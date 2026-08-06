@@ -62,3 +62,10 @@ jobs:
           BEAVER_PATH: ${{ github.workspace }}/beaver
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
+
+      - name: Build Hex package
+        # Simulate publishing: declare deps as Hex constraints (no path
+        # overrides) and reuse the test-env build so the tarball is produced
+        # without another native build.
+        run: |
+          env -u BEAVER_PATH -u BEAVER_KINDA_PATH MIX_ENV=test mix hex.build
