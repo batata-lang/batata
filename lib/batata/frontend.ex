@@ -4,8 +4,7 @@ defmodule Batata.Frontend do
 
   This module deliberately does not implement macro expansion or compile-time
   semantics: it records a normalized module snapshot so later phases can
-  consume function clauses without owning them (the frontend boundary of the
-  M1 plan).
+  consume function clauses without owning them (the frontend boundary).
   """
 
   defmodule Module do
