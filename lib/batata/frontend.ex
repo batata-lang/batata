@@ -11,24 +11,28 @@ defmodule Batata.Frontend do
   defmodule Module do
     @moduledoc "A normalized module snapshot at the expanded-module boundary."
     @enforce_keys [:name, :definitions]
+    @type t() :: %__MODULE__{}
     defstruct [:name, definitions: [], unsupported: []]
   end
 
   defmodule Definition do
     @moduledoc "One normalized function definition with one or more clauses."
     @enforce_keys [:kind, :name, :arity, :clauses]
+    @type t() :: %__MODULE__{}
     defstruct [:kind, :name, :arity, clauses: []]
   end
 
   defmodule Clause do
     @moduledoc "One function clause with patterns and a body AST."
     @enforce_keys [:patterns, :body_ast]
+    @type t() :: %__MODULE__{}
     defstruct [:patterns, :body_ast]
   end
 
   defmodule UnsupportedForm do
     @moduledoc "A module-body form outside the frontend boundary."
     @enforce_keys [:form, :reason]
+    @type t() :: %__MODULE__{}
     defstruct [:form, :reason]
   end
 
@@ -91,5 +95,5 @@ defmodule Batata.Frontend do
   defp normalize_form({:import, _, _}), do: {:unsupported, :import}
   defp normalize_form({:use, _, _}), do: {:unsupported, :use}
   defp normalize_form({:defmodule, _, _}), do: {:unsupported, :nested_defmodule}
-  defp normalize_form(other), do: {:unsupported, :unknown_form}
+  defp normalize_form(_other), do: {:unsupported, :unknown_form}
 end

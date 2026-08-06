@@ -8,7 +8,8 @@ defmodule Batata.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      description: description()
+      description: description(),
+      docs: docs()
     ]
   end
 
@@ -46,5 +47,24 @@ defmodule Batata.MixProject do
 
   defp description() do
     "An Elixir-to-native compiler built on Beaver and the ex dialect."
+  end
+
+  defp docs do
+    [
+      main: "Batata",
+      source_url: "https://github.com/conformal-elixir/batata",
+      extras: ["README.md"],
+      groups_for_modules: [
+        Compiler: [Batata],
+        Frontend: [
+          Batata.Frontend,
+          Batata.Frontend.Clause,
+          Batata.Frontend.Definition,
+          Batata.Frontend.Module,
+          Batata.Frontend.UnsupportedForm
+        ],
+        Lift: [Batata.Lift]
+      ]
+    ]
   end
 end

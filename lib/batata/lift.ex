@@ -25,7 +25,6 @@ defmodule Batata.Lift do
   Returns a `Beaver.Deferred`; materialize it with `Beaver.Deferred.create/2`
   against the MLIR context.
   """
-  @spec module_to_ir(Frontend.Module.t(), keyword()) :: Beaver.Deferred.t()
   def module_to_ir(%Frontend.Module{} = mod, opts) do
     Beaver.Deferred.from_opts(opts, fn ctx ->
       Beaver.Slang.load(ctx, Ex)
