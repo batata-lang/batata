@@ -3,7 +3,7 @@ defmodule Batata.LowerTest do
 
   alias Batata
 
-  test "lowers the M1 scalar slice from ex IR to func/arith and LLVM", %{ctx: ctx} do
+  test "lowers the scalar slice from ex IR to func/arith and LLVM", %{ctx: ctx} do
     module =
       Batata.to_llvm(
         """

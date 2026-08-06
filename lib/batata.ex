@@ -3,8 +3,8 @@ defmodule Batata do
   An Elixir-to-native compiler built on [Beaver](https://github.com/beaver-lodge/beaver)
   and the Slang-defined `ex` dialect.
 
-  M1 brings up the frontend boundary (expanded module snapshot to `ex` IR),
-  and M2 lowers `ex` to `func`/`arith`/`scf`/`cf` and then to LLVM via
+  The frontend boundary lowers an expanded module snapshot to `ex` IR, then
+  `ex` to `func`/`arith`/`scf`/`cf` and finally to LLVM via
   `Beaver.MLIR.Conversion.Plan`. ExecutionEngine / AOT execution is still
   pending.
   """

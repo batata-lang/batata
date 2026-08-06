@@ -4,8 +4,7 @@ defmodule Batata.Lower do
 
   The conversion patterns live in Beaver
   (`Beaver.MLIR.Conversion.Ex`); this module wires them together with the
-  standard `arith-to-llvm` and `func-to-llvm` passes for the M2 lowering
-  phase.
+  standard `arith-to-llvm` and `func-to-llvm` passes for the lowering phase.
   """
 
   alias Beaver.MLIR

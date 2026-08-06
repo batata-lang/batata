@@ -2,7 +2,7 @@ defmodule Batata.Lift do
   @moduledoc """
   Lifts a `Batata.Frontend` module snapshot into `ex` dialect IR.
 
-  The M1 scalar slice supports integer literals, `+`, `=` bindings, local calls,
+  The scalar slice supports integer literals, `+`, `=` bindings, local calls,
   and parameterless functions. Bindings lower directly to SSA: `ex.var`/`ex.bind`
   are term-universe bookkeeping and stay out of the typed scalar slice (they are
   erased by `Beaver.MLIR.Dialect.Ex.MaterializeBoundVariables` on the term path).
@@ -50,11 +50,11 @@ defmodule Batata.Lift do
     end
 
     if arity != 0 do
-      raise Error, "function parameters are unsupported in the M1 scalar slice: #{name}/#{arity}"
+      raise Error, "function parameters are unsupported in the scalar slice: #{name}/#{arity}"
     end
 
     unless length(clauses) == 1 do
-      raise Error, "multiple clauses are unsupported in the M1 scalar slice: #{name}/#{arity}"
+      raise Error, "multiple clauses are unsupported in the scalar slice: #{name}/#{arity}"
     end
 
     [%Frontend.Clause{patterns: [], body_ast: body_ast}] = clauses
@@ -149,7 +149,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr(ast, _ctx, _block, _env) do
-    raise Error, "unsupported AST in the M1 scalar slice: #{inspect(ast)}"
+    raise Error, "unsupported AST in the scalar slice: #{inspect(ast)}"
   end
 
   defp insert_return(nil, ctx, block) do
