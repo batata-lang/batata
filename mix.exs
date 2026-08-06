@@ -9,7 +9,8 @@ defmodule Batata.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: description(),
-      docs: docs()
+      docs: docs(),
+      package: package()
     ]
   end
 
@@ -47,6 +48,19 @@ defmodule Batata.MixProject do
 
   defp description() do
     "An Elixir-to-native compiler built on Beaver and the ex dialect."
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{
+        "GitHub" => "https://github.com/conformal-elixir/batata",
+        "Docs" => "https://conformal-elixir.com/batata"
+      },
+      files: ~w{
+        lib .formatter.exs mix.exs README.md LICENSE
+      }
+    ]
   end
 
   defp docs do
