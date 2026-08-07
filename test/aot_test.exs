@@ -24,7 +24,10 @@ defmodule Batata.AOTTest do
     assert File.exists?(output.object)
 
     binary = Path.join(tmp_dir, "run_math")
-    {_, 0} = System.cmd("cc", [output.driver, output.archive, "-o", binary], stderr_to_stdout: true)
+
+    {_, 0} =
+      System.cmd("cc", [output.driver, output.archive, "-o", binary], stderr_to_stdout: true)
+
     {stdout, 0} = System.cmd(binary, [])
     assert stdout == "6\n"
   end
