@@ -58,6 +58,98 @@ defmodule Batata.LiftTest do
              ])
   end
 
+  test "lifts tuple and list literals plus predicates into ex IR", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            is_tuple({1, [2, 3]})
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert Enum.sort(op_names(module)) ==
+             Enum.sort([
+               "builtin.module",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.func",
+               "ex.lit",
+               "ex.lit",
+               "ex.lit",
+               "ex.list",
+               "ex.tuple",
+               "ex.is_tuple",
+               "ex.return"
+             ])
+  end
+
+  test "lifts map, binary and string literals into ex IR", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            is_map(%{1 => 2})
+            is_binary(<<1, 2>>)
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert Enum.sort(op_names(module)) ==
+             Enum.sort([
+               "builtin.module",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.box",
+               "ex.func",
+               "ex.lit",
+               "ex.lit",
+               "ex.lit",
+               "ex.lit",
+               "ex.map",
+               "ex.binary",
+               "ex.is_map",
+               "ex.is_binary",
+               "ex.return"
+             ])
+  end
+
+  test "lifts an empty list into ex IR", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            is_list([])
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert Enum.sort(op_names(module)) ==
+             Enum.sort([
+               "builtin.module",
+               "ex.box",
+               "ex.func",
+               "ex.list",
+               "ex.is_list",
+               "ex.return"
+             ])
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
@@ -139,7 +231,7 @@ defmodule Batata.LiftTest do
         """
         defmodule M do
           def main() do
-            "string"
+            1.0
           end
         end
         """,

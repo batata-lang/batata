@@ -49,7 +49,7 @@ defmodule Batata do
       |> Batata.Lower.to_llvm(ctx, c_interface: true)
       |> MLIR.verify!()
 
-    jit = MLIR.ExecutionEngine.create!(module)
+    jit = MLIR.ExecutionEngine.create!(module, execution_engine_opts(module))
 
     try do
       return = Beaver.Native.I64.make(0)
@@ -58,6 +58,16 @@ defmodule Batata do
     after
       MLIR.ExecutionEngine.destroy(jit)
       MLIR.Module.destroy(module)
+    end
+  end
+
+  # Term ops lower to `ex.term.*` calls; when they are present the JIT must be
+  # able to resolve them, so the Zig term runtime shared library is attached.
+  defp execution_engine_opts(module) do
+    if MLIR.to_string(module) =~ "ex.term." do
+      [shared_lib_paths: [Batata.TermRuntime.ensure_built!()]]
+    else
+      []
     end
   end
 

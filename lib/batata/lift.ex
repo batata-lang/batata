@@ -3,7 +3,11 @@ defmodule Batata.Lift do
   Lifts a `Batata.Frontend` module snapshot into `ex` dialect IR.
 
   The scalar slice supports integer literals, `+`/`-`/`*`, `=` bindings, local
-  calls, and functions with integer parameters. Bindings lower directly to SSA:
+  calls, and functions with integer parameters. The term slice adds tuple,
+  list, map and binary literals plus the `Kernel` term predicates
+  (`is_atom`/`is_binary`/`is_list`/`is_tuple`/`is_map`/`is_integer`); they
+  lift to the `ex.tuple`/`ex.list`/`ex.map`/`ex.binary`/`ex.is_*` ops and are
+  lowered through the Zig term runtime ABI. Bindings lower directly to SSA:
   `ex.var`/`ex.bind` are term-universe bookkeeping and stay out of the typed
   scalar slice (they are erased by
   `Beaver.MLIR.Dialect.Ex.MaterializeBoundVariables` on the term path). Anything
@@ -29,7 +33,9 @@ defmodule Batata.Lift do
   """
   def module_to_ir(%Frontend.Module{} = mod, opts) do
     Beaver.Deferred.from_opts(opts, fn ctx ->
-      Beaver.Slang.load(ctx, Ex)
+      unless ex_dialect_loaded?(ctx) do
+        Beaver.Slang.load(ctx, Ex)
+      end
 
       module = MLIR.Module.create!("module {}", ctx: ctx)
       body = MLIR.CAPI.mlirModuleGetBody(module)
@@ -40,6 +46,15 @@ defmodule Batata.Lift do
 
       module
     end)
+  end
+
+  # `Beaver.Slang.load/2` registers the IRDL ops in the context and is not
+  # idempotent: loading the same dialect twice crashes MLIR with an operation
+  # registration assertion. Skip it when the ex dialect is already present.
+  defp ex_dialect_loaded?(ctx) do
+    ctx
+    |> MLIR.CAPI.mlirContextIsRegisteredOperation(MLIR.StringRef.create("ex.box"))
+    |> Beaver.Native.to_term()
   end
 
   defp lift_definition(
@@ -138,6 +153,43 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_expr(binary, ctx, block, env) when is_binary(binary) do
+    {values, env} =
+      binary
+      |> :binary.bin_to_list()
+      |> Enum.map_reduce(env, fn byte, env ->
+        {value, env} = lift_expr(byte, ctx, block, env)
+        {box_term(value, ctx, block), env}
+      end)
+
+    {create_term_op("ex.binary", values, ctx, block), env}
+  end
+
+  defp lift_expr([], ctx, block, env) do
+    {create_term_op("ex.list", [], ctx, block), env}
+  end
+
+  defp lift_expr(elements, ctx, block, env) when is_list(elements) do
+    {values, env} = lift_operands_boxed(elements, ctx, block, env)
+    {create_term_op("ex.list", values, ctx, block), env}
+  end
+
+  defp lift_expr({:%{}, _, entries}, ctx, block, env) do
+    {values, env} = lift_map_entries(entries, ctx, block, env)
+    {create_term_op("ex.map", values, ctx, block), env}
+  end
+
+  defp lift_expr({:<<>>, _, segments}, ctx, block, env) do
+    {values, env} = lift_operands_boxed(segments, ctx, block, env)
+    {create_term_op("ex.binary", values, ctx, block), env}
+  end
+
+  defp lift_expr({name, _, [arg]}, ctx, block, env)
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer] do
+    {value, env} = lift_expr(arg, ctx, block, env)
+    {create_op("ex.#{name}", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block), env}
+  end
+
   defp lift_expr({:__block__, _, expressions}, ctx, block, env) do
     lift_block(expressions, ctx, block, env)
   end
@@ -177,8 +229,67 @@ defmodule Batata.Lift do
     end
   end
 
+  # Tuple literals: calls, operators and variables are 3-tuples in the AST and
+  # are handled above, so every other tuple shape is a literal tuple.
+  defp lift_expr(tuple, ctx, block, env) when is_tuple(tuple) and tuple_size(tuple) != 3 do
+    lift_tuple_literal(tuple, ctx, block, env)
+  end
+
+  defp lift_expr({a, b, c}, ctx, block, env)
+       when not (is_atom(a) and is_list(b) and is_list(c)) do
+    lift_tuple_literal({a, b, c}, ctx, block, env)
+  end
+
   defp lift_expr(ast, _ctx, _block, _env) do
-    raise Error, "unsupported AST in the scalar slice: #{inspect(ast)}"
+    raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp lift_tuple_literal(tuple, ctx, block, env) do
+    {values, env} = lift_operands_boxed(Tuple.to_list(tuple), ctx, block, env)
+    {create_term_op("ex.tuple", values, ctx, block), env}
+  end
+
+  # Values crossing into a term-universe op are boxed with `ex.box`; the
+  # conversion turns the box into a tagged word (and is a no-op for values
+  # that already are terms).
+  defp lift_operands_boxed(args, ctx, block, env) do
+    Enum.map_reduce(args, env, fn arg, env ->
+      {value, env} = lift_expr(arg, ctx, block, env)
+      {box_term(value, ctx, block), env}
+    end)
+  end
+
+  defp box_term(value, ctx, block) do
+    create_op("ex.box", [value], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp lift_map_entries(entries, ctx, block, env) do
+    Enum.flat_map_reduce(entries, env, fn entry, env ->
+      case entry do
+        {key, _value} when is_atom(key) ->
+          raise Error,
+                "atom-keyed map entries are unsupported in the term slice: #{inspect(entry)}"
+
+        {key, value} ->
+          {key_value, env} = lift_expr(key, ctx, block, env)
+          {value_value, env} = lift_expr(value, ctx, block, env)
+          {[box_term(key_value, ctx, block), box_term(value_value, ctx, block)], env}
+
+        other ->
+          {value, env} = lift_expr(other, ctx, block, env)
+          {[box_term(value, ctx, block)], env}
+      end
+    end)
+  end
+
+  defp create_term_op(op_name, args, ctx, block) do
+    create_op(
+      op_name,
+      args ++ [operandSegmentSizes: segment_sizes([length(args)])],
+      [ex_type("dyn", ctx)],
+      ctx,
+      block
+    )
   end
 
   defp insert_return(nil, ctx, block) do

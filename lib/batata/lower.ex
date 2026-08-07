@@ -10,6 +10,7 @@ defmodule Batata.Lower do
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Plan
+  alias Beaver.Walker
 
   @doc """
   Converts an `ex` dialect module to `func`/`arith`/`scf`/`cf`.
@@ -38,14 +39,42 @@ defmodule Batata.Lower do
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionArithToLLVMConversionPass/0)
 
     if request_c_wrappers? do
-      module
-      |> Beaver.Composer.nested("func.func", "llvm-request-c-wrappers")
-      |> Beaver.Composer.run!()
+      request_c_wrappers_for_entry(module, "main")
     end
 
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertFuncToLLVMPass/0)
 
     module
+  end
+
+  # Asks func-to-llvm to emit a C interface wrapper (`_mlir_ciface_*`) only for
+  # the entry function. The Zig term runtime declarations must not get
+  # wrappers: the generated `_mlir_ciface_*` symbols have no body and would
+  # fail JIT materialization.
+  defp request_c_wrappers_for_entry(module, sym_name) do
+    entry =
+      module
+      |> MLIR.Module.body()
+      |> Walker.operations()
+      |> Enum.to_list()
+      |> Enum.find(fn op ->
+        MLIR.Operation.name(op) == "func.func" and symbol_name(op) == sym_name
+      end)
+
+    if entry do
+      MLIR.Operation.get_and_update(entry, "llvm.emit_c_interface", fn _ ->
+        {nil, MLIR.Attribute.unit()}
+      end)
+    end
+
+    module
+  end
+
+  defp symbol_name(op) do
+    case op |> MLIR.Operation.fetch("sym_name") do
+      {:ok, attribute} -> attribute |> MLIR.CAPI.mlirStringAttrGetValue() |> MLIR.to_string()
+      :error -> nil
+    end
   end
 
   defp run_pass(module, ctx, pass_fun) do
