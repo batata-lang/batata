@@ -34,4 +34,30 @@ defmodule Batata do
     |> Batata.Lower.to_llvm(ctx)
     |> MLIR.verify!()
   end
+
+  @doc """
+  Parses Elixir source, lowers it to LLVM and executes `main` through the
+  MLIR JIT, returning its value.
+
+  The JIT engine and module are destroyed before returning.
+  """
+  @spec execute(String.t(), MLIR.Context.t()) :: term()
+  def execute(source, ctx) do
+    module =
+      source
+      |> compile(ctx)
+      |> Batata.Lower.to_llvm(ctx, c_interface: true)
+      |> MLIR.verify!()
+
+    jit = MLIR.ExecutionEngine.create!(module)
+
+    try do
+      return = Beaver.Native.I64.make(0)
+      MLIR.ExecutionEngine.invoke!(jit, "main", [], return)
+      Beaver.Native.to_term(return)
+    after
+      MLIR.ExecutionEngine.destroy(jit)
+      MLIR.Module.destroy(module)
+    end
+  end
 end
