@@ -49,4 +49,36 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "executes arithmetic", %{ctx: ctx} do
+    assert 5 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   2 * 3 - 1
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes a function with parameters", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   add(1, 2)
+                 end
+
+                 def add(a, b) do
+                   a + b
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end

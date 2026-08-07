@@ -86,6 +86,53 @@ defmodule Batata.LiftTest do
            |> Beaver.Native.to_term() == 2
   end
 
+  test "lifts function parameters into block arguments", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def add(a, b) do
+            a + b
+          end
+        end
+        """,
+        ctx
+      )
+
+    func =
+      module
+      |> operations()
+      |> Enum.find(&(MLIR.Operation.name(&1) == "ex.func"))
+
+    [block] =
+      func
+      |> Beaver.Walker.regions()
+      |> Enum.to_list()
+      |> hd()
+      |> Beaver.Walker.blocks()
+      |> Enum.to_list()
+
+    assert [%MLIR.Value{}, %MLIR.Value{}] = block |> Beaver.Walker.arguments() |> Enum.to_list()
+    assert "ex.add" in op_names(module)
+  end
+
+  test "lifts subtraction and multiplication", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            2 * 3 - 1
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert "ex.mul" in op_names(module)
+    assert "ex.sub" in op_names(module)
+  end
+
   test "raises explicitly on unsupported AST", %{ctx: ctx} do
     assert_raise Lift.Error, ~r/unsupported AST/, fn ->
       lift!(
