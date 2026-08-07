@@ -5,8 +5,8 @@ defmodule Batata do
 
   The frontend boundary lowers an expanded module snapshot to `ex` IR, then
   `ex` to `func`/`arith`/`scf`/`cf` and finally to LLVM via
-  `Beaver.MLIR.Conversion.Plan`. ExecutionEngine / AOT execution is still
-  pending.
+  `Beaver.MLIR.Conversion.Plan`. Both JIT (`execute/2`) and AOT (`build/3`)
+  execution are supported.
   """
 
   alias Beaver.MLIR
@@ -59,5 +59,89 @@ defmodule Batata do
       MLIR.ExecutionEngine.destroy(jit)
       MLIR.Module.destroy(module)
     end
+  end
+
+  @doc """
+  Compiles Elixir source to a static library and a C driver.
+
+  The entry function `main` is renamed to `batata_main` in the generated
+  object so the driver can call it without colliding with the C entry point.
+  Returns a map with the archive, driver and object paths.
+
+  Link the driver against the archive and run it:
+
+      cc driver.c libMath.a -o run_math
+  """
+  @spec build(String.t(), Path.t(), MLIR.Context.t()) :: %{
+          archive: Path.t(),
+          driver: Path.t(),
+          object: Path.t()
+        }
+  def build(source, output_dir, ctx) do
+    snapshot =
+      source
+      |> Batata.Frontend.from_source()
+      |> rename_entry(:batata_main)
+
+    module =
+      snapshot
+      |> Batata.Lift.module_to_ir(ctx: ctx)
+      |> Beaver.Deferred.create(ctx)
+      |> MLIR.verify!()
+      |> Batata.Lower.to_llvm(ctx)
+      |> MLIR.verify!()
+
+    File.mkdir_p!(output_dir)
+
+    object_path = Path.join(output_dir, "batata.o")
+    archive_path = Path.join(output_dir, "lib#{snapshot.name}.a")
+    driver_path = Path.join(output_dir, "driver.c")
+
+    jit = MLIR.ExecutionEngine.create!(module, object_dump: true)
+
+    try do
+      MLIR.ExecutionEngine.emit_object!(jit, object_path)
+    after
+      MLIR.ExecutionEngine.destroy(jit)
+    end
+
+    archive!(archive_path, object_path)
+    File.write!(driver_path, driver_source())
+
+    %{archive: archive_path, driver: driver_path, object: object_path}
+  end
+
+  defp rename_entry(%Batata.Frontend.Module{} = snapshot, entry) do
+    %{
+      snapshot
+      | definitions:
+          Enum.map(snapshot.definitions, fn
+            %Batata.Frontend.Definition{name: :main} = definition ->
+              %{definition | name: entry}
+
+            definition ->
+              definition
+          end)
+    }
+  end
+
+  defp archive!(archive_path, object_path) do
+    ar = System.find_executable("ar") || raise "ar not found on PATH"
+    {_output, 0} = System.cmd(ar, ["rcs", archive_path, object_path], stderr_to_stdout: true)
+    archive_path
+  end
+
+  defp driver_source do
+    """
+    #include <stdint.h>
+    #include <stdio.h>
+
+    extern int64_t batata_main(void);
+
+    int main(void) {
+      printf("%lld\\n", (long long)batata_main());
+      return 0;
+    }
+    """
   end
 end
