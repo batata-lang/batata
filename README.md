@@ -15,7 +15,8 @@ The first milestone wires a minimal closed loop (see
   Beaver) — `Batata.to_llvm/2` runs the plan plus the standard
   `arith-to-llvm` / `func-to-llvm` passes;
 - execution: ExecutionEngine (JIT) — `Batata.execute/2` lowers the source and
-  runs `main` through the MLIR JIT; AOT `lib<Module>.a` + C driver is pending.
+  runs `main` through the MLIR JIT; AOT — `Batata.build/3` emits
+  `lib<Module>.a` plus a C driver that calls the entry function.
 
 ## Dev setup
 
