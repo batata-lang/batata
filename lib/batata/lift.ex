@@ -2,17 +2,19 @@ defmodule Batata.Lift do
   @moduledoc """
   Lifts a `Batata.Frontend` module snapshot into `ex` dialect IR.
 
-  The scalar slice supports integer literals, `+`, `=` bindings, local calls,
-  and parameterless functions. Bindings lower directly to SSA: `ex.var`/`ex.bind`
-  are term-universe bookkeeping and stay out of the typed scalar slice (they are
-  erased by `Beaver.MLIR.Dialect.Ex.MaterializeBoundVariables` on the term path).
-  Anything outside the slice raises `Batata.Lift.Error` explicitly instead of
-  being silently dropped.
+  The scalar slice supports integer literals, `+`/`-`/`*`, `=` bindings, local
+  calls, and functions with integer parameters. Bindings lower directly to SSA:
+  `ex.var`/`ex.bind` are term-universe bookkeeping and stay out of the typed
+  scalar slice (they are erased by
+  `Beaver.MLIR.Dialect.Ex.MaterializeBoundVariables` on the term path). Anything
+  outside the slice raises `Batata.Lift.Error` explicitly instead of being
+  silently dropped.
   """
 
   alias Batata.Frontend
   alias Beaver.MLIR
   alias Beaver.MLIR.Dialect.Ex
+  alias Beaver.Walker
 
   defmodule Error do
     @moduledoc "Raised when the frontend encounters an unsupported AST form."
@@ -49,21 +51,28 @@ defmodule Batata.Lift do
       raise Error, "unsupported definition kind: #{inspect(kind)}"
     end
 
-    if arity != 0 do
-      raise Error, "function parameters are unsupported in the scalar slice: #{name}/#{arity}"
-    end
-
     unless length(clauses) == 1 do
       raise Error, "multiple clauses are unsupported in the scalar slice: #{name}/#{arity}"
     end
 
-    [%Frontend.Clause{patterns: [], body_ast: body_ast}] = clauses
+    [%Frontend.Clause{patterns: patterns, body_ast: body_ast}] = clauses
 
     region = MLIR.CAPI.mlirRegionCreate()
-    block = MLIR.Block.create([], [])
+    arg_types = List.duplicate(integer_type(ctx), length(patterns))
+    arg_locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), length(patterns))
+    block = MLIR.Block.create(arg_types, arg_locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
-    {return_value, _env} = lift_block(List.wrap(body_ast), ctx, block, %{})
+    env =
+      block
+      |> Walker.arguments()
+      |> Enum.to_list()
+      |> Enum.zip(patterns)
+      |> Enum.reduce(%{}, fn {value, pattern}, env ->
+        Map.put(env, param_name(pattern), value)
+      end)
+
+    {return_value, _env} = lift_block(List.wrap(body_ast), ctx, block, env)
     insert_return(return_value, ctx, block)
 
     %Beaver.SSA{
@@ -105,6 +114,26 @@ defmodule Batata.Lift do
 
     {
       create_op("ex.add", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
+      env
+    }
+  end
+
+  defp lift_expr({:-, _, [left, right]}, ctx, block, env) do
+    {left_value, env} = lift_expr(left, ctx, block, env)
+    {right_value, env} = lift_expr(right, ctx, block, env)
+
+    {
+      create_op("ex.sub", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
+      env
+    }
+  end
+
+  defp lift_expr({:*, _, [left, right]}, ctx, block, env) do
+    {left_value, env} = lift_expr(left, ctx, block, env)
+    {right_value, env} = lift_expr(right, ctx, block, env)
+
+    {
+      create_op("ex.mul", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
       env
     }
   end
@@ -180,6 +209,11 @@ defmodule Batata.Lift do
       _ -> operation |> MLIR.Operation.results() |> Enum.to_list()
     end
   end
+
+  defp param_name({name, _, nil}) when is_atom(name), do: name
+  defp param_name(pattern), do: raise(Error, "unsupported parameter pattern: #{inspect(pattern)}")
+
+  defp integer_type(ctx), do: MLIR.Type.integer(64, ctx: ctx)
 
   defp ex_type(name, ctx) do
     Beaver.Slang.create_constrained_element(:type, "ex", name, [], ctx: ctx)
