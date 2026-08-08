@@ -105,6 +105,15 @@ fn tuple_elems(tuple: i64) [*]i64 {
     return @ptrFromInt((@as(usize, @bitCast(tuple)) & ~tag_mask) + @sizeOf(i64));
 }
 
+fn binary_len(binary: i64) usize {
+    const header: *[1]i64 = @ptrFromInt(@as(usize, @bitCast(binary)) & ~tag_mask);
+    return @intCast(header[0]);
+}
+
+fn binary_bytes(binary: i64) [*]i64 {
+    return @ptrFromInt((@as(usize, @bitCast(binary)) & ~tag_mask) + @sizeOf(i64));
+}
+
 /// Conses a head word onto a list tail, returning a proper list word.
 pub export fn ex_term_list_cons(head: i64, tail: i64) i64 {
     const cell = alloc_words(2) orelse return nil_word;
@@ -159,6 +168,39 @@ pub export fn ex_term_list_length(list: i64) i64 {
 /// rather than deep equality.
 pub export fn ex_term_eq(left: i64, right: i64) i64 {
     return if (left == right) 1 else 0;
+}
+
+/// Returns the byte length of a binary word; 0 for non-binaries.
+pub export fn ex_term_binary_length(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return 0;
+    return @intCast(binary_len(binary));
+}
+
+/// Reads the byte at `index` as a tagged int term; nil for out-of-range or
+/// non-binaries (the caller is expected to have checked `is_binary` first).
+pub export fn ex_term_binary_get(binary: i64, index: i64) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const len = binary_len(binary);
+    if (index < 0 or index >= @as(i64, @intCast(len))) return nil_word;
+    const byte: i64 = binary_bytes(binary)[@intCast(index)];
+    return (byte & 0xFF) << @intCast(tag_shift);
+}
+
+/// Materializes a new binary word from bytes [start..len); nil for
+/// non-binaries or an out-of-range start.
+pub export fn ex_term_binary_slice(binary: i64, start: i64) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const len = binary_len(binary);
+    if (start < 0 or start > @as(i64, @intCast(len))) return nil_word;
+    const rest_len = len - @as(usize, @intCast(start));
+    const slice = alloc_words(rest_len + 1) orelse return nil_word;
+    slice[0] = @intCast(rest_len);
+    const bytes = binary_bytes(binary);
+    var i: usize = 0;
+    while (i < rest_len) : (i += 1) {
+        slice[i + 1] = bytes[@as(usize, @intCast(start)) + i];
+    }
+    return word_from_ptr(slice, tag_binary);
 }
 
 /// Converts a flat key/value list word (even length) into a map word.
@@ -226,6 +268,9 @@ comptime {
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_length, .{ .name = "ex.term.list_length" });
     @export(&ex_term_eq, .{ .name = "ex.term.eq" });
+    @export(&ex_term_binary_length, .{ .name = "ex.term.binary_length" });
+    @export(&ex_term_binary_get, .{ .name = "ex.term.binary_get" });
+    @export(&ex_term_binary_slice, .{ .name = "ex.term.binary_slice" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
@@ -300,6 +345,20 @@ test "term ABI reads" {
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
     try std.testing.expectEqual(@as(i64, 0), ex_term_eq(one, two));
+
+    // binary reads
+    const byte_list = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
+    const binary = ex_term_binary_from_list(byte_list);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_binary_length(binary));
+    try std.testing.expectEqual(one, ex_term_binary_get(binary, 0));
+    try std.testing.expectEqual(two, ex_term_binary_get(binary, 1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_get(binary, 2)));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_binary_length(one));
+
+    const rest = ex_term_binary_slice(binary, 1);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_binary_length(rest));
+    try std.testing.expectEqual(two, ex_term_binary_get(rest, 0));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_slice(binary, 3)));
 }
 
 fn ex_term_is_nil_word(word: i64) i64 {

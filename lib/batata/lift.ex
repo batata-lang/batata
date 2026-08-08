@@ -443,6 +443,10 @@ defmodule Batata.Lift do
     build_tuple_match(elements, value, ctx, block)
   end
 
+  defp do_build_match({:<<>>, _, segments}, value, ctx, block) do
+    build_binary_match(segments, value, ctx, block)
+  end
+
   defp do_build_match([], value, ctx, block) do
     cond_list =
       create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
@@ -545,6 +549,84 @@ defmodule Batata.Lift do
     {[head_cond | tail_conds], head_binds ++ tail_binds}
   end
 
+  defp build_binary_match(segments, value, ctx, block) do
+    {byte_segments, rest} = parse_binary_segments(segments)
+
+    cond_bin =
+      create_op("ex.is_binary", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    cond_len =
+      cmp(
+        create_op("ex.binary_length", [value], [MLIR.Type.i64()], ctx, block),
+        length(byte_segments),
+        if(rest == nil, do: "eq", else: "sge"),
+        ctx,
+        block
+      )
+
+    {byte_conds, byte_binds} =
+      byte_segments
+      |> Enum.with_index()
+      |> Enum.map_reduce([], fn {pat, index}, binds ->
+        byte_value =
+          create_op(
+            "ex.binary_get",
+            [value, lit(index, ctx, block)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+
+        {cond, pat_binds} = do_build_match(pat, byte_value, ctx, block)
+        {cond, pat_binds ++ binds}
+      end)
+
+    {rest_cond, rest_binds} =
+      case rest do
+        nil ->
+          {nil, []}
+
+        rest_pat ->
+          rest_value =
+            create_op(
+              "ex.binary_slice",
+              [value, lit(length(byte_segments), ctx, block)],
+              [ex_type("dyn", ctx)],
+              ctx,
+              block
+            )
+
+          do_build_match(rest_pat, rest_value, ctx, block)
+      end
+
+    {combine([cond_bin, cond_len | byte_conds ++ [rest_cond]], ctx, block),
+     Enum.reverse(byte_binds) ++ rest_binds}
+  end
+
+  defp parse_binary_segments(segments) do
+    {byte_segments, rest} =
+      Enum.split_while(segments, &(not match?({:"::", _, [_, {:binary, _, nil}]}, &1)))
+
+    case rest do
+      [] ->
+        {Enum.map(byte_segments, &byte_segment!/1), nil}
+
+      [{:"::", _, [rest_pat, {:binary, _, nil}]}] ->
+        {Enum.map(byte_segments, &byte_segment!/1), rest_pat}
+
+      _ ->
+        raise Error, "binary rest segment must be the last segment: #{inspect(segments)}"
+    end
+  end
+
+  defp byte_segment!({:"::", _, [pat, 8]}), do: pat
+  defp byte_segment!(pat) when is_integer(pat), do: pat
+  defp byte_segment!({name, _, nil} = pat) when is_atom(name), do: pat
+
+  defp byte_segment!(segment) do
+    raise Error, "unsupported binary byte segment: #{inspect(segment)}"
+  end
+
   defp add_term_clause_block(clause, guard, binds, env, ctx, region) do
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
@@ -642,7 +724,7 @@ defmodule Batata.Lift do
   defp term_pattern?(pattern) do
     pattern
     |> PatternPlan.lower_pattern()
-    |> Enum.any?(&(&1.op in [:tuple, :list_exact, :list_cons]))
+    |> Enum.any?(&(&1.op in [:tuple, :list_exact, :list_cons, :binary]))
   end
 
   defp parse_clause({:->, _, [args, body]}) when is_list(args) do

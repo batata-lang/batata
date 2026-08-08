@@ -254,6 +254,30 @@ defmodule Batata.LiftTest do
     assert "arith.andi" in names
   end
 
+  test "lifts binary patterns into guard-only ex.clause clauses", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case <<1, 2>> do
+              <<h::8, t::binary>> -> is_binary(t)
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.case" in names
+    assert "ex.is_binary" in names
+    assert "ex.binary_length" in names
+    assert "ex.binary_get" in names
+    assert "ex.binary_slice" in names
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
