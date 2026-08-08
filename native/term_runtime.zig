@@ -15,6 +15,7 @@ const tag_tuple: usize = 2;
 const tag_list: usize = 3;
 const tag_map: usize = 4;
 const tag_binary: usize = 5;
+const tag_fun: usize = 6;
 
 const tag_mask: usize = 7;
 const tag_shift: u6 = 3;
@@ -27,6 +28,7 @@ const nil_word: i64 = 1;
 //   map:    [len: i64] [entry: i64 ... 2*len]   (flat key/value pairs)
 //   binary: [len: i64] [byte: i64 ... len]
 //   list:   cons cells [head: i64] [tail: i64]
+//   fun:    [fn_idx: i64] [env_len: i64] [env: i64 ... env_len]
 
 // A fixed bump arena. M2 scope: term construction and predicates for small
 // literal programs; GC arrives with a later milestone.
@@ -121,6 +123,38 @@ fn map_len(map: i64) usize {
 
 fn map_entries(map: i64) [*]i64 {
     return @ptrFromInt((@as(usize, @bitCast(map)) & ~tag_mask) + @sizeOf(i64));
+}
+
+fn fun_words(fun: i64) [*]i64 {
+    return @ptrFromInt(@as(usize, @bitCast(fun)) & ~tag_mask);
+}
+
+/// Constructs a first-class function value: a closure word holding the index
+/// of the extracted `__fn_*` and up to four captured env words.
+pub export fn ex_term_make_fun(fn_idx: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) i64 {
+    if (env_len < 0 or env_len > 4) return nil_word;
+    const words = alloc_words(6) orelse return nil_word;
+    words[0] = fn_idx;
+    words[1] = env_len;
+    const env = [4]i64{ e0, e1, e2, e3 };
+    for (0..@as(usize, @intCast(env_len))) |i| words[2 + i] = env[i];
+    return word_from_ptr(words, tag_fun);
+}
+
+/// Returns the function index of a closure word; 0 for non-functions.
+pub export fn ex_term_fun_idx(fun: i64) i64 {
+    if (word_tag(fun) != tag_fun) return 0;
+    return fun_words(fun)[0];
+}
+
+/// Returns the `index`-th captured env word of a closure; nil for
+/// non-functions or out-of-range indices.
+pub export fn ex_term_fun_env(fun: i64, index: i64) i64 {
+    if (word_tag(fun) != tag_fun) return nil_word;
+    const words = fun_words(fun);
+    const env_len: usize = @intCast(words[1]);
+    if (index < 0 or index >= @as(i64, @intCast(env_len))) return nil_word;
+    return words[2 + @as(usize, @intCast(index))];
 }
 
 /// Conses a head word onto a list tail, returning a proper list word.
@@ -376,6 +410,9 @@ pub export fn ex_term_is_map(word: i64) i64 {
 // identifiers cannot contain dots, so the C ABI symbols are re-exported under
 // the manifest names.
 comptime {
+    @export(&ex_term_make_fun, .{ .name = "ex.term.make_fun" });
+    @export(&ex_term_fun_idx, .{ .name = "ex.term.fun_idx" });
+    @export(&ex_term_fun_env, .{ .name = "ex.term.fun_env" });
     @export(&ex_term_list_cons, .{ .name = "ex.term.list_cons" });
     @export(&ex_term_tuple_from_list, .{ .name = "ex.term.tuple_from_list" });
     @export(&ex_term_tuple_get, .{ .name = "ex.term.tuple_get" });

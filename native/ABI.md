@@ -19,6 +19,7 @@ remaining 61 bits hold the payload.
 | `list` | `0b011` | heap pointer to a cons cell |
 | `map` | `0b100` | heap pointer to a map header |
 | `binary` | `0b101` | heap pointer to a binary header |
+| `fun` | `0b110` | heap pointer to a closure header |
 
 Heap objects are 8-byte aligned, so the low 3 bits of a container pointer are
 always zero and the tag can be OR-ed in. `nil` is the atom with id 0
@@ -31,6 +32,7 @@ tuple:  [len] [elem × len]
 map:    [len] [entry × 2*len]   (flat key/value pairs; len = pair count)
 binary: [len] [byte × len]
 list:   cons cells [head] [tail]
+fun:    [fn_idx] [env_len] [env × env_len]
 ```
 
 ## Intrinsics
@@ -40,6 +42,9 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | symbol | signature | semantics |
 | --- | --- | --- |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
+| `ex.term.make_fun` | `(fn_idx: i64, env_len: i64, e0..e3: i64) -> i64` | closure word referencing `__fn_*` by index with up to four captured env words |
+| `ex.term.fun_idx` | `(fun: i64) -> i64` | function index of a closure; 0 for non-functions |
+| `ex.term.fun_env` | `(fun: i64, index: i64) -> i64` | captured env word at index; nil for non-functions / out-of-range |
 | `ex.term.tuple_from_list` | `(list: i64) -> i64` | proper list -> tuple |
 | `ex.term.tuple_get` | `(tuple: i64, index: i64) -> i64` | element at index; nil when out of range or not a tuple |
 | `ex.term.tuple_length` | `(tuple: i64) -> i64` | tuple arity; 0 for non-tuples |

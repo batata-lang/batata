@@ -39,18 +39,60 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp inline_once(module) do
     callees = callees(module)
 
-    case module |> ops_of("ex.call") |> Enum.find(&(action(&1, callees) != :skip)) do
-      nil ->
-        :unchanged
+    if apply = module |> ops_of("ex.apply") |> Enum.find(&(retype_apply_action(&1) == :ok)) do
+      retype_apply!(apply)
+      :changed
+    else
+      case module |> ops_of("ex.call") |> Enum.find(&(action(&1, callees) != :skip)) do
+        nil ->
+          :unchanged
 
-      call ->
-        case action(call, callees) do
-          {:inline, callee} -> inline!(call, callee)
-          {:retype, _callee} -> retype!(call)
-        end
+        call ->
+          case action(call, callees) do
+            {:inline, callee} -> inline!(call, callee)
+            {:retype, _callee} -> retype!(call)
+          end
 
-        :changed
+          :changed
+      end
     end
+  end
+
+  # Dynamic anonymous-function application returns the extracted fn's result,
+  # which is a scalar i64 in the current slice, so the result can be retyped
+  # to participate in arithmetic.
+  defp retype_apply_action(apply) do
+    if scalar_typed?(apply), do: :skip, else: :ok
+  end
+
+  defp retype_apply!(apply) do
+    owner = owner_func(apply)
+    args = apply |> Walker.operands() |> Enum.to_list()
+    {:ok, arg_count} = apply |> MLIR.Operation.fetch(:arg_count)
+    {:ok, segment_sizes_attr} = apply |> MLIR.Operation.fetch(:operandSegmentSizes)
+
+    new_apply =
+      %Changeset{
+        name: "ex.apply",
+        context: MLIR.context(apply),
+        location: MLIR.Operation.location(apply)
+      }
+      |> Changeset.add_argument(args)
+      |> Changeset.add_argument(arg_count: arg_count, operandSegmentSizes: segment_sizes_attr)
+      |> Changeset.add_result(MLIR.Type.i64())
+      |> MLIR.Operation.create()
+
+    IRRewriter.with_rewriter(owner, fn rewriter ->
+      RewriterBase.with_insertion_point(rewriter, {:before, apply}, fn ->
+        RewriterBase.insert(rewriter, new_apply)
+        [old_result] = apply |> Walker.results() |> Enum.to_list()
+        [new_result] = new_apply |> Walker.results() |> Enum.to_list()
+        RewriterBase.replace(rewriter, old_result, new_result)
+        RewriterBase.erase_op(rewriter, apply)
+      end)
+    end)
+
+    :ok
   end
 
   defp action(call, callees) do
@@ -138,11 +180,11 @@ defmodule Batata.Transform.InlineScalarCalls do
   end
 
   defp arg_segment_sizes(count) do
-    unless count <= 4 do
-      raise ArgumentError, "calls with more than 4 arguments are unsupported: #{count}"
+    unless count <= 8 do
+      raise ArgumentError, "calls with more than 8 arguments are unsupported: #{count}"
     end
 
-    List.duplicate(1, count) ++ List.duplicate(0, 4 - count)
+    List.duplicate(1, count) ++ List.duplicate(0, 8 - count)
   end
 
   defp inline!(call, callee) do

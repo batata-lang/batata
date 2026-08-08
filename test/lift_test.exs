@@ -447,11 +447,13 @@ defmodule Batata.LiftTest do
       )
 
     names = op_names(module)
-    assert Enum.count(names, &(&1 == "ex.func")) == 2
+    # main, the extracted __fn_*, and the closure dispatch function.
+    assert Enum.count(names, &(&1 == "ex.func")) == 3
     assert "ex.call" in names
 
     rendered = MLIR.to_string(module, generic: true)
     assert rendered =~ "__fn_"
+    assert rendered =~ "__fn_dispatch"
   end
 
   defp first_index(string, pattern) do

@@ -49,6 +49,7 @@ defmodule Batata.Lift do
 
       mod.definitions
       |> extract_all_fns()
+      |> then(&append_dispatch(&1))
       |> Enum.group_by(&{&1.name, &1.arity})
       |> Enum.each(fn {_key, definitions} ->
         lift_definitions(definitions, ctx, body)
@@ -69,9 +70,10 @@ defmodule Batata.Lift do
 
   # Extracts anonymous-function literals from every definition body into
   # synthetic `defp` definitions, replacing the literal with a
-  # `{:__fn_ref__, _, [name, arity, captured]}` marker. Free variables of the
-  # literal body become extra trailing parameters of the synthetic definition,
-  # and the application site resolves their values from the outer env.
+  # `{:__fn_ref__, _, [fn_idx, name, arity, captured]}` marker. The synthetic
+  # definition uses the fixed closure ABI: four captured-value slots followed
+  # by four argument slots. The application site threads the captured values
+  # from the outer env.
   defp extract_all_fns(definitions) do
     {defs, {synthetic, _counter}} =
       definitions
@@ -97,19 +99,28 @@ defmodule Batata.Lift do
     bound = Enum.map(args, &param_name/1)
     captured = body |> free_vars(bound) |> Enum.uniq() |> Enum.sort()
 
+    unless arity <= 4 and length(captured) <= 4 do
+      raise Error,
+            "anonymous functions are limited to 4 arguments and 4 captured variables: " <>
+              "#{arity} arguments, #{length(captured)} captured"
+    end
+
+    patterns =
+      ((captured ++ List.duplicate(nil, 4 - length(captured))) ++
+         bound ++ List.duplicate(nil, 4 - arity))
+      |> Enum.map(fn
+        nil -> {:_, [], nil}
+        name -> {name, [], nil}
+      end)
+
     fn_def = %Frontend.Definition{
       kind: :defp,
       name: name,
-      arity: arity + length(captured),
-      clauses: [
-        %Frontend.Clause{
-          patterns: args ++ Enum.map(captured, &{&1, [], nil}),
-          body_ast: body
-        }
-      ]
+      arity: 8,
+      clauses: [%Frontend.Clause{patterns: patterns, body_ast: body}]
     }
 
-    marker = {:__fn_ref__, [], [name, arity, captured]}
+    marker = {:__fn_ref__, [], [counter, name, arity, captured]}
     {marker, {synthetic ++ [fn_def], counter + 1}}
   end
 
@@ -137,6 +148,10 @@ defmodule Batata.Lift do
     if var == :_ or var in bound, do: [], else: [var]
   end
 
+  defp free_vars({{:., _, [fun]}, _, args}, bound) when is_list(args) do
+    free_vars(fun, bound) ++ Enum.flat_map(args, &free_vars(&1, bound))
+  end
+
   defp free_vars({_name, _, args}, bound) when is_list(args) do
     Enum.flat_map(args, &free_vars(&1, bound))
   end
@@ -150,6 +165,59 @@ defmodule Batata.Lift do
   end
 
   defp free_vars(_other, _bound), do: []
+
+  # Appends the closure dispatch function: it reads the function index and
+  # env words from a closure (via the Zig runtime) and jumps to the matching
+  # `__fn_*` with the fixed 8-slot ABI. Built only when at least one
+  # anonymous function exists.
+  defp append_dispatch(definitions) do
+    fns =
+      definitions
+      |> Enum.filter(&fn_definition?(&1))
+      |> Enum.map(fn defn ->
+        idx =
+          defn.name
+          |> Atom.to_string()
+          |> String.split("_")
+          |> List.last()
+          |> String.to_integer()
+
+        {idx, defn.name}
+      end)
+      |> Enum.sort()
+
+    case fns do
+      [] -> definitions
+      _ -> definitions ++ [dispatch_definition(fns)]
+    end
+  end
+
+  defp fn_definition?(%Frontend.Definition{name: name}) do
+    name |> Atom.to_string() |> String.starts_with?("__fn_")
+  end
+
+  defp dispatch_definition([{_, first_name} | _] = fns) do
+    vars = [:idx, :e0, :e1, :e2, :e3, :a0, :a1, :a2, :a3]
+    call_args = Enum.map(tl(vars), &{&1, [], nil})
+    zero_args = List.duplicate(0, 8)
+
+    clauses =
+      Enum.map(fns, fn {idx, name} ->
+        {:->, [], [[idx], {name, [], call_args}]}
+      end) ++ [{:->, [], [[{:_, [], nil}], {first_name, [], zero_args}]}]
+
+    %Frontend.Definition{
+      kind: :defp,
+      name: :__fn_dispatch,
+      arity: length(vars),
+      clauses: [
+        %Frontend.Clause{
+          patterns: Enum.map(vars, &{&1, [], nil}),
+          body_ast: {:case, [], [{:idx, [], nil}, [do: clauses]]}
+        }
+      ]
+    }
+  end
 
   defp lift_definition(
          %Frontend.Definition{kind: kind, name: name, arity: arity, clauses: clauses},
@@ -181,8 +249,8 @@ defmodule Batata.Lift do
         Map.put(env, param_name(pattern), value)
       end)
 
-    {return_value, _env} = lift_block(List.wrap(body_ast), ctx, block, env)
-    insert_return(return_value, ctx, block)
+    {return_value, env} = lift_block(List.wrap(body_ast), ctx, block, env)
+    insert_return(return_value, ctx, block, env)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -248,7 +316,7 @@ defmodule Batata.Lift do
     return_value =
       lift_case(clause_asts, arg, %{}, ctx, block, relax_types: true, box_scrutinee: false)
 
-    insert_return(return_value, ctx, block)
+    insert_return(return_value, ctx, block, %{})
 
     %Beaver.SSA{
       op: "ex.func",
@@ -285,7 +353,7 @@ defmodule Batata.Lift do
     return_value =
       lift_case(clause_asts, arg1, tail_env, ctx, block, relax_types: true, box_scrutinee: false)
 
-    insert_return(return_value, ctx, block)
+    insert_return(return_value, ctx, block, tail_env)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -762,45 +830,79 @@ defmodule Batata.Lift do
   end
 
   # Anonymous-function marker produced by `extract_all_fns/1`: the literal
-  # becomes a reference to the extracted ex.func, carrying the captured
-  # variable names so the application site can thread their values in.
-  defp lift_expr({:__fn_ref__, _, [name, arity, captured]}, _ctx, _block, env) do
-    {{:fn_ref, name, arity, captured}, env}
+  # becomes a compile-time function reference. It is materialized into a
+  # first-class closure word only when it crosses into a value context; a
+  # direct `.()` application calls the extracted ex.func directly.
+  defp lift_expr({:__fn_ref__, _, [fn_idx, name, arity, captured]}, _ctx, _block, env) do
+    {{:fn_ref, fn_idx, name, arity, captured}, env}
   end
 
   # Anonymous-function application: `f.(args)` / `(fn ... end).(args)`.
   defp lift_expr({{:., _, [fun_ast]}, _, args}, ctx, block, env) do
     case resolve_fun_ref(fun_ast, env) do
-      {:ok, name, arity, captured} ->
+      {:ok, _fn_idx, name, arity, captured} ->
         unless length(args) == arity do
           raise Error,
                 "anonymous function application arity mismatch: expected #{arity}, got #{length(args)}"
         end
-
-        {captured_values, env} =
-          Enum.map_reduce(captured, env, fn var, env ->
-            case Map.fetch(env, var) do
-              {:ok, value} -> {value, env}
-              :error -> raise Error, "unbound variable reference: #{inspect(var)}"
-            end
-          end)
 
         {arg_values, env} =
           Enum.map_reduce(args, env, fn arg, env ->
             lift_expr(arg, ctx, block, env)
           end)
 
-        call_arity = arity + length(captured)
+        captured_values = resolve_captured(captured, env)
+        captured_values = Enum.map(captured_values, &lift_value(&1, ctx, block, env))
+        arg_values = Enum.map(arg_values, &lift_value(&1, ctx, block, env))
+
+        # The extracted fn uses the fixed 8-slot closure ABI: four captured
+        # slots followed by four argument slots.
+        call_args =
+          captured_values ++
+            List.duplicate(zero_i64(ctx, block), 4 - length(captured_values)) ++
+            arg_values ++ List.duplicate(zero_i64(ctx, block), 4 - length(arg_values))
 
         {
           create_op(
             "ex.call",
-            arg_values ++
-              captured_values ++
+            call_args ++
               [
                 callee: MLIR.Attribute.string(to_string(name)),
-                arity: MLIR.Attribute.integer(MLIR.Type.i64(), call_arity),
-                operandSegmentSizes: segment_sizes(arg_segment_sizes(call_arity))
+                arity: MLIR.Attribute.integer(MLIR.Type.i64(), 8),
+                operandSegmentSizes: segment_sizes(arg_segment_sizes(8))
+              ],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          ),
+          env
+        }
+
+      {:dynamic, closure} ->
+        unless length(args) <= 4 do
+          raise Error,
+                "dynamic anonymous function application supports at most 4 arguments, got #{length(args)}"
+        end
+
+        {arg_values, env} =
+          Enum.map_reduce(args, env, fn arg, env ->
+            lift_expr(arg, ctx, block, env)
+          end)
+
+        closure_word = create_op("ex.to_word", [closure], [ex_type("dyn", ctx)], ctx, block)
+
+        {
+          create_op(
+            "ex.apply",
+            [closure_word] ++
+              arg_values ++
+              [
+                arg_count: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
+                operandSegmentSizes:
+                  segment_sizes(
+                    [1 | List.duplicate(1, length(args))] ++
+                      List.duplicate(0, 4 - length(args))
+                  )
               ],
             [ex_type("dyn", ctx)],
             ctx,
@@ -820,13 +922,7 @@ defmodule Batata.Lift do
     {arg_values, env} =
       Enum.map_reduce(args, env, fn arg, env ->
         {value, env} = lift_expr(arg, ctx, block, env)
-
-        if match?({:fn_ref, _, _, _}, value) do
-          raise Error,
-                "anonymous functions can only be applied directly with .() in the current slice"
-        end
-
-        {value, env}
+        {lift_value(value, ctx, block, env), env}
       end)
 
     {
@@ -870,15 +966,65 @@ defmodule Batata.Lift do
 
   defp resolve_fun_ref({name, _, nil}, env) when is_atom(name) do
     case Map.get(env, name) do
-      {:fn_ref, fn_name, arity, captured} -> {:ok, fn_name, arity, captured}
-      _ -> :error
+      {:fn_ref, fn_idx, fn_name, arity, captured} -> {:ok, fn_idx, fn_name, arity, captured}
+      nil -> :error
+      value -> {:dynamic, value}
     end
   end
 
-  defp resolve_fun_ref({:__fn_ref__, _, [name, arity, captured]}, _env),
-    do: {:ok, name, arity, captured}
+  defp resolve_fun_ref({:__fn_ref__, _, [fn_idx, name, arity, captured]}, _env),
+    do: {:ok, fn_idx, name, arity, captured}
 
   defp resolve_fun_ref(_ast, _env), do: :error
+
+  # Reads the captured variable values of a compile-time function reference
+  # from the current env.
+  defp resolve_captured(captured, env) do
+    Enum.map(captured, fn var ->
+      case Map.fetch(env, var) do
+        {:ok, value} -> value
+        :error -> raise Error, "unbound variable reference: #{inspect(var)}"
+      end
+    end)
+  end
+
+  # Materializes a compile-time function reference into a first-class closure
+  # word; all other values pass through unchanged.
+  defp lift_value({:fn_ref, fn_idx, _name, _arity, captured}, ctx, block, env) do
+    env_values = resolve_captured(captured, env)
+
+    unless length(env_values) <= 4 do
+      raise Error, "anonymous function capture exceeds 4 slots: #{length(env_values)}"
+    end
+
+    create_op(
+      "ex.make_fun",
+      env_values ++
+        [
+          fn_idx: MLIR.Attribute.integer(MLIR.Type.i64(), fn_idx),
+          env_len: MLIR.Attribute.integer(MLIR.Type.i64(), length(captured)),
+          operandSegmentSizes:
+            segment_sizes(
+              List.duplicate(1, length(captured)) ++ List.duplicate(0, 4 - length(captured))
+            )
+        ],
+      [ex_type("dyn", ctx)],
+      ctx,
+      block
+    )
+  end
+
+  defp lift_value(value, _ctx, _block, _env), do: value
+
+  defp zero_i64(ctx, block) do
+    create_op(
+      "ex.lit",
+      [value: MLIR.Attribute.integer(MLIR.Type.i64(), 0)],
+      [MLIR.Type.i64()],
+      ctx,
+      block
+    )
+  end
 
   defp lift_tuple_literal(tuple, ctx, block, env) do
     {values, env} = lift_operands_boxed(Tuple.to_list(tuple), ctx, block, env)
@@ -1288,7 +1434,8 @@ defmodule Batata.Lift do
         {var, value}, acc -> Map.put(acc, var, value)
       end)
 
-    {value, _env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    {value, clause_env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    value = lift_value(value, ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
   end
@@ -1446,7 +1593,8 @@ defmodule Batata.Lift do
     clause_args = if guard, do: [guard], else: []
     create_op("ex.clause", clause_args ++ clause_attrs, [], ctx, block)
 
-    {value, _env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    {value, clause_env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    value = lift_value(value, ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
   end
@@ -1461,7 +1609,7 @@ defmodule Batata.Lift do
   defp lift_operands_boxed(args, ctx, block, env) do
     Enum.map_reduce(args, env, fn arg, env ->
       {value, env} = lift_expr(arg, ctx, block, env)
-      {box_term(value, ctx, block), env}
+      {box_term(lift_value(value, ctx, block, env), ctx, block), env}
     end)
   end
 
@@ -1479,11 +1627,18 @@ defmodule Batata.Lift do
         {key, value} ->
           {key_value, env} = lift_expr(key, ctx, block, env)
           {value_value, env} = lift_expr(value, ctx, block, env)
-          {[box_term(key_value, ctx, block), box_term(value_value, ctx, block)], env}
+
+          {
+            [
+              box_term(lift_value(key_value, ctx, block, env), ctx, block),
+              box_term(lift_value(value_value, ctx, block, env), ctx, block)
+            ],
+            env
+          }
 
         other ->
           {value, env} = lift_expr(other, ctx, block, env)
-          {[box_term(value, ctx, block)], env}
+          {[box_term(lift_value(value, ctx, block, env), ctx, block)], env}
       end
     end)
   end
@@ -1498,12 +1653,13 @@ defmodule Batata.Lift do
     )
   end
 
-  defp insert_return(nil, ctx, block) do
+  defp insert_return(nil, ctx, block, _env) do
     create_op("ex.return", [operandSegmentSizes: segment_sizes([0])], [], ctx, block)
     :ok
   end
 
-  defp insert_return(value, ctx, block) do
+  defp insert_return(value, ctx, block, env) do
+    value = lift_value(value, ctx, block, env)
     create_op("ex.return", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     :ok
   end
@@ -1541,12 +1697,13 @@ defmodule Batata.Lift do
     MLIR.Attribute.dense_array(sizes, Beaver.Native.I32)
   end
 
-  # ex.call has four optional argument slots; encode which are filled.
+  # ex.call has eight optional argument slots (the closure ABI adds four);
+  # encode which are filled.
   defp arg_segment_sizes(count) do
-    unless count <= 4 do
-      raise Error, "calls with more than 4 arguments are unsupported: #{count}"
+    unless count <= 8 do
+      raise Error, "calls with more than 8 arguments are unsupported: #{count}"
     end
 
-    List.duplicate(1, count) ++ List.duplicate(0, 4 - count)
+    List.duplicate(1, count) ++ List.duplicate(0, 8 - count)
   end
 end

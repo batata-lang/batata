@@ -1227,22 +1227,92 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects anonymous functions passed as values", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/only be applied directly with \.\(\)/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def helper(f) do
-            f
-          end
+  test "passes anonymous functions as values and applies them dynamically", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def helper(f, x) do
+                   f.(x)
+                 end
 
-          def main() do
-            helper(fn x -> x end)
-          end
-        end
-        """,
-        ctx
-      )
-    end
+                 def main() do
+                   helper(fn a -> a + 1 end, 2)
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 15 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def apply(f, x) do
+                   f.(x)
+                 end
+
+                 def main() do
+                   a = 10
+                   apply(fn y -> y + a end, 5)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "returns anonymous functions as values", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def make() do
+                   fn x -> x + 1 end
+                 end
+
+                 def main() do
+                   f = make()
+                   f.(2)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "captures and applies functions from within closures", %{ctx: ctx} do
+    assert 6 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   f = fn x -> x * 2 end
+                   g = fn y -> f.(y) + 1 end
+                   g.(2) + 1
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "dispatches distinct function values correctly", %{ctx: ctx} do
+    assert 30 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def apply2(f, x) do
+                   f.(x)
+                 end
+
+                 def main() do
+                   apply2(fn a -> a * 10 end, 2) +
+                     apply2(fn b -> b + 8 end, 2)
+                 end
+               end
+               """,
+               ctx
+             )
   end
 end
