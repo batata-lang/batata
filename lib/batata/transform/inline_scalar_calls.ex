@@ -5,13 +5,16 @@ defmodule Batata.Transform.InlineScalarCalls do
   `ex.call` results are typed `!ex.dyn`, which cannot feed `ex.add`/`ex.sub`/
   `ex.mul`. When a callee's parameters and return value are all `i64`, the
   call is replaced by a clone of the callee body with arguments substituted,
-  so the result participates in arithmetic (e.g. `add(1, 2) + 3`).
+  so the result participates in arithmetic (e.g. `add(1, 2) + 3`). Calls that
+  cannot be inlined (self/mutual recursion) are retyped to an i64 result when
+  the callee returns i64 (e.g. `count(t)` in a recursive scanner).
 
   The pass runs to a fixpoint so nested scalar calls are inlined
-  innermost-first. Non-scalar callees, self-recursion, unknown callees and
-  arity mismatches are left untouched (`ex.call` stays `!ex.dyn`).
+  innermost-first. Term-returning callees, unknown callees and arity
+  mismatches are left untouched (`ex.call` stays `!ex.dyn`).
   """
 
+  alias Beaver.Changeset
   alias Beaver.MLIR
   alias Beaver.MLIR.IRMapping
   alias Beaver.MLIR.{IRRewriter, RewriterBase}
@@ -36,27 +39,34 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp inline_once(module) do
     callees = callees(module)
 
-    case module |> ops_of("ex.call") |> Enum.find(&match?({:ok, _}, resolve(&1, callees))) do
+    case module |> ops_of("ex.call") |> Enum.find(&(action(&1, callees) != :skip)) do
       nil ->
         :unchanged
 
       call ->
-        {:ok, callee} = resolve(call, callees)
-        inline!(call, callee)
+        case action(call, callees) do
+          {:inline, callee} -> inline!(call, callee)
+          {:retype, _callee} -> retype!(call)
+        end
+
         :changed
     end
   end
 
-  defp resolve(call, callees) do
+  defp action(call, callees) do
     name = call |> attribute_string("callee")
     arity = call |> attribute_integer("arity")
 
-    with {:ok, callee} <- Map.fetch(callees, {name, arity}),
-         true <- scalar?(callee),
-         true <- scalar_args?(call) do
-      {:ok, callee}
-    else
-      _ -> :skip
+    case Map.fetch(callees, {name, arity}) do
+      {:ok, callee} ->
+        cond do
+          scalar?(callee) and scalar_args?(call) -> {:inline, callee}
+          scalar_return?(callee) and not scalar_typed?(call) -> {:retype, callee}
+          true -> :skip
+        end
+
+      :error ->
+        :skip
     end
   end
 
@@ -64,6 +74,67 @@ defmodule Batata.Transform.InlineScalarCalls do
     call
     |> Walker.operands()
     |> Enum.all?(&(MLIR.to_string(MLIR.Value.type(&1)) == "i64"))
+  end
+
+  defp scalar_return?(callee) do
+    terminator = callee |> body_block() |> MLIR.CAPI.mlirBlockGetTerminator()
+
+    case terminator |> Walker.operands() |> Enum.to_list() do
+      [value] -> MLIR.to_string(MLIR.Value.type(value)) == "i64"
+      _ -> false
+    end
+  end
+
+  defp scalar_typed?(call) do
+    call
+    |> Walker.results()
+    |> Enum.to_list()
+    |> hd()
+    |> MLIR.Value.type()
+    |> MLIR.to_string() == "i64"
+  end
+
+  # Replaces a call whose callee returns i64 with an i64-typed ex.call, so
+  # recursive scalar-returning functions (e.g. binary scanners) can feed
+  # arithmetic without being inlined.
+  defp retype!(call) do
+    owner = owner_func(call)
+    args = call |> Walker.operands() |> Enum.to_list()
+    name = call |> attribute_string("callee")
+    arity = call |> attribute_integer("arity")
+
+    new_call =
+      %Changeset{
+        name: "ex.call",
+        context: MLIR.context(call),
+        location: MLIR.Operation.location(call)
+      }
+      |> Changeset.add_argument(
+        args ++
+          [
+            callee: MLIR.Attribute.string(name),
+            arity: MLIR.Attribute.integer(MLIR.Type.i64(), arity),
+            operandSegmentSizes: segment_sizes([length(args)])
+          ]
+      )
+      |> Changeset.add_result(MLIR.Type.i64())
+      |> MLIR.Operation.create()
+
+    IRRewriter.with_rewriter(owner, fn rewriter ->
+      RewriterBase.with_insertion_point(rewriter, {:before, call}, fn ->
+        RewriterBase.insert(rewriter, new_call)
+        [old_result] = call |> Walker.results() |> Enum.to_list()
+        [new_result] = new_call |> Walker.results() |> Enum.to_list()
+        RewriterBase.replace(rewriter, old_result, new_result)
+        RewriterBase.erase_op(rewriter, call)
+      end)
+    end)
+
+    :ok
+  end
+
+  defp segment_sizes(sizes) do
+    MLIR.Attribute.array(Enum.map(sizes, &MLIR.Attribute.integer(MLIR.Type.i32(), &1)))
   end
 
   defp inline!(call, callee) do

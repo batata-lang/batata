@@ -95,4 +95,34 @@ defmodule Batata.TransformTest do
     rendered = MLIR.to_string(module, generic: true)
     assert rendered =~ ~s{"ex.call"}
   end
+
+  test "retypes recursive scalar-returning calls so arithmetic verifies", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule Math do
+          def count(<<>>) do
+            0
+          end
+
+          def count(<<_h::8, t::binary>>) do
+            1 + count(t)
+          end
+
+          def count(_) do
+            0
+          end
+
+          def main() do
+            count(<<1, 2>>)
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    # the recursive call is retyped to i64 and stays a call (not inlined)
+    assert rendered =~ ~s{"ex.call"}
+  end
 end
