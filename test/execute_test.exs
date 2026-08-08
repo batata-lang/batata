@@ -747,4 +747,106 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  @tag :multi_clause
+  test "executes a recursive binary scanner via typed calls", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def count(<<>>) do
+                   0
+                 end
+
+                 def count(<<_h::8, t::binary>>) do
+                   1 + count(t)
+                 end
+
+                 def count(_) do
+                   0
+                 end
+
+                 def main() do
+                   count(<<1, 2, 3>>)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  @tag :multi_clause
+  test "executes multi-clause function dispatch", %{ctx: ctx} do
+    assert 30 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def pick(<<>>) do
+                   10
+                 end
+
+                 def pick(<<_h::8, _t::binary>>) do
+                   20
+                 end
+
+                 def pick(_) do
+                   0
+                 end
+
+                 def main() do
+                   pick(<<>>) + pick(<<1>>)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  @tag :multi_clause
+  test "rejects multi-clause functions without a final catch-all", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/catch-all/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def f(1) do
+            1
+          end
+
+          def f(2) do
+            2
+          end
+
+          def main() do
+            f(1)
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
+  @tag :multi_clause
+  test "rejects multi-clause functions with multiple arguments", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/multiple arguments are unsupported/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def f(a, b) do
+            a
+          end
+
+          def f(c, d) do
+            c
+          end
+
+          def main() do
+            f(1, 2)
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
 end

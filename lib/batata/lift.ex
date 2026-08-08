@@ -5,8 +5,10 @@ defmodule Batata.Lift do
   The scalar slice supports integer literals, `+`/`-`/`*`, `=` bindings, local
   calls, comparisons (`==`/`!=`/`<`/`<=`/`>`/`>=`), `case` with integer literal
   or catch-all patterns and optional guards, and functions with integer
-  parameters. The term slice adds tuple, list, map and binary literals plus
-  the `Kernel` term predicates
+  parameters. Multi-clause functions (single argument) dispatch on the
+  argument with `ex.case`; the final clause must be a catch-all. The term
+  slice adds tuple, list, map and binary literals plus the `Kernel` term
+  predicates
   (`is_atom`/`is_binary`/`is_list`/`is_tuple`/`is_map`/`is_integer`); they
   lift to the `ex.tuple`/`ex.list`/`ex.map`/`ex.binary`/`ex.is_*` ops and are
   lowered through the Zig term runtime ABI. Bindings lower directly to SSA:
@@ -43,8 +45,10 @@ defmodule Batata.Lift do
       module = MLIR.Module.create!("module {}", ctx: ctx)
       body = MLIR.CAPI.mlirModuleGetBody(module)
 
-      Enum.each(mod.definitions, fn definition ->
-        lift_definition(definition, ctx, body)
+      mod.definitions
+      |> Enum.group_by(&{&1.name, &1.arity})
+      |> Enum.each(fn {_key, definitions} ->
+        lift_definitions(definitions, ctx, body)
       end)
 
       module
@@ -91,6 +95,58 @@ defmodule Batata.Lift do
       end)
 
     {return_value, _env} = lift_block(List.wrap(body_ast), ctx, block, env)
+    insert_return(return_value, ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  defp lift_definitions([definition], ctx, ip) do
+    lift_definition(definition, ctx, ip)
+  end
+
+  # Multiple `def` forms with the same name/arity become one ex.func whose
+  # body dispatches on the argument with ex.case, matching each clause's
+  # pattern (the cursor-loop foundation for recursive scanners). M2 requires
+  # a single argument and a final catch-all clause.
+  defp lift_definitions(definitions, ctx, ip) do
+    %Frontend.Definition{kind: kind, name: name, arity: arity} = hd(definitions)
+
+    unless kind in [:def, :defp] do
+      raise Error, "unsupported definition kind: #{inspect(kind)}"
+    end
+
+    unless arity == 1 do
+      raise Error,
+            "multi-clause functions with multiple arguments are unsupported: #{name}/#{arity}"
+    end
+
+    clauses = Enum.flat_map(definitions, & &1.clauses)
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    # The argument is a scalar word (like single-clause functions); the term
+    # path re-types it with ex.to_word when term reads are involved.
+    arg_locs = [MLIR.Location.unknown(ctx: ctx)]
+    block = MLIR.Block.create([integer_type(ctx)], arg_locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    [arg] = block |> Walker.arguments() |> Enum.to_list()
+
+    clause_asts =
+      Enum.map(clauses, fn %Frontend.Clause{patterns: [pattern], body_ast: body_ast} ->
+        {:->, [], [[pattern], body_ast]}
+      end)
+
+    return_value =
+      lift_case(clause_asts, arg, %{}, ctx, block, relax_types: true, box_scrutinee: false)
+
     insert_return(return_value, ctx, block)
 
     %Beaver.SSA{
@@ -281,15 +337,15 @@ defmodule Batata.Lift do
   defp cmp_predicate(:>), do: "sgt"
   defp cmp_predicate(:>=), do: "sge"
 
-  defp lift_case(clauses, scrutinee, env, ctx, block) do
+  defp lift_case(clauses, scrutinee, env, ctx, block, opts \\ []) do
     if Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?())) do
-      lift_term_case(clauses, scrutinee, env, ctx, block)
+      lift_term_case(clauses, scrutinee, env, ctx, block, opts)
     else
-      lift_scalar_case(clauses, scrutinee, env, ctx, block)
+      lift_scalar_case(clauses, scrutinee, env, ctx, block, opts)
     end
   end
 
-  defp lift_scalar_case(clauses, scrutinee, env, ctx, block) do
+  defp lift_scalar_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_clause/1)
 
     unless parsed |> List.last() |> Map.fetch!(:patterns) == [] do
@@ -315,7 +371,8 @@ defmodule Batata.Lift do
 
     [first_type | rest_types] = yield_types
 
-    unless Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
+    unless Keyword.get(opts, :relax_types, false) or
+             Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
       raise Error, "case clauses must yield the same type"
     end
 
@@ -336,7 +393,7 @@ defmodule Batata.Lift do
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
   end
 
-  defp lift_term_case(clauses, scrutinee, env, ctx, block) do
+  defp lift_term_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_term_clause/1)
 
     unless match?(
@@ -347,8 +404,15 @@ defmodule Batata.Lift do
     end
 
     # term reads require a tagged word, so box the scrutinee once up front
-    # (a no-op for values that already are terms)
-    scrutinee = box_term(scrutinee, ctx, block)
+    # (a no-op for values that already are terms). Multi-clause function
+    # arguments already carry the tagged word, so they are re-typed with
+    # ex.to_word instead (pure passthrough, no re-tagging).
+    scrutinee =
+      if Keyword.get(opts, :box_scrutinee, true) do
+        box_term(scrutinee, ctx, block)
+      else
+        create_op("ex.to_word", [scrutinee], [ex_type("dyn", ctx)], ctx, block)
+      end
 
     {guards, bindss} =
       parsed
@@ -381,7 +445,8 @@ defmodule Batata.Lift do
 
     [first_type | rest_types] = yield_types
 
-    unless Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
+    unless Keyword.get(opts, :relax_types, false) or
+             Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
       raise Error, "case clauses must yield the same type"
     end
 

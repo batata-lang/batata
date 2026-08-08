@@ -301,6 +301,37 @@ defmodule Batata.LiftTest do
     assert "ex.binary_slice" in names
   end
 
+  test "lifts multi-clause functions into a case dispatch", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def kind(<<>>) do
+            1
+          end
+
+          def kind(<<_h::8, _t::binary>>) do
+            2
+          end
+
+          def kind(_) do
+            0
+          end
+
+          def main() do
+            kind(<<1>>)
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert Enum.count(names, &(&1 == "ex.func")) == 2
+    assert Enum.count(names, &(&1 == "ex.case")) == 1
+    assert Enum.count(names, &(&1 == "ex.clause")) == 3
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
