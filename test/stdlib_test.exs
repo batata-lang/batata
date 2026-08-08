@@ -18,6 +18,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Map, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
+      assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
     end
 
@@ -49,12 +50,39 @@ defmodule Batata.StdlibTest do
       assert 1 == execute("map_size(%{1 => 2})", ctx)
       assert 2 == execute("Map.size(%{1 => 2, 3 => 4})", ctx)
       assert 2 == execute("Tuple.size({1, 2})", ctx)
+      assert 3 == execute("Enum.count([1, 2, 3])", ctx)
+      assert 2 == execute("Enum.count({1, 2})", ctx)
+      assert 2 == execute("Enum.count(%{1 => 2, 3 => 4})", ctx)
+      assert 4 == execute("Enum.count(<<1, 2, 3, 4>>)", ctx)
+    end
+
+    test "executes recognized Enum.map/2 and Enum.reduce/3 patterns", %{ctx: ctx} do
+      assert 3 == execute("Enum.count(Enum.map([1, 2, 3], fn x -> x end))", ctx)
+      assert 6 == execute("Enum.reduce([1, 2, 3], 0, fn x, a -> x + a end)", ctx)
+      assert 16 == execute("Enum.reduce([1, 2, 3], 10, fn x, a -> a + x end)", ctx)
+      assert 42 == execute("Enum.reduce([1, 2, 3], 42, fn _x, a -> a end)", ctx)
+    end
+
+    test "rejects unrecognized Enum mapper/reducer shapes explicitly", %{ctx: ctx} do
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute("Enum.reduce([1, 2, 3], 0, fn x, a -> x * a end)", ctx)
+        end
+
+      assert error.message =~ "requires BEAM callback interop"
+
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute("Enum.map([1, 2, 3], fn _x -> 7 end)", ctx)
+        end
+
+      assert error.message =~ "not yet supported"
     end
 
     test "rejects BEAM-callback stdlib calls explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.count([1, 2, 3])", ctx)
+          execute("Enum.to_list([1, 2, 3])", ctx)
         end
 
       assert error.message =~ "requires BEAM callback interop"

@@ -54,6 +54,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.tuple_get` | `(tuple: i64, index: i64) -> i64` | element at index; nil when out of range or not a tuple |
 | `ex.term.tuple_length` | `(tuple: i64) -> i64` | tuple arity; 0 for non-tuples |
 | `ex.term.map_length` | `(map: i64) -> i64` | map pair count; 0 for non-maps |
+| `ex.term.enumerable_count` | `(word: i64) -> i64` | element count by tag: list length / tuple arity / map pairs / binary bytes; 0 otherwise |
 | `ex.term.jmp_buf_size` | `() -> i64` | byte size of libc `jmp_buf`, for stack allocation in compiled code |
 | `ex.term.setjmp_addr` | `() -> i64` | address of libc `setjmp`, for indirect calls that avoid ORC symbol resolution |
 | `ex.term.try_push` | `(buf: ptr) -> i64` | push a setjmp buffer for a try region; -1 when the 16-slot stack is full |
@@ -62,6 +63,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.catch_value` | `() -> i64` | the term delivered by the most recent throw (read from the catch region) |
 | `ex.term.list_head` | `(list: i64) -> i64` | head; nil for empty/non-lists |
 | `ex.term.list_tail` | `(list: i64) -> i64` | tail; nil for empty/non-lists |
+| `ex.term.list_get` | `(list: i64, index: i64) -> i64` | element at index; nil for empty/non-lists or out of range |
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
 | `ex.term.eq` | `(left: i64, right: i64) -> i64` | deep equality: exact for immediates, structural for containers |
 | `ex.term.binary_length` | `(binary: i64) -> i64` | byte length; 0 for non-binaries |

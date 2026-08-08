@@ -48,6 +48,7 @@ defmodule Batata.Lift do
       body = MLIR.CAPI.mlirModuleGetBody(module)
 
       mod.definitions
+      |> recognize_enum_calls()
       |> extract_all_fns()
       |> then(&append_dispatch(&1))
       |> Enum.group_by(&{&1.name, &1.arity})
@@ -92,6 +93,84 @@ defmodule Batata.Lift do
 
     defs ++ synthetic
   end
+
+  # Recognizes `Enum.map/2` and `Enum.reduce/3` calls whose mapper/reducer
+  # matches a supported pattern (identity map, const map, sum/return-acc
+  # reduce) and replaces the call with an internal `__enum_call__` marker, so
+  # the fn literal is not extracted into a closure. Unsupported shapes are
+  # left untouched and raise later through the stdlib registry.
+  defp recognize_enum_calls(definitions) do
+    Enum.map(definitions, fn definition ->
+      %{
+        definition
+        | clauses:
+            Enum.map(definition.clauses, fn clause ->
+              %{clause | body_ast: recognize_enum_calls_ast(clause.body_ast)}
+            end)
+      }
+    end)
+  end
+
+  defp recognize_enum_calls_ast(ast) do
+    Macro.prewalk(ast, fn
+      {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node ->
+        if enum_alias?(alias_parts) do
+          case map_pattern(fn_ast) do
+            {:ok, pattern} -> {:__enum_call__, [], [:map, pattern, enumerable]}
+            :error -> node
+          end
+        else
+          node
+        end
+
+      {{:., _, [{:__aliases__, _, alias_parts}, :reduce]}, _, [enumerable, acc, fn_ast]} = node ->
+        if enum_alias?(alias_parts) do
+          case reduce_pattern(fn_ast) do
+            {:ok, pattern} -> {:__enum_call__, [], [:reduce, pattern, enumerable, acc]}
+            :error -> node
+          end
+        else
+          node
+        end
+
+      node ->
+        node
+    end)
+  end
+
+  defp enum_alias?([:Enum]), do: true
+  defp enum_alias?([:"Elixir", :Enum]), do: true
+  defp enum_alias?(_), do: false
+
+  defp map_pattern({:fn, _, [{:->, _, [[item], body]}]}) do
+    cond do
+      same_var?(body, item) -> {:ok, :identity}
+      is_integer(body) -> {:ok, {:const, body}}
+      true -> :error
+    end
+  end
+
+  defp map_pattern(_), do: :error
+
+  defp reduce_pattern({:fn, _, [{:->, _, [[item, acc_var], body]}]}) do
+    cond do
+      sum_pattern?(body, item, acc_var) -> {:ok, :sum}
+      same_var?(body, acc_var) -> {:ok, :return_acc}
+      true -> :error
+    end
+  end
+
+  defp reduce_pattern(_), do: :error
+
+  defp sum_pattern?({:+, _, [left, right]}, item, acc_var) do
+    (same_var?(left, item) and same_var?(right, acc_var)) or
+      (same_var?(left, acc_var) and same_var?(right, item))
+  end
+
+  defp sum_pattern?(_body, _item, _acc_var), do: false
+
+  defp same_var?({name, _, _}, {name, _, _}) when is_atom(name), do: true
+  defp same_var?(_left, _right), do: false
 
   defp extract_fns({:fn, _, [{:->, _, [args, body]}]}, parent, {synthetic, counter}) do
     name = :"__fn_#{parent}_#{counter}"
@@ -709,6 +788,60 @@ defmodule Batata.Lift do
     while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
   end
 
+  # `Enum.reduce/3` with a `fn item, acc -> item + acc end` reducer compiles
+  # to a cursor loop over the list: carries (list, acc, cursor), reads each
+  # element via `ex.list_get`, untags it, and accumulates.
+  defp lift_enum_sum_loop(list_word, acc0, ctx, block) do
+    i64 = integer_type(ctx)
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
+    len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
+    cond = cmp(b_cursor, len, "slt", ctx, before_block)
+    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
+
+    [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+
+    item =
+      create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+    item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+    acc_next = create_op("ex.add", [a_acc, item_i64], [i64], ctx, after_block)
+
+    cursor_next =
+      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
+
+    cursor0 = lit(0, ctx, block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [list_i64, acc0, cursor0],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+  end
+
   defp lift_block(expressions, ctx, block, env) do
     {values, env} =
       Enum.map_reduce(expressions, env, fn expression, env ->
@@ -862,6 +995,37 @@ defmodule Batata.Lift do
   # direct `.()` application calls the extracted ex.func directly.
   defp lift_expr({:__fn_ref__, _, [fn_idx, name, arity, captured]}, _ctx, _block, env) do
     {{:fn_ref, fn_idx, name, arity, captured}, env}
+  end
+
+  # `Enum.map/2` / `Enum.reduce/3` calls recognized by `recognize_enum_calls`.
+  defp lift_expr({:__enum_call__, _, [:map, pattern, enumerable_ast]}, ctx, block, env) do
+    {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+    enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+
+    case pattern do
+      :identity ->
+        {enumerable_word, env}
+
+      {:const, _value} ->
+        raise Error, "Enum.map with a constant mapper is not yet supported"
+    end
+  end
+
+  defp lift_expr(
+         {:__enum_call__, _, [:reduce, pattern, enumerable_ast, acc_ast]},
+         ctx,
+         block,
+         env
+       ) do
+    {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+    {acc, env} = lift_expr(acc_ast, ctx, block, env)
+    enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+    acc_value = lift_value(acc, ctx, block, env)
+
+    case pattern do
+      :sum -> {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
+      :return_acc -> {acc_value, env}
+    end
   end
 
   # Anonymous-function application: `f.(args)` / `(fn ... end).(args)`.
@@ -1177,6 +1341,9 @@ defmodule Batata.Lift do
 
   defp native_term_call(_module, :map_size, [value], ctx, block),
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(Enum, :count, [value], ctx, block),
+    do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(_module, :elem, [tuple, index], ctx, block) do
     index_int = create_op("ex.to_int", [index], [MLIR.Type.i64()], ctx, block)

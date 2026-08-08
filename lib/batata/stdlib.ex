@@ -102,7 +102,7 @@ defmodule Batata.Stdlib.Enum do
   """
 
   @class_map %{
-    {Enum, :count, 1} => :beamer_callback,
+    {Enum, :count, 1} => :native_term,
     {Enum, :map, 2} => :beamer_callback,
     {Enum, :reduce, 3} => :beamer_callback,
     {Enum, :to_list, 1} => :beamer_callback
