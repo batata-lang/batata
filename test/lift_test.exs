@@ -232,6 +232,28 @@ defmodule Batata.LiftTest do
     assert "ex.tuple_get" in names
   end
 
+  test "lifts term pattern guards into the eager match condition", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case {1, 2} do
+              {a, b} when is_integer(a) -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.case" in names
+    assert "ex.is_integer" in names
+    assert "arith.andi" in names
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
