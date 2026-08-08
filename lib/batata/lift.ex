@@ -48,6 +48,7 @@ defmodule Batata.Lift do
       body = MLIR.CAPI.mlirModuleGetBody(module)
 
       mod.definitions
+      |> extract_all_fns()
       |> Enum.group_by(&{&1.name, &1.arity})
       |> Enum.each(fn {_key, definitions} ->
         lift_definitions(definitions, ctx, body)
@@ -65,6 +66,59 @@ defmodule Batata.Lift do
     |> MLIR.CAPI.mlirContextIsRegisteredOperation(MLIR.StringRef.create("ex.box"))
     |> Beaver.Native.to_term()
   end
+
+  # Extracts anonymous-function literals from every definition body into
+  # synthetic `defp` definitions, replacing the literal with a
+  # `{:__fn_ref__, _, [name, arity]}` marker. Capturing free variables is
+  # rejected naturally when the extracted body is lifted with a fresh env
+  # (unbound variable reference).
+  defp extract_all_fns(definitions) do
+    {defs, {synthetic, _counter}} =
+      definitions
+      |> Enum.map_reduce({[], 0}, fn defn, {synthetic, counter} ->
+        {clauses, {synthetic, counter}} =
+          defn.clauses
+          |> Enum.map_reduce({synthetic, counter}, fn clause, {synthetic, counter} ->
+            {body_ast, {synthetic, counter}} =
+              extract_fns(clause.body_ast, defn.name, {synthetic, counter})
+
+            {%{clause | body_ast: body_ast}, {synthetic, counter}}
+          end)
+
+        {%{defn | clauses: clauses}, {synthetic, counter}}
+      end)
+
+    defs ++ synthetic
+  end
+
+  defp extract_fns({:fn, _, [{:->, _, [args, body]}]}, parent, {synthetic, counter}) do
+    name = :"__fn_#{parent}_#{counter}"
+
+    fn_def = %Frontend.Definition{
+      kind: :defp,
+      name: name,
+      arity: length(args),
+      clauses: [%Frontend.Clause{patterns: args, body_ast: body}]
+    }
+
+    marker = {:__fn_ref__, [], [name, length(args)]}
+    {marker, {synthetic ++ [fn_def], counter + 1}}
+  end
+
+  defp extract_fns(tuple, parent, acc) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map_reduce(acc, &extract_fns(&1, parent, &2))
+    |> then(fn {elements, acc} -> {List.to_tuple(elements), acc} end)
+  end
+
+  defp extract_fns([head | tail], parent, acc) do
+    {head, acc} = extract_fns(head, parent, acc)
+    {tail, acc} = extract_fns(tail, parent, acc)
+    {[head | tail], acc}
+  end
+
+  defp extract_fns(other, _parent, acc), do: {other, acc}
 
   defp lift_definition(
          %Frontend.Definition{kind: kind, name: name, arity: arity, clauses: clauses},
@@ -676,10 +730,60 @@ defmodule Batata.Lift do
     {value, Map.put(env, var, value)}
   end
 
+  # Anonymous-function marker produced by `extract_all_fns/1`: the literal
+  # becomes a reference to the extracted ex.func.
+  defp lift_expr({:__fn_ref__, _, [name, arity]}, _ctx, _block, env) do
+    {{:fn_ref, name, arity}, env}
+  end
+
+  # Anonymous-function application: `f.(args)` / `(fn ... end).(args)`.
+  defp lift_expr({{:., _, [fun_ast]}, _, args}, ctx, block, env) do
+    case resolve_fun_ref(fun_ast, env) do
+      {:ok, name, arity} ->
+        unless length(args) == arity do
+          raise Error,
+                "anonymous function application arity mismatch: expected #{arity}, got #{length(args)}"
+        end
+
+        {arg_values, env} =
+          Enum.map_reduce(args, env, fn arg, env ->
+            lift_expr(arg, ctx, block, env)
+          end)
+
+        {
+          create_op(
+            "ex.call",
+            arg_values ++
+              [
+                callee: MLIR.Attribute.string(to_string(name)),
+                arity: MLIR.Attribute.integer(MLIR.Type.i64(), arity),
+                operandSegmentSizes: segment_sizes(arg_segment_sizes(arity))
+              ],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          ),
+          env
+        }
+
+      :error ->
+        raise Error,
+              "anonymous function application requires a fn literal or a bound function: " <>
+                inspect(fun_ast)
+    end
+  end
+
   defp lift_expr({name, _, args}, ctx, block, env) when is_atom(name) and is_list(args) do
     {arg_values, env} =
       Enum.map_reduce(args, env, fn arg, env ->
-        lift_expr(arg, ctx, block, env)
+        {value, env} = lift_expr(arg, ctx, block, env)
+
+        if match?({:fn_ref, _, _}, value) do
+          raise Error,
+                "anonymous functions can only be applied directly with .() in the current slice"
+        end
+
+        {value, env}
       end)
 
     {
@@ -720,6 +824,16 @@ defmodule Batata.Lift do
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
   end
+
+  defp resolve_fun_ref({name, _, nil}, env) when is_atom(name) do
+    case Map.get(env, name) do
+      {:fn_ref, fn_name, arity} -> {:ok, fn_name, arity}
+      _ -> :error
+    end
+  end
+
+  defp resolve_fun_ref({:__fn_ref__, _, [name, arity]}, _env), do: {:ok, name, arity}
+  defp resolve_fun_ref(_ast, _env), do: :error
 
   defp lift_tuple_literal(tuple, ctx, block, env) do
     {values, env} = lift_operands_boxed(Tuple.to_list(tuple), ctx, block, env)

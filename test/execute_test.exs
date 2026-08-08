@@ -1122,4 +1122,81 @@ defmodule Batata.ExecuteTest do
       )
     end
   end
+
+  test "executes bound anonymous functions via dot application", %{ctx: ctx} do
+    assert 7 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   f = fn x -> x + 1 end
+                   f.(2) + f.(3)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes directly applied anonymous functions", %{ctx: ctx} do
+    assert 10 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   (fn x -> x * 2 end).(5)
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   (fn a, b -> a + b end).(1, 2)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects anonymous functions capturing free variables", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/unbound variable reference/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            a = 1
+            f = fn x -> x + a end
+            f.(2)
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
+  test "rejects anonymous functions passed as values", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/only be applied directly with \.\(\)/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def helper(f) do
+            f
+          end
+
+          def main() do
+            helper(fn x -> x end)
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
 end
