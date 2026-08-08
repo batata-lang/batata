@@ -813,7 +813,8 @@ defmodule Batata.Lift do
     {guards, bindss} =
       parsed
       |> Enum.map(fn clause ->
-        {match_cond, binds} = build_match(clause.pattern, scrutinee, ctx, block)
+        {match_cond, binds} =
+          build_match(clause.pattern, scrutinee, ctx, block, clause.guard == nil)
 
         cond =
           case clause.guard do
@@ -865,8 +866,15 @@ defmodule Batata.Lift do
   # eagerly before `ex.case`: predicates and reads are pure and safe on the
   # wrong term kind (reads return nil), so a non-matching clause's eager
   # values are simply unused. The combined condition becomes the clause guard.
-  defp build_match(pattern, value, ctx, block) do
-    do_build_match(pattern, value, ctx, block)
+  # `defer_rest?` moves the rest-slice materialization of a top-level binary
+  # pattern into the clause body (expandable 210418e): without a guard, the
+  # slice is only needed when the clause matches, so a rejected clause never
+  # allocates it.
+  defp build_match(pattern, value, ctx, block, defer_rest?) do
+    case pattern do
+      {:<<>>, _, segments} -> build_binary_match(segments, value, ctx, block, defer_rest?)
+      _ -> do_build_match(pattern, value, ctx, block)
+    end
   end
 
   defp do_build_match({name, _, nil}, value, _ctx, _block) when is_atom(name) do
@@ -1010,7 +1018,7 @@ defmodule Batata.Lift do
     {[head_cond | tail_conds], head_binds ++ tail_binds}
   end
 
-  defp build_binary_match(segments, value, ctx, block) do
+  defp build_binary_match(segments, value, ctx, block, defer_rest? \\ false) do
     {segs, rest} = parse_binary_segments(segments)
 
     cond_bin =
@@ -1050,17 +1058,7 @@ defmodule Batata.Lift do
         end
       end)
 
-    {rest_cond, rest_binds} =
-      case rest do
-        nil ->
-          {nil, []}
-
-        rest_pat ->
-          rest_value =
-            create_op("ex.binary_slice", [value, offset], [ex_type("dyn", ctx)], ctx, block)
-
-          do_build_match(rest_pat, rest_value, ctx, block)
-      end
+    {rest_cond, rest_binds} = build_rest_bind(rest, value, offset, ctx, block, defer_rest?)
 
     cond_len =
       cmp(
@@ -1073,6 +1071,24 @@ defmodule Batata.Lift do
 
     {combine([cond_bin, cond_len | Enum.reverse(conds) ++ [rest_cond]], ctx, block),
      Enum.reverse(binds) ++ rest_binds}
+  end
+
+  defp build_rest_bind(nil, _value, _offset, _ctx, _block, _defer_rest?), do: {nil, []}
+
+  defp build_rest_bind({name, _, nil}, value, offset, ctx, _block, true)
+       when is_atom(name) and name != :_ do
+    slice = fn clause_block ->
+      create_op("ex.binary_slice", [value, offset], [ex_type("dyn", ctx)], ctx, clause_block)
+    end
+
+    {nil, [{name, {:deferred, slice}}]}
+  end
+
+  defp build_rest_bind(rest_pat, value, offset, ctx, block, _defer_rest?) do
+    rest_value =
+      create_op("ex.binary_slice", [value, offset], [ex_type("dyn", ctx)], ctx, block)
+
+    do_build_match(rest_pat, rest_value, ctx, block)
   end
 
   defp parse_binary_segments(segments) do
@@ -1107,7 +1123,12 @@ defmodule Batata.Lift do
     clause_args = if guard, do: [guard], else: []
     create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, block)
 
-    clause_env = Enum.reduce(binds, env, fn {var, value}, acc -> Map.put(acc, var, value) end)
+    clause_env =
+      Enum.reduce(binds, env, fn
+        {var, {:deferred, fun}}, acc -> Map.put(acc, var, fun.(block))
+        {var, value}, acc -> Map.put(acc, var, value)
+      end)
+
     {value, _env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)

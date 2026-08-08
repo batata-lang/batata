@@ -393,6 +393,53 @@ defmodule Batata.LiftTest do
     refute Enum.any?(names, &(&1 == "ex.case"))
   end
 
+  test "defers rest-slice materialization into the clause body when unguarded", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case <<1, 2>> do
+              <<h::8, t::binary>> -> is_binary(t)
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert first_index(rendered, ~s{"ex.case"}) < first_index(rendered, "ex.binary_slice")
+  end
+
+  test "keeps rest-slice materialization eager when a guard is present", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case <<1, 2>> do
+              <<h::8, t::binary>> when is_binary(t) -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert first_index(rendered, "ex.binary_slice") < first_index(rendered, ~s{"ex.case"})
+  end
+
+  defp first_index(string, pattern) do
+    case :binary.match(string, pattern) do
+      {index, _length} -> index
+      :nomatch -> -1
+    end
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
