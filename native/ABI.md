@@ -41,6 +41,11 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | --- | --- | --- |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
 | `ex.term.tuple_from_list` | `(list: i64) -> i64` | proper list -> tuple |
+| `ex.term.tuple_get` | `(tuple: i64, index: i64) -> i64` | element at index; nil when out of range or not a tuple |
+| `ex.term.tuple_length` | `(tuple: i64) -> i64` | tuple arity; 0 for non-tuples |
+| `ex.term.list_head` | `(list: i64) -> i64` | head; nil for empty/non-lists |
+| `ex.term.list_tail` | `(list: i64) -> i64` | tail; nil for empty/non-lists |
+| `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
 | `ex.term.map_from_list` | `(list: i64) -> i64` | flat key/value list -> map |
 | `ex.term.binary_from_list` | `(list: i64) -> i64` | integer byte list -> binary |
 | `ex.term.is_integer` | `(word: i64) -> i64` | 1 if int |

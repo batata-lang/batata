@@ -74,22 +74,35 @@ fn list_len(list: i64) usize {
     var current = list;
     var count: usize = 0;
     while (word_tag(current) == tag_list) {
-        const cell: *[2]i64 = @ptrFromInt(@as(usize, @bitCast(current)) & ~tag_mask);
+        const cell = list_cell(current);
         count += 1;
         current = cell[1];
     }
     return count;
 }
 
+fn list_cell(list: i64) *[2]i64 {
+    return @ptrFromInt(@as(usize, @bitCast(list)) & ~tag_mask);
+}
+
 fn copy_list_into(dst: []i64, list: i64) void {
     var current = list;
     var i: usize = 0;
     while (word_tag(current) == tag_list) {
-        const cell: *[2]i64 = @ptrFromInt(@as(usize, @bitCast(current)) & ~tag_mask);
+        const cell = list_cell(current);
         dst[i] = cell[0];
         i += 1;
         current = cell[1];
     }
+}
+
+fn tuple_len(tuple: i64) usize {
+    const header: *[1]i64 = @ptrFromInt(@as(usize, @bitCast(tuple)) & ~tag_mask);
+    return @intCast(header[0]);
+}
+
+fn tuple_elems(tuple: i64) [*]i64 {
+    return @ptrFromInt((@as(usize, @bitCast(tuple)) & ~tag_mask) + @sizeOf(i64));
 }
 
 /// Conses a head word onto a list tail, returning a proper list word.
@@ -107,6 +120,38 @@ pub export fn ex_term_tuple_from_list(list: i64) i64 {
     tuple[0] = @intCast(len);
     copy_list_into(tuple[1 .. len + 1], list);
     return word_from_ptr(tuple, tag_tuple);
+}
+
+/// Reads the element at `index` from a tuple word; nil for out-of-range or
+/// non-tuples (the caller is expected to have checked `is_tuple` first).
+pub export fn ex_term_tuple_get(tuple: i64, index: i64) i64 {
+    if (word_tag(tuple) != tag_tuple) return nil_word;
+    const len = tuple_len(tuple);
+    if (index < 0 or index >= @as(i64, @intCast(len))) return nil_word;
+    return tuple_elems(tuple)[@intCast(index)];
+}
+
+/// Returns the arity of a tuple word; 0 for non-tuples.
+pub export fn ex_term_tuple_length(tuple: i64) i64 {
+    if (word_tag(tuple) != tag_tuple) return 0;
+    return @intCast(tuple_len(tuple));
+}
+
+/// Returns the head of a list word; nil for non-lists or the empty list.
+pub export fn ex_term_list_head(list: i64) i64 {
+    if (word_tag(list) != tag_list) return nil_word;
+    return list_cell(list)[0];
+}
+
+/// Returns the tail of a list word; nil for non-lists or the empty list.
+pub export fn ex_term_list_tail(list: i64) i64 {
+    if (word_tag(list) != tag_list) return nil_word;
+    return list_cell(list)[1];
+}
+
+/// Returns the length of a list word (0 for nil, the empty list).
+pub export fn ex_term_list_length(list: i64) i64 {
+    return @intCast(list_len(list));
 }
 
 /// Converts a flat key/value list word (even length) into a map word.
@@ -168,6 +213,11 @@ pub export fn ex_term_is_map(word: i64) i64 {
 comptime {
     @export(&ex_term_list_cons, .{ .name = "ex.term.list_cons" });
     @export(&ex_term_tuple_from_list, .{ .name = "ex.term.tuple_from_list" });
+    @export(&ex_term_tuple_get, .{ .name = "ex.term.tuple_get" });
+    @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
+    @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
+    @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
+    @export(&ex_term_list_length, .{ .name = "ex.term.list_length" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
@@ -216,4 +266,30 @@ test "term ABI construction and predicates" {
     const binary = ex_term_binary_from_list(bytes);
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_binary(binary));
     try std.testing.expectEqual(@as(i64, 0), ex_term_is_map(binary));
+}
+
+test "term ABI reads" {
+    const one: i64 = 8;
+    const two: i64 = 16;
+
+    // tuple reads
+    const tuple = ex_term_tuple_from_list(ex_term_list_cons(one, ex_term_list_cons(two, nil_word)));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_tuple_length(tuple));
+    try std.testing.expectEqual(one, ex_term_tuple_get(tuple, 0));
+    try std.testing.expectEqual(two, ex_term_tuple_get(tuple, 1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_tuple_get(tuple, 2)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_tuple_get(one, 0)));
+
+    // list reads
+    const list = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(list));
+    try std.testing.expectEqual(one, ex_term_list_head(list));
+    try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(list)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_list(ex_term_list_tail(ex_term_list_tail(list))));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_list_head(nil_word)));
+}
+
+fn ex_term_is_nil_word(word: i64) i64 {
+    return if (word == nil_word) 1 else 0;
 }
