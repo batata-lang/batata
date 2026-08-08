@@ -8,7 +8,9 @@ defmodule Batata.Lift do
   parameters. Multi-clause functions (single argument) dispatch on the
   argument with `ex.case`; the final clause must be a catch-all. The term
   slice adds tuple, list, map and binary literals plus the `Kernel` term
-  predicates
+  predicates, and tail-recursive binary scanners (fixed-width head segments +
+  rest, `± delta` accumulator) compile to `scf.while` cursor loops instead of
+  recursion.
   (`is_atom`/`is_binary`/`is_list`/`is_tuple`/`is_map`/`is_integer`); they
   lift to the `ex.tuple`/`ex.list`/`ex.map`/`ex.binary`/`ex.is_*` ops and are
   lowered through the Zig term runtime ABI. Bindings lower directly to SSA:
@@ -130,6 +132,16 @@ defmodule Batata.Lift do
 
     clauses = Enum.flat_map(definitions, & &1.clauses)
 
+    case detect_scanner(name, clauses) do
+      {:ok, scanner} ->
+        lift_scanner_loop(name, scanner, ctx, ip)
+
+      :skip ->
+        lift_multi_clause_dispatch(name, clauses, ctx, ip)
+    end
+  end
+
+  defp lift_multi_clause_dispatch(name, clauses, ctx, ip) do
     region = MLIR.CAPI.mlirRegionCreate()
 
     # The argument is a scalar word (like single-clause functions); the term
@@ -148,6 +160,183 @@ defmodule Batata.Lift do
       lift_case(clause_asts, arg, %{}, ctx, block, relax_types: true, box_scrutinee: false)
 
     insert_return(return_value, ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  # Cursor-loop optimization (expandable d95fd36/f62b38b route): a
+  # tail-recursive binary scanner — one clause whose pattern is fixed-width
+  # binary segments plus a rest, whose body accumulates `± delta` around the
+  # self call, and whose other clauses return a common constant base —
+  # compiles to a cf loop over the original binary with a cursor and
+  # accumulator, avoiding per-step slice materialization and call overhead.
+  defp detect_scanner(name, clauses) do
+    parsed =
+      Enum.map(clauses, fn clause ->
+        scanner_clause(clause, name)
+      end)
+
+    with [%{delta: delta, head_width: width}] <-
+           Enum.filter(parsed, &match?(%{kind: :recursive}, &1)),
+         {:ok, base} <- common_base(parsed) do
+      {:ok, %{base: base, delta: delta, head_width: width}}
+    else
+      _ -> :skip
+    end
+  end
+
+  defp scanner_clause(%Frontend.Clause{patterns: [pattern], body_ast: body_ast}, name) do
+    case binary_segments(pattern) do
+      {:ok, _width, nil} ->
+        %{kind: :terminating, body: body_ast}
+
+      {:ok, width, rest} ->
+        case accumulator(body_ast, name, rest) do
+          {:ok, delta} -> %{kind: :recursive, delta: delta, head_width: width}
+          :skip -> %{kind: :terminating, body: body_ast}
+        end
+
+      :skip ->
+        %{kind: :terminating, body: body_ast}
+    end
+  end
+
+  defp binary_segments({:<<>>, _, segments}) do
+    {bytes, rest} =
+      Enum.split_while(segments, &(not match?({:"::", _, [_, {:binary, _, nil}]}, &1)))
+
+    if Enum.all?(bytes, &byte_segment?/1) do
+      case rest do
+        [] ->
+          {:ok, length(bytes), nil}
+
+        [{:"::", _, [rest_pat, {:binary, _, nil}]}] ->
+          case rest_pat do
+            {name, _, nil} when is_atom(name) and name != :_ -> {:ok, length(bytes), rest_pat}
+            _ -> :skip
+          end
+
+        _ ->
+          :skip
+      end
+    else
+      :skip
+    end
+  end
+
+  defp binary_segments(_), do: :skip
+
+  defp byte_segment?({:"::", _, [_, 8]}), do: true
+  defp byte_segment?(pat) when is_integer(pat), do: true
+  defp byte_segment?({_, _, nil}), do: true
+  defp byte_segment?(_), do: false
+
+  # `count(t)`, `delta + count(t)`, `count(t) + delta`, `count(t) - delta`
+  # where `t` is the rest-segment bind.
+  defp accumulator({name, _, [var_ast]}, name, rest) when is_atom(name) do
+    if var_name(var_ast) == var_name(rest), do: {:ok, 0}, else: :skip
+  end
+
+  defp accumulator({:+, _, [delta, {name, _, [var_ast]}]}, name, rest)
+       when is_integer(delta) and is_atom(name) do
+    if var_name(var_ast) == var_name(rest), do: {:ok, delta}, else: :skip
+  end
+
+  defp accumulator({:+, _, [{name, _, [var_ast]}, delta]}, name, rest)
+       when is_integer(delta) and is_atom(name) do
+    if var_name(var_ast) == var_name(rest), do: {:ok, delta}, else: :skip
+  end
+
+  defp accumulator({:-, _, [{name, _, [var_ast]}, delta]}, name, rest)
+       when is_integer(delta) and is_atom(name) do
+    if var_name(var_ast) == var_name(rest), do: {:ok, -delta}, else: :skip
+  end
+
+  defp accumulator(_body_ast, _name, _rest), do: :skip
+
+  defp var_name({name, _, nil}) when is_atom(name), do: name
+  defp var_name(_), do: nil
+
+  defp common_base(parsed) do
+    bases =
+      parsed
+      |> Enum.reject(&match?(%{kind: :recursive}, &1))
+      |> Enum.map(&terminator_base(&1.body))
+
+    case Enum.uniq(bases) do
+      [base] when is_integer(base) -> {:ok, base}
+      _ -> :skip
+    end
+  end
+
+  defp terminator_base(body) when is_integer(body), do: body
+  defp terminator_base(_body), do: :skip
+
+  defp lift_scanner_loop(name, %{base: base, delta: delta, head_width: width}, ctx, ip) do
+    region = MLIR.CAPI.mlirRegionCreate()
+    loc = MLIR.Location.unknown(ctx: ctx)
+    i64 = integer_type(ctx)
+    locs = [loc, loc, loc]
+
+    block = MLIR.Block.create([i64], [loc])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    [arg] = block |> Walker.arguments() |> Enum.to_list()
+
+    base_val = lit(base, ctx, block)
+    cursor0 = lit(0, ctx, block)
+
+    # scf.while keeps the ex.func body to a single block: the before region
+    # carries (arg, acc, cursor) and conditions on the next head segment
+    # existing; the after region advances the accumulator and cursor.
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_arg, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    word = create_op("ex.to_word", [b_arg], [ex_type("dyn", ctx)], ctx, before_block)
+    len = create_op("ex.binary_length", [word], [i64], ctx, before_block)
+
+    next_cursor =
+      create_op("ex.add", [b_cursor, lit(width, ctx, before_block)], [i64], ctx, before_block)
+
+    cond = cmp(len, next_cursor, "sge", ctx, before_block)
+    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [cond_i1, b_arg, b_acc, b_cursor], [], ctx, before_block)
+
+    [a_arg, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    acc_next = create_op("ex.add", [a_acc, lit(delta, ctx, after_block)], [i64], ctx, after_block)
+
+    cursor_next =
+      create_op("ex.add", [a_cursor, lit(width, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_arg, acc_next, cursor_next], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [arg, base_val, cursor0],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    acc_result = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
       op: "ex.func",

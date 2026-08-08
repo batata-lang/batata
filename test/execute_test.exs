@@ -849,4 +849,82 @@ defmodule Batata.ExecuteTest do
       )
     end
   end
+
+  test "executes a cursor-loop scanner with a non-zero base and delta", %{ctx: ctx} do
+    assert 14 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def total(<<>>) do
+                   10
+                 end
+
+                 def total(<<_h::8, t::binary>>) do
+                   2 + total(t)
+                 end
+
+                 def total(_) do
+                   0
+                 end
+
+                 def main() do
+                   total(<<1, 2>>)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes a cursor-loop scanner with a negative delta", %{ctx: ctx} do
+    assert -3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def sub(<<>>) do
+                   0
+                 end
+
+                 def sub(<<_h::8, t::binary>>) do
+                   sub(t) - 1
+                 end
+
+                 def sub(_) do
+                   0
+                 end
+
+                 def main() do
+                   sub(<<1, 2, 3>>)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "leaves non-scanner recursion as recursive calls", %{ctx: ctx} do
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def double_count(<<>>) do
+                   0
+                 end
+
+                 def double_count(<<_h::8, t::binary>>) do
+                   double_count(t) * 2
+                 end
+
+                 def double_count(_) do
+                   0
+                 end
+
+                 def main() do
+                   double_count(<<1, 2>>)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end
