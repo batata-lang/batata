@@ -5,7 +5,8 @@ defmodule Batata.Upgrade.Diff do
   Mirrors `Expandable.Upgrade.Diff` in miniature: compares the per-file digest
   index of two AOT output directories and reports additions/removals/changes,
   whether the aggregated artifact changed, and whether a migration is
-  required (artifact change implies migration).
+  required (artifact change implies migration), plus a bundle schema drift
+  (top-level fields and schema version).
   """
 
   @type summary() :: %{
@@ -14,7 +15,8 @@ defmodule Batata.Upgrade.Diff do
           file_additions: non_neg_integer(),
           file_removals: non_neg_integer(),
           file_changes: non_neg_integer(),
-          migration_required: boolean()
+          migration_required: boolean(),
+          schema_drift: map()
         }
 
   @doc """
@@ -24,6 +26,9 @@ defmodule Batata.Upgrade.Diff do
   """
   @spec compare(Path.t(), Path.t()) :: summary()
   def compare(old_dir, new_dir) do
+    old_bundle = read_bundle!(old_dir)
+    new_bundle = read_bundle!(new_dir)
+
     old_index = read_index!(old_dir)
     new_index = read_index!(new_dir)
 
@@ -57,9 +62,10 @@ defmodule Batata.Upgrade.Diff do
       end)
       |> Enum.sort_by(& &1["path"])
 
-    old_artifact = artifact_digest(old_dir, old_index)
-    new_artifact = artifact_digest(new_dir, new_index)
+    old_artifact = artifact_digest(old_bundle, old_index)
+    new_artifact = artifact_digest(new_bundle, new_index)
     artifacts_changed = old_artifact != new_artifact
+    schema_drift = schema_drift(old_bundle.bundle, new_bundle.bundle)
 
     %{
       artifacts_changed: artifacts_changed,
@@ -67,7 +73,43 @@ defmodule Batata.Upgrade.Diff do
       file_additions: count_status(file_surface, "added"),
       file_removals: count_status(file_surface, "removed"),
       file_changes: count_status(file_surface, "changed"),
-      migration_required: artifacts_changed
+      migration_required: artifacts_changed,
+      schema_drift: schema_drift
+    }
+  end
+
+  @doc """
+  Compares the schema shape of two export bundles: top-level field set and
+  schema version.
+
+  Status is `"unchanged"` when both shapes match, `"changed"` when the new
+  bundle only adds fields (backward-compatible), and `"incompatible"` when
+  fields are removed or the schema version differs.
+  """
+  @spec schema_drift(map(), map()) :: map()
+  def schema_drift(old_bundle, new_bundle) when is_map(old_bundle) and is_map(new_bundle) do
+    old_keys = old_bundle |> Map.keys() |> MapSet.new()
+    new_keys = new_bundle |> Map.keys() |> MapSet.new()
+
+    added = new_keys |> MapSet.difference(old_keys) |> Enum.sort()
+    removed = old_keys |> MapSet.difference(new_keys) |> Enum.sort()
+
+    status =
+      cond do
+        added == [] and removed == [] -> "unchanged"
+        old_bundle["schema_version"] != new_bundle["schema_version"] -> "incompatible"
+        removed == [] -> "changed"
+        true -> "incompatible"
+      end
+
+    %{
+      "status" => status,
+      "schema_version" => %{
+        "old" => old_bundle["schema_version"],
+        "new" => new_bundle["schema_version"]
+      },
+      "fields_added" => added,
+      "fields_removed" => removed
     }
   end
 
@@ -80,13 +122,17 @@ defmodule Batata.Upgrade.Diff do
     end
   end
 
+  defp read_bundle!(dir) do
+    Batata.Export.read(dir) ||
+      raise ArgumentError, "no export bundle at #{dir}"
+  end
+
   # Aggregated artifact digest from bundle.json; falls back to hashing the
-  # per-file digests when the bundle is missing (defensive).
-  defp artifact_digest(dir, index) do
-    case Batata.Export.read(dir) do
-      %{bundle: %{"artifact_digest" => digest}} -> digest
-      _ -> index["files"] |> Enum.map(& &1["digest"]) |> Enum.join() |> hash()
-    end
+  # per-file digests when the bundle lacks the field (defensive).
+  defp artifact_digest(%{bundle: %{"artifact_digest" => digest}}, _index), do: digest
+
+  defp artifact_digest(_bundle, index) do
+    index["files"] |> Enum.map(& &1["digest"]) |> Enum.join() |> hash()
   end
 
   defp count_status(surface, status) do

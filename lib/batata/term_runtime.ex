@@ -92,7 +92,7 @@ defmodule Batata.TermRuntime do
   end
 
   defp build!(:static, path) do
-    zig!(["build-lib", source_path(), "-O", "ReleaseSafe", "-femit-bin=#{path}"])
+    zig!(["build-lib", source_path(), "-O", "ReleaseSafe", "-lc", "-femit-bin=#{path}"])
   end
 
   defp zig!(args) do
