@@ -36,10 +36,12 @@ defmodule Batata.Export do
   def write!(output_dir, module_name, opts) do
     source = Keyword.fetch!(opts, :source)
     artifact_paths = Keyword.get(opts, :artifact_paths, [])
+    definitions = Keyword.get(opts, :definitions, [])
 
     source_digest = digest(source)
     artifact_digest = artifact_paths |> Enum.map(&digest_file/1) |> join_digests()
     runtime_version = runtime_version()
+    exports = exports(definitions, module_name)
 
     bundle =
       %{
@@ -48,7 +50,8 @@ defmodule Batata.Export do
         "entry" => "batata_main",
         "source_digest" => source_digest,
         "runtime_version" => runtime_version,
-        "artifact_digest" => artifact_digest
+        "artifact_digest" => artifact_digest,
+        "exports" => exports
       }
 
     files =
@@ -101,6 +104,61 @@ defmodule Batata.Export do
     else
       "unknown"
     end
+  end
+
+  @doc """
+  Symbol-level export list for the snapshot's definitions.
+
+  The entry function is renamed to `batata_main` by `Batata.build/3`; every
+  other definition keeps its source symbol (the LLVM `@<name>` symbol).
+  """
+  @spec exports([Batata.Frontend.Definition.t()], module(), atom()) :: [map()]
+  def exports(definitions, module_name, entry_name \\ :main) do
+    module_part =
+      module_name
+      |> Atom.to_string()
+      |> String.replace_leading("Elixir.", "")
+
+    Enum.map(definitions, fn definition ->
+      entry? = definition.name == :batata_main
+      symbol = if entry?, do: "batata_main", else: to_string(definition.name)
+      function = if entry?, do: to_string(entry_name), else: to_string(definition.name)
+
+      %{
+        "function" => "#{module_part}.#{function}/#{definition.arity}",
+        "symbol" => symbol
+      }
+    end)
+    |> Enum.sort_by(& &1["function"])
+  end
+
+  @doc """
+  Verifies that every exported symbol is defined in the archive (via `nm`).
+  Raises with the missing symbols otherwise.
+  """
+  @spec verify_symbols!(Path.t(), [map()]) :: :ok
+  def verify_symbols!(archive_path, exports) do
+    nm = System.find_executable("nm") || raise "nm not found on PATH"
+    {output, 0} = System.cmd(nm, ["-g", archive_path], stderr_to_stdout: true)
+
+    defined =
+      output
+      |> String.split("\n")
+      |> Enum.map(fn line -> line |> String.split() |> List.last() end)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    missing =
+      exports
+      |> Enum.map(& &1["symbol"])
+      |> Enum.reject(&MapSet.member?(defined, &1))
+
+    if missing != [] do
+      raise ArgumentError,
+            "exported symbols missing from #{Path.basename(archive_path)}: #{inspect(missing)}"
+    end
+
+    :ok
   end
 
   defp write_json!(path, value) do

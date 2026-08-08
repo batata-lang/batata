@@ -32,10 +32,44 @@ defmodule Batata.ExportTest do
     assert bundle["runtime_version"] |> byte_size() == 64
     assert manifest["compiler"] == "batata"
 
+    assert bundle["exports"] == [
+             %{"function" => "Math.main/0", "symbol" => "batata_main"}
+           ]
+
     paths = index["files"] |> Enum.map(& &1["path"])
     assert "libElixir.Math.a" in paths
     assert "batata.o" in paths
     assert "driver.c" in paths
+  end
+
+  @tag :tmp_dir
+  test "bundle lists every definition symbol and the archive defines them", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output =
+      Batata.build(
+        """
+        defmodule Math do
+          def main() do
+            helper(2) + 1
+          end
+
+          defp helper(x), do: x * 3
+        end
+        """,
+        tmp_dir,
+        ctx
+      )
+
+    %{bundle: bundle} = Export.read(tmp_dir)
+
+    assert bundle["exports"] == [
+             %{"function" => "Math.helper/1", "symbol" => "helper"},
+             %{"function" => "Math.main/0", "symbol" => "batata_main"}
+           ]
+
+    assert :ok = Export.verify_symbols!(output.archive, bundle["exports"])
   end
 
   @tag :tmp_dir

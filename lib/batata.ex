@@ -108,6 +108,10 @@ defmodule Batata do
       snapshot
       |> Batata.Lift.module_to_ir(ctx: ctx)
       |> Beaver.Deferred.create(ctx)
+      |> Batata.Transform.run!([
+        Batata.Transform.InlineScalarCalls,
+        Batata.Transform.ExpandCase
+      ])
       |> MLIR.verify!()
       |> Batata.Lower.to_llvm(ctx)
       |> MLIR.verify!()
@@ -132,7 +136,9 @@ defmodule Batata do
     metadata =
       Batata.Export.write!(output_dir, snapshot.name,
         source: source,
-        artifact_paths: [archive_path, object_path, driver_path]
+        artifact_paths: [archive_path, object_path, driver_path],
+        definitions: snapshot.definitions,
+        entry_name: :main
       )
 
     %{
