@@ -353,12 +353,19 @@ defmodule Batata.Lift do
     {guards, bindss} =
       parsed
       |> Enum.map(fn clause ->
-        if clause.guard do
-          raise Error,
-                "guards on term patterns are unsupported: #{inspect(clause.pattern)}"
-        end
+        {match_cond, binds} = build_match(clause.pattern, scrutinee, ctx, block)
 
-        build_match(clause.pattern, scrutinee, ctx, block)
+        cond =
+          case clause.guard do
+            nil ->
+              match_cond
+
+            guard_ast ->
+              guard_cond = lift_term_guard(guard_ast, binds, env, ctx, block)
+              combine([match_cond, guard_cond], ctx, block)
+          end
+
+        {cond, binds}
       end)
       |> Enum.unzip()
 
@@ -567,6 +574,29 @@ defmodule Batata.Lift do
         end)
     end
   end
+
+  # Term-pattern guards are evaluated eagerly against the (nil-safe) bound
+  # values, so they must be composed of term-safe predicates only: `is_*`
+  # calls on bound or outer variables. Comparisons and arithmetic on terms
+  # are rejected explicitly.
+  defp lift_term_guard(guard_ast, binds, env, ctx, block) do
+    unless supported_term_guard?(guard_ast) do
+      raise Error,
+            "unsupported guard on term pattern (only is_* predicates on bound or outer variables): " <>
+              inspect(guard_ast)
+    end
+
+    guard_env = Map.merge(env, Map.new(binds))
+    {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
+    value
+  end
+
+  defp supported_term_guard?({predicate, _, [var_ast]})
+       when predicate in [:is_integer, :is_atom, :is_binary, :is_list, :is_tuple, :is_map] do
+    match?({name, _, nil} when is_atom(name), var_ast)
+  end
+
+  defp supported_term_guard?(_guard_ast), do: false
 
   defp lit(value, ctx, block) do
     create_op(
