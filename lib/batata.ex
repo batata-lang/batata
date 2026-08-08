@@ -93,7 +93,10 @@ defmodule Batata do
   @spec build(String.t(), Path.t(), MLIR.Context.t()) :: %{
           archive: Path.t(),
           driver: Path.t(),
-          object: Path.t()
+          object: Path.t(),
+          bundle: Path.t(),
+          artifact_index: Path.t(),
+          manifest: Path.t()
         }
   def build(source, output_dir, ctx) do
     snapshot =
@@ -126,7 +129,20 @@ defmodule Batata do
     archive!(archive_path, object_path)
     File.write!(driver_path, driver_source())
 
-    %{archive: archive_path, driver: driver_path, object: object_path}
+    metadata =
+      Batata.Export.write!(output_dir, snapshot.name,
+        source: source,
+        artifact_paths: [archive_path, object_path, driver_path]
+      )
+
+    %{
+      archive: archive_path,
+      driver: driver_path,
+      object: object_path,
+      bundle: metadata.bundle,
+      artifact_index: metadata.artifact_index,
+      manifest: metadata.manifest
+    }
   end
 
   defp rename_entry(%Batata.Frontend.Module{} = snapshot, entry) do
