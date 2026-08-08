@@ -197,6 +197,18 @@ defmodule Batata.Stdlib do
     Elixir.Map.get(@classes, {module, function, arity})
   end
 
+  @doc """
+  Returns a `Batata.Stdlib.Plan` for the declared `{module, function, arity}`,
+  or `nil` when the call is outside the declared surface.
+  """
+  @spec plan({module(), atom(), non_neg_integer()}) :: Batata.Stdlib.Plan.t() | nil
+  def plan({module, function, arity} = mfa) do
+    case class(mfa) do
+      nil -> nil
+      class -> %Batata.Stdlib.Plan{mfa: mfa, class: class}
+    end
+  end
+
   @doc "All declared entries, for diagnostics and tests."
   def classes, do: @classes
 end
