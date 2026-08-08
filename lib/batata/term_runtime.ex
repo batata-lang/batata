@@ -65,7 +65,12 @@ defmodule Batata.TermRuntime do
   @spec ensure_static_built!() :: Path.t()
   def ensure_static_built! do
     path = static_lib_path()
-    if usable?(path), do: path, else: build!(:static, path)
+
+    unless usable?(path) do
+      build!(:static, path)
+    end
+
+    path
   end
 
   defp usable?(path), do: File.exists?(path) and File.stat!(path).size > 0
@@ -92,7 +97,7 @@ defmodule Batata.TermRuntime do
   end
 
   defp build!(:static, path) do
-    zig!(["build-lib", source_path(), "-O", "ReleaseSafe", "-femit-bin=#{path}"])
+    zig!(["build-lib", source_path(), "-O", "ReleaseSafe", "-lc", "-femit-bin=#{path}"])
   end
 
   defp zig!(args) do

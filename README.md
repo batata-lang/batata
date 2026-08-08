@@ -83,11 +83,18 @@ M5 starts the `native_elixirc` equivalent (see
   checks the symbols against the archive via `nm`;
 - `Batata.Upgrade.Diff.compare/2` compares two bundle directories and reports
   file additions/removals/changes, `artifacts_changed`, and
-  `migration_required` (artifact change implies migration);
+  `migration_required` (artifact change implies migration), plus a bundle
+  `schema_drift` (field set and schema version: unchanged / changed /
+  incompatible);
 - `test/semantic_gates_test.exs` runs a gate per slice (scalar, term
   patterns, cursor scanners, Kernel/Enum/String/Base stdlib, closures,
   receive, try/throw), asserting Batata's compiled result matches the BEAM
-  oracle of the equivalent expression.
+  oracle of the equivalent expression;
+- `test/fixtures/self_bootstrap.exs` is a self-bootstrap fixture: a
+  batata-shaped module (stand-in for `Upgrade.Diff`'s status classification)
+  that is compiled by Batata, checked against the BEAM oracle, and built into
+  a runnable AOT binary with verified symbols (`zig cc` links the Zig term
+  runtime).
 
 ## Dev setup
 
