@@ -77,7 +77,10 @@ M5 starts the `native_elixirc` equivalent (see
 
 - `Batata.build/3` now emits an export bundle (`bundle.json`,
   `artifact_index.json`, `manifest.json`) with module/entry/source digest/
-  runtime version/artifact digest and a per-file digest index;
+  runtime version/artifact digest and a per-file digest index, plus a
+  symbol-level `exports` list (every definition's `Module.fun/arity` and its
+  native symbol, entry renamed to `batata_main`); `Export.verify_symbols!/2`
+  checks the symbols against the archive via `nm`;
 - `Batata.Upgrade.Diff.compare/2` compares two bundle directories and reports
   file additions/removals/changes, `artifacts_changed`, and
   `migration_required` (artifact change implies migration);
