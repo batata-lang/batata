@@ -125,19 +125,23 @@ defmodule Batata.Lift do
       raise Error, "unsupported definition kind: #{inspect(kind)}"
     end
 
-    unless arity == 1 do
-      raise Error,
-            "multi-clause functions with multiple arguments are unsupported: #{name}/#{arity}"
-    end
-
     clauses = Enum.flat_map(definitions, & &1.clauses)
 
-    case detect_scanner(name, clauses) do
-      {:ok, scanner} ->
-        lift_scanner_loop(name, scanner, ctx, ip)
+    cond do
+      arity == 1 ->
+        case detect_scanner(name, clauses) do
+          {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip)
+          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip)
+        end
 
-      :skip ->
-        lift_multi_clause_dispatch(name, clauses, ctx, ip)
+      arity >= 2 ->
+        case detect_accumulator_scanner(name, clauses) do
+          {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip)
+          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip)
+        end
+
+      true ->
+        raise Error, "unsupported function arity: #{name}/#{arity}"
     end
   end
 
@@ -170,6 +174,149 @@ defmodule Batata.Lift do
       filler: fn -> [region] end
     }
     |> MLIR.Operation.create()
+  end
+
+  # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
+  # first argument dispatches with `ex.case`; the trailing arguments must be
+  # bound as variables and are threaded through the clause environments.
+  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip) do
+    tail_names = validate_multi_arg_clauses!(arity, clauses)
+
+    region = MLIR.CAPI.mlirRegionCreate()
+    loc = MLIR.Location.unknown(ctx: ctx)
+    i64 = integer_type(ctx)
+    locs = List.duplicate(loc, arity)
+
+    block = MLIR.Block.create(List.duplicate(i64, arity), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    [arg1 | tail_args] = block |> Walker.arguments() |> Enum.to_list()
+    tail_env = Map.new(Enum.zip(tail_names, tail_args))
+
+    clause_asts =
+      Enum.map(clauses, fn %Frontend.Clause{patterns: [first | _], body_ast: body_ast} ->
+        {:->, [], [[first], body_ast]}
+      end)
+
+    return_value =
+      lift_case(clause_asts, arg1, tail_env, ctx, block, relax_types: true, box_scrutinee: false)
+
+    insert_return(return_value, ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  defp validate_multi_arg_clauses!(arity, clauses) do
+    tail_names =
+      clauses
+      |> Enum.map(fn %Frontend.Clause{patterns: patterns} ->
+        unless length(patterns) == arity do
+          raise Error, "clause arity mismatch for a multi-clause function"
+        end
+
+        {_first, tails} = Enum.split(patterns, 1)
+
+        Enum.map(tails, fn
+          {name, _, nil} when is_atom(name) and name != :_ ->
+            name
+
+          other ->
+            raise Error, "multi-clause trailing arguments must be variables: #{inspect(other)}"
+        end)
+      end)
+      |> Enum.uniq()
+
+    case tail_names do
+      [names] ->
+        names
+
+      _ ->
+        raise Error,
+              "multi-clause multi-argument functions must use the same trailing argument names"
+    end
+  end
+
+  # Accumulator-scanner detection (the `reduce(binary, acc)` shape): a
+  # two-argument function whose recursive clause matches fixed-width binary
+  # head segments plus a rest and calls itself with the rest slice and an
+  # accumulator step (`acc + delta`), and whose other clauses return the
+  # accumulator unchanged.
+  defp detect_accumulator_scanner(name, clauses) do
+    parsed = Enum.map(clauses, &accumulator_scanner_clause(&1, name))
+
+    with [%{delta: delta, head_width: width}] <-
+           Enum.filter(parsed, &match?(%{kind: :recursive}, &1)),
+         {:ok, acc_name} <- common_acc_name(parsed),
+         true <- terminating_returns_acc?(parsed, acc_name) do
+      {:ok, %{delta: delta, head_width: width, acc_name: acc_name}}
+    else
+      _ -> :skip
+    end
+  end
+
+  defp accumulator_scanner_clause(
+         %Frontend.Clause{patterns: [p1, acc_pat], body_ast: body_ast},
+         name
+       ) do
+    case binary_segments(p1) do
+      {:ok, width, rest} ->
+        case reduce_accumulator(body_ast, name, rest, acc_pat) do
+          {:ok, delta} -> %{kind: :recursive, delta: delta, head_width: width, acc: acc_pat}
+          :skip -> %{kind: :terminating, body: body_ast, acc: acc_pat}
+        end
+
+      :skip ->
+        %{kind: :terminating, body: body_ast, acc: acc_pat}
+    end
+  end
+
+  defp reduce_accumulator({name, _, [var_ast, acc_expr]}, name, rest, acc_pat)
+       when is_atom(name) do
+    if var_name(var_ast) == var_name(rest) do
+      acc_step(acc_expr, acc_pat)
+    else
+      :skip
+    end
+  end
+
+  defp reduce_accumulator(_body_ast, _name, _rest, _acc_pat), do: :skip
+
+  defp acc_step({acc, _, nil} = acc_ast, acc_pat) when is_atom(acc) do
+    if var_name(acc_ast) == var_name(acc_pat), do: {:ok, 0}, else: :skip
+  end
+
+  defp acc_step({:+, _, [acc_ast, delta]}, acc_pat) when is_integer(delta) do
+    if var_name(acc_ast) == var_name(acc_pat), do: {:ok, delta}, else: :skip
+  end
+
+  defp acc_step({:+, _, [delta, acc_ast]}, acc_pat) when is_integer(delta) do
+    if var_name(acc_ast) == var_name(acc_pat), do: {:ok, delta}, else: :skip
+  end
+
+  defp acc_step({:-, _, [acc_ast, delta]}, acc_pat) when is_integer(delta) do
+    if var_name(acc_ast) == var_name(acc_pat), do: {:ok, -delta}, else: :skip
+  end
+
+  defp acc_step(_acc_expr, _acc_pat), do: :skip
+
+  defp common_acc_name(parsed) do
+    case parsed |> Enum.map(&var_name(&1.acc)) |> Enum.uniq() do
+      [acc_name] when is_atom(acc_name) -> {:ok, acc_name}
+      _ -> :skip
+    end
+  end
+
+  defp terminating_returns_acc?(parsed, acc_name) do
+    parsed
+    |> Enum.reject(&match?(%{kind: :recursive}, &1))
+    |> Enum.all?(fn clause -> var_name(clause.body) == acc_name end)
   end
 
   # Cursor-loop optimization (expandable d95fd36/f62b38b route): a
@@ -284,18 +431,60 @@ defmodule Batata.Lift do
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
     i64 = integer_type(ctx)
-    locs = [loc, loc, loc]
 
     block = MLIR.Block.create([i64], [loc])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
     [arg] = block |> Walker.arguments() |> Enum.to_list()
 
     base_val = lit(base, ctx, block)
-    cursor0 = lit(0, ctx, block)
+    acc_result = emit_cursor_while(block, arg, base_val, width, delta, ctx)
+    create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
-    # scf.while keeps the ex.func body to a single block: the before region
-    # carries (arg, acc, cursor) and conditions on the next head segment
-    # existing; the after region advances the accumulator and cursor.
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  defp lift_reduce_loop(name, %{delta: delta, head_width: width}, ctx, ip) do
+    region = MLIR.CAPI.mlirRegionCreate()
+    loc = MLIR.Location.unknown(ctx: ctx)
+
+    block = MLIR.Block.create([integer_type(ctx), integer_type(ctx)], [loc, loc])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    [arg, acc0] = block |> Walker.arguments() |> Enum.to_list()
+
+    acc_result = emit_cursor_while(block, arg, acc0, width, delta, ctx)
+    create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  # scf.while keeps the ex.func body to a single block: the before region
+  # carries (arg, acc, cursor) and conditions on the next head segment
+  # existing; the after region advances the accumulator and cursor.
+  defp emit_cursor_while(block, arg, acc, width, delta, ctx) do
+    i64 = integer_type(ctx)
+
+    locs = [
+      MLIR.Location.unknown(ctx: ctx),
+      MLIR.Location.unknown(ctx: ctx),
+      MLIR.Location.unknown(ctx: ctx)
+    ]
+
     before = MLIR.CAPI.mlirRegionCreate()
     before_block = MLIR.Block.create([i64, i64, i64], locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
@@ -323,30 +512,21 @@ defmodule Batata.Lift do
 
     create_op("scf.yield", [a_arg, acc_next, cursor_next], [], ctx, after_block)
 
+    cursor0 = lit(0, ctx, block)
+
     while_op =
       %Beaver.SSA{
         op: "scf.while",
         ip: block,
         ctx: ctx,
-        arguments: [arg, base_val, cursor0],
+        arguments: [arg, acc, cursor0],
         results: [i64, i64, i64],
         loc: MLIR.Location.unknown(),
         filler: fn -> [before, after_region] end
       }
       |> MLIR.Operation.create()
 
-    acc_result = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
-    create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
-
-    %Beaver.SSA{
-      op: "ex.func",
-      ip: ip,
-      ctx: ctx,
-      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
-      results: [],
-      filler: fn -> [region] end
-    }
-    |> MLIR.Operation.create()
+    while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
   end
 
   defp lift_block(expressions, ctx, block, env) do
@@ -509,7 +689,7 @@ defmodule Batata.Lift do
           [
             callee: MLIR.Attribute.string(to_string(name)),
             arity: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
-            operandSegmentSizes: segment_sizes([length(args)])
+            operandSegmentSizes: segment_sizes(arg_segment_sizes(length(args)))
           ],
         [ex_type("dyn", ctx)],
         ctx,
@@ -1178,6 +1358,15 @@ defmodule Batata.Lift do
   end
 
   defp segment_sizes(sizes) do
-    MLIR.Attribute.array(Enum.map(sizes, &MLIR.Attribute.integer(MLIR.Type.i32(), &1)))
+    MLIR.Attribute.dense_array(sizes, Beaver.Native.I32)
+  end
+
+  # ex.call has four optional argument slots; encode which are filled.
+  defp arg_segment_sizes(count) do
+    unless count <= 4 do
+      raise Error, "calls with more than 4 arguments are unsupported: #{count}"
+    end
+
+    List.duplicate(1, count) ++ List.duplicate(0, 4 - count)
   end
 end

@@ -114,7 +114,7 @@ defmodule Batata.Transform.InlineScalarCalls do
           [
             callee: MLIR.Attribute.string(name),
             arity: MLIR.Attribute.integer(MLIR.Type.i64(), arity),
-            operandSegmentSizes: segment_sizes([length(args)])
+            operandSegmentSizes: segment_sizes(arg_segment_sizes(length(args)))
           ]
       )
       |> Changeset.add_result(MLIR.Type.i64())
@@ -134,7 +134,15 @@ defmodule Batata.Transform.InlineScalarCalls do
   end
 
   defp segment_sizes(sizes) do
-    MLIR.Attribute.array(Enum.map(sizes, &MLIR.Attribute.integer(MLIR.Type.i32(), &1)))
+    MLIR.Attribute.dense_array(sizes, Beaver.Native.I32)
+  end
+
+  defp arg_segment_sizes(count) do
+    unless count <= 4 do
+      raise ArgumentError, "calls with more than 4 arguments are unsupported: #{count}"
+    end
+
+    List.duplicate(1, count) ++ List.duplicate(0, 4 - count)
   end
 
   defp inline!(call, callee) do
