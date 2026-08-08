@@ -46,6 +46,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.list_head` | `(list: i64) -> i64` | head; nil for empty/non-lists |
 | `ex.term.list_tail` | `(list: i64) -> i64` | tail; nil for empty/non-lists |
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
+| `ex.term.eq` | `(left: i64, right: i64) -> i64` | word equality; exact for immediates, identity for containers |
 | `ex.term.map_from_list` | `(list: i64) -> i64` | flat key/value list -> map |
 | `ex.term.binary_from_list` | `(list: i64) -> i64` | integer byte list -> binary |
 | `ex.term.is_integer` | `(word: i64) -> i64` | 1 if int |

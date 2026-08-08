@@ -219,6 +219,141 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes tuple pattern matching through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     {a, b} -> is_integer(a)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes tuple pattern arity fall-through", %{ctx: ctx} do
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     {a, b, c} -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case [1, 2] do
+                     [h | t] -> is_list(t)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes exact list pattern fall-through", %{ctx: ctx} do
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case [1, 2] do
+                     [] -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes literal element patterns through word equality", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     {1, b} -> is_integer(b)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     {2, b} -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes bound terms round-tripping through reconstruction", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     {a, b} -> is_tuple({a, b})
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects guards on term patterns explicitly", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/guards on term patterns/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            case {1, 2} do
+              {a, b} when is_integer(a) -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes tuple construction and predicates through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
