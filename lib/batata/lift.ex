@@ -69,9 +69,9 @@ defmodule Batata.Lift do
 
   # Extracts anonymous-function literals from every definition body into
   # synthetic `defp` definitions, replacing the literal with a
-  # `{:__fn_ref__, _, [name, arity]}` marker. Capturing free variables is
-  # rejected naturally when the extracted body is lifted with a fresh env
-  # (unbound variable reference).
+  # `{:__fn_ref__, _, [name, arity, captured]}` marker. Free variables of the
+  # literal body become extra trailing parameters of the synthetic definition,
+  # and the application site resolves their values from the outer env.
   defp extract_all_fns(definitions) do
     {defs, {synthetic, _counter}} =
       definitions
@@ -93,15 +93,23 @@ defmodule Batata.Lift do
 
   defp extract_fns({:fn, _, [{:->, _, [args, body]}]}, parent, {synthetic, counter}) do
     name = :"__fn_#{parent}_#{counter}"
+    arity = length(args)
+    bound = Enum.map(args, &param_name/1)
+    captured = body |> free_vars(bound) |> Enum.uniq() |> Enum.sort()
 
     fn_def = %Frontend.Definition{
       kind: :defp,
       name: name,
-      arity: length(args),
-      clauses: [%Frontend.Clause{patterns: args, body_ast: body}]
+      arity: arity + length(captured),
+      clauses: [
+        %Frontend.Clause{
+          patterns: args ++ Enum.map(captured, &{&1, [], nil}),
+          body_ast: body
+        }
+      ]
     }
 
-    marker = {:__fn_ref__, [], [name, length(args)]}
+    marker = {:__fn_ref__, [], [name, arity, captured]}
     {marker, {synthetic ++ [fn_def], counter + 1}}
   end
 
@@ -119,6 +127,29 @@ defmodule Batata.Lift do
   end
 
   defp extract_fns(other, _parent, acc), do: {other, acc}
+
+  # Collects variable references in an AST that are not bound by `bound`.
+  # Nested fn literals are skipped: their bodies bind and reference variables
+  # in their own scope, and each literal is extracted independently.
+  defp free_vars({:fn, _, _}, _bound), do: []
+
+  defp free_vars({var, _, nil}, bound) when is_atom(var) do
+    if var == :_ or var in bound, do: [], else: [var]
+  end
+
+  defp free_vars({_name, _, args}, bound) when is_list(args) do
+    Enum.flat_map(args, &free_vars(&1, bound))
+  end
+
+  defp free_vars(tuple, bound) when is_tuple(tuple) do
+    tuple |> Tuple.to_list() |> Enum.flat_map(&free_vars(&1, bound))
+  end
+
+  defp free_vars(list, bound) when is_list(list) do
+    Enum.flat_map(list, &free_vars(&1, bound))
+  end
+
+  defp free_vars(_other, _bound), do: []
 
   defp lift_definition(
          %Frontend.Definition{kind: kind, name: name, arity: arity, clauses: clauses},
@@ -731,33 +762,45 @@ defmodule Batata.Lift do
   end
 
   # Anonymous-function marker produced by `extract_all_fns/1`: the literal
-  # becomes a reference to the extracted ex.func.
-  defp lift_expr({:__fn_ref__, _, [name, arity]}, _ctx, _block, env) do
-    {{:fn_ref, name, arity}, env}
+  # becomes a reference to the extracted ex.func, carrying the captured
+  # variable names so the application site can thread their values in.
+  defp lift_expr({:__fn_ref__, _, [name, arity, captured]}, _ctx, _block, env) do
+    {{:fn_ref, name, arity, captured}, env}
   end
 
   # Anonymous-function application: `f.(args)` / `(fn ... end).(args)`.
   defp lift_expr({{:., _, [fun_ast]}, _, args}, ctx, block, env) do
     case resolve_fun_ref(fun_ast, env) do
-      {:ok, name, arity} ->
+      {:ok, name, arity, captured} ->
         unless length(args) == arity do
           raise Error,
                 "anonymous function application arity mismatch: expected #{arity}, got #{length(args)}"
         end
+
+        {captured_values, env} =
+          Enum.map_reduce(captured, env, fn var, env ->
+            case Map.fetch(env, var) do
+              {:ok, value} -> {value, env}
+              :error -> raise Error, "unbound variable reference: #{inspect(var)}"
+            end
+          end)
 
         {arg_values, env} =
           Enum.map_reduce(args, env, fn arg, env ->
             lift_expr(arg, ctx, block, env)
           end)
 
+        call_arity = arity + length(captured)
+
         {
           create_op(
             "ex.call",
             arg_values ++
+              captured_values ++
               [
                 callee: MLIR.Attribute.string(to_string(name)),
-                arity: MLIR.Attribute.integer(MLIR.Type.i64(), arity),
-                operandSegmentSizes: segment_sizes(arg_segment_sizes(arity))
+                arity: MLIR.Attribute.integer(MLIR.Type.i64(), call_arity),
+                operandSegmentSizes: segment_sizes(arg_segment_sizes(call_arity))
               ],
             [ex_type("dyn", ctx)],
             ctx,
@@ -778,7 +821,7 @@ defmodule Batata.Lift do
       Enum.map_reduce(args, env, fn arg, env ->
         {value, env} = lift_expr(arg, ctx, block, env)
 
-        if match?({:fn_ref, _, _}, value) do
+        if match?({:fn_ref, _, _, _}, value) do
           raise Error,
                 "anonymous functions can only be applied directly with .() in the current slice"
         end
@@ -827,12 +870,14 @@ defmodule Batata.Lift do
 
   defp resolve_fun_ref({name, _, nil}, env) when is_atom(name) do
     case Map.get(env, name) do
-      {:fn_ref, fn_name, arity} -> {:ok, fn_name, arity}
+      {:fn_ref, fn_name, arity, captured} -> {:ok, fn_name, arity, captured}
       _ -> :error
     end
   end
 
-  defp resolve_fun_ref({:__fn_ref__, _, [name, arity]}, _env), do: {:ok, name, arity}
+  defp resolve_fun_ref({:__fn_ref__, _, [name, arity, captured]}, _env),
+    do: {:ok, name, arity, captured}
+
   defp resolve_fun_ref(_ast, _env), do: :error
 
   defp lift_tuple_literal(tuple, ctx, block, env) do
