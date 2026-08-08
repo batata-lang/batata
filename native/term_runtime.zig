@@ -154,6 +154,13 @@ pub export fn ex_term_list_length(list: i64) i64 {
     return @intCast(list_len(list));
 }
 
+/// Word equality: true when both words are bit-identical. This is exact for
+/// immediate terms (integers, atoms); container words compare by identity
+/// rather than deep equality.
+pub export fn ex_term_eq(left: i64, right: i64) i64 {
+    return if (left == right) 1 else 0;
+}
+
 /// Converts a flat key/value list word (even length) into a map word.
 pub export fn ex_term_map_from_list(list: i64) i64 {
     const count = list_len(list);
@@ -218,6 +225,7 @@ comptime {
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_length, .{ .name = "ex.term.list_length" });
+    @export(&ex_term_eq, .{ .name = "ex.term.eq" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
@@ -288,6 +296,10 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_list(ex_term_list_tail(ex_term_list_tail(list))));
     try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(nil_word));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_list_head(nil_word)));
+
+    // word equality
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_eq(one, two));
 }
 
 fn ex_term_is_nil_word(word: i64) i64 {

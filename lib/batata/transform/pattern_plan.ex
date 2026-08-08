@@ -158,6 +158,12 @@ defmodule Batata.Transform.PatternPlan do
     [%Step{op: :unsupported, path: path, value: {:<<>>, [], segments}}]
   end
 
+  # Three-or-more element tuples parse as `{:{}, meta, elements}`.
+  defp do_lower_pattern({:{}, _, elements}, path) do
+    [%Step{op: :tuple, path: path, value: length(elements)}] ++
+      lower_indexed(elements, path)
+  end
+
   # Tuple patterns: `{a, b}` and `{a, b, c}` are plain tuples in the AST.
   defp do_lower_pattern(tuple, path)
        when is_tuple(tuple) and tuple_size(tuple) != 3 do

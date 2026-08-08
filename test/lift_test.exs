@@ -208,6 +208,30 @@ defmodule Batata.LiftTest do
     assert "ex.cmp" in names
   end
 
+  test "lifts term patterns into guard-only ex.clause clauses", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case {1, 2} do
+              {a, b} -> is_integer(a)
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.case" in names
+    assert Enum.count(names, &(&1 == "ex.clause")) == 2
+    assert "ex.is_tuple" in names
+    assert "ex.tuple_length" in names
+    assert "ex.tuple_get" in names
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(

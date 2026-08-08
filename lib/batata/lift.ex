@@ -18,6 +18,7 @@ defmodule Batata.Lift do
   """
 
   alias Batata.Frontend
+  alias Batata.Transform.PatternPlan
   alias Beaver.MLIR
   alias Beaver.MLIR.Dialect.Ex
   alias Beaver.Walker
@@ -281,6 +282,14 @@ defmodule Batata.Lift do
   defp cmp_predicate(:>=), do: "sge"
 
   defp lift_case(clauses, scrutinee, env, ctx, block) do
+    if Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?())) do
+      lift_term_case(clauses, scrutinee, env, ctx, block)
+    else
+      lift_scalar_case(clauses, scrutinee, env, ctx, block)
+    end
+  end
+
+  defp lift_scalar_case(clauses, scrutinee, env, ctx, block) do
     parsed = Enum.map(clauses, &parse_clause/1)
 
     unless parsed |> List.last() |> Map.fetch!(:patterns) == [] do
@@ -325,6 +334,285 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lift_term_case(clauses, scrutinee, env, ctx, block) do
+    parsed = Enum.map(clauses, &parse_term_clause/1)
+
+    unless match?(
+             {name, _, nil} when is_atom(name),
+             parsed |> List.last() |> Map.fetch!(:pattern)
+           ) do
+      raise Error, "case requires a final catch-all clause"
+    end
+
+    # term reads require a tagged word, so box the scrutinee once up front
+    # (a no-op for values that already are terms)
+    scrutinee = box_term(scrutinee, ctx, block)
+
+    {guards, bindss} =
+      parsed
+      |> Enum.map(fn clause ->
+        if clause.guard do
+          raise Error,
+                "guards on term patterns are unsupported: #{inspect(clause.pattern)}"
+        end
+
+        build_match(clause.pattern, scrutinee, ctx, block)
+      end)
+      |> Enum.unzip()
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    yield_types =
+      parsed
+      |> Enum.zip(guards)
+      |> Enum.zip(bindss)
+      |> Enum.map(fn {{clause, guard}, binds} ->
+        add_term_clause_block(clause, guard, binds, env, ctx, region)
+      end)
+
+    [first_type | rest_types] = yield_types
+
+    unless Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
+      raise Error, "case clauses must yield the same type"
+    end
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [scrutinee, operandSegmentSizes: segment_sizes([1])],
+        results: [first_type],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  # The match condition and the bound values of one term pattern are computed
+  # eagerly before `ex.case`: predicates and reads are pure and safe on the
+  # wrong term kind (reads return nil), so a non-matching clause's eager
+  # values are simply unused. The combined condition becomes the clause guard.
+  defp build_match(pattern, value, ctx, block) do
+    do_build_match(pattern, value, ctx, block)
+  end
+
+  defp do_build_match({name, _, nil}, value, _ctx, _block) when is_atom(name) do
+    if name == :_ do
+      {nil, []}
+    else
+      {nil, [{name, value}]}
+    end
+  end
+
+  defp do_build_match(integer, value, ctx, block) when is_integer(integer) do
+    lit =
+      create_op(
+        "ex.lit",
+        [value: MLIR.Attribute.integer(MLIR.Type.i64(), integer)],
+        [MLIR.Type.i64()],
+        ctx,
+        block
+      )
+
+    boxed = box_term(lit, ctx, block)
+    {create_op("ex.term_eq", [value, boxed], [MLIR.Type.i64()], ctx, block), []}
+  end
+
+  defp do_build_match(tuple, value, ctx, block) when is_tuple(tuple) and tuple_size(tuple) != 3 do
+    build_tuple_match(Tuple.to_list(tuple), value, ctx, block)
+  end
+
+  defp do_build_match({a, b, c}, value, ctx, block)
+       when not (is_atom(a) and is_list(b) and is_list(c)) do
+    build_tuple_match([a, b, c], value, ctx, block)
+  end
+
+  defp do_build_match({:{}, _, elements}, value, ctx, block) do
+    build_tuple_match(elements, value, ctx, block)
+  end
+
+  defp do_build_match([], value, ctx, block) do
+    cond_list =
+      create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    cond_len =
+      cmp(
+        create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block),
+        0,
+        "eq",
+        ctx,
+        block
+      )
+
+    {combine([cond_list, cond_len], ctx, block), []}
+  end
+
+  defp do_build_match([{:|, _, [head, tail]}], value, ctx, block) do
+    cond_list =
+      create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    cond_nonempty =
+      cmp(
+        create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block),
+        0,
+        "ne",
+        ctx,
+        block
+      )
+
+    head_value = create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
+    tail_value = create_op("ex.list_tail", [value], [ex_type("dyn", ctx)], ctx, block)
+    {head_cond, head_binds} = do_build_match(head, head_value, ctx, block)
+    {tail_cond, tail_binds} = do_build_match(tail, tail_value, ctx, block)
+
+    {combine([cond_list, cond_nonempty, head_cond, tail_cond], ctx, block),
+     head_binds ++ tail_binds}
+  end
+
+  defp do_build_match(elements, value, ctx, block) when is_list(elements) do
+    cond_list =
+      create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    cond_len =
+      cmp(
+        create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block),
+        length(elements),
+        "eq",
+        ctx,
+        block
+      )
+
+    {elem_conds, binds} = list_elements_match(elements, value, ctx, block, [])
+    {combine([cond_list, cond_len | elem_conds], ctx, block), binds}
+  end
+
+  defp do_build_match(other, _value, _ctx, _block) do
+    raise Error, "unsupported term pattern: #{inspect(other)}"
+  end
+
+  defp build_tuple_match(elements, value, ctx, block) do
+    cond_tuple =
+      create_op("ex.is_tuple", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    cond_len =
+      cmp(
+        create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block),
+        length(elements),
+        "eq",
+        ctx,
+        block
+      )
+
+    {elem_conds, binds} =
+      elements
+      |> Enum.with_index()
+      |> Enum.map_reduce([], fn {element, index}, binds ->
+        element_value =
+          create_op(
+            "ex.tuple_get",
+            [value, lit(index, ctx, block)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+
+        {cond, element_binds} = do_build_match(element, element_value, ctx, block)
+        {cond, element_binds ++ binds}
+      end)
+
+    {combine([cond_tuple, cond_len | elem_conds], ctx, block), Enum.reverse(binds)}
+  end
+
+  defp list_elements_match([], _value, _ctx, _block, binds), do: {[], binds}
+
+  defp list_elements_match([element | rest], value, ctx, block, binds) do
+    head_value = create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
+    tail_value = create_op("ex.list_tail", [value], [ex_type("dyn", ctx)], ctx, block)
+    {head_cond, head_binds} = do_build_match(element, head_value, ctx, block)
+    {tail_conds, tail_binds} = list_elements_match(rest, tail_value, ctx, block, binds)
+    {[head_cond | tail_conds], head_binds ++ tail_binds}
+  end
+
+  defp add_term_clause_block(clause, guard, binds, env, ctx, region) do
+    block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+
+    clause_args = if guard, do: [guard], else: []
+    create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, block)
+
+    clause_env = Enum.reduce(binds, env, fn {var, value}, acc -> Map.put(acc, var, value) end)
+    {value, _env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+    MLIR.Value.type(value)
+  end
+
+  defp combine(conds, ctx, block) do
+    conds
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] ->
+        nil
+
+      [single] ->
+        single
+
+      many ->
+        Enum.reduce(many, fn cond, acc ->
+          create_op("arith.andi", [acc, cond], [MLIR.Type.i64()], ctx, block)
+        end)
+    end
+  end
+
+  defp lit(value, ctx, block) do
+    create_op(
+      "ex.lit",
+      [value: MLIR.Attribute.integer(MLIR.Type.i64(), value)],
+      [MLIR.Type.i64()],
+      ctx,
+      block
+    )
+  end
+
+  defp cmp(left, right, predicate, ctx, block) do
+    right = if is_integer(right), do: lit(right, ctx, block), else: right
+
+    create_op(
+      "ex.cmp",
+      [left, right, predicate: MLIR.Attribute.string(predicate)],
+      [MLIR.Type.i64()],
+      ctx,
+      block
+    )
+  end
+
+  defp clause_pattern({:->, _, [args, _body]}) when is_list(args) do
+    case args do
+      [{:when, _, [pattern, _guard]}] -> pattern
+      [pattern] -> pattern
+      _ -> raise Error, "case clauses with multiple patterns are unsupported: #{inspect(args)}"
+    end
+  end
+
+  defp parse_term_clause({:->, _, [args, body]}) when is_list(args) do
+    {pattern, guard} =
+      case args do
+        [{:when, _, [pattern, guard]}] -> {pattern, guard}
+        [pattern] -> {pattern, nil}
+        _ -> raise Error, "case clauses with multiple patterns are unsupported: #{inspect(args)}"
+      end
+
+    %{pattern: pattern, guard: guard, body: body}
+  end
+
+  defp term_pattern?(pattern) do
+    pattern
+    |> PatternPlan.lower_pattern()
+    |> Enum.any?(&(&1.op in [:tuple, :list_exact, :list_cons]))
   end
 
   defp parse_clause({:->, _, [args, body]}) when is_list(args) do
