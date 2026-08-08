@@ -1442,17 +1442,18 @@ defmodule Batata.Lift do
 
   # Lowering for `:native_term` registry entries: operands arrive boxed as
   # `!ex.dyn` words, results are either scalar i64 or `!ex.dyn`.
-  defp native_term_call(_module, :length, [value], ctx, block),
+  defp native_term_call(module, :length, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :hd, [value], ctx, block),
+  defp native_term_call(module, :hd, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
 
-  defp native_term_call(_module, :tl, [value], ctx, block),
+  defp native_term_call(module, :tl, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.list_tail", [value], [ex_type("dyn", ctx)], ctx, block)
 
-  defp native_term_call(_module, :tuple_size, [value], ctx, block),
-    do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)
+  defp native_term_call(module, :tuple_size, [value], ctx, block)
+       when module in [Kernel, :erlang],
+       do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(Map, :size, [value], ctx, block),
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
@@ -1460,14 +1461,29 @@ defmodule Batata.Lift do
   defp native_term_call(Tuple, :size, [value], ctx, block),
     do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :byte_size, [value], ctx, block),
+  defp native_term_call(module, :byte_size, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.binary_length", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :map_size, [value], ctx, block),
+  defp native_term_call(module, :map_size, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(Enum, :count, [value], ctx, block),
     do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(String, :length, [value], ctx, block),
+    do: create_op("ex.binary_utf8_length", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(String, :to_integer, [value], ctx, block),
+    do: create_op("ex.string_to_int", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(Base, :encode16, [value], ctx, block),
+    do: create_op("ex.binary_encode16", [value], [ex_type("dyn", ctx)], ctx, block)
+
+  defp native_term_call(Base, :decode16, [value], ctx, block),
+    do: create_op("ex.binary_decode16", [value], [ex_type("dyn", ctx)], ctx, block)
+
+  defp native_term_call(Integer, :to_string, [value], ctx, block),
+    do: create_op("ex.int_to_string", [value], [ex_type("dyn", ctx)], ctx, block)
 
   defp native_term_call(_module, :elem, [tuple, index], ctx, block) do
     index_int = create_op("ex.to_int", [index], [MLIR.Type.i64()], ctx, block)
@@ -1475,22 +1491,23 @@ defmodule Batata.Lift do
     create_op("ex.tuple_get", [tuple, index0], [ex_type("dyn", ctx)], ctx, block)
   end
 
-  defp native_term_call(_module, :is_atom, [value], ctx, block),
+  defp native_term_call(module, :is_atom, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.is_atom", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :is_binary, [value], ctx, block),
+  defp native_term_call(module, :is_binary, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :is_integer, [value], ctx, block),
-    do: create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
+  defp native_term_call(module, :is_integer, [value], ctx, block)
+       when module in [Kernel, :erlang],
+       do: create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :is_list, [value], ctx, block),
+  defp native_term_call(module, :is_list, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.is_list", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :is_map, [value], ctx, block),
+  defp native_term_call(module, :is_map, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.is_map", [value], [MLIR.Type.i64()], ctx, block)
 
-  defp native_term_call(_module, :is_tuple, [value], ctx, block),
+  defp native_term_call(module, :is_tuple, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.is_tuple", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(_module, :first, [value], ctx, block),

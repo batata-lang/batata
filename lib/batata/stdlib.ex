@@ -95,6 +95,47 @@ defmodule Batata.Stdlib.Binary do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.String do
+  @moduledoc """
+  String-domain declarations.
+  """
+
+  @class_map %{
+    {String, :length, 1} => :native_term,
+    {String, :to_integer, 1} => :native_term
+  }
+
+  @doc "Returns string-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
+defmodule Batata.Stdlib.Base do
+  @moduledoc """
+  Base-domain declarations.
+  """
+
+  @class_map %{
+    {Base, :encode16, 1} => :native_term,
+    {Base, :decode16, 1} => :native_term
+  }
+
+  @doc "Returns base-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
+defmodule Batata.Stdlib.Integer do
+  @moduledoc """
+  Integer-domain declarations.
+  """
+
+  @class_map %{
+    {Integer, :to_string, 1} => :native_term
+  }
+
+  @doc "Returns integer-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Enum do
   @moduledoc """
   Enum-domain declarations. The first slice declares the surface only:
@@ -137,6 +178,9 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.Kernel.class_map(),
                Batata.Stdlib.List.class_map(),
                Batata.Stdlib.Map.class_map(),
+               Batata.Stdlib.String.class_map(),
+               Batata.Stdlib.Base.class_map(),
+               Batata.Stdlib.Integer.class_map(),
                Batata.Stdlib.Tuple.class_map(),
                Batata.Stdlib.Enum.class_map()
              ],

@@ -71,6 +71,11 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.binary_slice` | `(binary: i64, start: i64) -> i64` | materialized binary of bytes [start..len); nil for non-binaries / bad start |
 | `ex.term.binary_utf8_get` | `(binary: i64, index: i64) -> i64` | UTF-8 codepoint at index as a tagged int term; nil for invalid/out-of-range |
 | `ex.term.binary_utf8_width` | `(binary: i64, index: i64) -> i64` | UTF-8 codepoint byte width; 0 for invalid/out-of-range |
+| `ex.term.binary_utf8_length` | `(binary: i64) -> i64` | UTF-8 codepoint count; invalid sequences count as one byte; 0 for non-binaries |
+| `ex.term.binary_encode16` | `(binary: i64) -> i64` | uppercase hexadecimal binary of the bytes; nil for non-binaries |
+| `ex.term.binary_decode16` | `(binary: i64) -> i64` | bytes from an uppercase hexadecimal binary; nil for non-binaries, odd lengths, or invalid digits |
+| `ex.term.int_to_string` | `(word: i64) -> i64` | decimal binary of a tagged integer term; nil for non-integers |
+| `ex.term.string_to_int` | `(binary: i64) -> i64` | scalar i64 parsed from a decimal binary (optionally signed); 0 for invalid input or overflow |
 | `ex.term.map_from_list` | `(list: i64) -> i64` | flat key/value list -> map |
 | `ex.term.binary_from_list` | `(list: i64) -> i64` | integer byte list -> binary |
 | `ex.term.is_integer` | `(word: i64) -> i64` | 1 if int |
