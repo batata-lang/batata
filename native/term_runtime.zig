@@ -114,6 +114,15 @@ fn binary_bytes(binary: i64) [*]i64 {
     return @ptrFromInt((@as(usize, @bitCast(binary)) & ~tag_mask) + @sizeOf(i64));
 }
 
+fn map_len(map: i64) usize {
+    const header: *[1]i64 = @ptrFromInt(@as(usize, @bitCast(map)) & ~tag_mask);
+    return @intCast(header[0]);
+}
+
+fn map_entries(map: i64) [*]i64 {
+    return @ptrFromInt((@as(usize, @bitCast(map)) & ~tag_mask) + @sizeOf(i64));
+}
+
 /// Conses a head word onto a list tail, returning a proper list word.
 pub export fn ex_term_list_cons(head: i64, tail: i64) i64 {
     const cell = alloc_words(2) orelse return nil_word;
@@ -163,11 +172,59 @@ pub export fn ex_term_list_length(list: i64) i64 {
     return @intCast(list_len(list));
 }
 
-/// Word equality: true when both words are bit-identical. This is exact for
-/// immediate terms (integers, atoms); container words compare by identity
-/// rather than deep equality.
+/// Deep equality: exact for immediate terms, structural for containers
+/// (tuples, lists, maps, binaries). Terms are immutable on the bump heap, so
+/// no cycle handling is needed.
 pub export fn ex_term_eq(left: i64, right: i64) i64 {
-    return if (left == right) 1 else 0;
+    return if (term_eq(left, right)) 1 else 0;
+}
+
+fn term_eq(left: i64, right: i64) bool {
+    if (left == right) return true;
+    const ltag = word_tag(left);
+    if (ltag != word_tag(right)) return false;
+
+    switch (ltag) {
+        tag_tuple => {
+            if (tuple_len(left) != tuple_len(right)) return false;
+            const n = tuple_len(left);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (!term_eq(tuple_elems(left)[i], tuple_elems(right)[i])) return false;
+            }
+            return true;
+        },
+        tag_list => {
+            if (list_len(left) != list_len(right)) return false;
+            var a = left;
+            var b = right;
+            while (word_tag(a) == tag_list) {
+                if (!term_eq(list_cell(a)[0], list_cell(b)[0])) return false;
+                a = list_cell(a)[1];
+                b = list_cell(b)[1];
+            }
+            return true;
+        },
+        tag_map => {
+            if (map_len(left) != map_len(right)) return false;
+            const n = map_len(left);
+            var i: usize = 0;
+            while (i < 2 * n) : (i += 1) {
+                if (!term_eq(map_entries(left)[i], map_entries(right)[i])) return false;
+            }
+            return true;
+        },
+        tag_binary => {
+            if (binary_len(left) != binary_len(right)) return false;
+            const n = binary_len(left);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (binary_bytes(left)[i] != binary_bytes(right)[i]) return false;
+            }
+            return true;
+        },
+        else => return false,
+    }
 }
 
 /// Returns the byte length of a binary word; 0 for non-binaries.
@@ -407,6 +464,18 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
     try std.testing.expectEqual(@as(i64, 0), ex_term_eq(one, two));
 
+    // deep equality: structurally equal containers built separately are equal
+    const tuple_a = ex_term_tuple_from_list(ex_term_list_cons(one, ex_term_list_cons(two, nil_word)));
+    const tuple_b = ex_term_tuple_from_list(ex_term_list_cons(one, ex_term_list_cons(two, nil_word)));
+    const tuple_c = ex_term_tuple_from_list(ex_term_list_cons(one, nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(tuple_a, tuple_b));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_eq(tuple_a, tuple_c));
+
+    const list_a = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
+    const list_b = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(list_a, list_b));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_eq(list_a, tuple_a));
+
     // binary reads
     const byte_list = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
     const binary = ex_term_binary_from_list(byte_list);
@@ -420,6 +489,10 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_binary_length(rest));
     try std.testing.expectEqual(two, ex_term_binary_get(rest, 0));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_slice(binary, 3)));
+
+    // deep binary equality
+    const bin_b = ex_term_binary_from_list(byte_list);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(binary, bin_b));
 
     // utf8 reads: é = 0xC3 0xA9 -> codepoint 233, width 2
     const e_binary = ex_term_binary_from_list(ex_term_list_cons(@as(i64, 195 << 3), ex_term_list_cons(@as(i64, 169 << 3), nil_word)));

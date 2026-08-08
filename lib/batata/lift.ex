@@ -443,16 +443,43 @@ defmodule Batata.Lift do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
 
-    {
-      create_op(
-        "ex.cmp",
-        [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
-        [MLIR.Type.i64()],
-        ctx,
-        block
-      ),
-      env
-    }
+    if term_operand?(left_value) or term_operand?(right_value) do
+      unless op in [:==, :!=] do
+        raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
+      end
+
+      eq =
+        create_op(
+          "ex.term_eq",
+          [box_if_scalar(left_value, ctx, block), box_if_scalar(right_value, ctx, block)],
+          [MLIR.Type.i64()],
+          ctx,
+          block
+        )
+
+      if op == :== do
+        {eq, env}
+      else
+        {create_op(
+           "ex.cmp",
+           [eq, lit(0, ctx, block), predicate: MLIR.Attribute.string("eq")],
+           [MLIR.Type.i64()],
+           ctx,
+           block
+         ), env}
+      end
+    else
+      {
+        create_op(
+          "ex.cmp",
+          [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
+          [MLIR.Type.i64()],
+          ctx,
+          block
+        ),
+        env
+      }
+    end
   end
 
   defp lift_expr({:case, _, [scrutinee_ast, [do: clauses]]}, ctx, block, env) do
@@ -944,7 +971,31 @@ defmodule Batata.Lift do
     match?({name, _, nil} when is_atom(name), var_ast)
   end
 
+  defp supported_term_guard?({op, _, [left, right]}) when op in [:==, :!=] do
+    guard_operand?(left) and guard_operand?(right)
+  end
+
   defp supported_term_guard?(_guard_ast), do: false
+
+  defp guard_operand?(value) when is_integer(value), do: true
+  defp guard_operand?(value) when is_binary(value), do: true
+  defp guard_operand?({name, _, nil}) when is_atom(name), do: true
+  defp guard_operand?({:<<>>, _, _}), do: true
+  defp guard_operand?({:%{}, _, _}), do: true
+  defp guard_operand?(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3, do: true
+
+  defp guard_operand?(_), do: false
+
+  defp term_operand?(value) do
+    value
+    |> MLIR.Value.type()
+    |> MLIR.to_string()
+    |> then(&(&1 in ["!ex.dyn", "!ex.bound", "!ex.unbound"]))
+  end
+
+  defp box_if_scalar(value, ctx, block) do
+    if term_operand?(value), do: value, else: box_term(value, ctx, block)
+  end
 
   defp lit(value, ctx, block) do
     create_op(

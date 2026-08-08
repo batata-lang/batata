@@ -927,4 +927,100 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "executes deep term equality on separately built terms", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   {1, 2} == {1, 2}
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   {1, 2} == {1, 3}
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   <<1, 2>> == <<1, 2>>
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes nested deep term equality and inequality", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   {{1, 2}, 3} == {{1, 2}, 3}
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   {1, 2} != {1, 3}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes term equality in case guards", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     x when x == {1, 2} -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {1, 2} do
+                     x when x == {1, 3} -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end
