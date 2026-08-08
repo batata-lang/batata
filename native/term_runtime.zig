@@ -203,6 +203,65 @@ pub export fn ex_term_binary_slice(binary: i64, start: i64) i64 {
     return word_from_ptr(slice, tag_binary);
 }
 
+const Utf8Decoded = struct { cp: i64, width: i64 };
+
+fn utf8_at(binary: i64, index: i64) ?Utf8Decoded {
+    if (word_tag(binary) != tag_binary) return null;
+    const len = binary_len(binary);
+    if (index < 0 or index >= @as(i64, @intCast(len))) return null;
+    const bytes = binary_bytes(binary);
+    const start: usize = @intCast(index);
+
+    const b0: u8 = @intCast(bytes[start] & 0xFF);
+    if (b0 < 0x80) {
+        return .{ .cp = b0, .width = 1 };
+    } else if (b0 >= 0xC2 and b0 <= 0xDF) {
+        if (start + 1 >= len) return null;
+        const b1: u8 = @intCast(bytes[start + 1] & 0xFF);
+        if (b1 & 0xC0 != 0x80) return null;
+        return .{ .cp = (@as(i64, b0 & 0x1F) << 6) | @as(i64, b1 & 0x3F), .width = 2 };
+    } else if (b0 >= 0xE0 and b0 <= 0xEF) {
+        if (start + 2 >= len) return null;
+        const b1: u8 = @intCast(bytes[start + 1] & 0xFF);
+        const b2: u8 = @intCast(bytes[start + 2] & 0xFF);
+        if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80) return null;
+        if (b0 == 0xE0 and b1 < 0xA0) return null;
+        if (b0 == 0xED and b1 >= 0xA0) return null;
+        return .{
+            .cp = (@as(i64, b0 & 0x0F) << 12) | (@as(i64, b1 & 0x3F) << 6) | @as(i64, b2 & 0x3F),
+            .width = 3,
+        };
+    } else if (b0 >= 0xF0 and b0 <= 0xF4) {
+        if (start + 3 >= len) return null;
+        const b1: u8 = @intCast(bytes[start + 1] & 0xFF);
+        const b2: u8 = @intCast(bytes[start + 2] & 0xFF);
+        const b3: u8 = @intCast(bytes[start + 3] & 0xFF);
+        if (b1 & 0xC0 != 0x80 or b2 & 0xC0 != 0x80 or b3 & 0xC0 != 0x80) return null;
+        if (b0 == 0xF0 and b1 < 0x90) return null;
+        if (b0 == 0xF4 and b1 > 0x8F) return null;
+        return .{
+            .cp = (@as(i64, b0 & 0x07) << 18) | (@as(i64, b1 & 0x3F) << 12) |
+                (@as(i64, b2 & 0x3F) << 6) | @as(i64, b3 & 0x3F),
+            .width = 4,
+        };
+    }
+    return null;
+}
+
+/// Decodes the UTF-8 codepoint at `index` as a tagged int term; nil for
+/// invalid sequences or out-of-range.
+pub export fn ex_term_binary_utf8_get(binary: i64, index: i64) i64 {
+    const decoded = utf8_at(binary, index) orelse return nil_word;
+    return decoded.cp << @intCast(tag_shift);
+}
+
+/// Returns the byte width of the UTF-8 codepoint at `index`; 0 for invalid
+/// sequences or out-of-range.
+pub export fn ex_term_binary_utf8_width(binary: i64, index: i64) i64 {
+    const decoded = utf8_at(binary, index) orelse return 0;
+    return decoded.width;
+}
+
 /// Converts a flat key/value list word (even length) into a map word.
 pub export fn ex_term_map_from_list(list: i64) i64 {
     const count = list_len(list);
@@ -271,6 +330,8 @@ comptime {
     @export(&ex_term_binary_length, .{ .name = "ex.term.binary_length" });
     @export(&ex_term_binary_get, .{ .name = "ex.term.binary_get" });
     @export(&ex_term_binary_slice, .{ .name = "ex.term.binary_slice" });
+    @export(&ex_term_binary_utf8_get, .{ .name = "ex.term.binary_utf8_get" });
+    @export(&ex_term_binary_utf8_width, .{ .name = "ex.term.binary_utf8_width" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
@@ -359,6 +420,20 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_binary_length(rest));
     try std.testing.expectEqual(two, ex_term_binary_get(rest, 0));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_slice(binary, 3)));
+
+    // utf8 reads: é = 0xC3 0xA9 -> codepoint 233, width 2
+    const e_binary = ex_term_binary_from_list(ex_term_list_cons(@as(i64, 195 << 3), ex_term_list_cons(@as(i64, 169 << 3), nil_word)));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_binary_utf8_width(e_binary, 0));
+    try std.testing.expectEqual(@as(i64, 233 << 3), ex_term_binary_utf8_get(e_binary, 0));
+
+    const ascii = ex_term_binary_from_list(ex_term_list_cons(@as(i64, 65 << 3), nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_binary_utf8_width(ascii, 0));
+    try std.testing.expectEqual(@as(i64, 65 << 3), ex_term_binary_utf8_get(ascii, 0));
+
+    // truncated and overlong sequences are invalid
+    const truncated = ex_term_binary_from_list(ex_term_list_cons(@as(i64, 195 << 3), nil_word));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_binary_utf8_width(truncated, 0));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_utf8_get(truncated, 0)));
 }
 
 fn ex_term_is_nil_word(word: i64) i64 {
