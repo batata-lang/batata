@@ -18,6 +18,17 @@ The first milestone wires a minimal closed loop (see
   runs `main` through the MLIR JIT; AOT — `Batata.build/3` emits
   `lib<Module>.a` plus a C driver that calls the entry function.
 
+M2 adds the first slice of the term universe on top (see
+[tsai/beaver#17](https://localhost:3000/tsai/beaver/issues/17)):
+
+- a Zig term runtime (`native/term_runtime.zig`) implementing the
+  declaration-first ABI in `native/ABI.md` (tagged word + bump heap);
+- lowering of `ex.tuple`/`ex.list`/`ex.map`/`ex.binary` construction and the
+  `ex.is_*` predicates to `ex.term.*` runtime calls (the patterns live in
+  Beaver, `Beaver.MLIR.Conversion.Ex`);
+- JIT execution of term construction and predicates through the runtime
+  shared library (`Batata.execute/2` attaches it via `shared_lib_paths`).
+
 ## Dev setup
 
 Beaver and Kinda are pre-release, so development uses local checkouts:
@@ -28,3 +39,6 @@ export BEAVER_KINDA_PATH=/path/to/kinda
 mix deps.get
 mix test
 ```
+
+The Zig runtime is built on demand with `zig build-lib` (zig 0.16 is required
+and preinstalled in CI).

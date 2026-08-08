@@ -81,4 +81,104 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "executes tuple construction and predicates through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   is_tuple({1, 2})
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes nested term construction through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   is_tuple({1, {2, 3}})
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes list, map and binary construction through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   is_list([1, 2])
+                   is_map(%{1 => 2})
+                   is_binary(<<1, 2>>)
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   is_binary("ab")
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes predicates over scalar integers and empty lists", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   is_integer(1)
+                   is_list([])
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes negative predicates through the Zig runtime", %{ctx: ctx} do
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   is_list({1, 2})
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes term construction with bindings through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = 1
+                   is_tuple({a, 2})
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end
