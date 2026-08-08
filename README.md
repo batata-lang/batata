@@ -52,6 +52,16 @@ M3 starts the stdlib domain registry (see
 - the first slice added `ex.map_length` (`map_size`/`Map.size`) to the Zig
   runtime, completing the read-intrinsic family for tuple/list/map/binary.
 
+The Enum slice adds the first callback-shaped stdlib calls:
+
+- `Enum.count/1` lowers to `ex.term.enumerable_count`, dispatching on the
+  term tag (list/tuple/map/binary);
+- `Enum.map/2` with an identity mapper and `Enum.reduce/3` with
+  sum/return-accumulator reducers are recognized before closure extraction and
+  lower to `scf.while` cursor loops over the list (`ex.list_get` +
+  `ex.to_int`); other mapper/reducer shapes keep the explicit `:beamer_callback`
+  rejection.
+
 ## Dev setup
 
 ## Dev setup

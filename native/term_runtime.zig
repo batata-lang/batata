@@ -304,6 +304,18 @@ pub export fn ex_term_map_length(map: i64) i64 {
     return @intCast(map_len(map));
 }
 
+/// Returns the element count of an enumerable term: list length, tuple
+/// arity, map pair count, or binary byte length; 0 for non-enumerables.
+pub export fn ex_term_enumerable_count(word: i64) i64 {
+    return switch (word_tag(word)) {
+        tag_list => @intCast(list_len(word)),
+        tag_tuple => @intCast(tuple_len(word)),
+        tag_map => @intCast(map_len(word)),
+        tag_binary => @intCast(binary_len(word)),
+        else => 0,
+    };
+}
+
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
@@ -314,6 +326,20 @@ pub export fn ex_term_list_head(list: i64) i64 {
 pub export fn ex_term_list_tail(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
     return list_cell(list)[1];
+}
+
+/// Returns the element at index of a list word; nil when out of range or
+/// not a list.
+pub export fn ex_term_list_get(list: i64, index: i64) i64 {
+    if (word_tag(list) != tag_list) return nil_word;
+    var cell = list_cell(list);
+    var i: i64 = 0;
+    while (i < index) : (i += 1) {
+        const tail = cell[1];
+        if (word_tag(tail) != tag_list) return nil_word;
+        cell = list_cell(tail);
+    }
+    return cell[0];
 }
 
 /// Returns the length of a list word (0 for nil, the empty list).
@@ -544,8 +570,10 @@ comptime {
     @export(&ex_term_tuple_get, .{ .name = "ex.term.tuple_get" });
     @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
     @export(&ex_term_map_length, .{ .name = "ex.term.map_length" });
+    @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
+    @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
     @export(&ex_term_list_length, .{ .name = "ex.term.list_length" });
     @export(&ex_term_eq, .{ .name = "ex.term.eq" });
     @export(&ex_term_binary_length, .{ .name = "ex.term.binary_length" });
@@ -620,6 +648,9 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(list));
     try std.testing.expectEqual(one, ex_term_list_head(list));
     try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(list)));
+    try std.testing.expectEqual(one, ex_term_list_get(list, 0));
+    try std.testing.expectEqual(two, ex_term_list_get(list, 1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_list_get(list, 2)));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_list(ex_term_list_tail(ex_term_list_tail(list))));
     try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(nil_word));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_list_head(nil_word)));
@@ -629,6 +660,15 @@ test "term ABI reads" {
     const map = ex_term_map_from_list(entries);
     try std.testing.expectEqual(@as(i64, 1), ex_term_map_length(map));
     try std.testing.expectEqual(@as(i64, 0), ex_term_map_length(one));
+
+    // enumerable counts: list length, tuple arity, map pairs, binary bytes
+    const count_bytes = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(one, nil_word)));
+    const count_bin = ex_term_binary_from_list(count_bytes);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_count(list));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_count(tuple));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_enumerable_count(map));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_count(count_bin));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_count(one));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
