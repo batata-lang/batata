@@ -494,6 +494,125 @@ pub export fn ex_term_binary_utf8_width(binary: i64, index: i64) i64 {
     return decoded.width;
 }
 
+/// Number of UTF-8 codepoints in a binary; invalid sequences count as one
+/// byte each. 0 for non-binaries.
+pub export fn ex_term_binary_utf8_length(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return 0;
+    const len: i64 = @intCast(binary_len(binary));
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while (i < len) {
+        if (utf8_at(binary, i)) |decoded| {
+            i += decoded.width;
+        } else {
+            i += 1;
+        }
+        count += 1;
+    }
+    return count;
+}
+
+/// Encodes the bytes of a binary as an uppercase hexadecimal binary; nil for
+/// non-binaries.
+pub export fn ex_term_binary_encode16(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const len = binary_len(binary);
+    const out_len = len * 2;
+    const words = alloc_words(out_len + 1) orelse return nil_word;
+    words[0] = @intCast(out_len);
+    const bytes = binary_bytes(binary);
+    const hex = "0123456789ABCDEF";
+    var i: usize = 0;
+    while (i < len) : (i += 1) {
+        const b: u8 = @intCast(bytes[i] & 0xFF);
+        words[i * 2 + 1] = @intCast(hex[b >> 4]);
+        words[i * 2 + 2] = @intCast(hex[b & 0x0F]);
+    }
+    return word_from_ptr(words, tag_binary);
+}
+
+fn hex_value(byte: i64) i8 {
+    const b: u8 = @intCast(byte & 0xFF);
+    if (b >= '0' and b <= '9') return @intCast(b - '0');
+    if (b >= 'A' and b <= 'F') return @intCast(b - 'A' + 10);
+    return -1;
+}
+
+/// Decodes an uppercase hexadecimal binary into a byte binary; nil for
+/// non-binaries, odd lengths, or invalid digits.
+pub export fn ex_term_binary_decode16(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const len = binary_len(binary);
+    if (len % 2 != 0) return nil_word;
+    const out_len = len / 2;
+    const words = alloc_words(out_len + 1) orelse return nil_word;
+    words[0] = @intCast(out_len);
+    const bytes = binary_bytes(binary);
+    var i: usize = 0;
+    while (i < len) : (i += 2) {
+        const hi = hex_value(bytes[i]);
+        const lo = hex_value(bytes[i + 1]);
+        if (hi < 0 or lo < 0) return nil_word;
+        words[i / 2 + 1] = @as(i64, hi) << 4 | lo;
+    }
+    return word_from_ptr(words, tag_binary);
+}
+
+/// Renders a tagged integer term as a decimal binary; nil for non-integers.
+pub export fn ex_term_int_to_string(word: i64) i64 {
+    if (!is_int(word)) return nil_word;
+    const value = word_payload(word);
+    var digits: [24]u8 = undefined;
+    var i: usize = 0;
+    const negative = value < 0;
+    var mag: u64 = @abs(value);
+    if (mag == 0) {
+        digits[0] = '0';
+        i = 1;
+    } else {
+        while (mag > 0) : (mag /= 10) {
+            digits[i] = @intCast('0' + mag % 10);
+            i += 1;
+        }
+    }
+    if (negative) {
+        digits[i] = '-';
+        i += 1;
+    }
+    const words = alloc_words(i + 1) orelse return nil_word;
+    words[0] = @intCast(i);
+    var j: usize = 0;
+    while (j < i) : (j += 1) {
+        words[j + 1] = digits[i - 1 - j];
+    }
+    return word_from_ptr(words, tag_binary);
+}
+
+/// Parses a decimal binary (optionally signed) into a scalar i64; 0 for
+/// non-binaries, empty or invalid strings, or i64 overflow.
+pub export fn ex_term_string_to_int(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return 0;
+    const len = binary_len(binary);
+    if (len == 0) return 0;
+    const bytes = binary_bytes(binary);
+    var i: usize = 0;
+    var negative = false;
+    if (bytes[0] == '-') {
+        negative = true;
+        i = 1;
+        if (len == 1) return 0;
+    }
+    var value: i64 = 0;
+    while (i < len) : (i += 1) {
+        const b: u8 = @intCast(bytes[i] & 0xFF);
+        if (b < '0' or b > '9') return 0;
+        const digit: i64 = b - '0';
+        if (value > @divTrunc(std.math.maxInt(i64) - digit, 10)) return 0;
+        value = value * 10 + digit;
+    }
+    return if (negative) -value else value;
+}
+
 /// Converts a flat key/value list word (even length) into a map word.
 pub export fn ex_term_map_from_list(list: i64) i64 {
     const count = list_len(list);
@@ -581,6 +700,11 @@ comptime {
     @export(&ex_term_binary_slice, .{ .name = "ex.term.binary_slice" });
     @export(&ex_term_binary_utf8_get, .{ .name = "ex.term.binary_utf8_get" });
     @export(&ex_term_binary_utf8_width, .{ .name = "ex.term.binary_utf8_width" });
+    @export(&ex_term_binary_utf8_length, .{ .name = "ex.term.binary_utf8_length" });
+    @export(&ex_term_binary_encode16, .{ .name = "ex.term.binary_encode16" });
+    @export(&ex_term_binary_decode16, .{ .name = "ex.term.binary_decode16" });
+    @export(&ex_term_int_to_string, .{ .name = "ex.term.int_to_string" });
+    @export(&ex_term_string_to_int, .{ .name = "ex.term.string_to_int" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
@@ -629,6 +753,38 @@ test "term ABI construction and predicates" {
     const binary = ex_term_binary_from_list(bytes);
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_binary(binary));
     try std.testing.expectEqual(@as(i64, 0), ex_term_is_map(binary));
+
+    // UTF-8 length: "aé中" is 3 codepoints / 6 bytes.
+    const utf8_bytes = ex_term_list_cons(97 << @intCast(tag_shift), ex_term_list_cons(0xC3 << @intCast(tag_shift), ex_term_list_cons(0xA9 << @intCast(tag_shift), ex_term_list_cons(0xE4 << @intCast(tag_shift), ex_term_list_cons(0xB8 << @intCast(tag_shift), ex_term_list_cons(0xAD << @intCast(tag_shift), nil_word))))));
+    const utf8_bin = ex_term_binary_from_list(utf8_bytes);
+    try std.testing.expectEqual(@as(i64, 6), ex_term_binary_length(utf8_bin));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_binary_utf8_length(utf8_bin));
+
+    // Base16 round-trip: <<0xAB, 0xCD>> -> "ABCD" -> <<0xAB, 0xCD>>
+    const hex_src = ex_term_list_cons(0xAB << @intCast(tag_shift), ex_term_list_cons(0xCD << @intCast(tag_shift), nil_word));
+    const hex_bin = ex_term_binary_from_list(hex_src);
+    const encoded = ex_term_binary_encode16(hex_bin);
+    try std.testing.expectEqual(@as(i64, 4), ex_term_binary_length(encoded));
+    const enc_bytes = binary_bytes(encoded);
+    try std.testing.expectEqual(@as(i64, 'A'), enc_bytes[0]);
+    try std.testing.expectEqual(@as(i64, 'B'), enc_bytes[1]);
+    try std.testing.expectEqual(@as(i64, 'C'), enc_bytes[2]);
+    try std.testing.expectEqual(@as(i64, 'D'), enc_bytes[3]);
+    const decoded = ex_term_binary_decode16(encoded);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(decoded, hex_bin));
+    const odd_hex = ex_term_binary_from_list(ex_term_list_cons(65 << @intCast(tag_shift), nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_decode16(odd_hex)));
+
+    // Integer <-> decimal string round-trip.
+    const forty_two: i64 = 42 << @intCast(tag_shift);
+    const num_str = ex_term_int_to_string(forty_two);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_binary_length(num_str));
+    try std.testing.expectEqual(@as(i64, '4'), binary_bytes(num_str)[0]);
+    try std.testing.expectEqual(@as(i64, '2'), binary_bytes(num_str)[1]);
+    try std.testing.expectEqual(@as(i64, 42), ex_term_string_to_int(num_str));
+    const neg_str = ex_term_int_to_string(-1 << @intCast(tag_shift));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_binary_length(neg_str));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_string_to_int(neg_str));
 }
 
 test "term ABI reads" {

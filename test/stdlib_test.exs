@@ -89,6 +89,21 @@ defmodule Batata.StdlibTest do
                )
     end
 
+    test "executes String.length/1 and String.to_integer/1", %{ctx: ctx} do
+      assert 3 == execute("String.length(\"abc\")", ctx)
+      assert 3 == execute("String.length(\"aé中\")", ctx)
+      assert 42 == execute("String.to_integer(\"42\")", ctx)
+      assert -7 == execute("String.to_integer(\"-7\")", ctx)
+      assert 42 == execute("String.to_integer(Integer.to_string(42))", ctx)
+    end
+
+    test "executes Base16 encode/decode", %{ctx: ctx} do
+      assert 4 == execute("byte_size(Base.encode16(<<1, 2>>))", ctx)
+      assert 2 == execute("byte_size(Base.decode16(\"ABCD\"))", ctx)
+      assert 2 == execute("byte_size(Base.decode16(Base.encode16(<<171, 205>>)))", ctx)
+      assert 0 == execute("byte_size(Base.decode16(\"zz\"))", ctx)
+    end
+
     test "rejects unrecognized Enum mapper/reducer shapes explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->

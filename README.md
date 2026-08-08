@@ -64,6 +64,14 @@ The Enum slice adds the first callback-shaped stdlib calls:
   cons-collection loops (`ex.list_cons`); other mapper/reducer shapes keep the
   explicit `:beamer_callback` rejection.
 
+The String/Base slice adds UTF-8 and byte-string conversions in the Zig
+runtime:
+
+- `String.length/1` (`ex.term.binary_utf8_length`, codepoint count) and
+  `String.to_integer/1` / `Integer.to_string/1` (decimal round-trip);
+- `Base.encode16/1` / `Base.decode16/1` (uppercase hex, `ex.term.binary_encode16`
+  / `ex.term.binary_decode16`); invalid hex decodes to nil.
+
 ## Dev setup
 
 ## Dev setup
