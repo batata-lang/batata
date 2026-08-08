@@ -23,7 +23,7 @@ defmodule Batata.LowerTest do
     assert rendered =~ "llvm.add"
   end
 
-  test "lowers a local call into a func.call", %{ctx: ctx} do
+  test "lowers a non-scalar local call into a func.call", %{ctx: ctx} do
     module =
       Batata.to_llvm(
         """
@@ -33,7 +33,7 @@ defmodule Batata.LowerTest do
           end
 
           def helper() do
-            1
+            {1, 2}
           end
         end
         """,
@@ -41,7 +41,7 @@ defmodule Batata.LowerTest do
       )
 
     rendered = MLIR.to_string(module)
-    refute rendered =~ "ex."
+    refute rendered =~ ~s{"ex.}
     assert rendered =~ "llvm.func"
   end
 end

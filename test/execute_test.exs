@@ -82,6 +82,42 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "executes inlined scalar calls in arithmetic", %{ctx: ctx} do
+    assert 6 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def add(a, b) do
+                   a + b
+                 end
+
+                 def main() do
+                   add(1, 2) + 3
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes nested scalar calls", %{ctx: ctx} do
+    assert 10 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def add(a, b) do
+                   a + b
+                 end
+
+                 def main() do
+                   add(add(1, 2), add(3, 4))
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "executes tuple construction and predicates through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

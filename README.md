@@ -29,6 +29,18 @@ M2 adds the first slice of the term universe on top (see
 - JIT execution of term construction and predicates through the runtime
   shared library (`Batata.execute/2` attaches it via `shared_lib_paths`).
 
+The pipeline now has an explicit transform layer between lift and lowering
+(see [tsai/beaver#16](https://localhost:3000/tsai/beaver/issues/16)):
+
+- `Batata.Transform` is the information-preserving IR-to-IR rewrite layer;
+  anything that changes representation or drops information belongs in
+  `Batata.Lower` (discipline transplanted from expandable);
+- `Batata.Transform.InlineScalarCalls` inlines local calls whose callee stays
+  in the scalar slice, so `ex.call` results (typed `!ex.dyn`) can feed
+  arithmetic — e.g. `add(1, 2) + 3` compiles to 6.
+
+## Dev setup
+
 ## Dev setup
 
 Beaver and Kinda are pre-release, so development uses local checkouts:
