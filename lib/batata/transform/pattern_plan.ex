@@ -155,8 +155,24 @@ defmodule Batata.Transform.PatternPlan do
   end
 
   defp do_lower_pattern({:<<>>, _, segments}, path) do
-    [%Step{op: :unsupported, path: path, value: {:<<>>, [], segments}}]
+    segment_steps =
+      segments
+      |> Enum.with_index()
+      |> Enum.flat_map(fn
+        {{:"::", _, [pat, {:binary, _, nil}]}, _index} ->
+          [%Step{op: :binary_rest, path: path ++ [:rest]}] ++
+            do_lower_pattern(pat, path ++ [:rest])
+
+        {segment, index} ->
+          [%Step{op: :binary_get, path: path ++ [{:segment, index}]}] ++
+            do_lower_pattern(byte_pat(segment), path ++ [{:segment, index}])
+      end)
+
+    [%Step{op: :binary, path: path, value: length(segments)}] ++ segment_steps
   end
+
+  defp byte_pat({:"::", _, [pat, 8]}), do: pat
+  defp byte_pat(pat), do: pat
 
   # Three-or-more element tuples parse as `{:{}, meta, elements}`.
   defp do_lower_pattern({:{}, _, elements}, path) do

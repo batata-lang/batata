@@ -49,12 +49,15 @@ defmodule Batata.Transform.PatternPlanTest do
     assert [%Step{op: :bind, value: :x}] = PatternPlan.lower_pattern(Code.string_to_quoted!("x"))
   end
 
-  test "marks map and binary patterns unsupported" do
+  test "marks map patterns unsupported" do
     assert [%Step{op: :unsupported}] =
              PatternPlan.lower_pattern(Code.string_to_quoted!("%{k => v}"))
+  end
 
-    assert [%Step{op: :unsupported}] =
-             PatternPlan.lower_pattern(Code.string_to_quoted!("<<h, t::binary>>"))
+  test "lowers binary patterns into binary and segment steps" do
+    steps = PatternPlan.lower_pattern(Code.string_to_quoted!("<<h::8, t::binary>>"))
+
+    assert ops(steps) == [:binary, :binary_get, :bind, :binary_rest, :bind]
   end
 
   test "builds clause plans with vars and guard refinements" do

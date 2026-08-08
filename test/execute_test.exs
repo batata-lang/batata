@@ -403,6 +403,153 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes binary rest matching through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1, 2>> do
+                     <<h::8, t::binary>> -> is_binary(t)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1, 2>> do
+                     <<h::8, t::binary>> -> is_integer(h)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes binary byte patterns with literal elements", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1, 2>> do
+                     <<1, b::8>> -> is_integer(b)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1, 2>> do
+                     <<2, b::8>> -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes exact binary length matching", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1, 2>> do
+                     <<a::8, b::8>> -> is_integer(b)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1, 2>> do
+                     <<a::8>> -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes binary rest length fall-through", %{ctx: ctx} do
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<1>> do
+                     <<a::8, b::8, t::binary>> -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects unsupported binary segments explicitly", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/unsupported binary byte segment/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            case <<1, 2>> do
+              <<x::16>> -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+
+    assert_raise Batata.Lift.Error, ~r/rest segment must be the last/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            case <<1, 2>> do
+              <<a::8, t::binary, b::8>> -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes tuple construction and predicates through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
