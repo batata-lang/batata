@@ -1164,21 +1164,67 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects anonymous functions capturing free variables", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/unbound variable reference/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def main() do
-            a = 1
-            f = fn x -> x + a end
-            f.(2)
-          end
-        end
-        """,
-        ctx
-      )
-    end
+  test "captures free variables in anonymous functions", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = 1
+                   f = fn x -> x + a end
+                   f.(2)
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 6 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = 1
+                   b = 2
+                   f = fn x -> x + a + b end
+                   f.(3)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "captured values are stable across applications", %{ctx: ctx} do
+    assert 7 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = 1
+                   f = fn x -> x + a end
+                   f.(2) + f.(3)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "fn parameters shadow outer variables and are not captured", %{ctx: ctx} do
+    assert 12 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = 1
+                   f = fn a, x -> x + a end
+                   f.(10, 2)
+                 end
+               end
+               """,
+               ctx
+             )
   end
 
   test "rejects anonymous functions passed as values", %{ctx: ctx} do
