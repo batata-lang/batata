@@ -332,6 +332,37 @@ defmodule Batata.LiftTest do
     assert Enum.count(names, &(&1 == "ex.clause")) == 3
   end
 
+  test "lifts tail-recursive binary scanners into scf.while cursor loops", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def count(<<>>) do
+            0
+          end
+
+          def count(<<_h::8, t::binary>>) do
+            1 + count(t)
+          end
+
+          def count(_) do
+            0
+          end
+
+          def main() do
+            count(<<1, 2>>)
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "scf.while" in names
+    assert "scf.condition" in names
+    refute Enum.any?(names, &(&1 == "ex.case"))
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
