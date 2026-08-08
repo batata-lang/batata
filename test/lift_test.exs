@@ -150,6 +150,64 @@ defmodule Batata.LiftTest do
              ])
   end
 
+  test "lifts case into ex.case/ex.clause with patterns and catch-all", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case 2 do
+              1 -> 10
+              2 -> 20
+              _ -> 30
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert Enum.sort(op_names(module)) ==
+             Enum.sort([
+               "builtin.module",
+               "ex.func",
+               "ex.lit",
+               "ex.lit",
+               "ex.lit",
+               "ex.lit",
+               "ex.case",
+               "ex.clause",
+               "ex.clause",
+               "ex.clause",
+               "ex.yield",
+               "ex.yield",
+               "ex.yield",
+               "ex.return"
+             ])
+  end
+
+  test "lifts case guards into ex.clause guard operands", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case 2 do
+              n when n > 1 -> 20
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.case" in names
+    assert Enum.count(names, &(&1 == "ex.clause")) == 2
+    assert "ex.cmp" in names
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(

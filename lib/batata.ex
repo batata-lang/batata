@@ -25,7 +25,10 @@ defmodule Batata do
       |> Beaver.Deferred.create(ctx)
 
     module
-    |> Batata.Transform.run!([Batata.Transform.InlineScalarCalls])
+    |> Batata.Transform.run!([
+      Batata.Transform.InlineScalarCalls,
+      Batata.Transform.ExpandCase
+    ])
     |> MLIR.verify!()
   end
 

@@ -118,6 +118,107 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "executes case with integer patterns and catch-all", %{ctx: ctx} do
+    assert 20 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case 2 do
+                     1 -> 10
+                     2 -> 20
+                     _ -> 30
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes case falling through to the catch-all", %{ctx: ctx} do
+    assert 30 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case 5 do
+                     1 -> 10
+                     _ -> 30
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes case with a guard narrowing the clause", %{ctx: ctx} do
+    assert 20 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case 2 do
+                     n when n > 1 -> 20
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case 0 do
+                     n when n > 1 -> 20
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes case with a type-check guard through the Zig runtime", %{ctx: ctx} do
+    assert 10 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case 1 do
+                     n when is_integer(n) -> 10
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects case without a final catch-all clause", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/catch-all/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            case 2 do
+              1 -> 10
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes tuple construction and predicates through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
