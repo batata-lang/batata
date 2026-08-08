@@ -144,9 +144,17 @@ defmodule Batata.Lift do
 
   defp map_pattern({:fn, _, [{:->, _, [[item], body]}]}) do
     cond do
-      same_var?(body, item) -> {:ok, :identity}
-      is_integer(body) -> {:ok, {:const, body}}
-      true -> :error
+      same_var?(body, item) ->
+        {:ok, :identity}
+
+      is_integer(body) ->
+        {:ok, {:const, body}}
+
+      true ->
+        case capture_add(body, item) do
+          {:ok, capture_ast} -> {:ok, {:add_capture, capture_ast}}
+          :error -> :error
+        end
     end
   end
 
@@ -168,6 +176,23 @@ defmodule Batata.Lift do
   end
 
   defp sum_pattern?(_body, _item, _acc_var), do: false
+
+  # `fn item -> item + capture end` / `capture + item` where capture is a free
+  # variable of the fn (resolved from the enclosing env) or an integer
+  # literal.
+  defp capture_add({:+, _, [left, right]}, item) do
+    cond do
+      same_var?(left, item) and addend?(right) -> {:ok, right}
+      same_var?(right, item) and addend?(left) -> {:ok, left}
+      true -> :error
+    end
+  end
+
+  defp capture_add(_body, _item), do: :error
+
+  defp addend?({name, _, _}) when is_atom(name), do: true
+  defp addend?(value) when is_integer(value), do: true
+  defp addend?(_), do: false
 
   defp same_var?({name, _, _}, {name, _, _}) when is_atom(name), do: true
   defp same_var?(_left, _right), do: false
@@ -842,6 +867,100 @@ defmodule Batata.Lift do
     while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
   end
 
+  # `Enum.map/2` with a constant mapper (`fn _x -> c end`) compiles to a
+  # descending cursor loop that conses the constant onto the accumulator,
+  # preserving list order without a reverse.
+  defp lift_enum_const_map(list_word, value, ctx, block) do
+    lift_enum_map_loop(
+      list_word,
+      ctx,
+      block,
+      fn _item, b -> lit(value, ctx, b) end
+    )
+  end
+
+  # `Enum.map/2` with a capture-add mapper (`fn x -> x + c end`) compiles to
+  # the same descending loop, adding the captured scalar to each element.
+  defp lift_enum_capture_map(list_word, capture_i64, ctx, block) do
+    lift_enum_map_loop(
+      list_word,
+      ctx,
+      block,
+      fn item, b ->
+        create_op("ex.add", [item, capture_i64], [integer_type(ctx)], ctx, b)
+      end
+    )
+  end
+
+  defp lift_enum_map_loop(list_word, ctx, block, mapper_fun) do
+    i64 = integer_type(ctx)
+    list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
+    len = create_op("ex.list_length", [list_word], [i64], ctx, block)
+    cursor0 = create_op("ex.sub", [len, lit(1, ctx, block)], [i64], ctx, block)
+
+    nil_dyn = create_term_op("ex.list", [], ctx, block)
+    nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
+    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
+
+    [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+
+    item =
+      create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+    item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+    mapped = mapper_fun.(item_i64, after_block)
+    mapped_term = box_term(mapped, ctx, after_block)
+    acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("dyn", ctx)], ctx, after_block)
+
+    acc_next_dyn =
+      create_op("ex.list_cons", [mapped_term, acc_dyn], [ex_type("dyn", ctx)], ctx, after_block)
+
+    acc_next = create_op("ex.unbox", [acc_next_dyn], [i64], ctx, after_block)
+
+    cursor_next =
+      create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [list_i64, nil_i64, cursor0],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    acc_i64 = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    create_op("ex.to_word", [acc_i64], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp enum_capture_i64(capture, ctx, block) do
+    if term_operand?(capture) do
+      create_op("ex.to_int", [capture], [integer_type(ctx)], ctx, block)
+    else
+      capture
+    end
+  end
+
   defp lift_block(expressions, ctx, block, env) do
     {values, env} =
       Enum.map_reduce(expressions, env, fn expression, env ->
@@ -1006,8 +1125,13 @@ defmodule Batata.Lift do
       :identity ->
         {enumerable_word, env}
 
-      {:const, _value} ->
-        raise Error, "Enum.map with a constant mapper is not yet supported"
+      {:const, value} ->
+        {lift_enum_const_map(enumerable_word, value, ctx, block), env}
+
+      {:add_capture, capture_ast} ->
+        {capture, env} = lift_expr(capture_ast, ctx, block, env)
+        capture_i64 = enum_capture_i64(capture, ctx, block)
+        {lift_enum_capture_map(enumerable_word, capture_i64, ctx, block), env}
     end
   end
 
