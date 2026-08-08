@@ -51,7 +51,7 @@ defmodule Batata.TermRuntime do
   def ensure_built!(opts \\ []) do
     path = shared_lib_path()
 
-    if usable?(path) and not Keyword.get(opts, :force, false) do
+    if usable?(path) and not stale?(path) and not Keyword.get(opts, :force, false) do
       path
     else
       build!(:dynamic, path)
@@ -69,6 +69,15 @@ defmodule Batata.TermRuntime do
   end
 
   defp usable?(path), do: File.exists?(path) and File.stat!(path).size > 0
+
+  # Rebuild when the Zig sources are newer than the built library, so pulling
+  # new intrinsics (or any runtime change) does not silently keep using the
+  # previous binary.
+  defp stale?(path) do
+    source = Path.join(native_dir(), "term_runtime.zig")
+
+    File.exists?(source) and File.stat!(source).mtime > File.stat!(path).mtime
+  end
 
   defp build!(:dynamic, path) do
     zig!(["build-lib", source_path(), "-dynamic", "-O", "ReleaseSafe", "-femit-bin=#{path}"])
