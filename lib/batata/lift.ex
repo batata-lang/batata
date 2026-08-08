@@ -3,8 +3,10 @@ defmodule Batata.Lift do
   Lifts a `Batata.Frontend` module snapshot into `ex` dialect IR.
 
   The scalar slice supports integer literals, `+`/`-`/`*`, `=` bindings, local
-  calls, and functions with integer parameters. The term slice adds tuple,
-  list, map and binary literals plus the `Kernel` term predicates
+  calls, comparisons (`==`/`!=`/`<`/`<=`/`>`/`>=`), `case` with integer literal
+  or catch-all patterns and optional guards, and functions with integer
+  parameters. The term slice adds tuple, list, map and binary literals plus
+  the `Kernel` term predicates
   (`is_atom`/`is_binary`/`is_list`/`is_tuple`/`is_map`/`is_integer`); they
   lift to the `ex.tuple`/`ex.list`/`ex.map`/`ex.binary`/`ex.is_*` ops and are
   lowered through the Zig term runtime ABI. Bindings lower directly to SSA:
@@ -190,6 +192,28 @@ defmodule Batata.Lift do
     {create_op("ex.#{name}", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block), env}
   end
 
+  defp lift_expr({op, _, [left, right]}, ctx, block, env)
+       when op in [:==, :!=, :<, :<=, :>, :>=] do
+    {left_value, env} = lift_expr(left, ctx, block, env)
+    {right_value, env} = lift_expr(right, ctx, block, env)
+
+    {
+      create_op(
+        "ex.cmp",
+        [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
+        [MLIR.Type.i64()],
+        ctx,
+        block
+      ),
+      env
+    }
+  end
+
+  defp lift_expr({:case, _, [scrutinee_ast, [do: clauses]]}, ctx, block, env) do
+    {scrutinee, env} = lift_expr(scrutinee_ast, ctx, block, env)
+    {lift_case(clauses, scrutinee, env, ctx, block), env}
+  end
+
   defp lift_expr({:__block__, _, expressions}, ctx, block, env) do
     lift_block(expressions, ctx, block, env)
   end
@@ -247,6 +271,111 @@ defmodule Batata.Lift do
   defp lift_tuple_literal(tuple, ctx, block, env) do
     {values, env} = lift_operands_boxed(Tuple.to_list(tuple), ctx, block, env)
     {create_term_op("ex.tuple", values, ctx, block), env}
+  end
+
+  defp cmp_predicate(:==), do: "eq"
+  defp cmp_predicate(:!=), do: "ne"
+  defp cmp_predicate(:<), do: "slt"
+  defp cmp_predicate(:<=), do: "sle"
+  defp cmp_predicate(:>), do: "sgt"
+  defp cmp_predicate(:>=), do: "sge"
+
+  defp lift_case(clauses, scrutinee, env, ctx, block) do
+    parsed = Enum.map(clauses, &parse_clause/1)
+
+    unless parsed |> List.last() |> Map.fetch!(:patterns) == [] do
+      raise Error, "case requires a final catch-all clause"
+    end
+
+    guards =
+      Enum.map(parsed, fn clause ->
+        case clause.guard do
+          nil -> nil
+          guard_ast -> lift_guard(guard_ast, clause.vars, scrutinee, env, ctx, block)
+        end
+      end)
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    yield_types =
+      parsed
+      |> Enum.zip(guards)
+      |> Enum.map(fn {clause, guard} ->
+        add_clause_block(clause, guard, scrutinee, env, ctx, region)
+      end)
+
+    [first_type | rest_types] = yield_types
+
+    unless Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
+      raise Error, "case clauses must yield the same type"
+    end
+
+    result_type = first_type
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [scrutinee, operandSegmentSizes: segment_sizes([1])],
+        results: [result_type],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp parse_clause({:->, _, [args, body]}) when is_list(args) do
+    {pattern, guard} =
+      case args do
+        [{:when, _, [pattern, guard]}] -> {pattern, guard}
+        [pattern] -> {pattern, nil}
+        _ -> raise Error, "case clauses with multiple patterns are unsupported: #{inspect(args)}"
+      end
+
+    {patterns, vars} = parse_pattern(pattern)
+    %{pattern: pattern, patterns: patterns, vars: vars, guard: guard, body: body}
+  end
+
+  defp parse_pattern(integer) when is_integer(integer), do: {[integer], []}
+
+  defp parse_pattern({name, _, nil}) when is_atom(name) do
+    if name == :_ do
+      {[], []}
+    else
+      {[], [name]}
+    end
+  end
+
+  defp parse_pattern(pattern) do
+    raise Error, "unsupported case pattern: #{inspect(pattern)}"
+  end
+
+  defp lift_guard(guard_ast, vars, scrutinee, env, ctx, block) do
+    guard_env = Enum.reduce(vars, env, fn var, acc -> Map.put(acc, var, scrutinee) end)
+    {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
+    value
+  end
+
+  defp add_clause_block(clause, guard, scrutinee, env, ctx, region) do
+    block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+
+    clause_env = Enum.reduce(clause.vars, env, fn var, acc -> Map.put(acc, var, scrutinee) end)
+
+    clause_attrs = [patterns: pattern_attr(clause.patterns)]
+    clause_args = if guard, do: [guard], else: []
+    create_op("ex.clause", clause_args ++ clause_attrs, [], ctx, block)
+
+    {value, _env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+    MLIR.Value.type(value)
+  end
+
+  defp pattern_attr(patterns) do
+    MLIR.Attribute.dense_array(patterns, Beaver.Native.I64)
   end
 
   # Values crossing into a term-universe op are boxed with `ex.box`; the

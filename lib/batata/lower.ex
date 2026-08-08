@@ -37,6 +37,8 @@ defmodule Batata.Lower do
     request_c_wrappers? = Keyword.get(opts, :c_interface, false)
 
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionArithToLLVMConversionPass/0)
+    run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionSCFToControlFlowPass/0)
+    run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertControlFlowToLLVMPass/0)
 
     if request_c_wrappers? do
       request_c_wrappers_for_entry(module, "main")
