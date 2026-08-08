@@ -4,9 +4,10 @@ defmodule Batata do
   and the Slang-defined `ex` dialect.
 
   The frontend boundary lowers an expanded module snapshot to `ex` IR, then
-  `ex` to `func`/`arith`/`scf`/`cf` and finally to LLVM via
-  `Beaver.MLIR.Conversion.Plan`. Both JIT (`execute/2`) and AOT (`build/3`)
-  execution are supported.
+  information-preserving IR-to-IR transforms run (`Batata.Transform`, e.g.
+  scalar call inlining), then `ex` lowers to `func`/`arith`/`scf`/`cf` and
+  finally to LLVM via `Beaver.MLIR.Conversion.Plan`. Both JIT (`execute/2`)
+  and AOT (`build/3`) execution are supported.
   """
 
   alias Beaver.MLIR
@@ -17,10 +18,14 @@ defmodule Batata do
   """
   @spec compile(String.t(), MLIR.Context.t()) :: MLIR.Module.t()
   def compile(source, ctx) do
-    source
-    |> Batata.Frontend.from_source()
-    |> Batata.Lift.module_to_ir(ctx: ctx)
-    |> Beaver.Deferred.create(ctx)
+    module =
+      source
+      |> Batata.Frontend.from_source()
+      |> Batata.Lift.module_to_ir(ctx: ctx)
+      |> Beaver.Deferred.create(ctx)
+
+    module
+    |> Batata.Transform.run!([Batata.Transform.InlineScalarCalls])
     |> MLIR.verify!()
   end
 

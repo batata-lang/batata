@@ -1,0 +1,98 @@
+defmodule Batata.TransformTest do
+  use Batata.Case, async: true
+
+  alias Batata.{Frontend, Lift, Transform}
+  alias Batata.Transform.InlineScalarCalls
+  alias Beaver.MLIR
+
+  defp transform!(source, ctx) do
+    source
+    |> Frontend.from_source()
+    |> Lift.module_to_ir(ctx: ctx)
+    |> Beaver.Deferred.create(ctx)
+    |> Transform.run!([InlineScalarCalls])
+    |> MLIR.verify!()
+  end
+
+  test "inlines scalar calls so results participate in arithmetic", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule Math do
+          def add(a, b) do
+            a + b
+          end
+
+          def main() do
+            add(1, 2) + 3
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    refute rendered =~ ~s{"ex.call"}
+    assert rendered =~ ~s{"ex.add"}
+  end
+
+  test "inlines nested scalar calls innermost-first", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule Math do
+          def add(a, b) do
+            a + b
+          end
+
+          def main() do
+            add(add(1, 2), add(3, 4))
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    refute rendered =~ ~s{"ex.call"}
+    assert rendered =~ ~s{"ex.add"}
+  end
+
+  test "leaves non-scalar callees as ex.call", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule Math do
+          def pair() do
+            {1, 2}
+          end
+
+          def main() do
+            is_tuple(pair())
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~s{"ex.call"}
+  end
+
+  test "leaves unknown callees as ex.call", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule Math do
+          def main() do
+            missing(1, 2)
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~s{"ex.call"}
+  end
+end
