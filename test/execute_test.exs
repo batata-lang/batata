@@ -1391,4 +1391,80 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "try catches a thrown value and untags it", %{ctx: ctx} do
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   try do
+                     throw(42)
+                   catch
+                     x when is_integer(x) -> x + 1
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "try returns the body result when nothing is thrown", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   try do
+                     1 + 2
+                   catch
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "throw unwinds through nested function calls", %{ctx: ctx} do
+    assert 8 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def helper() do
+                   throw(7)
+                 end
+
+                 def main() do
+                   try do
+                     helper()
+                   catch
+                     x when is_integer(x) -> x + 1
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "try matches thrown tuples", %{ctx: ctx} do
+    assert 10 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   try do
+                     throw({1, 5})
+                   catch
+                     {1, n} when is_integer(n) -> n * 2
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end

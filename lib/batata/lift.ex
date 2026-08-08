@@ -977,6 +977,68 @@ defmodule Batata.Lift do
     {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
   end
 
+  defp lift_expr({:throw, _, [value_ast]}, ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = box_term(lift_value(value, ctx, block, env), ctx, block)
+    {create_op("ex.throw", [value], [ex_type("dyn", ctx)], ctx, block), env}
+  end
+
+  # `try do body catch pattern -> handler end`: the body region runs normally;
+  # a `throw` longjmps back and the catch region matches the thrown value.
+  defp lift_expr({:try, _, [options]}, ctx, block, env) do
+    if Enum.any?([:rescue, :after, :else], &Keyword.has_key?(options, &1)) do
+      raise Error, "only try/catch is supported in the current slice"
+    end
+
+    body = Keyword.fetch!(options, :do)
+    catch_clauses = Keyword.fetch!(options, :catch) |> ensure_receive_catch_all()
+
+    body_region = MLIR.CAPI.mlirRegionCreate()
+    body_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(body_region, body_block)
+
+    {body_value, body_env} = lift_block(List.wrap(body), ctx, body_block, env)
+    body_value = lift_value(body_value, ctx, body_block, body_env)
+
+    create_op(
+      "ex.yield",
+      [body_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      body_block
+    )
+
+    catch_region = MLIR.CAPI.mlirRegionCreate()
+    catch_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(catch_region, catch_block)
+
+    thrown = create_op("ex.catch_value", [], [ex_type("dyn", ctx)], ctx, catch_block)
+
+    catch_value =
+      lift_term_case(catch_clauses, thrown, env, ctx, catch_block, untag_int_binds: true)
+
+    create_op(
+      "ex.yield",
+      [catch_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      catch_block
+    )
+
+    try_op =
+      %Beaver.SSA{
+        op: "ex.try",
+        ip: block,
+        ctx: ctx,
+        results: [ex_type("dyn", ctx)],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [body_region, catch_region] end
+      }
+      |> MLIR.Operation.create()
+
+    {try_op |> MLIR.Operation.results() |> Enum.to_list() |> hd(), env}
+  end
+
   defp lift_expr({name, _, args}, ctx, block, env) when is_atom(name) and is_list(args) do
     {arg_values, env} =
       Enum.map_reduce(args, env, fn arg, env ->

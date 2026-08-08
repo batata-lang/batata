@@ -5,6 +5,9 @@
 //! conversion plan emits calls to exactly these symbols.
 
 const std = @import("std");
+const c = @cImport({
+    @cInclude("setjmp.h");
+});
 
 // Tag layout: the low 3 bits of a 64-bit word. Immediate terms carry their
 // payload in the upper 61 bits; heap-backed containers carry an 8-byte-aligned
@@ -151,6 +154,53 @@ fn mailbox_pop() ?i64 {
     mailbox_head = (mailbox_head + 1) % mailbox_cap;
     mailbox_len -= 1;
     return msg;
+}
+
+// A stack of setjmp buffers for non-local exits (`throw`). The setjmp call
+// itself happens in the compiled code (so its frame stays live); the runtime
+// only tracks the buffers and performs the longjmp. The scalar slice has no
+// stack-owned resources to clean up, so a plain longjmp is safe.
+var jmp_stack: [16]*c.jmp_buf = undefined;
+var jmp_depth: usize = 0;
+var throw_value: i64 = 0;
+
+/// Size of the C `jmp_buf` so the compiled code can allocate it on its own
+/// stack.
+pub export fn ex_term_jmp_buf_size() i64 {
+    return @sizeOf(c.jmp_buf);
+}
+
+/// Address of libc's `setjmp`, so the compiled code can call it indirectly
+/// without the ORC linker resolving libc symbols.
+pub export fn ex_term_setjmp_addr() i64 {
+    return @bitCast(@intFromPtr(&c.setjmp));
+}
+
+/// Pushes a setjmp buffer for a try region.
+pub export fn ex_term_try_push(buf: *c.jmp_buf) i64 {
+    if (jmp_depth >= jmp_stack.len) return -1;
+    jmp_stack[jmp_depth] = buf;
+    jmp_depth += 1;
+    return 0;
+}
+
+/// Pops the innermost try region's setjmp buffer.
+pub export fn ex_term_try_pop() i64 {
+    if (jmp_depth > 0) jmp_depth -= 1;
+    return 0;
+}
+
+/// Throws a value to the innermost try region. Uncaught throws abort.
+pub export fn ex_term_throw(value: i64) noreturn {
+    throw_value = value;
+    if (jmp_depth == 0) @panic("uncaught throw");
+    c.longjmp(jmp_stack[jmp_depth - 1], 1);
+}
+
+/// Returns the value delivered by the most recent throw (called from the
+/// catch region after the longjmp returns).
+pub export fn ex_term_catch_value() i64 {
+    return throw_value;
 }
 
 /// Returns the pid of the current execution context. The scalar slice runs a
@@ -474,6 +524,12 @@ comptime {
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
     @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
     @export(&ex_term_to_int, .{ .name = "ex.term.to_int" });
+    @export(&ex_term_jmp_buf_size, .{ .name = "ex.term.jmp_buf_size" });
+    @export(&ex_term_setjmp_addr, .{ .name = "ex.term.setjmp_addr" });
+    @export(&ex_term_try_push, .{ .name = "ex.term.try_push" });
+    @export(&ex_term_try_pop, .{ .name = "ex.term.try_pop" });
+    @export(&ex_term_throw, .{ .name = "ex.term.throw" });
+    @export(&ex_term_catch_value, .{ .name = "ex.term.catch_value" });
     @export(&ex_term_make_fun, .{ .name = "ex.term.make_fun" });
     @export(&ex_term_fun_idx, .{ .name = "ex.term.fun_idx" });
     @export(&ex_term_fun_env, .{ .name = "ex.term.fun_env" });
@@ -632,6 +688,24 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_to_int(one));
     try std.testing.expectEqual(@as(i64, 2), ex_term_to_int(two));
     try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_self()));
+}
+
+test "term ABI throw unwinds to the innermost try" {
+    var buf: c.jmp_buf = undefined;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_try_push(&buf));
+
+    if (c.setjmp(&buf) == 0) {
+        // Normal path: throw longjmps back to the setjmp above.
+        ex_term_throw(42 << @intCast(tag_shift));
+        unreachable;
+    } else {
+        try std.testing.expectEqual(@as(i64, 42 << @intCast(tag_shift)), ex_term_catch_value());
+    }
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_try_pop());
+
+    // jmp_buf size is positive and matches the C ABI
+    try std.testing.expect(ex_term_jmp_buf_size() > 0);
 }
 
 fn ex_term_is_nil_word(word: i64) i64 {
