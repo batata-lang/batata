@@ -164,8 +164,15 @@ defmodule Batata.Transform.PatternPlan do
             do_lower_pattern(pat, path ++ [:rest])
 
         {segment, index} ->
-          [%Step{op: :binary_get, path: path ++ [{:segment, index}]}] ++
-            do_lower_pattern(byte_pat(segment), path ++ [{:segment, index}])
+          case segment do
+            {:"::", _, [pat, {:utf8, _, nil}]} ->
+              [%Step{op: :binary_utf8, path: path ++ [{:segment, index}]}] ++
+                do_lower_pattern(pat, path ++ [{:segment, index}])
+
+            _ ->
+              [%Step{op: :binary_get, path: path ++ [{:segment, index}]}] ++
+                do_lower_pattern(byte_pat(segment), path ++ [{:segment, index}])
+          end
       end)
 
     [%Step{op: :binary, path: path, value: length(segments)}] ++ segment_steps

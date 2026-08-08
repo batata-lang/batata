@@ -517,7 +517,7 @@ defmodule Batata.ExecuteTest do
   end
 
   test "rejects unsupported binary segments explicitly", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/unsupported binary byte segment/, fn ->
+    assert_raise Batata.Lift.Error, ~r/unsupported binary segment/, fn ->
       Batata.execute(
         """
         defmodule Math do
@@ -548,6 +548,104 @@ defmodule Batata.ExecuteTest do
         ctx
       )
     end
+  end
+
+  test "executes utf8 segment matching through the Zig runtime", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<0xC3, 0xA9>> do
+                     <<c::utf8, t::binary>> -> is_integer(c)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<0xC3, 0xA9, 0x41>> do
+                     <<c::utf8, t::binary>> -> is_binary(t)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes exact utf8 length matching", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<0xC3, 0xA9>> do
+                     <<c::utf8>> -> is_integer(c)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<0xC3>> do
+                     <<c::utf8>> -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes mixed byte and utf8 segments", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<0x41, 0xC3, 0xA9>> do
+                     <<a::8, c::utf8>> -> is_integer(a)
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects invalid utf8 sequences with fall-through", %{ctx: ctx} do
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case <<0xC0, 0x80>> do
+                     <<c::utf8>> -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
   end
 
   test "executes tuple construction and predicates through the Zig runtime", %{ctx: ctx} do

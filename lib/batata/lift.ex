@@ -550,35 +550,43 @@ defmodule Batata.Lift do
   end
 
   defp build_binary_match(segments, value, ctx, block) do
-    {byte_segments, rest} = parse_binary_segments(segments)
+    {segs, rest} = parse_binary_segments(segments)
 
     cond_bin =
       create_op("ex.is_binary", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
-    cond_len =
-      cmp(
-        create_op("ex.binary_length", [value], [MLIR.Type.i64()], ctx, block),
-        length(byte_segments),
-        if(rest == nil, do: "eq", else: "sge"),
-        ctx,
-        block
-      )
+    {conds, binds, offset} =
+      Enum.reduce(segs, {[], [], lit(0, ctx, block)}, fn seg, {conds, binds, offset} ->
+        case seg do
+          {:byte, pat} ->
+            byte_value =
+              create_op(
+                "ex.binary_get",
+                [value, offset],
+                [ex_type("dyn", ctx)],
+                ctx,
+                block
+              )
 
-    {byte_conds, byte_binds} =
-      byte_segments
-      |> Enum.with_index()
-      |> Enum.map_reduce([], fn {pat, index}, binds ->
-        byte_value =
-          create_op(
-            "ex.binary_get",
-            [value, lit(index, ctx, block)],
-            [ex_type("dyn", ctx)],
-            ctx,
-            block
-          )
+            {cond, pat_binds} = do_build_match(pat, byte_value, ctx, block)
 
-        {cond, pat_binds} = do_build_match(pat, byte_value, ctx, block)
-        {cond, pat_binds ++ binds}
+            next =
+              create_op("ex.add", [offset, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+            {[cond | conds], pat_binds ++ binds, next}
+
+          {:utf8, pat} ->
+            width =
+              create_op("ex.binary_utf8_width", [value, offset], [MLIR.Type.i64()], ctx, block)
+
+            codepoint =
+              create_op("ex.binary_utf8_get", [value, offset], [ex_type("dyn", ctx)], ctx, block)
+
+            cond_w = cmp(width, 0, "ne", ctx, block)
+            {pat_cond, pat_binds} = do_build_match(pat, codepoint, ctx, block)
+            next = create_op("ex.add", [offset, width], [MLIR.Type.i64()], ctx, block)
+            {[cond_w, pat_cond | conds], pat_binds ++ binds, next}
+        end
       end)
 
     {rest_cond, rest_binds} =
@@ -588,43 +596,47 @@ defmodule Batata.Lift do
 
         rest_pat ->
           rest_value =
-            create_op(
-              "ex.binary_slice",
-              [value, lit(length(byte_segments), ctx, block)],
-              [ex_type("dyn", ctx)],
-              ctx,
-              block
-            )
+            create_op("ex.binary_slice", [value, offset], [ex_type("dyn", ctx)], ctx, block)
 
           do_build_match(rest_pat, rest_value, ctx, block)
       end
 
-    {combine([cond_bin, cond_len | byte_conds ++ [rest_cond]], ctx, block),
-     Enum.reverse(byte_binds) ++ rest_binds}
+    cond_len =
+      cmp(
+        create_op("ex.binary_length", [value], [MLIR.Type.i64()], ctx, block),
+        offset,
+        if(rest == nil, do: "eq", else: "sge"),
+        ctx,
+        block
+      )
+
+    {combine([cond_bin, cond_len | Enum.reverse(conds) ++ [rest_cond]], ctx, block),
+     Enum.reverse(binds) ++ rest_binds}
   end
 
   defp parse_binary_segments(segments) do
-    {byte_segments, rest} =
+    {segs, rest} =
       Enum.split_while(segments, &(not match?({:"::", _, [_, {:binary, _, nil}]}, &1)))
 
     case rest do
       [] ->
-        {Enum.map(byte_segments, &byte_segment!/1), nil}
+        {Enum.map(segs, &binary_segment!/1), nil}
 
       [{:"::", _, [rest_pat, {:binary, _, nil}]}] ->
-        {Enum.map(byte_segments, &byte_segment!/1), rest_pat}
+        {Enum.map(segs, &binary_segment!/1), rest_pat}
 
       _ ->
         raise Error, "binary rest segment must be the last segment: #{inspect(segments)}"
     end
   end
 
-  defp byte_segment!({:"::", _, [pat, 8]}), do: pat
-  defp byte_segment!(pat) when is_integer(pat), do: pat
-  defp byte_segment!({name, _, nil} = pat) when is_atom(name), do: pat
+  defp binary_segment!({:"::", _, [pat, 8]}), do: {:byte, pat}
+  defp binary_segment!({:"::", _, [pat, {:utf8, _, nil}]}), do: {:utf8, pat}
+  defp binary_segment!(pat) when is_integer(pat), do: {:byte, pat}
+  defp binary_segment!({name, _, nil} = pat) when is_atom(name), do: {:byte, pat}
 
-  defp byte_segment!(segment) do
-    raise Error, "unsupported binary byte segment: #{inspect(segment)}"
+  defp binary_segment!(segment) do
+    raise Error, "unsupported binary segment: #{inspect(segment)}"
   end
 
   defp add_term_clause_block(clause, guard, binds, env, ctx, region) do

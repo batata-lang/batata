@@ -278,6 +278,29 @@ defmodule Batata.LiftTest do
     assert "ex.binary_slice" in names
   end
 
+  test "lifts utf8 binary patterns with dynamic offsets", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case <<0xC3, 0xA9>> do
+              <<c::utf8, t::binary>> -> is_integer(c)
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.case" in names
+    assert "ex.binary_utf8_width" in names
+    assert "ex.binary_utf8_get" in names
+    assert "ex.binary_slice" in names
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(
