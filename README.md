@@ -59,8 +59,10 @@ The Enum slice adds the first callback-shaped stdlib calls:
 - `Enum.map/2` with an identity mapper and `Enum.reduce/3` with
   sum/return-accumulator reducers are recognized before closure extraction and
   lower to `scf.while` cursor loops over the list (`ex.list_get` +
-  `ex.to_int`); other mapper/reducer shapes keep the explicit `:beamer_callback`
-  rejection.
+  `ex.to_int`); const mappers (`fn _x -> c end`) and capture-add mappers
+  (`fn x -> x + c end`, literal or captured scalar) lower to descending
+  cons-collection loops (`ex.list_cons`); other mapper/reducer shapes keep the
+  explicit `:beamer_callback` rejection.
 
 ## Dev setup
 

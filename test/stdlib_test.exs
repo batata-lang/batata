@@ -63,6 +63,32 @@ defmodule Batata.StdlibTest do
       assert 42 == execute("Enum.reduce([1, 2, 3], 42, fn _x, a -> a end)", ctx)
     end
 
+    test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do
+      assert 21 ==
+               execute(
+                 "Enum.reduce(Enum.map([1, 2, 3], fn _x -> 7 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 36 ==
+               execute(
+                 "Enum.reduce(Enum.map([1, 2, 3], fn x -> x + 10 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 36 ==
+               execute(
+                 "c = 10\nEnum.reduce(Enum.map([1, 2, 3], fn x -> x + c end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 36 ==
+               execute(
+                 "c = 10\nEnum.reduce(Enum.map([1, 2, 3], fn x -> c + x end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+    end
+
     test "rejects unrecognized Enum mapper/reducer shapes explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->
@@ -73,10 +99,10 @@ defmodule Batata.StdlibTest do
 
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.map([1, 2, 3], fn _x -> 7 end)", ctx)
+          execute("Enum.map([1, 2, 3], fn x -> x * 2 end)", ctx)
         end
 
-      assert error.message =~ "not yet supported"
+      assert error.message =~ "requires BEAM callback interop"
     end
 
     test "rejects BEAM-callback stdlib calls explicitly", %{ctx: ctx} do
