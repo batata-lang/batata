@@ -363,6 +363,36 @@ defmodule Batata.LiftTest do
     refute Enum.any?(names, &(&1 == "ex.case"))
   end
 
+  test "lifts reduce-style accumulator scanners into scf.while cursor loops", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def reduce(<<>>, acc) do
+            acc
+          end
+
+          def reduce(<<_h::8, t::binary>>, acc) do
+            reduce(t, acc + 1)
+          end
+
+          def reduce(_, acc) do
+            acc
+          end
+
+          def main() do
+            reduce(<<1, 2>>, 0)
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "scf.while" in names
+    refute Enum.any?(names, &(&1 == "ex.case"))
+  end
+
   test "lifts local calls with callee and arity attributes", %{ctx: ctx} do
     module =
       lift!(

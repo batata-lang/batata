@@ -827,29 +827,6 @@ defmodule Batata.ExecuteTest do
   end
 
   @tag :multi_clause
-  test "rejects multi-clause functions with multiple arguments", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/multiple arguments are unsupported/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def f(a, b) do
-            a
-          end
-
-          def f(c, d) do
-            c
-          end
-
-          def main() do
-            f(1, 2)
-          end
-        end
-        """,
-        ctx
-      )
-    end
-  end
-
   test "executes a cursor-loop scanner with a non-zero base and delta", %{ctx: ctx} do
     assert 14 ==
              Batata.execute(
@@ -1022,5 +999,127 @@ defmodule Batata.ExecuteTest do
                """,
                ctx
              )
+  end
+
+  test "executes a reduce-style accumulator scanner as a cursor loop", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def reduce(<<>>, acc) do
+                   acc
+                 end
+
+                 def reduce(<<_h::8, t::binary>>, acc) do
+                   reduce(t, acc + 1)
+                 end
+
+                 def reduce(_, acc) do
+                   acc
+                 end
+
+                 def main() do
+                   reduce(<<1, 2, 3>>, 0)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes multi-argument multi-clause dispatch", %{ctx: ctx} do
+    assert 15 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def pick(<<>>, acc) do
+                   acc
+                 end
+
+                 def pick(<<_h::8, _t::binary>>, acc) do
+                   acc + 10
+                 end
+
+                 def pick(_, acc) do
+                   acc
+                 end
+
+                 def main() do
+                   pick(<<1, 2>>, 5)
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 5 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def pick(<<>>, acc) do
+                   acc
+                 end
+
+                 def pick(<<_h::8, _t::binary>>, acc) do
+                   acc + 10
+                 end
+
+                 def pick(_, acc) do
+                   acc
+                 end
+
+                 def main() do
+                   pick(<<>>, 5)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects multi-clause functions with non-variable trailing arguments", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def f(1, 2) do
+            1
+          end
+
+          def f(_, _) do
+            0
+          end
+
+          def main() do
+            f(1, 2)
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
+  test "rejects multi-clause functions with inconsistent trailing argument names", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/same trailing argument names/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def f(1, a) do
+            a
+          end
+
+          def f(_, b) do
+            b
+          end
+
+          def main() do
+            f(1, 2)
+          end
+        end
+        """,
+        ctx
+      )
+    end
   end
 end
