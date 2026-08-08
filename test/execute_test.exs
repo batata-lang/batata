@@ -1315,4 +1315,80 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "receives messages sent to self", %{ctx: ctx} do
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, 42)
+
+                   receive do
+                     42 -> 43
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "receive matches integer messages in FIFO order", %{ctx: ctx} do
+    assert 11 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, 1)
+                   send(pid, 2)
+
+                   receive do
+                     x when is_integer(x) -> x + 10
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "receive falls through to the catch-all when empty", %{ctx: ctx} do
+    assert 5 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   receive do
+                     99 -> 1
+                     _ -> 5
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "receive matches tuple messages and untags integer elements", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, {1, 2})
+
+                   receive do
+                     {a, b} when is_integer(a) -> a + 1
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end
