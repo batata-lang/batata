@@ -19,3 +19,25 @@ Rules for AI agents working in this repository.
 
 - All tests use `use ExUnit.Case, async: true` where possible and never mutate
   process-global or VM-global state.
+
+## Stacked PRs against beaver
+
+CI clones beaver at `vars.BEAVER_REF` (default `main`). When a batata change
+depends on an unmerged beaver branch, set the variable **before** opening the
+PR: the ref is resolved when the workflow run starts, so a variable set after
+`gh pr create` races with the first run and silently tests against `main`.
+
+```sh
+gh variable set BEAVER_REF --repo conformal-elixir/batata --body <beaver-branch>
+gh pr create ...
+```
+
+Merge order is beaver first, then batata; delete the variable afterwards:
+
+```sh
+gh variable delete BEAVER_REF --repo conformal-elixir/batata
+```
+
+If a run already started with the wrong ref (logs show `BEAVER_REF: main`),
+push an empty commit to the PR branch to trigger a fresh run instead of
+rerunning the old job.
