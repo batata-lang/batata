@@ -72,6 +72,20 @@ runtime:
 - `Base.encode16/1` / `Base.decode16/1` (uppercase hex, `ex.term.binary_encode16`
   / `ex.term.binary_decode16`); invalid hex decodes to nil.
 
+M5 starts the `native_elixirc` equivalent (see
+[tsai/beaver#29](https://localhost:3000/tsai/beaver/issues/29)):
+
+- `Batata.build/3` now emits an export bundle (`bundle.json`,
+  `artifact_index.json`, `manifest.json`) with module/entry/source digest/
+  runtime version/artifact digest and a per-file digest index;
+- `Batata.Upgrade.Diff.compare/2` compares two bundle directories and reports
+  file additions/removals/changes, `artifacts_changed`, and
+  `migration_required` (artifact change implies migration);
+- `test/semantic_gates_test.exs` runs a gate per slice (scalar, term
+  patterns, cursor scanners, Kernel/Enum/String/Base stdlib, closures,
+  receive, try/throw), asserting Batata's compiled result matches the BEAM
+  oracle of the equivalent expression.
+
 ## Dev setup
 
 ## Dev setup
