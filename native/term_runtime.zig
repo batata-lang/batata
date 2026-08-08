@@ -129,6 +129,65 @@ fn fun_words(fun: i64) [*]i64 {
     return @ptrFromInt(@as(usize, @bitCast(fun)) & ~tag_mask);
 }
 
+// A fixed-capacity FIFO mailbox for the current execution context. M4 scope:
+// a single actor consumes messages through `receive`; blocking and `after`
+// timeouts arrive with the scheduler.
+const mailbox_cap: usize = 64;
+var mailbox: [mailbox_cap]i64 = undefined;
+var mailbox_head: usize = 0;
+var mailbox_len: usize = 0;
+
+fn mailbox_push(msg: i64) bool {
+    if (mailbox_len >= mailbox_cap) return false;
+    const index = (mailbox_head + mailbox_len) % mailbox_cap;
+    mailbox[index] = msg;
+    mailbox_len += 1;
+    return true;
+}
+
+fn mailbox_pop() ?i64 {
+    if (mailbox_len == 0) return null;
+    const msg = mailbox[mailbox_head];
+    mailbox_head = (mailbox_head + 1) % mailbox_cap;
+    mailbox_len -= 1;
+    return msg;
+}
+
+/// Returns the pid of the current execution context. The scalar slice runs a
+/// single actor with pid 1 (the atom term with id 1).
+pub export fn ex_term_self() i64 {
+    return @as(i64, @intCast(1 << @intCast(tag_shift))) | @as(i64, @intCast(tag_atom));
+}
+
+/// Enqueues a message. The single-actor slice accepts any pid and returns the
+/// message itself (matching BEAM's `send/2`); returns nil when the mailbox is
+/// full.
+pub export fn ex_term_send(pid: i64, msg: i64) i64 {
+    _ = pid;
+    if (!mailbox_push(msg)) return nil_word;
+    return msg;
+}
+
+/// Dequeues the oldest message; nil when the mailbox is empty.
+pub export fn ex_term_receive() i64 {
+    return mailbox_pop() orelse nil_word;
+}
+
+/// Resets the mailbox. The compiled entry function calls this on startup so
+/// each program run observes a fresh actor.
+pub export fn ex_term_mailbox_clear() i64 {
+    mailbox_head = 0;
+    mailbox_len = 0;
+    return nil_word;
+}
+
+/// Untags an integer term word to its scalar value; 0 for non-integers (the
+/// caller is expected to have checked `is_integer` first).
+pub export fn ex_term_to_int(word: i64) i64 {
+    if (word_tag(word) != tag_int) return 0;
+    return word_payload(word);
+}
+
 /// Constructs a first-class function value: a closure word holding the index
 /// of the extracted `__fn_*` and up to four captured env words.
 pub export fn ex_term_make_fun(fn_idx: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) i64 {
@@ -410,6 +469,11 @@ pub export fn ex_term_is_map(word: i64) i64 {
 // identifiers cannot contain dots, so the C ABI symbols are re-exported under
 // the manifest names.
 comptime {
+    @export(&ex_term_self, .{ .name = "ex.term.self" });
+    @export(&ex_term_send, .{ .name = "ex.term.send" });
+    @export(&ex_term_receive, .{ .name = "ex.term.receive" });
+    @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
+    @export(&ex_term_to_int, .{ .name = "ex.term.to_int" });
     @export(&ex_term_make_fun, .{ .name = "ex.term.make_fun" });
     @export(&ex_term_fun_idx, .{ .name = "ex.term.fun_idx" });
     @export(&ex_term_fun_env, .{ .name = "ex.term.fun_env" });
@@ -544,6 +608,30 @@ test "term ABI reads" {
     const truncated = ex_term_binary_from_list(ex_term_list_cons(@as(i64, 195 << 3), nil_word));
     try std.testing.expectEqual(@as(i64, 0), ex_term_binary_utf8_width(truncated, 0));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_utf8_get(truncated, 0)));
+}
+
+test "term ABI mailbox and integer untag" {
+    const one: i64 = 1 << @intCast(tag_shift);
+    const two: i64 = 2 << @intCast(tag_shift);
+
+    // empty mailbox receives nil
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));
+
+    // self() is the pid of the single actor
+    const pid = ex_term_self();
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(pid));
+
+    // send enqueues in FIFO order and returns the message
+    try std.testing.expectEqual(one, ex_term_send(pid, one));
+    try std.testing.expectEqual(two, ex_term_send(pid, two));
+    try std.testing.expectEqual(one, ex_term_receive());
+    try std.testing.expectEqual(two, ex_term_receive());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));
+
+    // integer untag
+    try std.testing.expectEqual(@as(i64, 1), ex_term_to_int(one));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_to_int(two));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_self()));
 }
 
 fn ex_term_is_nil_word(word: i64) i64 {

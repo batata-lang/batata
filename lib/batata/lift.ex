@@ -249,6 +249,12 @@ defmodule Batata.Lift do
         Map.put(env, param_name(pattern), value)
       end)
 
+    # The entry function starts a fresh actor: reset the mailbox so each
+    # program run observes an empty message queue.
+    if name == :main and uses_mailbox?(body_ast) do
+      create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, block)
+    end
+
     {return_value, env} = lift_block(List.wrap(body_ast), ctx, block, env)
     insert_return(return_value, ctx, block, env)
 
@@ -261,6 +267,27 @@ defmodule Batata.Lift do
       filler: fn -> [region] end
     }
     |> MLIR.Operation.create()
+  end
+
+  defp uses_mailbox?(ast) do
+    ast
+    |> Macro.prewalk(false, fn
+      node, true ->
+        {node, true}
+
+      {:receive, _, _}, _ ->
+        {nil, true}
+
+      {:send, _, _}, _ ->
+        {nil, true}
+
+      {:self, _, []}, _ ->
+        {nil, true}
+
+      node, acc ->
+        {node, acc}
+    end)
+    |> elem(1)
   end
 
   defp lift_definitions([definition], ctx, ip) do
@@ -918,6 +945,38 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_expr({:self, _, []}, ctx, block, env) do
+    {create_op("ex.self", [], [ex_type("dyn", ctx)], ctx, block), env}
+  end
+
+  defp lift_expr({:send, _, [pid_ast, msg_ast]}, ctx, block, env) do
+    {pid_value, env} = lift_expr(pid_ast, ctx, block, env)
+    {msg_value, env} = lift_expr(msg_ast, ctx, block, env)
+
+    pid_word = box_term(lift_value(pid_value, ctx, block, env), ctx, block)
+    msg_word = box_term(lift_value(msg_value, ctx, block, env), ctx, block)
+
+    {
+      create_op("ex.send", [pid_word, msg_word], [ex_type("dyn", ctx)], ctx, block),
+      env
+    }
+  end
+
+  # `receive do pattern -> body end`: pops one message from the actor
+  # mailbox and matches it with a term case. Empty or non-matching messages
+  # fall through to a catch-all that returns the popped word; `after`
+  # clauses are a later milestone.
+  defp lift_expr({:receive, _, [options]}, ctx, block, env) do
+    if Keyword.has_key?(options, :after) do
+      raise Error, "receive after clauses are unsupported in the current slice"
+    end
+
+    clauses = Keyword.fetch!(options, :do)
+    clauses = ensure_receive_catch_all(clauses)
+    msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, block)
+    {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
+  end
+
   defp lift_expr({name, _, args}, ctx, block, env) when is_atom(name) and is_list(args) do
     {arg_values, env} =
       Enum.map_reduce(args, env, fn arg, env ->
@@ -963,6 +1022,20 @@ defmodule Batata.Lift do
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
   end
+
+  defp ensure_receive_catch_all(clauses) do
+    if catch_all_clause?(List.last(clauses)) do
+      clauses
+    else
+      clauses ++ [{:->, [], [[{:_, [], nil}], 0]}]
+    end
+  end
+
+  defp catch_all_clause?({:->, _, [[pattern], _body]}) do
+    match?({name, _, nil} when is_atom(name), pattern)
+  end
+
+  defp catch_all_clause?(_clause), do: false
 
   defp resolve_fun_ref({name, _, nil}, env) when is_atom(name) do
     case Map.get(env, name) do
@@ -1135,6 +1208,16 @@ defmodule Batata.Lift do
       end)
       |> Enum.unzip()
 
+    # `receive` clauses guard integer messages with `is_integer(x)`; the
+    # bound word is untagged so the clause body can use it in scalar
+    # arithmetic.
+    bindss =
+      if Keyword.get(opts, :untag_int_binds, false) do
+        untag_int_binds(parsed, bindss, ctx, block)
+      else
+        bindss
+      end
+
     region = MLIR.CAPI.mlirRegionCreate()
 
     yield_types =
@@ -1166,6 +1249,29 @@ defmodule Batata.Lift do
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
   end
+
+  defp untag_int_binds(parsed, bindss, ctx, block) do
+    parsed
+    |> Enum.zip(bindss)
+    |> Enum.map(fn {%{guard: guard}, binds} ->
+      case integer_guard_var(guard) do
+        nil ->
+          binds
+
+        var ->
+          Enum.map(binds, fn
+            {^var, value} ->
+              {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
+
+            other ->
+              other
+          end)
+      end
+    end)
+  end
+
+  defp integer_guard_var({:is_integer, _, [{var, _, nil}]}) when is_atom(var), do: var
+  defp integer_guard_var(_guard), do: nil
 
   # The match condition and the bound values of one term pattern are computed
   # eagerly before `ex.case`: predicates and reads are pure and safe on the
