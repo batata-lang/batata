@@ -53,6 +53,12 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.tuple_from_list` | `(list: i64) -> i64` | proper list -> tuple |
 | `ex.term.tuple_get` | `(tuple: i64, index: i64) -> i64` | element at index; nil when out of range or not a tuple |
 | `ex.term.tuple_length` | `(tuple: i64) -> i64` | tuple arity; 0 for non-tuples |
+| `ex.term.jmp_buf_size` | `() -> i64` | byte size of libc `jmp_buf`, for stack allocation in compiled code |
+| `ex.term.setjmp_addr` | `() -> i64` | address of libc `setjmp`, for indirect calls that avoid ORC symbol resolution |
+| `ex.term.try_push` | `(buf: ptr) -> i64` | push a setjmp buffer for a try region; -1 when the 16-slot stack is full |
+| `ex.term.try_pop` | `() -> i64` | pop the innermost try region's buffer |
+| `ex.term.throw` | `(value: i64) -> noreturn` | longjmp to the innermost try with a thrown term; aborts when uncaught |
+| `ex.term.catch_value` | `() -> i64` | the term delivered by the most recent throw (read from the catch region) |
 | `ex.term.list_head` | `(list: i64) -> i64` | head; nil for empty/non-lists |
 | `ex.term.list_tail` | `(list: i64) -> i64` | tail; nil for empty/non-lists |
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
@@ -78,6 +84,8 @@ Predicates return `1` or `0` as an `i64`.
 - Immediate integers carry a 61-bit payload; values beyond that truncate.
 - `ex.term.map_from_list` requires an even-length list.
 - `ex.term.binary_from_list` reads each segment's integer payload as a byte.
+- `ex.term.try_push` overflows at 16 nested try regions; deeper nesting aborts.
+- An uncaught `ex.term.throw` panics.
 - The runtime owns a fixed bump arena; GC is a later milestone.
 - The mailbox is a fixed 64-slot FIFO for a single actor; blocking receives
   and `after` timeouts arrive with the scheduler.
@@ -85,8 +93,11 @@ Predicates return `1` or `0` as an `i64`.
 ## Building
 
 ```sh
-zig build-lib native/term_runtime.zig -dynamic -O ReleaseSafe -femit-bin=priv/term_runtime/libterm_runtime.so
+zig build-lib native/term_runtime.zig -dynamic -O ReleaseSafe -femit-bin=priv/term_runtime/libterm_runtime.so -lc
 ```
+
+`-lc` links libc so the runtime can reference `setjmp`/`longjmp` for
+`try`/`throw`; `Batata.TermRuntime.ensure_built!/0` passes it automatically.
 
 `Batata.TermRuntime.ensure_built!/0` wraps this and is used by
 `Batata.execute/2` (JIT) through `shared_lib_paths`.

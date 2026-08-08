@@ -80,7 +80,15 @@ defmodule Batata.TermRuntime do
   end
 
   defp build!(:dynamic, path) do
-    zig!(["build-lib", source_path(), "-dynamic", "-O", "ReleaseSafe", "-femit-bin=#{path}"])
+    zig!([
+      "build-lib",
+      source_path(),
+      "-dynamic",
+      "-O",
+      "ReleaseSafe",
+      "-lc",
+      "-femit-bin=#{path}"
+    ])
   end
 
   defp build!(:static, path) do
