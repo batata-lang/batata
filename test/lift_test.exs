@@ -433,6 +433,27 @@ defmodule Batata.LiftTest do
     assert first_index(rendered, "ex.binary_slice") < first_index(rendered, ~s{"ex.case"})
   end
 
+  test "extracts anonymous function literals into synthetic ex.funcs", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            (fn x -> x + 1 end).(2)
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert Enum.count(names, &(&1 == "ex.func")) == 2
+    assert "ex.call" in names
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ "__fn_"
+  end
+
   defp first_index(string, pattern) do
     case :binary.match(string, pattern) do
       {index, _length} -> index
