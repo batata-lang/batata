@@ -163,6 +163,7 @@ defmodule Batata.Lift do
   defp reduce_pattern({:fn, _, [{:->, _, [[item, acc_var], body]}]}) do
     cond do
       sum_pattern?(body, item, acc_var) -> {:ok, :sum}
+      map_values_sum_pattern?(body, item, acc_var) -> {:ok, :map_values_sum}
       same_var?(body, acc_var) -> {:ok, :return_acc}
       true -> :error
     end
@@ -176,6 +177,27 @@ defmodule Batata.Lift do
   end
 
   defp sum_pattern?(_body, _item, _acc_var), do: false
+
+  # `fn {_k, v}, acc -> acc + v end` / `v + acc`: map value accumulation.
+  # The item pattern must be a two-element tuple whose second element feeds
+  # the addition.
+  defp map_values_sum_pattern?({:+, _, [left, right]}, item, acc_var) do
+    with {:ok, value_var} <- map_value_var(item) do
+      (same_var?(left, value_var) and same_var?(right, acc_var)) or
+        (same_var?(left, acc_var) and same_var?(right, value_var))
+    else
+      :error -> false
+    end
+  end
+
+  defp map_values_sum_pattern?(_body, _item, _acc_var), do: false
+
+  # Two-element tuple patterns parse as 2-tuples in quoted form (`{_k, v}`),
+  # unlike arity >= 3 tuple literals which are `{:{}, meta, elems}`.
+  defp map_value_var({{_key, _, _}, {value, _, _}}) when is_atom(value),
+    do: {:ok, {value, [], nil}}
+
+  defp map_value_var(_item), do: :error
 
   # `fn item -> item + capture end` / `capture + item` where capture is a free
   # variable of the fn (resolved from the enclosing env) or an integer
@@ -1170,6 +1192,10 @@ defmodule Batata.Lift do
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
         end
+
+      :map_values_sum ->
+        # Map reduce sums entry values through runtime continuation 3.
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 3, ctx, block), env}
 
       :return_acc ->
         {acc_value, env}
