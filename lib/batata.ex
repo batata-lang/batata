@@ -123,6 +123,8 @@ defmodule Batata do
     archive_path = Path.join(output_dir, "lib#{snapshot.name}.a")
     driver_path = Path.join(output_dir, "driver.c")
     runtime_lib = Batata.TermRuntime.ensure_static_built!()
+    runtime_lib_copy = Path.join(output_dir, Path.basename(runtime_lib))
+    File.cp!(runtime_lib, runtime_lib_copy)
 
     jit = MLIR.ExecutionEngine.create!(module, object_dump: true)
 
@@ -138,7 +140,7 @@ defmodule Batata do
     metadata =
       Batata.Export.write!(output_dir, snapshot.name,
         source: source,
-        artifact_paths: [archive_path, object_path, driver_path, runtime_lib],
+        artifact_paths: [archive_path, object_path, driver_path, runtime_lib_copy],
         definitions: snapshot.definitions,
         entry_name: :main
       )
@@ -147,7 +149,7 @@ defmodule Batata do
       archive: archive_path,
       driver: driver_path,
       object: object_path,
-      runtime_lib: runtime_lib,
+      runtime_lib: runtime_lib_copy,
       bundle: metadata.bundle,
       artifact_index: metadata.artifact_index,
       manifest: metadata.manifest

@@ -382,6 +382,31 @@ pub export fn ex_term_enumerable_to_list_range(start: i64, stop: i64) i64 {
     return result;
 }
 
+/// Maps an enumerable by calling a compiled mapper `(item: i64) -> i64` on
+/// each item, producing a list in order. Items are untagged integers; the
+/// mapped scalar is tagged as an int term in the result.
+pub export fn ex_term_enumerable_map_fun(
+    enumerable: i64,
+    mapper: ?*const fn (i64) callconv(.c) i64,
+) i64 {
+    const count = ex_term_enumerable_count(enumerable);
+    var result = nil_word;
+    var i: i64 = count;
+    while (i > 0) {
+        i -= 1;
+        const item =
+            switch (word_tag(enumerable)) {
+                tag_list => ex_term_list_get(enumerable, i),
+                tag_tuple => ex_term_tuple_get(enumerable, i),
+                tag_binary => (binary_bytes(enumerable)[@intCast(i)] << @intCast(tag_shift)),
+                else => nil_word,
+            };
+        const mapped = mapper.?(word_value(item));
+        result = ex_term_list_cons(mapped << @intCast(tag_shift), result);
+    }
+    return result;
+}
+
 /// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
 /// unchanged, 3 = map values sum (acc + each entry value), 4 = map keys sum
@@ -1013,6 +1038,7 @@ comptime {
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
+    @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
     @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
     @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
     @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
@@ -1166,6 +1192,17 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_to_list_range(1, 3)));
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_to_list_range(3, 1)));
 
+    // enumerable map by compiled mapper: x * 2 over list/tuple/binary
+    const mapped_list = ex_term_enumerable_map_fun(list, &test_mapper_double);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(mapped_list));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_head(mapped_list) >> @intCast(tag_shift));
+    const mapped_tuple = ex_term_enumerable_map_fun(tuple, &test_mapper_double);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(mapped_tuple));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_head(mapped_tuple) >> @intCast(tag_shift));
+    const mapped_binary = ex_term_enumerable_map_fun(count_bin, &test_mapper_double);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(mapped_binary));
+    try std.testing.expectEqual(@as(i64, 4), ex_term_list_head(ex_term_list_tail(mapped_binary)) >> @intCast(tag_shift));
+
     // enumerable reduce by tag: sum over list/tuple/binary
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(list, 0, 1));
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(tuple, 0, 1));
@@ -1273,6 +1310,10 @@ fn test_reducer_sum(item: i64, acc: i64) callconv(.c) i64 {
 
 fn test_callback(arg: i64) callconv(.c) i64 {
     return arg + 32;
+}
+
+fn test_mapper_double(item: i64) callconv(.c) i64 {
+    return item * 2;
 }
 
 test "term ABI mailbox and integer untag" {

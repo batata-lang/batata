@@ -102,7 +102,10 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
 - slice extension: `Enum.to_list/1` is native (`ex.term.enumerable_to_list`
   by term tag: list identity, tuple elements, map `{k, v}` pairs, binary
   bytes, plus range via `ex.term.enumerable_to_list_range`) — the first
-  external-impl callback (to_list) moved from BEAM to native dispatch.
+  external-impl callback (to_list) moved from BEAM to native dispatch;
+  arbitrary arithmetic mappers (`fn x -> x * 2 end`) now compile to synthetic
+  functions called through `ex.term.enumerable_map_fun` for any
+  list/tuple/binary.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
