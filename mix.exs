@@ -58,8 +58,8 @@ defmodule Batata.MixProject do
     [
       licenses: ["MIT"],
       links: %{
-        "GitHub" => "https://github.com/conformal-elixir/batata",
-        "Docs" => "https://conformal-elixir.com/batata"
+        "GitHub" => "https://github.com/batata-lang/batata",
+        "Docs" => "https://hexdocs.pm/batata"
       },
       files: ~w{
         lib .formatter.exs mix.exs README.md LICENSE
@@ -70,7 +70,7 @@ defmodule Batata.MixProject do
   defp docs do
     [
       main: "Batata",
-      source_url: "https://github.com/conformal-elixir/batata",
+      source_url: "https://github.com/batata-lang/batata",
       extras: ["README.md"],
       groups_for_modules: [
         Compiler: [Batata],
