@@ -157,6 +157,18 @@ defmodule Batata.StdlibTest do
       assert 6 == execute("Enum.reduce(1..3, 0, fn x, a -> x + a end)", ctx)
       assert 6 == execute("Enum.reduce(3..1, 0, fn x, a -> x + a end)", ctx)
       assert 6 == execute("Enum.reduce(1..3, 1, fn x, a -> x * a end)", ctx)
+
+      assert 16 ==
+               execute(
+                 "Enum.reduce(<<1, 2, 3>>, 1, fn x, a -> a * x + 1 end)",
+                 ctx
+               )
+
+      assert 55 ==
+               execute(
+                 "Enum.reduce({2, 3}, 10, fn x, a -> a * x - x + 1 end)",
+                 ctx
+               )
     end
 
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do
@@ -207,13 +219,6 @@ defmodule Batata.StdlibTest do
         end
 
       assert error.message =~ "requires BEAM callback interop"
-
-      error =
-        assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.reduce({1, 2, 3}, 0, fn x, a -> a * x + x end)", ctx)
-        end
-
-      assert error.message =~ "combination reducers require a list literal"
 
       error =
         assert_raise Batata.Lift.Error, fn ->
