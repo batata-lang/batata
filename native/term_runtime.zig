@@ -320,8 +320,8 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
 /// unchanged, 3 = map values sum (acc + each entry value), 4 = map keys sum
 /// (acc + each entry key), 5 = map entries sum (acc + key + value per entry).
-/// Items are untagged integers (binary bytes are tagged before the step,
-/// matching list/tuple elements).
+/// 6 = product (acc * item). Items are untagged integers (binary bytes are
+/// tagged before the step, matching list/tuple elements).
 pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) i64 {
     switch (word_tag(enumerable)) {
         tag_list => {
@@ -376,6 +376,8 @@ pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation:
 fn enumerate_step(acc: i64, item: i64, continuation: i64) i64 {
     if (continuation == 1 or continuation == 3 or continuation == 4) { // sum variants
         return acc + word_value(item);
+    } else if (continuation == 6) { // product
+        return acc * word_value(item);
     }
     return acc; // return-accumulator
 }
@@ -910,6 +912,10 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 8), ex_term_enumerable_reduce(pair_map, 6, 4));
     try std.testing.expectEqual(@as(i64, 6), ex_term_enumerable_reduce(pair_map, 0, 5));
     try std.testing.expectEqual(@as(i64, 12), ex_term_enumerable_reduce(pair_map, 6, 5));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(list, 1, 6));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(tuple, 1, 6));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(count_bin, 1, 6));
+    try std.testing.expectEqual(@as(i64, 8), ex_term_enumerable_reduce(list, 4, 6));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
