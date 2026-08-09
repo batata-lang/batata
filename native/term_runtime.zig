@@ -427,6 +427,34 @@ pub export fn ex_term_stream_filter(
     return result;
 }
 
+/// Takes the first n elements of a list (n clamped to [0, len]).
+pub export fn ex_term_stream_take(list: i64, n: i64) i64 {
+    if (word_tag(list) != tag_list) return nil_word;
+    const len: i64 = @intCast(list_len(list));
+    const take_n = if (n < 0) 0 else @min(n, len);
+    var result = nil_word;
+    var i: i64 = take_n;
+    while (i > 0) {
+        i -= 1;
+        result = ex_term_list_cons(ex_term_list_get(list, i), result);
+    }
+    return result;
+}
+
+/// Drops the first n elements of a list (n clamped to [0, len]).
+pub export fn ex_term_stream_drop(list: i64, n: i64) i64 {
+    if (word_tag(list) != tag_list) return nil_word;
+    const len: i64 = @intCast(list_len(list));
+    const skip = if (n < 0) 0 else @min(n, len);
+    var result = nil_word;
+    var i: i64 = len;
+    while (i > skip) {
+        i -= 1;
+        result = ex_term_list_cons(ex_term_list_get(list, i), result);
+    }
+    return result;
+}
+
 /// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
 /// unchanged, 3 = map values sum (acc + each entry value), 4 = map keys sum
@@ -1096,6 +1124,8 @@ comptime {
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
     @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
+    @export(&ex_term_stream_take, .{ .name = "ex.term.stream_take" });
+    @export(&ex_term_stream_drop, .{ .name = "ex.term.stream_drop" });
     @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
     @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
     @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
@@ -1267,6 +1297,17 @@ test "term ABI reads" {
     const filtered = ex_term_stream_filter(list, &test_predicate_even);
     try std.testing.expectEqual(@as(i64, 1), ex_term_list_length(filtered));
     try std.testing.expectEqual(two, ex_term_list_head(filtered));
+
+    // stream take/drop
+    const three_list = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(two, nil_word)));
+    const taken = ex_term_stream_take(three_list, 2);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(taken));
+    try std.testing.expectEqual(one, ex_term_list_head(taken));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(ex_term_stream_take(three_list, 0)));
+    const dropped = ex_term_stream_drop(three_list, 1);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(dropped));
+    try std.testing.expectEqual(two, ex_term_list_head(dropped));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(ex_term_stream_drop(three_list, 9)));
 
     // enumerable reduce by tag: sum over list/tuple/binary
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(list, 0, 1));
