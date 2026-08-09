@@ -135,11 +135,17 @@ clock:
   preemptive yield;
 - slice 2: `ex.reduction_tick` is injected into every `scf.while` back edge
   (once per iteration); with `Batata.execute/3`'s `reduction_budget` option
-  the loop records a yield (`ex.yield_mark`) and resumes immediately (the
-  single-actor slice has no other process to schedule), so results stay
-  consistent across slices; without a budget the tick is a no-op. The
-  `clock_epoch`/`clock_bump_epoch` primitives let a scheduler invalidate
-  continuations.
+  an exhausted budget saves the cursor-loop continuation and exits the loop
+  (a real preemptive yield); without a budget the tick is a no-op;
+- slice 5: the generated scheduler driver (`main`) runs a process table:
+  `spawn(fun)` registers a closure entry, the driver round-robins runnable
+  processes and resumes a preempted process from its saved continuation
+  (`cont_save`/`cont_pending`/`cont_load_*`), and `process_done` parks a
+  completed process with its result. Post-loop body (e.g. `receive`) is gated
+  on loop completion, so side effects never repeat across slices. Message
+  delivery does not invalidate continuations in this slice (a plain FIFO
+  receive must observe it on resume); `clock_bump_epoch` remains the explicit
+  invalidation primitive.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

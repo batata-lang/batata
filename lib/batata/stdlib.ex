@@ -20,6 +20,7 @@ defmodule Batata.Stdlib.Kernel do
     {Kernel, :is_tuple, 1} => :native_term,
     {Kernel, :self, 0} => :native_term,
     {Kernel, :send, 2} => :native_term,
+    {Kernel, :spawn, 1} => :native_term,
     {:erlang, :length, 1} => :native_term,
     {:erlang, :hd, 1} => :native_term,
     {:erlang, :tl, 1} => :native_term,
