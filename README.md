@@ -124,6 +124,16 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   file IO: `File.read!/1` and `File.stream!/1` read through the runtime
   (`ex.term.file_read` / `file_read_lines`, eager lines).
 
+The actor model (tsai/beaver#35) starts with the Zig process and reduction
+clock:
+
+- a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
+  (the mailbox moved from globals into the process);
+- clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /
+  `clock_epoch` / `clock_bump_epoch`) charge reductions and expose the
+  continuation-generation counter, ready for loop back-edge injection and
+  preemptive yield (next slice).
+
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
 
