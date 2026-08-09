@@ -146,7 +146,7 @@ defmodule Batata.Stdlib.Enum do
     {Enum, :count, 1} => :native_term,
     {Enum, :map, 2} => :beamer_callback,
     {Enum, :reduce, 3} => :beamer_callback,
-    {Enum, :to_list, 1} => :beamer_callback
+    {Enum, :to_list, 1} => :native_term
   }
 
   @doc "Returns enum-domain stdlib replacement declarations."

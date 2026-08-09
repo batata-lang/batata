@@ -158,6 +158,12 @@ defmodule Batata.StdlibTest do
       assert 6 == execute("Enum.reduce(3..1, 0, fn x, a -> x + a end)", ctx)
       assert 6 == execute("Enum.reduce(1..3, 1, fn x, a -> x * a end)", ctx)
 
+      assert 3 == execute("Enum.count(Enum.to_list([1, 2, 3]))", ctx)
+      assert 3 == execute("Enum.count(Enum.to_list({1, 2, 3}))", ctx)
+      assert 2 == execute("Enum.count(Enum.to_list(%{1 => 2, 3 => 4}))", ctx)
+      assert 2 == execute("Enum.count(Enum.to_list(<<1, 2>>))", ctx)
+      assert 3 == execute("Enum.count(Enum.to_list(1..3))", ctx)
+
       assert 16 ==
                execute(
                  "Enum.reduce(<<1, 2, 3>>, 1, fn x, a -> a * x + 1 end)",
@@ -235,10 +241,10 @@ defmodule Batata.StdlibTest do
       assert error.message =~ "requires BEAM callback interop"
     end
 
-    test "rejects BEAM-callback stdlib calls explicitly", %{ctx: ctx} do
+    test "rejects unrecognized BEAM-callback Enum calls explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.to_list([1, 2, 3])", ctx)
+          execute("Enum.map([1, 2, 3], fn x -> x * 2 end)", ctx)
         end
 
       assert error.message =~ "requires BEAM callback interop"

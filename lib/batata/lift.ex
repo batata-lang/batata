@@ -1864,6 +1864,22 @@ defmodule Batata.Lift do
     {lift_enum_range_reduce(start, stop, lit(0, ctx, block), 15, ctx, block), env}
   end
 
+  defp lift_stdlib_call(Enum, :to_list, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
+    {start, env} = lift_expr(start_ast, ctx, block, env)
+    {stop, env} = lift_expr(stop_ast, ctx, block, env)
+
+    {
+      create_op(
+        "ex.enumerable_to_list_range",
+        [start, stop],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      ),
+      env
+    }
+  end
+
   defp lift_stdlib_call(module, fun, args, ctx, block, env) do
     case Batata.Stdlib.class({module, fun, length(args)}) do
       :native_term ->
@@ -1915,6 +1931,9 @@ defmodule Batata.Lift do
 
   defp native_term_call(Enum, :count, [value], ctx, block),
     do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(Enum, :to_list, [value], ctx, block),
+    do: create_op("ex.enumerable_to_list", [value], [ex_type("dyn", ctx)], ctx, block)
 
   defp native_term_call(String, :length, [value], ctx, block),
     do: create_op("ex.binary_utf8_length", [value], [MLIR.Type.i64()], ctx, block)

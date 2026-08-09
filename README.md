@@ -98,7 +98,11 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   MapSet, Function, ...) get `:unsupported` with a reason (their Elixir
   implementations are outside the slice — MISSING_IMPL discipline);
   `register_native/2` maps an external impl to runtime callback slots for a
-  project-provided Provider plan.
+  project-provided Provider plan;
+- slice extension: `Enum.to_list/1` is native (`ex.term.enumerable_to_list`
+  by term tag: list identity, tuple elements, map `{k, v}` pairs, binary
+  bytes, plus range via `ex.term.enumerable_to_list_range`) — the first
+  external-impl callback (to_list) moved from BEAM to native dispatch.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
