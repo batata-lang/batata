@@ -293,6 +293,20 @@ defmodule Batata.StdlibTest do
       assert error.message =~ "Date.new requires integer literal"
     end
 
+    test "reduction budget stops loops when exhausted", %{ctx: ctx} do
+      source = """
+      defmodule M do
+        def main() do
+          Enum.reduce([1, 2, 3, 4, 5], 0, fn x, a -> x + a end)
+        end
+      end
+      """
+
+      assert 15 == Batata.execute(source, ctx)
+      assert 1 == Batata.execute(source, ctx, reduction_budget: 2)
+      assert 15 == Batata.execute(source, ctx, reduction_budget: 10)
+    end
+
     @tag :tmp_dir
     test "reads files via File.read!/File.stream!", %{ctx: ctx, tmp_dir: tmp_dir} do
       path = Path.join(tmp_dir, "lines.txt")

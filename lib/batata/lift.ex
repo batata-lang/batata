@@ -46,6 +46,7 @@ defmodule Batata.Lift do
 
       module = MLIR.Module.create!("module {}", ctx: ctx)
       body = MLIR.CAPI.mlirModuleGetBody(module)
+      budget = Keyword.get(opts, :reduction_budget)
 
       mod.definitions
       |> recognize_enum_calls()
@@ -53,7 +54,7 @@ defmodule Batata.Lift do
       |> then(&append_dispatch(&1))
       |> Enum.group_by(&{&1.name, &1.arity})
       |> Enum.each(fn {_key, definitions} ->
-        lift_definitions(definitions, ctx, body)
+        lift_definitions(definitions, ctx, body, budget)
       end)
 
       module
@@ -674,7 +675,8 @@ defmodule Batata.Lift do
   defp lift_definition(
          %Frontend.Definition{kind: kind, name: name, arity: arity, clauses: clauses},
          ctx,
-         ip
+         ip,
+         budget
        ) do
     unless kind in [:def, :defp] do
       raise Error, "unsupported definition kind: #{inspect(kind)}"
@@ -702,9 +704,14 @@ defmodule Batata.Lift do
       end)
 
     # The entry function starts a fresh actor: reset the mailbox so each
-    # program run observes an empty message queue.
+    # program run observes an empty message queue; optionally set the
+    # reduction budget for preemptive loop slicing (#35).
     if name == :main and uses_mailbox?(body_ast) do
       create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, block)
+    end
+
+    if name == :main and budget != nil do
+      create_op("ex.clock_init", [lit(budget, ctx, block)], [integer_type(ctx)], ctx, block)
     end
 
     {return_value, env} = lift_block(List.wrap(body_ast), ctx, block, env)
@@ -742,15 +749,15 @@ defmodule Batata.Lift do
     |> elem(1)
   end
 
-  defp lift_definitions([definition], ctx, ip) do
-    lift_definition(definition, ctx, ip)
+  defp lift_definitions([definition], ctx, ip, budget) do
+    lift_definition(definition, ctx, ip, budget)
   end
 
   # Multiple `def` forms with the same name/arity become one ex.func whose
   # body dispatches on the argument with ex.case, matching each clause's
   # pattern (the cursor-loop foundation for recursive scanners). M2 requires
   # a single argument and a final catch-all clause.
-  defp lift_definitions(definitions, ctx, ip) do
+  defp lift_definitions(definitions, ctx, ip, _budget) do
     %Frontend.Definition{kind: kind, name: name, arity: arity} = hd(definitions)
 
     unless kind in [:def, :defp] do
@@ -1134,7 +1141,8 @@ defmodule Batata.Lift do
 
     cond = cmp(len, next_cursor, "sge", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    create_op("scf.condition", [cond_i1, b_arg, b_acc, b_cursor], [], ctx, before_block)
+    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1)
+    create_op("scf.condition", [budget_cond, b_arg, b_acc, b_cursor], [], ctx, before_block)
 
     [a_arg, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
     acc_next = create_op("ex.add", [a_acc, lit(delta, ctx, after_block)], [i64], ctx, after_block)
@@ -1168,6 +1176,30 @@ defmodule Batata.Lift do
     lift_enum_cursor_loop(list_word, acc0, {"ex.add", :acc_first}, ctx, block)
   end
 
+  # #35 slice 2: charge one reduction per loop iteration (the scf.while
+  # before region runs once per iteration) and stop the loop when the budget
+  # is exhausted. With no budget set (runtime budget 0) the tick is a no-op.
+  defp inject_reduction_tick(before_block, ctx, cond_i1) do
+    i64 = integer_type(ctx)
+
+    ticked =
+      create_op("ex.reduction_tick", [lit(1, ctx, before_block)], [i64], ctx, before_block)
+
+    not_exhausted =
+      create_op(
+        "ex.cmp",
+        [ticked, lit(0, ctx, before_block), predicate: MLIR.Attribute.string("eq")],
+        [i64],
+        ctx,
+        before_block
+      )
+
+    not_exhausted_i1 =
+      create_op("arith.trunci", [not_exhausted], [MLIR.Type.i1()], ctx, before_block)
+
+    create_op("arith.andi", [cond_i1, not_exhausted_i1], [MLIR.Type.i1()], ctx, before_block)
+  end
+
   defp lift_enum_product_loop(list_word, acc0, ctx, block) do
     lift_enum_cursor_loop(list_word, acc0, {"ex.mul", :acc_first}, ctx, block)
   end
@@ -1194,7 +1226,8 @@ defmodule Batata.Lift do
     len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
     cond = cmp(b_cursor, len, "slt", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
+    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1)
+    create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
     [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
     a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
@@ -1345,7 +1378,8 @@ defmodule Batata.Lift do
     [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
     cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
+    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1)
+    create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
     [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
     a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
