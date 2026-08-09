@@ -543,6 +543,34 @@ pub export fn ex_term_enumerable_reduce_fun(
     }
 }
 
+// Native callback registry (protocol dispatch contract, expandable route):
+// the runtime owns a table of registered callback entry points
+// (fn_id -> function pointer). Compiled impls (e.g. enumerable count/reduce
+// for external types) register through `ex.term.register_callback`; compiled
+// code calls them through `ex.term.call_callback`. Unregistered ids return
+// the error sentinel -1.
+const beam_callback_cap = 16;
+var callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 = [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap;
+
+/// Registers a native callback entry (fn_id, function pointer). Returns 0 on
+/// success, -1 when the id is out of range.
+pub export fn ex_term_register_callback(
+    fn_id: i64,
+    callback: ?*const fn (i64) callconv(.c) i64,
+) i64 {
+    if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
+    callbacks[@intCast(fn_id)] = callback;
+    return 0;
+}
+
+/// Calls a registered native callback entry with an argument word; -1 when
+/// the id is out of range or not registered.
+pub export fn ex_term_call_callback(fn_id: i64, arg: i64) i64 {
+    if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
+    const callback = callbacks[@intCast(fn_id)] orelse return -1;
+    return callback(arg);
+}
+
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
@@ -921,6 +949,8 @@ comptime {
     @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
     @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
     @export(&ex_term_enumerable_reduce_fun, .{ .name = "ex.term.enumerable_reduce_fun" });
+    @export(&ex_term_register_callback, .{ .name = "ex.term.register_callback" });
+    @export(&ex_term_call_callback, .{ .name = "ex.term.call_callback" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
@@ -1098,6 +1128,12 @@ test "term ABI reads" {
         @as(i64, 11),
         ex_term_enumerable_reduce_fun(tuple, 8, &test_reducer_sum),
     );
+    try std.testing.expectEqual(@as(i64, -1), ex_term_call_callback(0, 1));
+    try std.testing.expectEqual(
+        @as(i64, 0),
+        ex_term_register_callback(0, &test_callback),
+    );
+    try std.testing.expectEqual(@as(i64, 42), ex_term_call_callback(0, 10));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
@@ -1150,6 +1186,10 @@ test "term ABI reads" {
 
 fn test_reducer_sum(item: i64, acc: i64) callconv(.c) i64 {
     return acc + item;
+}
+
+fn test_callback(arg: i64) callconv(.c) i64 {
+    return arg + 32;
 }
 
 test "term ABI mailbox and integer untag" {

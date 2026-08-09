@@ -84,6 +84,16 @@ The Enum slice adds the first callback-shaped stdlib calls:
   runtime through function pointers (`ex.term.enumerable_reduce_fun`),
   supporting list/tuple/binary for any pure-arithmetic reducer body.
 
+Protocol dispatch follows the expandable route (native callbacks, no BEAM
+bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
+
+- `Batata.Native.Enumerable` records the consolidated `Enumerable` impls
+  (internal term-tag dispatch for List/Map/Range plus the batata Tuple/Binary
+  extensions; external impls listed for explicit rejection);
+- the Zig runtime exposes a native callback registry
+  (`ex.term.register_callback` / `ex.term.call_callback`) for compiled impls,
+  the building block for external-type count/reduce dispatch.
+
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
 

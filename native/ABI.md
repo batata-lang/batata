@@ -59,6 +59,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.enumerable_reduce_c` | `(enumerable: i64, acc: i64, continuation: i64, capture: i64) -> i64` | closure-shaped reduce with a captured scalar; continuation 13 = sum with capture (acc + item + capture), 14 = product with capture (acc + item * capture) |
 | `ex.term.enumerable_reduce_range` | `(start: i64, stop: i64, acc: i64, continuation: i64) -> i64` | inclusive integer range reduce (ascending or descending), reusing the continuation table (15 = count, acc + 1 per item) |
 | `ex.term.enumerable_reduce_fun` | `(enumerable: i64, acc: i64, reducer_addr: i64) -> i64` | reduce by calling a compiled reducer `(item, acc) -> acc` on each item (list/tuple/binary); items are untagged integers |
+| `ex.term.register_callback` | `(fn_id: i64, callback: ptr) -> i64` | register a native callback entry (fn_id, function pointer); 0 on success, -1 out of range |
+| `ex.term.call_callback` | `(fn_id: i64, arg: i64) -> i64` | call a registered native callback with an argument word; -1 when unregistered/out of range |
 | `ex.term.jmp_buf_size` | `() -> i64` | byte size of libc `jmp_buf`, for stack allocation in compiled code |
 | `ex.term.setjmp_addr` | `() -> i64` | address of libc `setjmp`, for indirect calls that avoid ORC symbol resolution |
 | `ex.term.try_push` | `(buf: ptr) -> i64` | push a setjmp buffer for a try region; -1 when the 16-slot stack is full |
