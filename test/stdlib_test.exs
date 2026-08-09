@@ -214,6 +214,24 @@ defmodule Batata.StdlibTest do
       assert 2 == execute("Enum.count(MapSet.put(MapSet.new([1, 2]), 1))", ctx)
       assert 2 == execute("Enum.count(HashSet.new([1, 2, 2]))", ctx)
 
+      assert 12 ==
+               execute(
+                 "Enum.reduce(Stream.map([1, 2, 3], fn x -> x * 2 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 6 ==
+               execute(
+                 "Enum.reduce(Stream.filter([1, 2, 3, 4], fn x -> rem(x, 2) == 0 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 70 ==
+               execute(
+                 "Enum.reduce(Stream.map(Stream.filter([1, 2, 3, 4], fn x -> x > 2 end), fn x -> x * 10 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
       assert 16 ==
                execute(
                  "Enum.reduce(<<1, 2, 3>>, 1, fn x, a -> a * x + 1 end)",

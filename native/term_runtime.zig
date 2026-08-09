@@ -407,6 +407,26 @@ pub export fn ex_term_enumerable_map_fun(
     return result;
 }
 
+/// Filters a list by a compiled predicate `(item: i64) -> i64` (nonzero
+/// keeps), producing a list in order.
+pub export fn ex_term_stream_filter(
+    list: i64,
+    predicate: ?*const fn (i64) callconv(.c) i64,
+) i64 {
+    if (word_tag(list) != tag_list) return nil_word;
+    const count = list_len(list);
+    var result = nil_word;
+    var i: i64 = @intCast(count);
+    while (i > 0) {
+        i -= 1;
+        const item = ex_term_list_get(list, i);
+        if (predicate.?(word_value(item)) != 0) {
+            result = ex_term_list_cons(item, result);
+        }
+    }
+    return result;
+}
+
 /// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
 /// unchanged, 3 = map values sum (acc + each entry value), 4 = map keys sum
@@ -1075,6 +1095,7 @@ comptime {
     @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
+    @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
     @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
     @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
     @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
@@ -1242,6 +1263,11 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(mapped_binary));
     try std.testing.expectEqual(@as(i64, 4), ex_term_list_head(ex_term_list_tail(mapped_binary)) >> @intCast(tag_shift));
 
+    // stream filter: keep even items (predicate: item % 2 == 0)
+    const filtered = ex_term_stream_filter(list, &test_predicate_even);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_list_length(filtered));
+    try std.testing.expectEqual(two, ex_term_list_head(filtered));
+
     // enumerable reduce by tag: sum over list/tuple/binary
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(list, 0, 1));
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(tuple, 0, 1));
@@ -1364,6 +1390,10 @@ fn test_callback(arg: i64) callconv(.c) i64 {
 
 fn test_mapper_double(item: i64) callconv(.c) i64 {
     return item * 2;
+}
+
+fn test_predicate_even(item: i64) callconv(.c) i64 {
+    return if (@rem(item, 2) == 0) 1 else 0;
 }
 
 test "term ABI mailbox and integer untag" {
