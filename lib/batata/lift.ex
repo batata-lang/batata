@@ -165,6 +165,7 @@ defmodule Batata.Lift do
       sum_pattern?(body, item, acc_var) -> {:ok, :sum}
       map_values_sum_pattern?(body, item, acc_var) -> {:ok, :map_values_sum}
       map_keys_sum_pattern?(body, item, acc_var) -> {:ok, :map_keys_sum}
+      map_entries_sum_pattern?(body, item, acc_var) -> {:ok, :map_entries_sum}
       same_var?(body, acc_var) -> {:ok, :return_acc}
       true -> :error
     end
@@ -187,6 +188,22 @@ defmodule Batata.Lift do
   defp map_keys_sum_pattern?(body, item, acc_var),
     do: map_entry_add_pattern?(body, item, acc_var, :key)
 
+  # `fn {k, v}, acc -> acc + k + v end` (any addition order): the body must be
+  # a pure addition tree over exactly the key, value, and accumulator
+  # variables, each once.
+  defp map_entries_sum_pattern?(body, item, acc_var) do
+    with {:ok, key_var, value_var} <- map_entry_vars(item) do
+      body
+      |> collect_add_vars()
+      |> MapSet.new()
+      |> MapSet.equal?(MapSet.new([var_name(key_var), var_name(value_var), var_name(acc_var)]))
+    else
+      :error -> false
+    end
+  end
+
+  defp map_entries_sum_pattern?(_body, _item, _acc_var), do: false
+
   defp map_entry_add_pattern?({:+, _, [left, right]}, item, acc_var, selector) do
     with {:ok, entry_var} <- map_entry_var(item, selector) do
       (same_var?(left, entry_var) and same_var?(right, acc_var)) or
@@ -207,6 +224,20 @@ defmodule Batata.Lift do
     do: {:ok, {value, [], nil}}
 
   defp map_entry_var(_item, _selector), do: :error
+
+  defp map_entry_vars({{key, _, _}, {value, _, _}})
+       when is_atom(key) and is_atom(value) and key != value,
+       do: {:ok, {key, [], nil}, {value, [], nil}}
+
+  defp map_entry_vars(_item), do: :error
+
+  defp collect_add_vars({:+, _, [left, right]}),
+    do: collect_add_vars(left) ++ collect_add_vars(right)
+
+  defp collect_add_vars({name, _, _}) when is_atom(name), do: [name]
+  defp collect_add_vars(_), do: []
+
+  defp var_name({name, _, _}), do: name
 
   # `fn item -> item + capture end` / `capture + item` where capture is a free
   # variable of the fn (resolved from the enclosing env) or an integer
@@ -1209,6 +1240,10 @@ defmodule Batata.Lift do
       :map_keys_sum ->
         # Map reduce sums entry keys through runtime continuation 4.
         {lift_enum_reduce_runtime(enumerable_word, acc_value, 4, ctx, block), env}
+
+      :map_entries_sum ->
+        # Map reduce sums key + value per entry through runtime continuation 5.
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 5, ctx, block), env}
 
       :return_acc ->
         {acc_value, env}

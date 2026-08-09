@@ -319,8 +319,9 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
 /// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
 /// unchanged, 3 = map values sum (acc + each entry value), 4 = map keys sum
-/// (acc + each entry key). Items are untagged integers (binary bytes are
-/// tagged before the step, matching list/tuple elements).
+/// (acc + each entry key), 5 = map entries sum (acc + key + value per entry).
+/// Items are untagged integers (binary bytes are tagged before the step,
+/// matching list/tuple elements).
 pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) i64 {
     switch (word_tag(enumerable)) {
         tag_list => {
@@ -357,8 +358,14 @@ pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation:
             var result = acc;
             var i: usize = 0;
             while (i < len) : (i += 1) {
-                const item = if (continuation == 4) entries[i * 2] else entries[i * 2 + 1];
-                result = enumerate_step(result, item, continuation);
+                const key = entries[i * 2];
+                const value = entries[i * 2 + 1];
+                if (continuation == 5) {
+                    result += word_value(key) + word_value(value);
+                } else {
+                    const item = if (continuation == 4) key else value;
+                    result = enumerate_step(result, item, continuation);
+                }
             }
             return result;
         },
@@ -368,9 +375,13 @@ pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation:
 
 fn enumerate_step(acc: i64, item: i64, continuation: i64) i64 {
     if (continuation == 1 or continuation == 3 or continuation == 4) { // sum variants
-        return acc + (if (is_int(item)) word_payload(item) else 0);
+        return acc + word_value(item);
     }
     return acc; // return-accumulator
+}
+
+fn word_value(word: i64) i64 {
+    return if (is_int(word)) word_payload(word) else 0;
 }
 
 /// Returns the head of a list word; nil for non-lists or the empty list.
@@ -897,6 +908,8 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 10), ex_term_enumerable_reduce(pair_map, 6, 3));
     try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(pair_map, 0, 4));
     try std.testing.expectEqual(@as(i64, 8), ex_term_enumerable_reduce(pair_map, 6, 4));
+    try std.testing.expectEqual(@as(i64, 6), ex_term_enumerable_reduce(pair_map, 0, 5));
+    try std.testing.expectEqual(@as(i64, 12), ex_term_enumerable_reduce(pair_map, 6, 5));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
