@@ -128,8 +128,15 @@ defmodule Batata.Lift do
       {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node ->
         if enum_alias?(alias_parts) do
           case map_pattern(fn_ast) do
-            {:ok, pattern} -> {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
-            :error -> {node, state}
+            {:ok, {:mapper, body_ast, item_name}} ->
+              {marker, state} = extract_mapper(body_ast, item_name, enumerable, state)
+              {marker, state}
+
+            {:ok, pattern} ->
+              {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
+
+            :error ->
+              {node, state}
           end
         else
           {node, state}
@@ -182,6 +189,28 @@ defmodule Batata.Lift do
     {marker, {[reducer_def | synthetic], counter + 1}}
   end
 
+  # Arbitrary arithmetic mappers become synthetic `__enum_mapper_N`
+  # definitions called through the runtime's compiled-mapper map.
+  defp extract_mapper(body_ast, item_name, enumerable, state) do
+    {synthetic, counter} = state
+    mapper_name = :"__enum_mapper_#{counter}"
+
+    mapper_def = %Frontend.Definition{
+      kind: :defp,
+      name: mapper_name,
+      arity: 1,
+      clauses: [
+        %Frontend.Clause{
+          patterns: [{item_name, [], nil}],
+          body_ast: body_ast
+        }
+      ]
+    }
+
+    marker = {:__enum_call__, [], [:map, {:mapper, mapper_name}, enumerable]}
+    {marker, {[mapper_def | synthetic], counter + 1}}
+  end
+
   defp enum_alias?([:Enum]), do: true
   defp enum_alias?([:"Elixir", :Enum]), do: true
   defp enum_alias?(_), do: false
@@ -196,8 +225,19 @@ defmodule Batata.Lift do
 
       true ->
         case capture_add(body, item) do
-          {:ok, capture_ast} -> {:ok, {:add_capture, capture_ast}}
-          :error -> :error
+          {:ok, capture_ast} ->
+            {:ok, {:add_capture, capture_ast}}
+
+          :error ->
+            if arithmetic_tree?(body) and
+                 body
+                 |> collect_tree_vars()
+                 |> MapSet.new()
+                 |> MapSet.subset?(MapSet.new([tree_var_name(item)])) do
+              {:ok, {:mapper, body, tree_var_name(item)}}
+            else
+              :error
+            end
         end
     end
   end
@@ -1450,6 +1490,27 @@ defmodule Batata.Lift do
         {capture, env} = lift_expr(capture_ast, ctx, block, env)
         capture_i64 = enum_capture_i64(capture, ctx, block)
         {lift_enum_capture_map(enumerable_word, capture_i64, ctx, block), env}
+
+      {:mapper, mapper_name} ->
+        addr =
+          create_op(
+            "ex.func_addr",
+            [sym_name: MLIR.Attribute.string(to_string(mapper_name))],
+            [MLIR.Type.function([integer_type(ctx)], [integer_type(ctx)])],
+            ctx,
+            block
+          )
+
+        {
+          create_op(
+            "ex.enumerable_map_fun",
+            [enumerable_word, addr],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          ),
+          env
+        }
     end
   end
 

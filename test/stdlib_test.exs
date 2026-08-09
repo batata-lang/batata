@@ -164,6 +164,24 @@ defmodule Batata.StdlibTest do
       assert 2 == execute("Enum.count(Enum.to_list(<<1, 2>>))", ctx)
       assert 3 == execute("Enum.count(Enum.to_list(1..3))", ctx)
 
+      assert 12 ==
+               execute(
+                 "Enum.reduce(Enum.map([1, 2, 3], fn x -> x * 2 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 12 ==
+               execute(
+                 "Enum.reduce(Enum.map({1, 2, 3}, fn x -> x * 2 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 3 ==
+               execute(
+                 "Enum.reduce(Enum.map(<<3, 4>>, fn x -> x - 2 end), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
       assert 16 ==
                execute(
                  "Enum.reduce(<<1, 2, 3>>, 1, fn x, a -> a * x + 1 end)",
@@ -235,7 +253,7 @@ defmodule Batata.StdlibTest do
 
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.map([1, 2, 3], fn x -> x * 2 end)", ctx)
+          execute("Enum.map([1, 2, 3], fn x -> is_integer(x) end)", ctx)
         end
 
       assert error.message =~ "requires BEAM callback interop"
@@ -244,7 +262,7 @@ defmodule Batata.StdlibTest do
     test "rejects unrecognized BEAM-callback Enum calls explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.map([1, 2, 3], fn x -> x * 2 end)", ctx)
+          execute("Enum.map([1, 2, 3], fn x -> is_integer(x) end)", ctx)
         end
 
       assert error.message =~ "requires BEAM callback interop"
