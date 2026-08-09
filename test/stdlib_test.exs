@@ -112,6 +112,10 @@ defmodule Batata.StdlibTest do
       assert -8 == execute("Enum.reduce([1, 2, 3], 10, fn x, a -> x - a end)", ctx)
       assert 12 == execute("Enum.reduce([1, 2, 3], 0, fn x, a -> a + x * 2 end)", ctx)
       assert 16 == execute("Enum.reduce([1, 2, 3], 1, fn x, a -> a * x + 1 end)", ctx)
+      assert 25 == execute("Enum.reduce([2, 2], 100, fn x, a -> div(a, x) end)", ctx)
+      assert 10 == execute("Enum.reduce({2, 5}, 100, fn x, a -> div(a, x) end)", ctx)
+      assert 1 == execute("Enum.reduce([3, 5], 100, fn x, a -> rem(a, x) end)", ctx)
+      assert 3 == execute("Enum.reduce({7, 3}, 10, fn x, a -> rem(x, a) end)", ctx)
     end
 
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do

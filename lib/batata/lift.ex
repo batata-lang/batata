@@ -171,6 +171,9 @@ defmodule Batata.Lift do
       subtract_pattern?(body, item, acc_var) ->
         {:ok, subtract_direction(body, item, acc_var)}
 
+      div_rem_pattern?(body, item, acc_var) ->
+        {:ok, div_rem_direction(body, item, acc_var)}
+
       map_values_sum_pattern?(body, item, acc_var) ->
         {:ok, :map_values_sum}
 
@@ -219,6 +222,20 @@ defmodule Batata.Lift do
 
   defp subtract_direction({:-, _, [left, right]}, _item, acc_var) do
     if same_var?(left, acc_var), do: :subtract_acc_first, else: :subtract_item_first
+  end
+
+  # `fn item, acc -> div(item, acc) end` / `rem(item, acc)` and the
+  # accumulator-first variants. Both are order-sensitive.
+  defp div_rem_pattern?({op, _, [left, right]}, item, acc_var) when op in [:div, :rem] do
+    (same_var?(left, acc_var) and same_var?(right, item)) or
+      (same_var?(left, item) and same_var?(right, acc_var))
+  end
+
+  defp div_rem_pattern?(_body, _item, _acc_var), do: false
+
+  defp div_rem_direction({op, _, [left, right]}, _item, acc_var) do
+    prefix = if op == :div, do: :div, else: :rem
+    if same_var?(left, acc_var), do: :"#{prefix}_acc_first", else: :"#{prefix}_item_first"
   end
 
   # `fn {_k, v}, acc -> acc + v end` / `v + acc`: map value accumulation.
@@ -1390,6 +1407,20 @@ defmodule Batata.Lift do
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
         end
+
+      :div_acc_first ->
+        # Integer division/remainder reduce through the runtime (the ex
+        # dialect has no div/rem ops).
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 9, ctx, block), env}
+
+      :div_item_first ->
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 10, ctx, block), env}
+
+      :rem_acc_first ->
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 11, ctx, block), env}
+
+      :rem_item_first ->
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 12, ctx, block), env}
 
       {:combination, body_ast, item_name, acc_name} ->
         unless is_list(enumerable_ast) do

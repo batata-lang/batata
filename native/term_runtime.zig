@@ -322,7 +322,8 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
 /// (acc + each entry key), 5 = map entries sum (acc + key + value per entry).
 /// 6 = product (acc * item). Items are untagged integers (binary bytes are
 /// tagged before the step, matching list/tuple elements). 7 = acc - item,
-/// 8 = item - acc (subtraction is order-sensitive).
+/// 8 = item - acc (subtraction is order-sensitive). 9-12 are the integer
+/// div/rem variants (order-sensitive, zero divisor yields 0).
 pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) i64 {
     switch (word_tag(enumerable)) {
         tag_list => {
@@ -383,6 +384,16 @@ fn enumerate_step(acc: i64, item: i64, continuation: i64) i64 {
         return acc - word_value(item);
     } else if (continuation == 8) { // item - acc
         return word_value(item) - acc;
+    } else if (continuation == 9) { // div(acc, item)
+        const item_v = word_value(item);
+        return if (item_v == 0) 0 else @divTrunc(acc, item_v);
+    } else if (continuation == 10) { // div(item, acc)
+        return if (acc == 0) 0 else @divTrunc(word_value(item), acc);
+    } else if (continuation == 11) { // rem(acc, item)
+        const item_v = word_value(item);
+        return if (item_v == 0) 0 else @rem(acc, item_v);
+    } else if (continuation == 12) { // rem(item, acc)
+        return if (acc == 0) 0 else @rem(word_value(item), acc);
     }
     return acc; // return-accumulator
 }
@@ -923,6 +934,10 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 8), ex_term_enumerable_reduce(list, 4, 6));
     try std.testing.expectEqual(@as(i64, 7), ex_term_enumerable_reduce(list, 10, 7));
     try std.testing.expectEqual(@as(i64, 11), ex_term_enumerable_reduce(list, 10, 8));
+    try std.testing.expectEqual(@as(i64, 5), ex_term_enumerable_reduce(list, 10, 9));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 10));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 11));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 12));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
