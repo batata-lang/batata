@@ -46,6 +46,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
 | `ex.term.receive` | `() -> i64` | dequeue the oldest message; nil when empty |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
+| `ex.term.spawn` | `() -> i64` | create a new process with its own mailbox/clock; returns its pid (atom), nil when the process table is full (capacity 8) |
 | `ex.term.clock_init` | `(budget: i64) -> i64` | set the reduction budget and reset the used counter |
 | `ex.term.clock_tick` | `(cost: i64) -> i64` | charge reductions; 1 when the budget is exhausted (yield), else 0 |
 | `ex.term.clock_budget_left` | `() -> i64` | remaining budget clamped to >= 0; -1 when no budget is set |

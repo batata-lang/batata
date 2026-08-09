@@ -179,10 +179,32 @@ const Process = struct {
     clock: Clock,
 };
 
-var process = Process{
-    .pid = (1 << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom)),
-    .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
-};
+// Process table (#35 slice 4): a fixed-capacity set of actors, each with its
+// own FIFO mailbox and reduction clock. `current` is the executing process;
+// spawn allocates a new entry and returns its pid. Scheduling (executing a
+// spawned process's entry) arrives with the scheduler slice.
+const process_cap: usize = 8;
+var processes: [process_cap]Process = undefined;
+var process_count: usize = 1;
+var current_process: usize = 0;
+var processes_initialized = false;
+
+fn init_processes() void {
+    processes[0] = .{
+        .pid = (1 << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom)),
+        .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
+    };
+    process_count = 1;
+    current_process = 0;
+}
+
+fn current_proc() *Process {
+    if (!processes_initialized) {
+        init_processes();
+        processes_initialized = true;
+    }
+    return &processes[current_process];
+}
 
 // Preemptive yield accounting (#35 slice 3): the compiled loop driver
 // charges slices of the reduction budget; each slice boundary is a yield
@@ -240,60 +262,77 @@ pub export fn ex_term_catch_value() i64 {
 /// Returns the pid of the current execution context. The scalar slice runs a
 /// single actor with pid 1 (the atom term with id 1).
 pub export fn ex_term_self() i64 {
-    return process.pid;
+    return current_proc().pid;
 }
 
 /// Enqueues a message. The single-actor slice accepts any pid and returns the
 /// message itself (matching BEAM's `send/2`); returns nil when the mailbox is
 /// full.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
-    _ = pid;
-    if (!process.mailbox.push(msg)) return nil_word;
+    _ = current_proc();
+    if (word_tag(pid) != tag_atom) return nil_word;
+    const pid_id: usize = @intCast(word_payload(pid));
+    if (pid_id == 0 or pid_id > @as(usize, @intCast(process_count))) return nil_word;
+    if (!processes[pid_id - 1].mailbox.push(msg)) return nil_word;
     return msg;
 }
 
 /// Dequeues the oldest message; nil when the mailbox is empty.
 pub export fn ex_term_receive() i64 {
-    return process.mailbox.pop() orelse nil_word;
+    return current_proc().mailbox.pop() orelse nil_word;
 }
 
 /// Resets the mailbox. The compiled entry function calls this on startup so
 /// each program run observes a fresh actor.
 pub export fn ex_term_mailbox_clear() i64 {
-    process.mailbox.clear();
+    current_proc().mailbox.clear();
     return nil_word;
+}
+
+/// Spawns a new process with its own mailbox and clock; returns its pid
+/// (atom word with id = process index + 1), or nil when the table is full.
+pub export fn ex_term_spawn() i64 {
+    if (process_count >= process_cap) return nil_word;
+    const index = process_count;
+    processes[index] = .{
+        .pid = (@as(i64, @intCast(index + 1)) << @intCast(tag_shift)) |
+            @as(i64, @intCast(tag_atom)),
+        .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
+    };
+    process_count += 1;
+    return processes[index].pid;
 }
 
 /// Sets the reduction budget and resets the used counter (epoch untouched).
 pub export fn ex_term_clock_init(budget: i64) i64 {
-    process.clock.budget = budget;
-    process.clock.used = 0;
+    current_proc().clock.budget = budget;
+    current_proc().clock.used = 0;
     return budget;
 }
 
 /// Charges `cost` reductions; returns 1 when the budget is exhausted (the
 /// caller should yield), else 0. Negative cost is clamped to zero.
 pub export fn ex_term_clock_tick(cost: i64) i64 {
-    if (cost > 0) process.clock.used += cost;
-    return if (process.clock.used >= process.clock.budget and process.clock.budget > 0) 1 else 0;
+    if (cost > 0) current_proc().clock.used += cost;
+    return if (current_proc().clock.used >= current_proc().clock.budget and current_proc().clock.budget > 0) 1 else 0;
 }
 
 /// Remaining reduction budget (clamped to >= 0); -1 when no budget is set.
 pub export fn ex_term_clock_budget_left() i64 {
-    if (process.clock.budget <= 0) return -1;
-    const left = process.clock.budget - process.clock.used;
+    if (current_proc().clock.budget <= 0) return -1;
+    const left = current_proc().clock.budget - current_proc().clock.used;
     return if (left < 0) 0 else left;
 }
 
 /// Current continuation-generation counter.
 pub export fn ex_term_clock_epoch() i64 {
-    return process.clock.epoch;
+    return current_proc().clock.epoch;
 }
 
 /// Bumps the epoch (message arrival / scheduler round); returns the new value.
 pub export fn ex_term_clock_bump_epoch() i64 {
-    process.clock.epoch += 1;
-    return process.clock.epoch;
+    current_proc().clock.epoch += 1;
+    return current_proc().clock.epoch;
 }
 
 /// Number of preemptive yields so far (slice boundaries in the loop driver).
@@ -1258,6 +1297,7 @@ comptime {
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
     @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
+    @export(&ex_term_spawn, .{ .name = "ex.term.spawn" });
     @export(&ex_term_clock_init, .{ .name = "ex.term.clock_init" });
     @export(&ex_term_clock_tick, .{ .name = "ex.term.clock_tick" });
     @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
@@ -1670,6 +1710,17 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_yield_mark());
     try std.testing.expectEqual(@as(i64, 2), ex_term_yield_mark());
     try std.testing.expectEqual(@as(i64, 2), ex_term_yield_count());
+
+    // spawn: new process with an isolated mailbox; send routes by pid
+    const pid2 = ex_term_spawn();
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(pid2));
+    try std.testing.expectEqual(one, ex_term_send(pid2, one));
+    // current process (pid 1) mailbox is unaffected by sends to pid2
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));
+    // send back to self routes to the current process
+    const pid1 = ex_term_self();
+    try std.testing.expectEqual(one, ex_term_send(pid1, one));
+    try std.testing.expectEqual(one, ex_term_receive());
 }
 
 test "term ABI throw unwinds to the innermost try" {
