@@ -100,42 +100,86 @@ defmodule Batata.Lift do
   # the fn literal is not extracted into a closure. Unsupported shapes are
   # left untouched and raise later through the stdlib registry.
   defp recognize_enum_calls(definitions) do
-    Enum.map(definitions, fn definition ->
-      %{
-        definition
-        | clauses:
-            Enum.map(definition.clauses, fn clause ->
-              %{clause | body_ast: recognize_enum_calls_ast(clause.body_ast)}
-            end)
-      }
+    {defs, {synthetic, _counter}} =
+      definitions
+      |> Enum.map_reduce({[], 0}, fn definition, state ->
+        {clauses, state} =
+          definition.clauses
+          |> Enum.map_reduce(state, fn clause, state ->
+            {body_ast, state} = recognize_enum_calls_ast(clause.body_ast, state)
+            {%{clause | body_ast: body_ast}, state}
+          end)
+
+        {%{definition | clauses: clauses}, state}
+      end)
+
+    defs ++ synthetic
+  end
+
+  defp recognize_enum_calls_ast(ast, state) do
+    Macro.prewalk(ast, state, fn
+      node, acc ->
+        recognize_enum_node(node, acc)
     end)
   end
 
-  defp recognize_enum_calls_ast(ast) do
-    Macro.prewalk(ast, fn
+  defp recognize_enum_node(node, state) do
+    case node do
       {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node ->
         if enum_alias?(alias_parts) do
           case map_pattern(fn_ast) do
-            {:ok, pattern} -> {:__enum_call__, [], [:map, pattern, enumerable]}
-            :error -> node
+            {:ok, pattern} -> {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
+            :error -> {node, state}
           end
         else
-          node
+          {node, state}
         end
 
       {{:., _, [{:__aliases__, _, alias_parts}, :reduce]}, _, [enumerable, acc, fn_ast]} = node ->
         if enum_alias?(alias_parts) do
           case reduce_pattern(fn_ast) do
-            {:ok, pattern} -> {:__enum_call__, [], [:reduce, pattern, enumerable, acc]}
-            :error -> node
+            {:ok, {:combination, body_ast, item_name, acc_name}} ->
+              {marker, state} =
+                extract_combination_reducer(body_ast, item_name, acc_name, enumerable, acc, state)
+
+              {marker, state}
+
+            {:ok, pattern} ->
+              {{:__enum_call__, [], [:reduce, pattern, enumerable, acc]}, state}
+
+            :error ->
+              {node, state}
           end
         else
-          node
+          {node, state}
         end
 
       node ->
-        node
-    end)
+        {node, state}
+    end
+  end
+
+  # Combination reducers become synthetic `__enum_reducer_N` definitions so
+  # any enumerable can call them through the runtime's arbitrary-closure
+  # reduce.
+  defp extract_combination_reducer(body_ast, item_name, acc_name, enumerable, acc, state) do
+    {synthetic, counter} = state
+    reducer_name = :"__enum_reducer_#{counter}"
+
+    reducer_def = %Frontend.Definition{
+      kind: :defp,
+      name: reducer_name,
+      arity: 2,
+      clauses: [
+        %Frontend.Clause{
+          patterns: [{item_name, [], nil}, {acc_name, [], nil}],
+          body_ast: body_ast
+        }
+      ]
+    }
+
+    marker = {:__enum_call__, [], [:reduce, {:combination, reducer_name}, enumerable, acc]}
+    {marker, {[reducer_def | synthetic], counter + 1}}
   end
 
   defp enum_alias?([:Enum]), do: true
@@ -1078,57 +1122,6 @@ defmodule Batata.Lift do
   # Combination reducer over a list literal: the cursor loop's after region
   # compiles the reducer body with the item (untagged) and accumulator bound
   # to the loop variables.
-  defp lift_enum_combo_loop(list_word, acc0, body_ast, item_name, acc_name, ctx, block) do
-    i64 = integer_type(ctx)
-    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
-    list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
-
-    before = MLIR.CAPI.mlirRegionCreate()
-    before_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
-
-    after_region = MLIR.CAPI.mlirRegionCreate()
-    after_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
-
-    [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
-    b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
-    len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
-    cond = cmp(b_cursor, len, "slt", ctx, before_block)
-    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
-
-    [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-    a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
-
-    item =
-      create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
-
-    item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
-    env = %{item_name => item_i64, acc_name => a_acc}
-    {acc_next, _env} = lift_expr(body_ast, ctx, after_block, env)
-
-    cursor_next =
-      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
-
-    create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
-
-    cursor0 = lit(0, ctx, block)
-
-    while_op =
-      %Beaver.SSA{
-        op: "scf.while",
-        ip: block,
-        ctx: ctx,
-        arguments: [list_i64, acc0, cursor0],
-        results: [i64, i64, i64],
-        loc: MLIR.Location.unknown(),
-        filler: fn -> [before, after_region] end
-      }
-      |> MLIR.Operation.create()
-
-    while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
-  end
 
   # Tag-dispatched enumerable reduce through the Zig runtime (continuation
   # 1 = sum), used when the enumerable is not a list literal.
@@ -1809,21 +1802,28 @@ defmodule Batata.Lift do
         capture_i64 = enum_capture_i64(capture, ctx, block)
         {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block, 14), env}
 
-      {:combination, body_ast, item_name, acc_name} ->
-        unless is_list(enumerable_ast) do
-          raise Error,
-                "combination reducers require a list literal enumerable"
-        end
+      {:combination, reducer_name} ->
+        # Any enumerable: the reducer was extracted to `__enum_reducer_N`,
+        # whose address is handed to the runtime's arbitrary-closure reduce.
+        addr =
+          create_op(
+            "ex.func_addr",
+            [sym_name: MLIR.Attribute.string(to_string(reducer_name))],
+            [MLIR.Type.function([integer_type(ctx), integer_type(ctx)], [integer_type(ctx)])],
+            ctx,
+            block
+          )
 
-        {lift_enum_combo_loop(
-           enumerable_word,
-           acc_value,
-           body_ast,
-           item_name,
-           acc_name,
-           ctx,
-           block
-         ), env}
+        {
+          create_op(
+            "ex.enumerable_reduce_fun",
+            [enumerable_word, acc_value, addr],
+            [integer_type(ctx)],
+            ctx,
+            block
+          ),
+          env
+        }
 
       :map_values_sum ->
         # Map reduce sums entry values through runtime continuation 3.

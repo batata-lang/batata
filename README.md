@@ -79,7 +79,10 @@ The Enum slice adds the first callback-shaped stdlib calls:
   captured scalar or literal) dispatch through `ex.term.enumerable_reduce_c`
   (continuation 13), capture-product (`a + x * c`, continuation 14) likewise;
   range literals (`1..3`) reduce through `ex.term.enumerable_reduce_range`
-  (scalar reducers and count; combination/map shapes raise).
+  (scalar reducers and count; combination/map shapes raise); arbitrary
+  combination reducers are extracted to synthetic functions and called by the
+  runtime through function pointers (`ex.term.enumerable_reduce_fun`),
+  supporting list/tuple/binary for any pure-arithmetic reducer body.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
