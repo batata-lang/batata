@@ -33,4 +33,39 @@ defmodule Batata.NativeEnumerableTest do
     assert Enum.sort(Enumerable.runtime_tags()) == Enum.sort(tags)
     assert Enum.all?(Enumerable.registry(), &(&1.count == :native and &1.reduce == :native))
   end
+
+  test "compile plans classify internal as runtime_tag and external as unsupported" do
+    assert Enumerable.compile_plan(List) == %{
+             count: :runtime_tag,
+             reduce: :runtime_tag,
+             reason: nil
+           }
+
+    plan = Enumerable.compile_plan(Stream)
+    assert plan.count == :unsupported
+    assert plan.reduce == :unsupported
+    assert plan.reason =~ "outside the slice"
+  end
+
+  test "plans cover every consolidated impl with a reason when unsupported" do
+    plans = Enumerable.plans()
+
+    assert length(plans) == length(Enumerable.impls())
+
+    Enum.each(plans, fn {impl, plan} ->
+      if Enumerable.internal?(impl) do
+        assert plan.count == :runtime_tag
+      else
+        assert plan.count == :unsupported
+        assert plan.reason != nil
+      end
+    end)
+  end
+
+  test "register_native maps external impls to runtime callback slots" do
+    assert Enumerable.register_native(List, %{count: 0, reduce: 1}) == nil
+
+    assert Enumerable.register_native(MapSet, %{count: 0, reduce: 1}) ==
+             {:ok, [{0, :count}, {1, :reduce}]}
+  end
 end

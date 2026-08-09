@@ -92,7 +92,13 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   extensions; external impls listed for explicit rejection);
 - the Zig runtime exposes a native callback registry
   (`ex.term.register_callback` / `ex.term.call_callback`) for compiled impls,
-  the building block for external-type count/reduce dispatch.
+  the building block for external-type count/reduce dispatch;
+- `Batata.Native.Enumerable.compile_plan/1` classifies each consolidated impl:
+  internal types get `:runtime_tag` count/reduce, external impls (Stream,
+  MapSet, Function, ...) get `:unsupported` with a reason (their Elixir
+  implementations are outside the slice — MISSING_IMPL discipline);
+  `register_native/2` maps an external impl to runtime callback slots for a
+  project-provided Provider plan.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
