@@ -105,7 +105,9 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   external-impl callback (to_list) moved from BEAM to native dispatch;
   arbitrary arithmetic mappers (`fn x -> x * 2 end`) now compile to synthetic
   functions called through `ex.term.enumerable_map_fun` for any
-  list/tuple/binary.
+  list/tuple/binary; reduce bodies generalize beyond arithmetic trees — any
+  slice-compilable expression over item/acc (including `div`/`rem`, now
+  `ex.div`/`ex.rem`, and comparisons) compiles into the extracted reducer.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

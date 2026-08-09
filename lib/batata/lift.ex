@@ -429,14 +429,15 @@ defmodule Batata.Lift do
   defp tree_var_name({name, _, _}), do: name
 
   # Combination reducer: the body is a pure arithmetic tree (+/-/*) over the
-  # item, the accumulator, and integer literals. Only list-literal
-  # enumerables can carry it (the cursor loop compiles the body).
+  # item, the accumulator, and integer literals — now generalized to any
+  # slice-compilable body whose variables come only from item/acc (the body
+  # is compiled into the extracted reducer function; unsupported forms
+  # surface as explicit lift errors).
   defp combination_pattern?(body, item, acc_var) do
-    arithmetic_tree?(body) and
-      body
-      |> collect_tree_vars()
-      |> MapSet.new()
-      |> MapSet.subset?(MapSet.new([tree_var_name(item), tree_var_name(acc_var)]))
+    body
+    |> collect_all_vars()
+    |> MapSet.new()
+    |> MapSet.subset?(MapSet.new([tree_var_name(item), tree_var_name(acc_var)]))
   end
 
   defp arithmetic_tree?({op, _, [left, right]}) when op in [:+, :-, :*],
@@ -451,6 +452,22 @@ defmodule Batata.Lift do
 
   defp collect_tree_vars({name, _, _}) when is_atom(name), do: [name]
   defp collect_tree_vars(_), do: []
+
+  # Variables in arbitrary AST: `{name, meta, ctx}` where ctx is an atom or
+  # nil is a variable; a list ctx means a call (or a non-variable node).
+  defp collect_all_vars({name, _, ctx}) when is_atom(name) and (is_atom(ctx) or is_nil(ctx)),
+    do: [name]
+
+  defp collect_all_vars({_name, _, args}) when is_list(args),
+    do: Enum.flat_map(args, &collect_all_vars/1)
+
+  defp collect_all_vars(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.flat_map(&collect_all_vars/1)
+
+  defp collect_all_vars(list) when is_list(list),
+    do: Enum.flat_map(list, &collect_all_vars/1)
+
+  defp collect_all_vars(_), do: []
 
   # `fn item -> item + capture end` / `capture + item` where capture is a free
   # variable of the fn (resolved from the enclosing env) or an integer
@@ -1450,6 +1467,13 @@ defmodule Batata.Lift do
         env
       }
     end
+  end
+
+  defp lift_expr({name, _, [left, right]}, ctx, block, env) when name in [:div, :rem] do
+    {left_value, env} = lift_expr(left, ctx, block, env)
+    {right_value, env} = lift_expr(right, ctx, block, env)
+    op = if name == :div, do: "ex.div", else: "ex.rem"
+    {create_op(op, [left_value, right_value], [integer_type(ctx)], ctx, block), env}
   end
 
   defp lift_expr({:case, _, [scrutinee_ast, [do: clauses]]}, ctx, block, env) do
