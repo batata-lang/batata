@@ -173,16 +173,38 @@ const Mailbox = struct {
     }
 };
 
+const ProcessStatus = enum(u8) { runnable, done };
+
+// Preemptive scheduler continuation (#35 slice 5): a budgeted cursor loop
+// saves its (arg, acc, cursor) state here before yielding. The scheduler
+// driver resumes the process by re-invoking its entry, which restores the
+// state when `pending` is set and the epoch matches. An explicit
+// `clock_bump_epoch` invalidates the continuation (the entry restarts), the
+// hook a future selective-receive slice uses to force mailbox re-evaluation.
+const Continuation = struct {
+    active: bool = false,
+    epoch: i64 = 0,
+    arg: i64 = 0,
+    acc: i64 = 0,
+    cursor: i64 = 0,
+};
+
 const Process = struct {
     pid: i64,
     mailbox: Mailbox = .{},
     clock: Clock,
+    // Closure word of the spawned entry; 0 for the initial process, whose
+    // entry is the compiled `__batata_entry` function.
+    entry: i64 = 0,
+    status: ProcessStatus = .runnable,
+    result: i64 = nil_word,
+    cont: Continuation = .{},
 };
 
-// Process table (#35 slice 4): a fixed-capacity set of actors, each with its
-// own FIFO mailbox and reduction clock. `current` is the executing process;
-// spawn allocates a new entry and returns its pid. Scheduling (executing a
-// spawned process's entry) arrives with the scheduler slice.
+// Process table (#35 slice 4/5): a fixed-capacity set of actors, each with
+// its own FIFO mailbox, reduction clock, entry, status and continuation.
+// `current` is the executing process; spawn allocates a new entry and returns
+// its pid; schedule_next round-robins runnable processes for the driver.
 const process_cap: usize = 8;
 var processes: [process_cap]Process = undefined;
 var process_count: usize = 1;
@@ -204,6 +226,20 @@ fn current_proc() *Process {
         processes_initialized = true;
     }
     return &processes[current_process];
+}
+
+fn pid_of(index: usize) i64 {
+    return (@as(i64, @intCast(index + 1)) << @intCast(tag_shift)) |
+        @as(i64, @intCast(tag_atom));
+}
+
+/// Resets the process table to a single fresh initial process. The scheduler
+/// driver calls this at program start so each run observes a clean actor
+/// table (processes/mailboxes do not leak across `Batata.execute` calls).
+pub export fn ex_term_process_table_reset() i64 {
+    init_processes();
+    processes_initialized = true;
+    return 1;
 }
 
 // Preemptive yield accounting (#35 slice 3): the compiled loop driver
@@ -265,9 +301,10 @@ pub export fn ex_term_self() i64 {
     return current_proc().pid;
 }
 
-/// Enqueues a message. The single-actor slice accepts any pid and returns the
-/// message itself (matching BEAM's `send/2`); returns nil when the mailbox is
-/// full.
+/// Enqueues a message to the process's mailbox, routing by pid; returns the
+/// message itself, or nil when the pid is invalid or the mailbox is full.
+/// Message delivery does not bump the recipient's epoch in this slice: a
+/// plain FIFO receive must observe the message on resume.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     _ = current_proc();
     if (word_tag(pid) != tag_atom) return nil_word;
@@ -282,25 +319,123 @@ pub export fn ex_term_receive() i64 {
     return current_proc().mailbox.pop() orelse nil_word;
 }
 
-/// Resets the mailbox. The compiled entry function calls this on startup so
-/// each program run observes a fresh actor.
+/// Resets the mailbox. The compiled entry function calls this at the start of
+/// the first slice; resumed slices skip it (guarded by the continuation check
+/// in the lift) so messages that arrived while the process was suspended are
+/// preserved.
 pub export fn ex_term_mailbox_clear() i64 {
     current_proc().mailbox.clear();
     return nil_word;
 }
 
-/// Spawns a new process with its own mailbox and clock; returns its pid
-/// (atom word with id = process index + 1), or nil when the table is full.
-pub export fn ex_term_spawn() i64 {
+/// Spawns a new process with its own mailbox, clock and entry closure;
+/// returns its pid (atom word with id = process index + 1), or nil when the
+/// table is full.
+pub export fn ex_term_spawn(fun: i64) i64 {
     if (process_count >= process_cap) return nil_word;
     const index = process_count;
     processes[index] = .{
-        .pid = (@as(i64, @intCast(index + 1)) << @intCast(tag_shift)) |
-            @as(i64, @intCast(tag_atom)),
+        .pid = pid_of(index),
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
+        .entry = fun,
     };
     process_count += 1;
     return processes[index].pid;
+}
+
+/// Saves the current process's cursor-loop continuation (list, acc, cursor)
+/// at the current epoch. Returns 1.
+pub export fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
+    const proc = current_proc();
+    proc.cont = .{
+        .active = true,
+        .epoch = proc.clock.epoch,
+        .arg = arg,
+        .acc = acc,
+        .cursor = cursor,
+    };
+    return 1;
+}
+
+/// 1 when the current process has a continuation saved at the current epoch;
+/// a message arrival bumps the epoch, so stale continuations read as not
+/// pending and the entry restarts from the top.
+pub export fn ex_term_cont_pending() i64 {
+    const proc = current_proc();
+    return if (proc.cont.active and proc.cont.epoch == proc.clock.epoch) 1 else 0;
+}
+
+/// Clears the current process's saved continuation.
+pub export fn ex_term_cont_clear() i64 {
+    current_proc().cont.active = false;
+    return 0;
+}
+
+/// Saved loop state (arg/acc/cursor) of the current process's continuation;
+/// nil when none is pending.
+pub export fn ex_term_cont_load_arg() i64 {
+    const proc = current_proc();
+    return if (proc.cont.active) proc.cont.arg else nil_word;
+}
+
+pub export fn ex_term_cont_load_acc() i64 {
+    const proc = current_proc();
+    return if (proc.cont.active) proc.cont.acc else nil_word;
+}
+
+pub export fn ex_term_cont_load_cursor() i64 {
+    const proc = current_proc();
+    return if (proc.cont.active) proc.cont.cursor else nil_word;
+}
+
+/// Advances to the next runnable process (round-robin from the current one)
+/// and returns its pid. Stays on the current process when it is the only
+/// runnable one.
+pub export fn ex_term_schedule_next() i64 {
+    if (process_count <= 1) return processes[0].pid;
+    var i: usize = 1;
+    while (i <= process_count) : (i += 1) {
+        const index = (current_process + i) % process_count;
+        if (processes[index].status == .runnable) {
+            current_process = index;
+            return processes[index].pid;
+        }
+    }
+    return processes[current_process].pid;
+}
+
+/// Closure word of the current process's entry; 0 for the initial process
+/// (the compiled `__batata_entry`).
+pub export fn ex_term_current_entry() i64 {
+    return current_proc().entry;
+}
+
+/// Marks the current process done and stores its result.
+pub export fn ex_term_process_done(result: i64) i64 {
+    const proc = current_proc();
+    proc.status = .done;
+    proc.result = result;
+    proc.cont.active = false;
+    return result;
+}
+
+/// Number of runnable processes (the scheduler driver loops while > 0).
+pub export fn ex_term_processes_runnable() i64 {
+    var count: i64 = 0;
+    for (0..process_count) |i| {
+        if (processes[i].status == .runnable) count += 1;
+    }
+    return count;
+}
+
+/// Result of a completed process; nil when the process is unknown or still
+/// runnable.
+pub export fn ex_term_process_result(pid: i64) i64 {
+    if (word_tag(pid) != tag_atom) return nil_word;
+    const pid_id: usize = @intCast(word_payload(pid));
+    if (pid_id == 0 or pid_id > @as(usize, @intCast(process_count))) return nil_word;
+    const proc = processes[pid_id - 1];
+    return if (proc.status == .done) proc.result else nil_word;
 }
 
 /// Sets the reduction budget and resets the used counter (epoch untouched).
@@ -332,7 +467,8 @@ pub export fn ex_term_clock_epoch() i64 {
 /// Bumps the epoch (message arrival / scheduler round); returns the new value.
 pub export fn ex_term_clock_bump_epoch() i64 {
     current_proc().clock.epoch += 1;
-    return current_proc().clock.epoch;
+    const result = current_proc().clock.epoch;
+    return result;
 }
 
 /// Number of preemptive yields so far (slice boundaries in the loop driver).
@@ -1298,6 +1434,18 @@ comptime {
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
     @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
     @export(&ex_term_spawn, .{ .name = "ex.term.spawn" });
+    @export(&ex_term_process_table_reset, .{ .name = "ex.term.process_table_reset" });
+    @export(&ex_term_cont_save, .{ .name = "ex.term.cont_save" });
+    @export(&ex_term_cont_pending, .{ .name = "ex.term.cont_pending" });
+    @export(&ex_term_cont_clear, .{ .name = "ex.term.cont_clear" });
+    @export(&ex_term_cont_load_arg, .{ .name = "ex.term.cont_load_arg" });
+    @export(&ex_term_cont_load_acc, .{ .name = "ex.term.cont_load_acc" });
+    @export(&ex_term_cont_load_cursor, .{ .name = "ex.term.cont_load_cursor" });
+    @export(&ex_term_schedule_next, .{ .name = "ex.term.schedule_next" });
+    @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
+    @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
+    @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
+    @export(&ex_term_process_result, .{ .name = "ex.term.process_result" });
     @export(&ex_term_clock_init, .{ .name = "ex.term.clock_init" });
     @export(&ex_term_clock_tick, .{ .name = "ex.term.clock_tick" });
     @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
@@ -1691,7 +1839,10 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_to_int(two));
     try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_self()));
 
-    // reduction clock: init budget, tick charges, exhausted -> 1, epoch
+    // reduction clock: init budget, tick charges, exhausted -> 1, epoch.
+    // Message delivery does not bump the epoch in this slice (a plain FIFO
+    // receive must not be invalidated by arrival), so the first explicit
+    // bump returns 1.
     try std.testing.expectEqual(@as(i64, 1), ex_term_clock_bump_epoch());
     try std.testing.expectEqual(@as(i64, 10), ex_term_clock_init(10));
     try std.testing.expectEqual(@as(i64, 10), ex_term_clock_budget_left());
@@ -1711,8 +1862,10 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_yield_mark());
     try std.testing.expectEqual(@as(i64, 2), ex_term_yield_count());
 
-    // spawn: new process with an isolated mailbox; send routes by pid
-    const pid2 = ex_term_spawn();
+    // spawn: new process with an isolated mailbox and entry closure; send
+    // routes by pid
+    const fun = ex_term_make_fun(1, 0, 0, 0, 0, 0);
+    const pid2 = ex_term_spawn(fun);
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(pid2));
     try std.testing.expectEqual(one, ex_term_send(pid2, one));
     // current process (pid 1) mailbox is unaffected by sends to pid2
@@ -1721,6 +1874,46 @@ test "term ABI mailbox and integer untag" {
     const pid1 = ex_term_self();
     try std.testing.expectEqual(one, ex_term_send(pid1, one));
     try std.testing.expectEqual(one, ex_term_receive());
+
+    // continuation: save/load round-trip on the current process
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_pending());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_cont_save(10, 20, 30));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_cont_pending());
+    try std.testing.expectEqual(@as(i64, 10), ex_term_cont_load_arg());
+    try std.testing.expectEqual(@as(i64, 20), ex_term_cont_load_acc());
+    try std.testing.expectEqual(@as(i64, 30), ex_term_cont_load_cursor());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_clear());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_pending());
+
+    // epoch invalidation: an explicit clock_bump_epoch invalidates a saved
+    // continuation, so it reads as not pending (the entry restarts)
+    try std.testing.expectEqual(@as(i64, 1), ex_term_cont_save(1, 2, 3));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_clock_bump_epoch());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_pending());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_clear());
+
+    // scheduler: spawn registers entries; schedule_next round-robins
+    // runnable processes; process_done parks a process with its result
+    try std.testing.expectEqual(@as(i64, 0), ex_term_current_entry());
+    const pid3 = ex_term_spawn(fun);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_processes_runnable());
+    try std.testing.expectEqual(pid2, ex_term_schedule_next());
+    try std.testing.expectEqual(fun, ex_term_current_entry());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_process_result(pid2)));
+    try std.testing.expectEqual(one, ex_term_process_done(one));
+    try std.testing.expectEqual(one, ex_term_process_result(pid2));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+    // the next slice skips the done process and picks pid3
+    try std.testing.expectEqual(pid3, ex_term_schedule_next());
+
+    // process table reset: a fresh program run starts with only the initial
+    // process, so spawns work again after a previous run filled the table
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_current_entry());
+    const pid4 = ex_term_spawn(fun);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+    try std.testing.expectEqual(pid4, ex_term_schedule_next());
 }
 
 test "term ABI throw unwinds to the innermost try" {

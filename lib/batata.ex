@@ -126,7 +126,7 @@ defmodule Batata do
     runtime_lib_copy = Path.join(output_dir, Path.basename(runtime_lib))
     File.cp!(runtime_lib, runtime_lib_copy)
 
-    jit = MLIR.ExecutionEngine.create!(module, object_dump: true)
+    jit = MLIR.ExecutionEngine.create!(module, [object_dump: true] ++ execution_engine_opts(module))
 
     try do
       MLIR.ExecutionEngine.emit_object!(jit, object_path)

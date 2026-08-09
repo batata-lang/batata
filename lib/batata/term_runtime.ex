@@ -66,7 +66,9 @@ defmodule Batata.TermRuntime do
   def ensure_static_built! do
     path = static_lib_path()
 
-    unless usable?(path) do
+    if usable?(path) and not stale?(path) do
+      path
+    else
       build!(:static, path)
     end
 
@@ -97,7 +99,18 @@ defmodule Batata.TermRuntime do
   end
 
   defp build!(:static, path) do
-    zig!(["build-lib", source_path(), "-O", "ReleaseSafe", "-lc", "-femit-bin=#{path}"])
+    # `-fno-stack-check`: the Zig std references `__zig_probe_stack`, which a
+    # plain C linker (the AOT driver) cannot resolve; the JIT path does not
+    # need this flag.
+    zig!([
+      "build-lib",
+      source_path(),
+      "-O",
+      "ReleaseSafe",
+      "-lc",
+      "-fno-stack-check",
+      "-femit-bin=#{path}"
+    ])
   end
 
   defp zig!(args) do

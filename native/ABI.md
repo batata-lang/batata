@@ -46,7 +46,17 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
 | `ex.term.receive` | `() -> i64` | dequeue the oldest message; nil when empty |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
-| `ex.term.spawn` | `() -> i64` | create a new process with its own mailbox/clock; returns its pid (atom), nil when the process table is full (capacity 8) |
+| `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns its pid (atom), nil when the process table is full (capacity 8) |
+| `ex.term.process_table_reset` | `() -> i64` | reset the process table to a single fresh initial process; the scheduler driver calls this at program start |
+| `ex.term.cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save the current process's cursor-loop continuation at the current epoch |
+| `ex.term.cont_pending` | `() -> i64` | 1 when a continuation is saved at the current epoch (a stale epoch reads 0, so the entry restarts) |
+| `ex.term.cont_clear` | `() -> i64` | clear the saved continuation |
+| `ex.term.cont_load_arg` / `cont_load_acc` / `cont_load_cursor` | `() -> i64` | saved loop state; nil when none is pending |
+| `ex.term.schedule_next` | `() -> i64` | round-robin to the next runnable process and return its pid |
+| `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
+| `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |
+| `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
+| `ex.term.process_result` | `(pid: i64) -> i64` | result of a completed process; nil when unknown or still runnable |
 | `ex.term.clock_init` | `(budget: i64) -> i64` | set the reduction budget and reset the used counter |
 | `ex.term.clock_tick` | `(cost: i64) -> i64` | charge reductions; 1 when the budget is exhausted (yield), else 0 |
 | `ex.term.clock_budget_left` | `() -> i64` | remaining budget clamped to >= 0; -1 when no budget is set |

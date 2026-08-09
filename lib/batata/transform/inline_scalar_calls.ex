@@ -60,9 +60,25 @@ defmodule Batata.Transform.InlineScalarCalls do
 
   # Dynamic anonymous-function application returns the extracted fn's result,
   # which is a scalar i64 in the current slice, so the result can be retyped
-  # to participate in arithmetic.
+  # to participate in arithmetic. Applies whose result only feeds an scf
+  # terminator (the scheduler driver's closure dispatch inside `scf.if`) keep
+  # their `!ex.dyn` type so the enclosing select stays type-consistent.
   defp retype_apply_action(apply) do
-    if scalar_typed?(apply), do: :skip, else: :ok
+    cond do
+      scalar_typed?(apply) -> :skip
+      apply_feeds_terminator?(apply) -> :skip
+      true -> :ok
+    end
+  end
+
+  defp apply_feeds_terminator?(apply) do
+    [result] = apply |> Walker.results() |> Enum.to_list()
+
+    result
+    |> Walker.uses()
+    |> Enum.all?(fn use ->
+      use |> MLIR.OpOperand.owner() |> MLIR.Operation.name() == "scf.yield"
+    end)
   end
 
   defp retype_apply!(apply) do
@@ -99,16 +115,23 @@ defmodule Batata.Transform.InlineScalarCalls do
     name = call |> attribute_string("callee")
     arity = call |> attribute_integer("arity")
 
-    case Map.fetch(callees, {name, arity}) do
-      {:ok, callee} ->
-        cond do
-          scalar?(callee) and scalar_args?(call) -> {:inline, callee}
-          scalar_return?(callee) and not scalar_typed?(call) -> {:retype, callee}
-          true -> :skip
-        end
+    # The scheduler driver's calls to the compiled entry must stay opaque:
+    # inlining the resumable entry (which the driver re-invokes per slice)
+    # would break the process-continuation handoff.
+    if name == "__batata_entry" do
+      :skip
+    else
+      case Map.fetch(callees, {name, arity}) do
+        {:ok, callee} ->
+          cond do
+            scalar?(callee) and scalar_args?(call) -> {:inline, callee}
+            scalar_return?(callee) and not scalar_typed?(call) -> {:retype, callee}
+            true -> :skip
+          end
 
-      :error ->
-        :skip
+        :error ->
+          :skip
+      end
     end
   end
 

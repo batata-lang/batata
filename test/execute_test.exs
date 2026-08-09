@@ -1388,6 +1388,83 @@ defmodule Batata.ExecuteTest do
                  end
                end
                """,
+             ctx
+             )
+  end
+
+  test "spawns a process that sends to the spawning process across preempted slices", %{
+    ctx: ctx
+  } do
+    # With a reduction budget, the entry's cursor loop yields to the
+    # scheduler; the spawned process runs during a suspended slice, sends a
+    # message, and the resumed loop keeps the message in the mailbox.
+    assert 57 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 42) end)
+                   sum = Enum.reduce([1, 2, 3, 4, 5], 0, fn x, a -> x + a end)
+
+                   receive do
+                     42 -> sum + 42
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx,
+               reduction_budget: 2
+             )
+  end
+
+  test "round-robins multiple spawned processes between preempted slices", %{ctx: ctx} do
+    # Each spawned process gets its own slice while the entry is suspended;
+    # both messages are delivered FIFO and observed by the entry on resume.
+    assert 45 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 10) end)
+                   spawn(fn -> send(me, 20) end)
+                   sum = Enum.reduce([1, 2, 3, 4, 5], 0, fn x, a -> x + a end)
+
+                   a = receive do
+                     10 -> 10
+                     _ -> 0
+                   end
+
+                   b = receive do
+                     20 -> 20
+                     _ -> 0
+                   end
+
+                   sum + a + b
+                 end
+               end
+               """,
+               ctx,
+               reduction_budget: 2
+             )
+  end
+
+  test "spawned processes run to completion under the scheduler driver", %{ctx: ctx} do
+    # Without a budget the entry is not preempted, but the driver still
+    # executes spawned processes after the entry completes.
+    assert 15 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 42) end)
+                   Enum.reduce([1, 2, 3, 4, 5], 0, fn x, a -> x + a end)
+                 end
+               end
+               """,
                ctx
              )
   end
