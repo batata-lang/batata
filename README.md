@@ -142,10 +142,16 @@ clock:
   processes and resumes a preempted process from its saved continuation
   (`cont_save`/`cont_pending`/`cont_load_*`), and `process_done` parks a
   completed process with its result. Post-loop body (e.g. `receive`) is gated
-  on loop completion, so side effects never repeat across slices. Message
-  delivery does not invalidate continuations in this slice (a plain FIFO
-  receive must observe it on resume); `clock_bump_epoch` remains the explicit
-  invalidation primitive.
+  on loop completion, so side effects never repeat across slices;
+- slice 6: selective receive (`receive` without a catch-all) compiles to a
+  preemptible mailbox scan (`ex.term.mailbox_len`/`peek`/`remove`) that skips
+  non-matching messages and removes the first match. The scan saves a
+  receive-type continuation (`ex.term.receive_cont_save`); a message arrival
+  bumps the recipient's epoch and invalidates it, and the resumed scan
+  observes the new message through the live mailbox-length check. The entry's
+  mailbox reset is gated on `cont_active` so a resume keeps messages that
+  arrived while suspended. `clock_bump_epoch` remains the explicit
+  invalidation primitive for cursor loops.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

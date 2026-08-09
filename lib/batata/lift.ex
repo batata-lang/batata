@@ -857,10 +857,10 @@ defmodule Batata.Lift do
       if budget == nil do
         create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, block)
       else
-        pending = create_op("ex.cont_pending", [], [integer_type(ctx)], ctx, block)
+        active = create_op("ex.cont_active", [], [integer_type(ctx)], ctx, block)
 
-        pending_i1 =
-          create_op("arith.trunci", [pending], [MLIR.Type.i1()], ctx, block)
+        active_i1 =
+          create_op("arith.trunci", [active], [MLIR.Type.i1()], ctx, block)
 
         resume_region = MLIR.CAPI.mlirRegionCreate()
         resume_block = MLIR.Block.create([], [])
@@ -877,7 +877,7 @@ defmodule Batata.Lift do
           op: "scf.if",
           ip: block,
           ctx: ctx,
-          arguments: [pending_i1],
+          arguments: [active_i1],
           results: [],
           loc: MLIR.Location.unknown(),
           filler: fn -> [resume_region, fresh_region] end
@@ -1526,7 +1526,7 @@ defmodule Batata.Lift do
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
 
     budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_arg, b_acc, b_cursor)
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_arg, b_acc, b_cursor, false)
 
     create_op("scf.condition", [budget_cond, b_arg, b_acc, b_cursor], [], ctx, before_block)
 
@@ -1571,7 +1571,7 @@ defmodule Batata.Lift do
   # continuation (arg, acc, cursor) to the runtime and records a yield; the
   # condition becomes false so the loop exits and the entry returns control
   # to the scheduler driver, which resumes the saved state later (#35 slice 5).
-  defp inject_reduction_tick(before_block, ctx, cond_i1, budget, arg, acc, cursor) do
+  defp inject_reduction_tick(before_block, ctx, cond_i1, budget, arg, acc, cursor, receive?) do
     i64 = integer_type(ctx)
 
     ticked =
@@ -1614,7 +1614,11 @@ defmodule Batata.Lift do
       else_block = MLIR.Block.create([], [])
       MLIR.CAPI.mlirRegionAppendOwnedBlock(else_region, else_block)
 
-      create_op("ex.cont_save", [arg, acc, cursor], [i64], ctx, if_block)
+      # Selective-receive scans save a receive-type continuation so a message
+      # arrival invalidates it (epoch wiring); cursor loops save a loop-type
+      # continuation that message arrival must not affect.
+      save_op = if receive?, do: "ex.receive_cont_save", else: "ex.cont_save"
+      create_op(save_op, [arg, acc, cursor], [i64], ctx, if_block)
       create_op("ex.yield_mark", [], [i64], ctx, if_block)
 
       false_i1 =
@@ -1653,10 +1657,17 @@ defmodule Batata.Lift do
       i64 = integer_type(ctx)
       create_op("ex.clock_init", [lit(budget, ctx, block)], [i64], ctx, block)
 
-      pending = create_op("ex.cont_pending", [], [i64], ctx, block)
+      # Resume on any saved continuation (valid or stale): the cursor-loop
+      # state is positionally valid even after a message arrival invalidates
+      # the token, and a selective-receive scan observes new messages through
+      # the live mailbox-length check. Epoch invalidation is detected by
+      # `ex.term.cont_pending` (the driver's parking check and runtime tests);
+      # restarting the loop here would re-run the entry's pre-loop side
+      # effects.
+      active = create_op("ex.cont_active", [], [i64], ctx, block)
 
-      pending_i1 =
-        create_op("arith.trunci", [pending], [MLIR.Type.i1()], ctx, block)
+      active_i1 =
+        create_op("arith.trunci", [active], [MLIR.Type.i1()], ctx, block)
 
       resume_region = MLIR.CAPI.mlirRegionCreate()
       resume_block = MLIR.Block.create([], [])
@@ -1681,7 +1692,7 @@ defmodule Batata.Lift do
           op: "scf.if",
           ip: block,
           ctx: ctx,
-          arguments: [pending_i1],
+          arguments: [active_i1],
           results: [i64, i64, i64],
           loc: MLIR.Location.unknown(),
           filler: fn -> [resume_region, fresh_region] end
@@ -1726,7 +1737,7 @@ defmodule Batata.Lift do
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
 
     budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor)
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor, false)
 
     create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
@@ -1885,7 +1896,7 @@ defmodule Batata.Lift do
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
 
     budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor)
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor, false)
 
     create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
@@ -2402,19 +2413,27 @@ defmodule Batata.Lift do
     }
   end
 
-  # `receive do pattern -> body end`: pops one message from the actor
-  # mailbox and matches it with a term case. Empty or non-matching messages
-  # fall through to a catch-all that returns the popped word; `after`
-  # clauses are a later milestone.
+  # `receive do pattern -> body end`: with a final catch-all clause the
+  # message is popped FIFO and matched with a term case (empty or
+  # non-matching messages fall through to the catch-all). Without a catch-all
+  # the receive is selective (#35 slice 6): a preemptible mailbox scan skips
+  # non-matching messages, and a message arrival invalidates the scan
+  # continuation so it restarts and observes the new message. `after` clauses
+  # are a later milestone.
   defp lift_expr({:receive, _, [options]}, ctx, block, env) do
     if Keyword.has_key?(options, :after) do
       raise Error, "receive after clauses are unsupported in the current slice"
     end
 
     clauses = Keyword.fetch!(options, :do)
-    clauses = ensure_receive_catch_all(clauses)
-    msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, block)
-    {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
+
+    if catch_all_clause?(List.last(clauses)) do
+      clauses = ensure_receive_catch_all(clauses)
+      msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, block)
+      {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
+    else
+      lift_selective_receive(clauses, ctx, block, env)
+    end
   end
 
   defp lift_expr({:throw, _, [value_ast]}, ctx, block, env) do
@@ -2536,6 +2555,164 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  # Selective receive: a cursor loop over the mailbox that tries each message
+  # against the clauses and removes the first match. The loop state is
+  # (found, result, cursor); with a reduction budget the scan is preemptible
+  # and saves a receive-type continuation, which a message arrival
+  # invalidates — the scan then restarts and observes the new message.
+  defp lift_selective_receive(clauses, ctx, block, env) do
+    i64 = integer_type(ctx)
+    i1 = MLIR.Type.i1()
+    budget = env[:__budget__]
+    parsed = Enum.map(clauses, &parse_term_clause/1)
+
+    {state_found, state_result, state_cursor} =
+      resumable_loop_state(block, ctx, budget, fn b ->
+        {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
+      end)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_found, b_result, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    len = create_op("ex.mailbox_len", [], [i64], ctx, before_block)
+
+    not_found_i1 =
+      create_op(
+        "arith.trunci",
+        [cmp(b_found, 0, "eq", ctx, before_block)],
+        [i1],
+        ctx,
+        before_block
+      )
+
+    more_i1 =
+      create_op(
+        "arith.trunci",
+        [cmp(b_cursor, len, "slt", ctx, before_block)],
+        [i1],
+        ctx,
+        before_block
+      )
+
+    cond_i1 = create_op("arith.andi", [not_found_i1, more_i1], [i1], ctx, before_block)
+
+    budget_cond =
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_found, b_result, b_cursor, true)
+
+    create_op("scf.condition", [budget_cond, b_found, b_result, b_cursor], [], ctx, before_block)
+
+    [_a_found, _a_result, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+    {n_found, n_result, n_cursor} =
+      receive_match_try(parsed, msg, a_cursor, env, ctx, after_block, i64)
+
+    create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [state_found, state_result, state_cursor],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    [found, result, _cursor] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
+    nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
+    nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
+
+    final =
+      build_scf_if(found_i1, ctx, block, [i64], fn _b -> [result] end, fn _b -> [nil_i64] end)
+      |> hd()
+
+    {final, env}
+  end
+
+  # Tries the remaining clauses against the peeked message: the first match
+  # removes the message and yields (found=1, body value, cursor); no match
+  # advances the cursor. Nested `scf.if`s select the first matching clause.
+  defp receive_match_try([], _msg, cursor, _env, ctx, block, i64) do
+    next_cursor = create_op("ex.add", [cursor, lit(1, ctx, block)], [i64], ctx, block)
+    {lit(0, ctx, block), lit(0, ctx, block), next_cursor}
+  end
+
+  defp receive_match_try([clause | rest], msg, cursor, env, ctx, block, i64) do
+    %{pattern: pattern, guard: guard, body: body} = clause
+    {match_cond, binds} = build_match(pattern, msg, ctx, block, guard == nil)
+
+    cond =
+      case guard do
+        nil ->
+          match_cond
+
+        guard_ast ->
+          guard_cond = lift_term_guard(guard_ast, binds, env, ctx, block)
+          combine([match_cond, guard_cond], ctx, block)
+      end
+
+    binds =
+      case integer_guard_var(guard) do
+        nil ->
+          binds
+
+        var ->
+          Enum.map(binds, fn
+            {^var, value} ->
+              {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
+
+            other ->
+              other
+          end)
+      end
+
+    cond_i1 =
+      create_op(
+        "arith.trunci",
+        [cond || lit(1, ctx, block)],
+        [MLIR.Type.i1()],
+        ctx,
+        block
+      )
+
+    [n_found, n_result, n_cursor] =
+      build_scf_if(
+        cond_i1,
+        ctx,
+        block,
+        [i64, i64, i64],
+        fn b ->
+          clause_env =
+            Enum.reduce(binds, env, fn
+              {var, {:deferred, fun}}, acc -> Map.put(acc, var, fun.(b))
+              {var, value}, acc -> Map.put(acc, var, value)
+            end)
+
+          {value, clause_env} = lift_block(List.wrap(body), ctx, b, clause_env)
+          value = lift_value(value, ctx, b, clause_env)
+          create_op("ex.mailbox_remove", [cursor], [i64], ctx, b)
+          [lit(1, ctx, b), value, cursor]
+        end,
+        fn b ->
+          {f, r, c} = receive_match_try(rest, msg, cursor, env, ctx, b, i64)
+          [f, r, c]
+        end
+      )
+
+    {n_found, n_result, n_cursor}
   end
 
   defp ensure_receive_catch_all(clauses) do

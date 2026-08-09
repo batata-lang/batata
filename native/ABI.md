@@ -45,13 +45,19 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.self` | `() -> i64` | pid of the current actor (atom word with id 1) |
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
 | `ex.term.receive` | `() -> i64` | dequeue the oldest message; nil when empty |
+| `ex.term.mailbox_len` | `() -> i64` | number of messages in the current process's mailbox |
+| `ex.term.mailbox_peek` | `(cursor: i64) -> i64` | message at `cursor` (0-based from the head) without removing it; nil when out of range |
+| `ex.term.mailbox_remove` | `(cursor: i64) -> i64` | remove the message at `cursor`, shifting later messages forward |
+| `ex.term.nil` | `() -> i64` | the nil term word (atom id 0) |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
 | `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns its pid (atom), nil when the process table is full (capacity 8) |
 | `ex.term.process_table_reset` | `() -> i64` | reset the process table to a single fresh initial process; the scheduler driver calls this at program start |
 | `ex.term.cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save the current process's cursor-loop continuation at the current epoch |
 | `ex.term.cont_pending` | `() -> i64` | 1 when a continuation is saved at the current epoch (a stale epoch reads 0, so the entry restarts) |
+| `ex.term.cont_active` | `() -> i64` | 1 when any continuation is saved (valid or stale); the entry's mailbox reset is gated on this so a resume keeps messages that arrived while suspended |
 | `ex.term.cont_clear` | `() -> i64` | clear the saved continuation |
 | `ex.term.cont_load_arg` / `cont_load_acc` / `cont_load_cursor` | `() -> i64` | saved loop state; nil when none is pending |
+| `ex.term.receive_cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save a selective-receive scan continuation; a message arrival invalidates it (epoch bump), unlike a cursor-loop continuation |
 | `ex.term.schedule_next` | `() -> i64` | round-robin to the next runnable process and return its pid |
 | `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
 | `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |

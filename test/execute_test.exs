@@ -1469,6 +1469,80 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "selective receive skips non-matching messages and removes the first match", %{ctx: ctx} do
+    # Without a catch-all clause, the receive scans the mailbox: non-matching
+    # messages stay queued and the first match is removed (#35 slice 6).
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, 43)
+                   send(pid, 42)
+
+                   receive do
+                     42 -> 43
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "selective receive scan resumes across preempted slices", %{ctx: ctx} do
+    # The mailbox scan is a budgeted cursor loop: it yields mid-scan and
+    # resumes from its saved cursor with a live mailbox-length check.
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, 1)
+                   send(pid, 1)
+                   send(pid, 42)
+
+                   receive do
+                     42 -> 43
+                   end
+                 end
+               end
+               """,
+               ctx,
+               reduction_budget: 2
+             )
+  end
+
+  test "message arrival invalidates a suspended selective-receive scan (epoch wiring)", %{
+    ctx: ctx
+  } do
+    # A spawned process delivers the matching message while the entry's scan
+    # is suspended; the resumed scan observes it (the receive-type
+    # continuation is invalidated, and the scan continues with the new
+    # message visible through the live mailbox length).
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   send(me, 1)
+                   send(me, 1)
+                   spawn(fn -> send(me, 42) end)
+
+                   receive do
+                     42 -> 43
+                   end
+                 end
+               end
+               """,
+               ctx,
+               reduction_budget: 2
+             )
+  end
+
   test "try catches a thrown value and untags it", %{ctx: ctx} do
     assert 43 ==
              Batata.execute(
