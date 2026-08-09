@@ -61,6 +61,8 @@ defmodule Batata.StdlibTest do
       assert 6 == execute("Enum.reduce([1, 2, 3], 0, fn x, a -> x + a end)", ctx)
       assert 16 == execute("Enum.reduce([1, 2, 3], 10, fn x, a -> a + x end)", ctx)
       assert 42 == execute("Enum.reduce([1, 2, 3], 42, fn _x, a -> a end)", ctx)
+      assert 6 == execute("Enum.reduce({1, 2, 3}, 0, fn x, a -> x + a end)", ctx)
+      assert 6 == execute("Enum.reduce(<<1, 2, 3>>, 0, fn x, a -> x + a end)", ctx)
     end
 
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do
