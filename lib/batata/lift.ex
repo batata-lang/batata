@@ -126,7 +126,7 @@ defmodule Batata.Lift do
   defp recognize_enum_node(node, state) do
     case node do
       {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node ->
-        if enum_alias?(alias_parts) do
+        if enum_alias?(alias_parts) or stream_alias?(alias_parts) do
           case map_pattern(fn_ast) do
             {:ok, {:mapper, body_ast, item_name}} ->
               {marker, state} = extract_mapper(body_ast, item_name, enumerable, state)
@@ -134,6 +134,20 @@ defmodule Batata.Lift do
 
             {:ok, pattern} ->
               {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
+
+            :error ->
+              {node, state}
+          end
+        else
+          {node, state}
+        end
+
+      {{:., _, [{:__aliases__, _, alias_parts}, :filter]}, _, [enumerable, fn_ast]} = node ->
+        if stream_alias?(alias_parts) do
+          case predicate_pattern(fn_ast) do
+            {:ok, body_ast, item_name} ->
+              {marker, state} = extract_predicate(body_ast, item_name, enumerable, state)
+              {marker, state}
 
             :error ->
               {node, state}
@@ -211,9 +225,51 @@ defmodule Batata.Lift do
     {marker, {[mapper_def | synthetic], counter + 1}}
   end
 
+  # Stream.filter predicates become synthetic `__stream_pred_N` definitions
+  # called through the runtime's compiled-predicate filter.
+  defp extract_predicate(body_ast, item_name, enumerable, state) do
+    {synthetic, counter} = state
+    predicate_name = :"__stream_pred_#{counter}"
+
+    predicate_def = %Frontend.Definition{
+      kind: :defp,
+      name: predicate_name,
+      arity: 1,
+      clauses: [
+        %Frontend.Clause{
+          patterns: [{item_name, [], nil}],
+          body_ast: body_ast
+        }
+      ]
+    }
+
+    marker = {:__enum_call__, [], [:stream_filter, predicate_name, enumerable]}
+    {marker, {[predicate_def | synthetic], counter + 1}}
+  end
+
+  # `fn item -> cond end`: predicate body must be a slice-compilable
+  # expression over the item (comparisons, arithmetic, is_*).
+  defp predicate_pattern({:fn, _, [{:->, _, [[item], body]}]}) do
+    vars =
+      body
+      |> collect_all_vars()
+      |> MapSet.new()
+
+    if MapSet.subset?(vars, MapSet.new([tree_var_name(item)])) do
+      {:ok, body, tree_var_name(item)}
+    else
+      :error
+    end
+  end
+
+  defp predicate_pattern(_), do: :error
+
   defp enum_alias?([:Enum]), do: true
   defp enum_alias?([:"Elixir", :Enum]), do: true
   defp enum_alias?(_), do: false
+  defp stream_alias?([:Stream]), do: true
+  defp stream_alias?([:"Elixir", :Stream]), do: true
+  defp stream_alias?(_), do: false
 
   defp map_pattern({:fn, _, [{:->, _, [[item], body]}]}) do
     cond do
@@ -1564,6 +1620,36 @@ defmodule Batata.Lift do
         enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
         lift_reduce_pattern(pattern, enumerable_ast, enumerable_word, acc_value, ctx, block, env)
     end
+  end
+
+  defp lift_expr(
+         {:__enum_call__, _, [:stream_filter, predicate_name, enumerable_ast]},
+         ctx,
+         block,
+         env
+       ) do
+    {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+    enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+
+    addr =
+      create_op(
+        "ex.func_addr",
+        [sym_name: MLIR.Attribute.string(to_string(predicate_name))],
+        [MLIR.Type.function([integer_type(ctx)], [integer_type(ctx)])],
+        ctx,
+        block
+      )
+
+    {
+      create_op(
+        "ex.stream_filter",
+        [enumerable_word, addr],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      ),
+      env
+    }
   end
 
   # Anonymous-function application: `f.(args)` / `(fn ... end).(args)`.

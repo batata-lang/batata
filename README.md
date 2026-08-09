@@ -111,7 +111,10 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
 - slice extension for sets: `MapSet.new/1` / `member?/2` / `put/2` (and
   `HashSet.new/1`) compile to deduplicated list words
   (`ex.term.mapset_*`), so `Enum` operations over sets reuse the list paths —
-  the first external Enumerable impl native-ized via a slice representation.
+  the first external Enumerable impl native-ized via a slice representation;
+  `Stream.map/2` and `Stream.filter/2` compile eagerly (mapper/predicate
+  extracted to synthetic functions, `ex.term.stream_filter` for filtering) —
+  for side-effect-free streams the eager result matches consumption.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
