@@ -2418,21 +2418,26 @@ defmodule Batata.Lift do
   # non-matching messages fall through to the catch-all). Without a catch-all
   # the receive is selective (#35 slice 6): a preemptible mailbox scan skips
   # non-matching messages, and a message arrival invalidates the scan
-  # continuation so it restarts and observes the new message. `after` clauses
-  # are a later milestone.
+  # continuation so it restarts and observes the new message.
+  #
+  # `after timeout_ms -> body end` (#35 slice 7): when no message matches, the
+  # receive becomes a preemptible wait loop that yields to other processes and
+  # re-scans until a match arrives or the timeout elapses (wall-clock
+  # milliseconds via `ex.term.monotonic_time`; `:infinity` waits forever).
   defp lift_expr({:receive, _, [options]}, ctx, block, env) do
-    if Keyword.has_key?(options, :after) do
-      raise Error, "receive after clauses are unsupported in the current slice"
-    end
-
     clauses = Keyword.fetch!(options, :do)
+    after_clause = parse_receive_after(Keyword.get(options, :after))
 
     if catch_all_clause?(List.last(clauses)) do
-      clauses = ensure_receive_catch_all(clauses)
-      msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, block)
-      {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
+      if after_clause == nil do
+        clauses = ensure_receive_catch_all(clauses)
+        msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, block)
+        {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
+      else
+        lift_receive_after_fifo(clauses, after_clause, ctx, block, env)
+      end
     else
-      lift_selective_receive(clauses, ctx, block, env)
+      lift_selective_receive(clauses, ctx, block, env, after_clause)
     end
   end
 
@@ -2562,7 +2567,7 @@ defmodule Batata.Lift do
   # (found, result, cursor); with a reduction budget the scan is preemptible
   # and saves a receive-type continuation, which a message arrival
   # invalidates — the scan then restarts and observes the new message.
-  defp lift_selective_receive(clauses, ctx, block, env) do
+  defp lift_selective_receive(clauses, ctx, block, env, after_clause) do
     i64 = integer_type(ctx)
     i1 = MLIR.Type.i1()
     budget = env[:__budget__]
@@ -2603,20 +2608,61 @@ defmodule Batata.Lift do
         before_block
       )
 
-    cond_i1 = create_op("arith.andi", [not_found_i1, more_i1], [i1], ctx, before_block)
+    cond_i1 =
+      if after_clause == nil do
+        create_op("arith.andi", [not_found_i1, more_i1], [i1], ctx, before_block)
+      else
+        # With `after`, a completed scan round (cursor >= len) is handled in
+        # the body: the wait loop re-scans or times out.
+        not_found_i1
+      end
 
     budget_cond =
       inject_reduction_tick(before_block, ctx, cond_i1, budget, b_found, b_result, b_cursor, true)
 
     create_op("scf.condition", [budget_cond, b_found, b_result, b_cursor], [], ctx, before_block)
 
-    [_a_found, _a_result, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-    msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+    [a_found, a_result, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    len = create_op("ex.mailbox_len", [], [i64], ctx, after_block)
 
-    {n_found, n_result, n_cursor} =
-      receive_match_try(parsed, msg, a_cursor, env, ctx, after_block, i64)
+    more_i1 =
+      create_op(
+        "arith.trunci",
+        [cmp(a_cursor, len, "slt", ctx, after_block)],
+        [i1],
+        ctx,
+        after_block
+      )
 
-    create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
+    if after_clause == nil do
+      msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+      {n_found, n_result, n_cursor} =
+        receive_match_try(parsed, msg, a_cursor, env, ctx, after_block, i64)
+
+      create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
+    else
+      [n_found, n_result, n_cursor] =
+        build_scf_if(
+          more_i1,
+          ctx,
+          after_block,
+          [i64, i64, i64],
+          fn b ->
+            msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, b)
+            {f, r, c} = receive_match_try(parsed, msg, a_cursor, env, ctx, b, i64)
+            [f, r, c]
+          end,
+          fn b ->
+            {f, r, c} =
+              receive_timeout_check(after_clause, a_found, a_result, a_cursor, env, ctx, b)
+
+            [f, r, c]
+          end
+        )
+
+      create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
+    end
 
     while_op =
       %Beaver.SSA{
@@ -2713,6 +2759,201 @@ defmodule Batata.Lift do
       )
 
     {n_found, n_result, n_cursor}
+  end
+
+  # `receive ... after` wait-loop step for a completed scan round (or an empty
+  # FIFO pop): restarts the round until the timeout elapses, then yields the
+  # after body. The timeout start lives in the process's `receive_start` slot
+  # (0 = timing not started yet); `:infinity` never times out.
+  defp receive_timeout_check({:infinity, _body}, _found, _result, cursor, _env, ctx, block) do
+    {lit(0, ctx, block), lit(0, ctx, block), cursor}
+  end
+
+  defp receive_timeout_check({:timeout, 0, body}, _found, _result, cursor, env, ctx, block) do
+    {lit(1, ctx, block), lift_after_body(body, env, ctx, block), cursor}
+  end
+
+  defp receive_timeout_check(
+         {:timeout, timeout_ms, body},
+         _found,
+         _result,
+         cursor,
+         env,
+         ctx,
+         block
+       ) do
+    i64 = integer_type(ctx)
+    i1 = MLIR.Type.i1()
+    now = create_op("ex.monotonic_time", [], [i64], ctx, block)
+    start = create_op("ex.receive_start", [], [i64], ctx, block)
+
+    is_first_i1 =
+      create_op("arith.trunci", [cmp(start, 0, "eq", ctx, block)], [i1], ctx, block)
+
+    [f, r, c] =
+      build_scf_if(
+        is_first_i1,
+        ctx,
+        block,
+        [i64, i64, i64],
+        fn b ->
+          create_op("ex.receive_start_set", [now], [i64], ctx, b)
+          [lit(0, ctx, b), lit(0, ctx, b), cursor]
+        end,
+        fn b ->
+          elapsed = create_op("ex.sub", [now, start], [i64], ctx, b)
+
+          timed_out_i1 =
+            create_op(
+              "arith.trunci",
+              [cmp(elapsed, timeout_ms, "sge", ctx, b)],
+              [i1],
+              ctx,
+              b
+            )
+
+          build_scf_if(
+            timed_out_i1,
+            ctx,
+            b,
+            [i64, i64, i64],
+            fn tb ->
+              [lit(1, ctx, tb), lift_after_body(body, env, ctx, tb), cursor]
+            end,
+            fn tb ->
+              [lit(0, ctx, tb), lit(0, ctx, tb), cursor]
+            end
+          )
+        end
+      )
+
+    {f, r, c}
+  end
+
+  defp lift_after_body(body, env, ctx, block) do
+    {value, _env} = lift_block(List.wrap(body), ctx, block, env)
+    lift_value(value, ctx, block, env)
+  end
+
+  # FIFO `receive` with `after`: a pop that finds the mailbox empty enters the
+  # wait loop (re-pop until a message arrives or the timeout elapses);
+  # non-empty pops match through the catch-all as usual.
+  defp lift_receive_after_fifo(clauses, after_clause, ctx, block, env) do
+    i64 = integer_type(ctx)
+    i1 = MLIR.Type.i1()
+    budget = env[:__budget__]
+    clauses = ensure_receive_catch_all(clauses)
+
+    {state_found, state_result, state_cursor} =
+      resumable_loop_state(block, ctx, budget, fn b ->
+        {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
+      end)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_found, b_result, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+
+    not_found_i1 =
+      create_op(
+        "arith.trunci",
+        [cmp(b_found, 0, "eq", ctx, before_block)],
+        [i1],
+        ctx,
+        before_block
+      )
+
+    budget_cond =
+      inject_reduction_tick(
+        before_block,
+        ctx,
+        not_found_i1,
+        budget,
+        b_found,
+        b_result,
+        b_cursor,
+        true
+      )
+
+    create_op("scf.condition", [budget_cond, b_found, b_result, b_cursor], [], ctx, before_block)
+
+    [a_found, a_result, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, after_block)
+    nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, after_block)
+    is_empty = create_op("ex.term_eq", [msg, nil_dyn], [i64], ctx, after_block)
+    is_empty_i1 = create_op("arith.trunci", [is_empty], [i1], ctx, after_block)
+
+    [n_found, n_result, n_cursor] =
+      build_scf_if(
+        is_empty_i1,
+        ctx,
+        after_block,
+        [i64, i64, i64],
+        fn b ->
+          {f, r, c} =
+            receive_timeout_check(after_clause, a_found, a_result, a_cursor, env, ctx, b)
+
+          [f, r, c]
+        end,
+        fn b ->
+          value = lift_term_case(clauses, msg, env, ctx, b, untag_int_binds: true)
+          [lit(1, ctx, b), value, a_cursor]
+        end
+      )
+
+    create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [state_found, state_result, state_cursor],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    [found, result, _cursor] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
+    nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
+    nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
+
+    final =
+      build_scf_if(found_i1, ctx, block, [i64], fn _b -> [result] end, fn _b -> [nil_i64] end)
+      |> hd()
+
+    {final, env}
+  end
+
+  # `after` value AST: `[timeout_ast, [do: body]]`; the timeout is an integer
+  # literal (>= 0) or `:infinity`.
+  defp parse_receive_after(nil), do: nil
+
+  defp parse_receive_after([{:->, _, [[timeout_ast], body]}]) do
+    case timeout_ast do
+      :infinity ->
+        {:infinity, body}
+
+      timeout when is_integer(timeout) and timeout >= 0 ->
+        {:timeout, timeout, body}
+
+      _ ->
+        raise Error,
+              "receive after timeout must be an integer literal or :infinity, got: " <>
+                inspect(timeout_ast)
+    end
+  end
+
+  defp parse_receive_after(other) do
+    raise Error, "malformed receive after clause: #{inspect(other)}"
   end
 
   defp ensure_receive_catch_all(clauses) do

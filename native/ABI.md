@@ -49,6 +49,9 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.mailbox_peek` | `(cursor: i64) -> i64` | message at `cursor` (0-based from the head) without removing it; nil when out of range |
 | `ex.term.mailbox_remove` | `(cursor: i64) -> i64` | remove the message at `cursor`, shifting later messages forward |
 | `ex.term.nil` | `() -> i64` | the nil term word (atom id 0) |
+| `ex.term.monotonic_time` | `() -> i64` | wall-clock milliseconds (monotonic) for `receive ... after` timeouts |
+| `ex.term.receive_start` | `() -> i64` | the current process's `receive ... after` timeout start (0 = not started) |
+| `ex.term.receive_start_set` | `(value: i64) -> i64` | set the current process's `receive ... after` timeout start |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
 | `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns its pid (atom), nil when the process table is full (capacity 8) |
 | `ex.term.process_table_reset` | `() -> i64` | reset the process table to a single fresh initial process; the scheduler driver calls this at program start |

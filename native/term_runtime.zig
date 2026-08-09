@@ -8,6 +8,7 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("setjmp.h");
     @cInclude("stdio.h");
+    @cInclude("time.h");
 });
 
 // Tag layout: the low 3 bits of a 64-bit word. Immediate terms carry their
@@ -203,6 +204,9 @@ const Process = struct {
     status: ProcessStatus = .runnable,
     result: i64 = nil_word,
     cont: Continuation = .{},
+    // `receive ... after` timeout start (monotonic milliseconds); 0 means the
+    // wait loop has not completed its first scan round yet.
+    receive_start: i64 = 0,
 };
 
 // Process table (#35 slice 4/5): a fixed-capacity set of actors, each with
@@ -333,6 +337,26 @@ pub export fn ex_term_receive() i64 {
 /// The nil term word (atom id 0).
 pub export fn ex_term_nil() i64 {
     return nil_word;
+}
+
+/// The current process's `receive ... after` timeout start; 0 when the wait
+/// loop has not started timing yet.
+pub export fn ex_term_receive_start() i64 {
+    return current_proc().receive_start;
+}
+
+/// Sets the current process's `receive ... after` timeout start.
+pub export fn ex_term_receive_start_set(value: i64) i64 {
+    current_proc().receive_start = value;
+    return value;
+}
+
+/// Wall-clock milliseconds (UTC epoch) for `receive ... after` timeouts.
+pub export fn ex_term_monotonic_time() i64 {
+    var ts: c.struct_timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return @as(i64, ts.tv_sec) * 1000 +
+        @divTrunc(@as(i64, ts.tv_nsec), 1_000_000);
 }
 
 /// Number of messages in the current process's mailbox.
@@ -1502,6 +1526,9 @@ comptime {
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
     @export(&ex_term_nil, .{ .name = "ex.term.nil" });
+    @export(&ex_term_monotonic_time, .{ .name = "ex.term.monotonic_time" });
+    @export(&ex_term_receive_start, .{ .name = "ex.term.receive_start" });
+    @export(&ex_term_receive_start_set, .{ .name = "ex.term.receive_start_set" });
     @export(&ex_term_mailbox_len, .{ .name = "ex.term.mailbox_len" });
     @export(&ex_term_mailbox_peek, .{ .name = "ex.term.mailbox_peek" });
     @export(&ex_term_mailbox_remove, .{ .name = "ex.term.mailbox_remove" });
