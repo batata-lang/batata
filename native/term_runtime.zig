@@ -316,6 +316,51 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
     };
 }
 
+/// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
+/// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
+/// unchanged. Items are untagged integers (binary bytes are tagged before the
+/// step, matching list/tuple elements).
+pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) i64 {
+    switch (word_tag(enumerable)) {
+        tag_list => {
+            var current = enumerable;
+            var result = acc;
+            while (word_tag(current) == tag_list) {
+                result = enumerate_step(result, list_cell(current)[0], continuation);
+                current = list_cell(current)[1];
+            }
+            return result;
+        },
+        tag_tuple => {
+            const len = tuple_len(enumerable);
+            var result = acc;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                result = enumerate_step(result, tuple_elems(enumerable)[i], continuation);
+            }
+            return result;
+        },
+        tag_binary => {
+            const len = binary_len(enumerable);
+            var result = acc;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                const byte: i64 = binary_bytes(enumerable)[i];
+                result = enumerate_step(result, byte << @intCast(tag_shift), continuation);
+            }
+            return result;
+        },
+        else => return acc,
+    }
+}
+
+fn enumerate_step(acc: i64, item: i64, continuation: i64) i64 {
+    if (continuation == 1) { // sum: acc + item
+        return acc + (if (is_int(item)) word_payload(item) else 0);
+    }
+    return acc; // return-accumulator
+}
+
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
@@ -690,6 +735,7 @@ comptime {
     @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
     @export(&ex_term_map_length, .{ .name = "ex.term.map_length" });
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
+    @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
@@ -825,6 +871,14 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_enumerable_count(map));
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_count(count_bin));
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_count(one));
+
+    // enumerable reduce by tag: sum over list/tuple/binary
+    try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(list, 0, 1));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(tuple, 0, 1));
+    try std.testing.expectEqual(@as(i64, 4), ex_term_enumerable_reduce(count_bin, 0, 1));
+    try std.testing.expectEqual(@as(i64, 7), ex_term_enumerable_reduce(list, 4, 1));
+    try std.testing.expectEqual(@as(i64, 4), ex_term_enumerable_reduce(list, 4, 2));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(one, 0, 1));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));

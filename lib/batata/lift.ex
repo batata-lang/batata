@@ -867,6 +867,20 @@ defmodule Batata.Lift do
     while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
   end
 
+  # Tag-dispatched enumerable reduce through the Zig runtime (continuation
+  # 1 = sum), used when the enumerable is not a list literal.
+  defp lift_enum_reduce_runtime(enumerable_word, acc0, continuation, ctx, block) do
+    i64 = integer_type(ctx)
+
+    create_op(
+      "ex.enumerable_reduce",
+      [enumerable_word, acc0, lit(continuation, ctx, block)],
+      [i64],
+      ctx,
+      block
+    )
+  end
+
   # `Enum.map/2` with a constant mapper (`fn _x -> c end`) compiles to a
   # descending cursor loop that conses the constant onto the accumulator,
   # preserving list order without a reverse.
@@ -1147,8 +1161,18 @@ defmodule Batata.Lift do
     acc_value = lift_value(acc, ctx, block, env)
 
     case pattern do
-      :sum -> {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
-      :return_acc -> {acc_value, env}
+      :sum ->
+        if is_list(enumerable_ast) do
+          # A list literal keeps the compile-time cursor loop (M3); other
+          # enumerables (tuple/binary literals or variables) dispatch through
+          # the runtime's tag-based enumerable reduce.
+          {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
+        end
+
+      :return_acc ->
+        {acc_value, env}
     end
   end
 
@@ -1339,6 +1363,12 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     {try_op |> MLIR.Operation.results() |> Enum.to_list() |> hd(), env}
+  end
+
+  # Tuple literal AST: `{a, b, c}` parses to `{:{}, meta, [a, b, c]}` for
+  # arity >= 3 (two-element tuples are already 2-tuples in quoted form).
+  defp lift_expr({:{}, _, elements}, ctx, block, env) when is_list(elements) do
+    lift_tuple_literal(List.to_tuple(elements), ctx, block, env)
   end
 
   defp lift_expr({name, _, args}, ctx, block, env) when is_atom(name) and is_list(args) do
