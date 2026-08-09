@@ -133,29 +133,56 @@ fn fun_words(fun: i64) [*]i64 {
     return @ptrFromInt(@as(usize, @bitCast(fun)) & ~tag_mask);
 }
 
-// A fixed-capacity FIFO mailbox for the current execution context. M4 scope:
-// a single actor consumes messages through `receive`; blocking and `after`
-// timeouts arrive with the scheduler.
+// Actor scheduling model (#35): a single process with a FIFO mailbox and a
+// reduction clock. `Clock.used` is charged by `ex.term.clock_tick` before
+// effectful steps / loop back-edges; when it exceeds `budget` the compiled
+// code yields. `epoch` is a continuation-generation counter: message arrival
+// or a scheduler round bumps it, invalidating stale resume tokens.
 const mailbox_cap: usize = 64;
-var mailbox: [mailbox_cap]i64 = undefined;
-var mailbox_head: usize = 0;
-var mailbox_len: usize = 0;
 
-fn mailbox_push(msg: i64) bool {
-    if (mailbox_len >= mailbox_cap) return false;
-    const index = (mailbox_head + mailbox_len) % mailbox_cap;
-    mailbox[index] = msg;
-    mailbox_len += 1;
-    return true;
-}
+const Clock = struct {
+    budget: i64,
+    used: i64,
+    epoch: i64,
+};
 
-fn mailbox_pop() ?i64 {
-    if (mailbox_len == 0) return null;
-    const msg = mailbox[mailbox_head];
-    mailbox_head = (mailbox_head + 1) % mailbox_cap;
-    mailbox_len -= 1;
-    return msg;
-}
+const Mailbox = struct {
+    queue: [mailbox_cap]i64 = undefined,
+    head: usize = 0,
+    len: usize = 0,
+
+    fn push(self: *Mailbox, msg: i64) bool {
+        if (self.len >= mailbox_cap) return false;
+        const index = (self.head + self.len) % mailbox_cap;
+        self.queue[index] = msg;
+        self.len += 1;
+        return true;
+    }
+
+    fn pop(self: *Mailbox) ?i64 {
+        if (self.len == 0) return null;
+        const msg = self.queue[self.head];
+        self.head = (self.head + 1) % mailbox_cap;
+        self.len -= 1;
+        return msg;
+    }
+
+    fn clear(self: *Mailbox) void {
+        self.head = 0;
+        self.len = 0;
+    }
+};
+
+const Process = struct {
+    pid: i64,
+    mailbox: Mailbox = .{},
+    clock: Clock,
+};
+
+var process = Process{
+    .pid = (1 << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom)),
+    .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
+};
 
 // A stack of setjmp buffers for non-local exits (`throw`). The setjmp call
 // itself happens in the compiled code (so its frame stays live); the runtime
@@ -207,7 +234,7 @@ pub export fn ex_term_catch_value() i64 {
 /// Returns the pid of the current execution context. The scalar slice runs a
 /// single actor with pid 1 (the atom term with id 1).
 pub export fn ex_term_self() i64 {
-    return @as(i64, @intCast(1 << @intCast(tag_shift))) | @as(i64, @intCast(tag_atom));
+    return process.pid;
 }
 
 /// Enqueues a message. The single-actor slice accepts any pid and returns the
@@ -215,21 +242,52 @@ pub export fn ex_term_self() i64 {
 /// full.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     _ = pid;
-    if (!mailbox_push(msg)) return nil_word;
+    if (!process.mailbox.push(msg)) return nil_word;
     return msg;
 }
 
 /// Dequeues the oldest message; nil when the mailbox is empty.
 pub export fn ex_term_receive() i64 {
-    return mailbox_pop() orelse nil_word;
+    return process.mailbox.pop() orelse nil_word;
 }
 
 /// Resets the mailbox. The compiled entry function calls this on startup so
 /// each program run observes a fresh actor.
 pub export fn ex_term_mailbox_clear() i64 {
-    mailbox_head = 0;
-    mailbox_len = 0;
+    process.mailbox.clear();
     return nil_word;
+}
+
+/// Sets the reduction budget and resets the used counter (epoch untouched).
+pub export fn ex_term_clock_init(budget: i64) i64 {
+    process.clock.budget = budget;
+    process.clock.used = 0;
+    return budget;
+}
+
+/// Charges `cost` reductions; returns 1 when the budget is exhausted (the
+/// caller should yield), else 0. Negative cost is clamped to zero.
+pub export fn ex_term_clock_tick(cost: i64) i64 {
+    if (cost > 0) process.clock.used += cost;
+    return if (process.clock.used >= process.clock.budget and process.clock.budget > 0) 1 else 0;
+}
+
+/// Remaining reduction budget (clamped to >= 0); -1 when no budget is set.
+pub export fn ex_term_clock_budget_left() i64 {
+    if (process.clock.budget <= 0) return -1;
+    const left = process.clock.budget - process.clock.used;
+    return if (left < 0) 0 else left;
+}
+
+/// Current continuation-generation counter.
+pub export fn ex_term_clock_epoch() i64 {
+    return process.clock.epoch;
+}
+
+/// Bumps the epoch (message arrival / scheduler round); returns the new value.
+pub export fn ex_term_clock_bump_epoch() i64 {
+    process.clock.epoch += 1;
+    return process.clock.epoch;
 }
 
 /// Untags an integer term word to its scalar value; 0 for non-integers (the
@@ -1183,6 +1241,11 @@ comptime {
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
     @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
+    @export(&ex_term_clock_init, .{ .name = "ex.term.clock_init" });
+    @export(&ex_term_clock_tick, .{ .name = "ex.term.clock_tick" });
+    @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
+    @export(&ex_term_clock_epoch, .{ .name = "ex.term.clock_epoch" });
+    @export(&ex_term_clock_bump_epoch, .{ .name = "ex.term.clock_bump_epoch" });
     @export(&ex_term_to_int, .{ .name = "ex.term.to_int" });
     @export(&ex_term_jmp_buf_size, .{ .name = "ex.term.jmp_buf_size" });
     @export(&ex_term_setjmp_addr, .{ .name = "ex.term.setjmp_addr" });
@@ -1568,6 +1631,20 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_to_int(one));
     try std.testing.expectEqual(@as(i64, 2), ex_term_to_int(two));
     try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_self()));
+
+    // reduction clock: init budget, tick charges, exhausted -> 1, epoch
+    try std.testing.expectEqual(@as(i64, 1), ex_term_clock_bump_epoch());
+    try std.testing.expectEqual(@as(i64, 10), ex_term_clock_init(10));
+    try std.testing.expectEqual(@as(i64, 10), ex_term_clock_budget_left());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_clock_tick(4));
+    try std.testing.expectEqual(@as(i64, 6), ex_term_clock_budget_left());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_clock_tick(6));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_clock_budget_left());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_clock_tick(1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_clock_epoch());
+    try std.testing.expectEqual(@as(i64, 2), ex_term_clock_bump_epoch());
+    try std.testing.expectEqual(@as(i64, 2), ex_term_clock_epoch());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_clock_budget_left());
 }
 
 test "term ABI throw unwinds to the innermost try" {
