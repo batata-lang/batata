@@ -151,7 +151,14 @@ clock:
   observes the new message through the live mailbox-length check. The entry's
   mailbox reset is gated on `cont_active` so a resume keeps messages that
   arrived while suspended. `clock_bump_epoch` remains the explicit
-  invalidation primitive for cursor loops.
+  invalidation primitive for cursor loops;
+- slice 7: `receive ... after timeout_ms -> body end` turns a no-match receive
+  into a preemptible wait loop: it yields to other processes (spawned senders)
+  and re-scans until a match arrives or the timeout elapses. Timeouts use
+  wall-clock milliseconds (`ex.term.monotonic_time`, start tracked per process
+  via `receive_start`/`receive_start_set`); `0` times out immediately after
+  one scan round and `:infinity` waits forever. The FIFO path (catch-all)
+  waits only when the mailbox is empty.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

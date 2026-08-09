@@ -1543,6 +1543,105 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "receive after times out immediately with timeout 0", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   receive do
+                     42 -> 1
+                   after
+                     0 -> 2
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "receive after ignores non-matching messages then times out", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, 43)
+
+                   receive do
+                     42 -> 1
+                   after
+                     0 -> 2
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "receive after waits for a message from a spawned process (infinity)", %{ctx: ctx} do
+    # The wait loop is preemptible: with a reduction budget it yields to the
+    # spawned process, whose message is observed on the resumed scan.
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 42) end)
+
+                   receive do
+                     42 -> 43
+                   after
+                     :infinity -> 0
+                   end
+                 end
+               end
+               """,
+               ctx,
+               reduction_budget: 2
+             )
+  end
+
+  test "receive after fires after a positive timeout with no message", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   receive do
+                     42 -> 1
+                   after
+                     50 -> 2
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "fifo receive after times out on an empty mailbox", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   receive do
+                     _ -> 1
+                   after
+                     0 -> 2
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "try catches a thrown value and untags it", %{ctx: ctx} do
     assert 43 ==
              Batata.execute(
