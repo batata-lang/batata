@@ -202,7 +202,7 @@ defmodule Batata.Stdlib do
   or `nil` when the call is outside the declared surface.
   """
   @spec plan({module(), atom(), non_neg_integer()}) :: Batata.Stdlib.Plan.t() | nil
-  def plan({module, function, arity} = mfa) do
+  def plan({_, _, _} = mfa) do
     case class(mfa) do
       nil -> nil
       class -> %Batata.Stdlib.Plan{mfa: mfa, class: class}
