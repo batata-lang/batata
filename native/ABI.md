@@ -86,6 +86,9 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.int_to_string` | `(word: i64) -> i64` | decimal binary of a tagged integer term; nil for non-integers |
 | `ex.term.string_to_int` | `(binary: i64) -> i64` | scalar i64 parsed from a decimal binary (optionally signed); 0 for invalid input or overflow |
 | `ex.term.map_from_list` | `(list: i64) -> i64` | flat key/value list -> map |
+| `ex.term.mapset_from_list` | `(list: i64) -> i64` | deduplicated set list (members keep their words) |
+| `ex.term.mapset_member` | `(set: i64, member: i64) -> i64` | 1 when the set list contains the member word, else 0 |
+| `ex.term.mapset_put` | `(set: i64, member: i64) -> i64` | set list with the member added (deduplicated) |
 | `ex.term.binary_from_list` | `(list: i64) -> i64` | integer byte list -> binary |
 | `ex.term.is_integer` | `(word: i64) -> i64` | 1 if int |
 | `ex.term.is_atom` | `(word: i64) -> i64` | 1 if atom (incl. nil) |

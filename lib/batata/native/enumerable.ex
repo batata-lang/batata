@@ -17,6 +17,11 @@ defmodule Batata.Native.Enumerable do
   @internal_impls [List, Map, Range]
   @runtime_tags [:list, :map, :tuple, :binary, :range]
 
+  # External BEAM Enumerable impls native-ized through a slice representation:
+  # MapSet/HashSet compile to deduplicated list words, so Enum operations
+  # reuse the list term-tag path.
+  @slice_native_external [MapSet, HashSet]
+
   @doc "Consolidated Enumerable implementations, or [] when unconsolidated."
   @spec impls() :: [module()]
   def impls do
@@ -67,16 +72,18 @@ defmodule Batata.Native.Enumerable do
           reason: String.t() | nil
         }
   def compile_plan(impl) do
-    if internal?(impl) do
-      %{count: :runtime_tag, reduce: :runtime_tag, to_list: :runtime_tag, reason: nil}
-    else
-      %{
-        count: :unsupported,
-        reduce: :unsupported,
-        to_list: :unsupported,
-        reason:
-          "#{inspect(impl)} Enumerable is outside the slice; a native count/reduce requires a Provider plan or BEAM"
-      }
+    cond do
+      internal?(impl) or impl in @slice_native_external ->
+        %{count: :runtime_tag, reduce: :runtime_tag, to_list: :runtime_tag, reason: nil}
+
+      true ->
+        %{
+          count: :unsupported,
+          reduce: :unsupported,
+          to_list: :unsupported,
+          reason:
+            "#{inspect(impl)} Enumerable is outside the slice; a native count/reduce requires a Provider plan or BEAM"
+        }
     end
   end
 

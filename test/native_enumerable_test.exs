@@ -49,13 +49,19 @@ defmodule Batata.NativeEnumerableTest do
     assert plan.reason =~ "outside the slice"
   end
 
+  test "slice-native external impls (MapSet/HashSet) get runtime_tag plans" do
+    assert Enumerable.compile_plan(MapSet).count == :runtime_tag
+    assert Enumerable.compile_plan(MapSet).reduce == :runtime_tag
+    assert Enumerable.compile_plan(HashSet).count == :runtime_tag
+  end
+
   test "plans cover every consolidated impl with a reason when unsupported" do
     plans = Enumerable.plans()
 
     assert length(plans) == length(Enumerable.impls())
 
     Enum.each(plans, fn {impl, plan} ->
-      if Enumerable.internal?(impl) do
+      if Enumerable.compile_plan(impl).count == :runtime_tag do
         assert plan.count == :runtime_tag
       else
         assert plan.count == :unsupported

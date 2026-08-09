@@ -206,6 +206,14 @@ defmodule Batata.StdlibTest do
                  ctx
                )
 
+      assert 3 == execute("Enum.count(MapSet.new([1, 2, 2, 3]))", ctx)
+      assert 6 == execute("Enum.reduce(MapSet.new([1, 2, 3]), 0, fn x, a -> x + a end)", ctx)
+      assert 1 == execute("MapSet.member?(MapSet.new([1, 2, 3]), 2)", ctx)
+      assert 0 == execute("MapSet.member?(MapSet.new([1, 2, 3]), 9)", ctx)
+      assert 3 == execute("Enum.count(MapSet.put(MapSet.new([1, 2]), 3))", ctx)
+      assert 2 == execute("Enum.count(MapSet.put(MapSet.new([1, 2]), 1))", ctx)
+      assert 2 == execute("Enum.count(HashSet.new([1, 2, 2]))", ctx)
+
       assert 16 ==
                execute(
                  "Enum.reduce(<<1, 2, 3>>, 1, fn x, a -> a * x + 1 end)",
