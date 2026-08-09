@@ -55,7 +55,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.tuple_length` | `(tuple: i64) -> i64` | tuple arity; 0 for non-tuples |
 | `ex.term.map_length` | `(map: i64) -> i64` | map pair count; 0 for non-maps |
 | `ex.term.enumerable_count` | `(word: i64) -> i64` | element count by tag: list length / tuple arity / map pairs / binary bytes; 0 otherwise |
-| `ex.term.enumerable_reduce` | `(enumerable: i64, acc: i64, continuation: i64) -> i64` | tag-dispatched reduce over list/tuple/binary/map; continuation 1 = sum (acc + item), 2 = return acc, 3 = map values sum, 4 = map keys sum |
+| `ex.term.enumerable_reduce` | `(enumerable: i64, acc: i64, continuation: i64) -> i64` | tag-dispatched reduce over list/tuple/binary/map; continuation 1 = sum (acc + item), 2 = return acc, 3 = map values sum, 4 = map keys sum, 5 = map entries sum (acc + key + value) |
 | `ex.term.jmp_buf_size` | `() -> i64` | byte size of libc `jmp_buf`, for stack allocation in compiled code |
 | `ex.term.setjmp_addr` | `() -> i64` | address of libc `setjmp`, for indirect calls that avoid ORC symbol resolution |
 | `ex.term.try_push` | `(buf: ptr) -> i64` | push a setjmp buffer for a try region; -1 when the 16-slot stack is full |
