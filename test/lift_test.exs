@@ -49,6 +49,8 @@ defmodule Batata.LiftTest do
              Enum.sort([
                "builtin.module",
                "ex.func",
+               "ex.clock_init",
+               "ex.lit",
                "ex.lit",
                "ex.lit",
                "ex.lit",
@@ -83,6 +85,8 @@ defmodule Batata.LiftTest do
                "ex.lit",
                "ex.lit",
                "ex.lit",
+               "ex.lit",
+               "ex.clock_init",
                "ex.list",
                "ex.tuple",
                "ex.is_tuple",
@@ -118,6 +122,8 @@ defmodule Batata.LiftTest do
                "ex.lit",
                "ex.lit",
                "ex.lit",
+               "ex.lit",
+               "ex.clock_init",
                "ex.map",
                "ex.binary",
                "ex.is_map",
@@ -143,8 +149,10 @@ defmodule Batata.LiftTest do
              Enum.sort([
                "builtin.module",
                "ex.box",
+               "ex.clock_init",
                "ex.func",
                "ex.list",
+               "ex.lit",
                "ex.is_list",
                "ex.return"
              ])
@@ -171,6 +179,8 @@ defmodule Batata.LiftTest do
              Enum.sort([
                "builtin.module",
                "ex.func",
+               "ex.clock_init",
+               "ex.lit",
                "ex.lit",
                "ex.lit",
                "ex.lit",

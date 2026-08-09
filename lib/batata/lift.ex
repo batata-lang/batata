@@ -703,15 +703,15 @@ defmodule Batata.Lift do
         Map.put(env, param_name(pattern), value)
       end)
 
-    # The entry function starts a fresh actor: reset the mailbox so each
-    # program run observes an empty message queue; optionally set the
-    # reduction budget for preemptive loop slicing (#35).
+    # The entry function starts a fresh actor: reset the mailbox and the
+    # reduction clock so each program run observes a clean process (budget 0
+    # keeps the tick a no-op when no explicit budget is set) (#35).
     if name == :main and uses_mailbox?(body_ast) do
       create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, block)
     end
 
-    if name == :main and budget != nil do
-      create_op("ex.clock_init", [lit(budget, ctx, block)], [integer_type(ctx)], ctx, block)
+    if name == :main do
+      create_op("ex.clock_init", [lit(budget || 0, ctx, block)], [integer_type(ctx)], ctx, block)
     end
 
     {return_value, env} = lift_block(List.wrap(body_ast), ctx, block, env)
