@@ -38,12 +38,14 @@ defmodule Batata.NativeEnumerableTest do
     assert Enumerable.compile_plan(List) == %{
              count: :runtime_tag,
              reduce: :runtime_tag,
+             to_list: :runtime_tag,
              reason: nil
            }
 
     plan = Enumerable.compile_plan(Stream)
     assert plan.count == :unsupported
     assert plan.reduce == :unsupported
+    assert plan.to_list == :unsupported
     assert plan.reason =~ "outside the slice"
   end
 

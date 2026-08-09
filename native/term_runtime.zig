@@ -316,6 +316,72 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
     };
 }
 
+/// Materializes an enumerable as a list by term tag: lists pass through,
+/// tuples yield their elements, maps yield `{k, v}` tuple pairs, binaries
+/// yield tagged byte integers. nil for unsupported tags.
+pub export fn ex_term_enumerable_to_list(enumerable: i64) i64 {
+    switch (word_tag(enumerable)) {
+        tag_list => return enumerable,
+        tag_tuple => {
+            const len = tuple_len(enumerable);
+            var result = nil_word;
+            var i: usize = len;
+            while (i > 0) {
+                i -= 1;
+                result = ex_term_list_cons(tuple_elems(enumerable)[i], result);
+            }
+            return result;
+        },
+        tag_map => {
+            const len = map_len(enumerable);
+            var result = nil_word;
+            var i: usize = len;
+            while (i > 0) {
+                i -= 1;
+                const key = map_entries(enumerable)[i * 2];
+                const value = map_entries(enumerable)[i * 2 + 1];
+                const pair = alloc_words(3) orelse return nil_word;
+                pair[0] = 2;
+                pair[1] = key;
+                pair[2] = value;
+                result = ex_term_list_cons(word_from_ptr(pair, tag_tuple), result);
+            }
+            return result;
+        },
+        tag_binary => {
+            const len = binary_len(enumerable);
+            var result = nil_word;
+            var i: usize = len;
+            while (i > 0) {
+                i -= 1;
+                result = ex_term_list_cons(
+                    binary_bytes(enumerable)[i] << @intCast(tag_shift),
+                    result,
+                );
+            }
+            return result;
+        },
+        else => return nil_word,
+    }
+}
+
+/// Materializes an inclusive integer range as a list.
+pub export fn ex_term_enumerable_to_list_range(start: i64, stop: i64) i64 {
+    var result = nil_word;
+    if (start <= stop) {
+        var i = stop;
+        while (i >= start) : (i -= 1) {
+            result = ex_term_list_cons(i << @intCast(tag_shift), result);
+        }
+    } else {
+        var i = stop;
+        while (i <= start) : (i += 1) {
+            result = ex_term_list_cons(i << @intCast(tag_shift), result);
+        }
+    }
+    return result;
+}
+
 /// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
 /// unchanged, 3 = map values sum (acc + each entry value), 4 = map keys sum
@@ -945,6 +1011,8 @@ comptime {
     @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
     @export(&ex_term_map_length, .{ .name = "ex.term.map_length" });
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
+    @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
+    @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
     @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
     @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
@@ -1087,6 +1155,17 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_count(count_bin));
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_count(one));
 
+    // enumerable to_list: list identity, tuple elements, map pairs, binary bytes
+    try std.testing.expectEqual(list, ex_term_enumerable_to_list(list));
+    const tuple_list = ex_term_enumerable_to_list(tuple);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(tuple_list));
+    try std.testing.expectEqual(one, ex_term_list_head(tuple_list));
+    const to_list_bytes = ex_term_enumerable_to_list(count_bin);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(to_list_bytes));
+    try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(to_list_bytes)));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_to_list_range(1, 3)));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_to_list_range(3, 1)));
+
     // enumerable reduce by tag: sum over list/tuple/binary
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(list, 0, 1));
     try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce(tuple, 0, 1));
@@ -1102,6 +1181,10 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 8), ex_term_enumerable_reduce(pair_map, 6, 4));
     try std.testing.expectEqual(@as(i64, 6), ex_term_enumerable_reduce(pair_map, 0, 5));
     try std.testing.expectEqual(@as(i64, 12), ex_term_enumerable_reduce(pair_map, 6, 5));
+    const pair_map_list = ex_term_enumerable_to_list(pair_map);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(pair_map_list));
+    const first_pair = ex_term_list_head(pair_map_list);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_tuple_length(first_pair));
     try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(list, 1, 6));
     try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(tuple, 1, 6));
     try std.testing.expectEqual(@as(i64, 2), ex_term_enumerable_reduce(count_bin, 1, 6));
