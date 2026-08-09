@@ -293,7 +293,7 @@ defmodule Batata.StdlibTest do
       assert error.message =~ "Date.new requires integer literal"
     end
 
-    test "reduction budget stops loops when exhausted", %{ctx: ctx} do
+    test "reduction budget yields and resumes loops with consistent results", %{ctx: ctx} do
       source = """
       defmodule M do
         def main() do
@@ -303,7 +303,9 @@ defmodule Batata.StdlibTest do
       """
 
       assert 15 == Batata.execute(source, ctx)
-      assert 1 == Batata.execute(source, ctx, reduction_budget: 2)
+      # Budget 2: the loop yields/resumes (single-actor immediate resume),
+      # so the result stays consistent across slices.
+      assert 15 == Batata.execute(source, ctx, reduction_budget: 2)
       assert 15 == Batata.execute(source, ctx, reduction_budget: 10)
     end
 
