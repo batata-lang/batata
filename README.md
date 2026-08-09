@@ -116,7 +116,11 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   extracted to synthetic functions, `ex.term.stream_filter` for filtering) —
   for side-effect-free streams the eager result matches consumption;
   `Stream.take/2` and `Stream.drop/2` slice lists in the runtime
-  (`ex.term.stream_take` / `stream_drop`).
+  (`ex.term.stream_take` / `stream_drop`);
+  dates are gregorian/ISO days (i64): `Date.new(y, m, d)` with integer
+  literals folds at lift time (`Calendar.ISO.date_to_iso_days/3`), so date
+  ranges (`Date.new(..)..Date.new(..)`) reuse the integer range paths
+  (`Enum.count/reduce/to_list`), including leap-day differences.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

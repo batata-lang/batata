@@ -265,6 +265,32 @@ defmodule Batata.StdlibTest do
                  "Enum.reduce({2, 3}, 10, fn x, a -> a * x - x + 1 end)",
                  ctx
                )
+
+      assert 3 ==
+               execute(
+                 "Enum.count(Date.new(2024, 1, 1)..Date.new(2024, 1, 3))",
+                 ctx
+               )
+
+      assert 3 ==
+               execute(
+                 "Enum.count(Enum.to_list(Date.new(2024, 1, 1)..Date.new(2024, 1, 3)))",
+                 ctx
+               )
+
+      assert 366 == execute("Date.new(2024, 2, 29) - Date.new(2023, 2, 28)", ctx)
+    end
+
+    test "rejects non-literal Date.new explicitly", %{ctx: ctx} do
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute(
+            "y = 2024\nEnum.count(Date.new(y, 1, 1)..Date.new(2024, 1, 3))",
+            ctx
+          )
+        end
+
+      assert error.message =~ "Date.new requires integer literal"
     end
 
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do

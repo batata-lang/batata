@@ -2029,6 +2029,18 @@ defmodule Batata.Lift do
   defp module_ref(_), do: :error
 
   # Resolves a module-qualified stdlib call through the domain registry.
+  # Dates are gregorian days (i64) in the slice: `Date.new(y, m, d)` with
+  # integer literals is folded at lift time, so `a..b` over dates reuses the
+  # integer range paths.
+  defp lift_stdlib_call(Date, :new, [year, month, day], ctx, block, env) do
+    if is_integer(year) and is_integer(month) and is_integer(day) do
+      days = Calendar.ISO.date_to_iso_days(year, month, day)
+      {lit(days, ctx, block), env}
+    else
+      raise Error, "Date.new requires integer literal arguments in this slice"
+    end
+  end
+
   defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
     {start, env} = lift_expr(start_ast, ctx, block, env)
     {stop, env} = lift_expr(stop_ast, ctx, block, env)
