@@ -318,8 +318,9 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
 
 /// Reduces an enumerable (list / tuple / binary) by term tag. `continuation`
 /// selects the step: 1 = sum (acc + item as i64), 2 = return the accumulator
-/// unchanged. Items are untagged integers (binary bytes are tagged before the
-/// step, matching list/tuple elements).
+/// unchanged, 3 = map values sum (acc + each entry value). Items are untagged
+/// integers (binary bytes are tagged before the step, matching list/tuple
+/// elements).
 pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) i64 {
     switch (word_tag(enumerable)) {
         tag_list => {
@@ -350,12 +351,24 @@ pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation:
             }
             return result;
         },
+        tag_map => {
+            const len = map_len(enumerable);
+            const entries = map_entries(enumerable);
+            var result = acc;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                result = enumerate_step(result, entries[i * 2 + 1], continuation);
+            }
+            return result;
+        },
         else => return acc,
     }
 }
 
 fn enumerate_step(acc: i64, item: i64, continuation: i64) i64 {
     if (continuation == 1) { // sum: acc + item
+        return acc + (if (is_int(item)) word_payload(item) else 0);
+    } else if (continuation == 3) { // map values sum
         return acc + (if (is_int(item)) word_payload(item) else 0);
     }
     return acc; // return-accumulator
@@ -879,6 +892,10 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 7), ex_term_enumerable_reduce(list, 4, 1));
     try std.testing.expectEqual(@as(i64, 4), ex_term_enumerable_reduce(list, 4, 2));
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(one, 0, 1));
+    const pair_entries = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(one, ex_term_list_cons(two, nil_word))));
+    const pair_map = ex_term_map_from_list(pair_entries);
+    try std.testing.expectEqual(@as(i64, 4), ex_term_enumerable_reduce(pair_map, 0, 3));
+    try std.testing.expectEqual(@as(i64, 10), ex_term_enumerable_reduce(pair_map, 6, 3));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));

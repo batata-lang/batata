@@ -64,7 +64,9 @@ The Enum slice adds the first callback-shaped stdlib calls:
   cons-collection loops (`ex.list_cons`); other mapper/reducer shapes keep the
   explicit `:beamer_callback` rejection; sum reduce over non-list
   enumerables (tuple/binary literals or variables) dispatches through the
-  runtime's tag-based `ex.term.enumerable_reduce`.
+  runtime's tag-based `ex.term.enumerable_reduce`; map reduce with a
+  `fn {_k, v}, acc -> acc + v end` value-sum reducer dispatches through the
+  same runtime (continuation 3).
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
