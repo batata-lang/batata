@@ -163,6 +163,7 @@ defmodule Batata.Lift do
   defp reduce_pattern({:fn, _, [{:->, _, [[item, acc_var], body]}]}) do
     cond do
       sum_pattern?(body, item, acc_var) -> {:ok, :sum}
+      product_pattern?(body, item, acc_var) -> {:ok, :product}
       map_values_sum_pattern?(body, item, acc_var) -> {:ok, :map_values_sum}
       map_keys_sum_pattern?(body, item, acc_var) -> {:ok, :map_keys_sum}
       map_entries_sum_pattern?(body, item, acc_var) -> {:ok, :map_entries_sum}
@@ -179,6 +180,14 @@ defmodule Batata.Lift do
   end
 
   defp sum_pattern?(_body, _item, _acc_var), do: false
+
+  # `fn item, acc -> item * acc end` / `acc * item`: product accumulation.
+  defp product_pattern?({:*, _, [left, right]}, item, acc_var) do
+    (same_var?(left, item) and same_var?(right, acc_var)) or
+      (same_var?(left, acc_var) and same_var?(right, item))
+  end
+
+  defp product_pattern?(_body, _item, _acc_var), do: false
 
   # `fn {_k, v}, acc -> acc + v end` / `v + acc`: map value accumulation.
   defp map_values_sum_pattern?(body, item, acc_var),
@@ -879,6 +888,14 @@ defmodule Batata.Lift do
   # to a cursor loop over the list: carries (list, acc, cursor), reads each
   # element via `ex.list_get`, untags it, and accumulates.
   defp lift_enum_sum_loop(list_word, acc0, ctx, block) do
+    lift_enum_cursor_loop(list_word, acc0, "ex.add", ctx, block)
+  end
+
+  defp lift_enum_product_loop(list_word, acc0, ctx, block) do
+    lift_enum_cursor_loop(list_word, acc0, "ex.mul", ctx, block)
+  end
+
+  defp lift_enum_cursor_loop(list_word, acc0, accumulate_op, ctx, block) do
     i64 = integer_type(ctx)
     locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
     list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
@@ -905,7 +922,7 @@ defmodule Batata.Lift do
       create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
 
     item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
-    acc_next = create_op("ex.add", [a_acc, item_i64], [i64], ctx, after_block)
+    acc_next = create_op(accumulate_op, [a_acc, item_i64], [i64], ctx, after_block)
 
     cursor_next =
       create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
@@ -1231,6 +1248,13 @@ defmodule Batata.Lift do
           {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
+        end
+
+      :product ->
+        if is_list(enumerable_ast) do
+          {lift_enum_product_loop(enumerable_word, acc_value, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
         end
 
       :map_values_sum ->
