@@ -120,7 +120,9 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   dates are gregorian/ISO days (i64): `Date.new(y, m, d)` with integer
   literals folds at lift time (`Calendar.ISO.date_to_iso_days/3`), so date
   ranges (`Date.new(..)..Date.new(..)`) reuse the integer range paths
-  (`Enum.count/reduce/to_list`), including leap-day differences.
+  (`Enum.count/reduce/to_list`), including leap-day differences;
+  file IO: `File.read!/1` and `File.stream!/1` read through the runtime
+  (`ex.term.file_read` / `file_read_lines`, eager lines).
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

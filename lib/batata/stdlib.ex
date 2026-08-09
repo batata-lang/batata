@@ -139,6 +139,21 @@ defmodule Batata.Stdlib.Stream do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.File do
+  @moduledoc """
+  File-domain declarations. `File.read!`/`File.stream!` read through the
+  runtime (eager lines for streams).
+  """
+
+  @class_map %{
+    {File, :read!, 1} => :native_term,
+    {File, :stream!, 1} => :native_term
+  }
+
+  @doc "Returns file-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.String do
   @moduledoc """
   String-domain declarations.
@@ -225,6 +240,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.MapSet.class_map(),
                Batata.Stdlib.HashSet.class_map(),
                Batata.Stdlib.Stream.class_map(),
+               Batata.Stdlib.File.class_map(),
                Batata.Stdlib.String.class_map(),
                Batata.Stdlib.Base.class_map(),
                Batata.Stdlib.Integer.class_map(),

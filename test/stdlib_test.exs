@@ -293,6 +293,17 @@ defmodule Batata.StdlibTest do
       assert error.message =~ "Date.new requires integer literal"
     end
 
+    @tag :tmp_dir
+    test "reads files via File.read!/File.stream!", %{ctx: ctx, tmp_dir: tmp_dir} do
+      path = Path.join(tmp_dir, "lines.txt")
+      File.write!(path, "alpha\nbeta\ngamma\n")
+
+      assert 17 == execute("byte_size(File.read!(#{inspect(path)}))", ctx)
+      assert 4 == execute("Enum.count(File.stream!(#{inspect(path)}))", ctx)
+
+      assert 0 == execute("byte_size(File.read!(\"/definitely/missing/file\"))", ctx)
+    end
+
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do
       assert 21 ==
                execute(

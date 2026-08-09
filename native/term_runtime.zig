@@ -7,6 +7,7 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("setjmp.h");
+    @cInclude("stdio.h");
 });
 
 // Tag layout: the low 3 bits of a 64-bit word. Immediate terms carry their
@@ -746,6 +747,84 @@ pub export fn ex_term_mapset_put(set: i64, member: i64) i64 {
     return ex_term_list_cons(member, set);
 }
 
+fn path_binary_to_slice(binary: i64, out: []u8) ?[]const u8 {
+    if (word_tag(binary) != tag_binary) return null;
+    const len = binary_len(binary);
+    if (len > out.len) return null;
+    const bytes = binary_bytes(binary);
+    for (0..len) |i| {
+        out[i] = @intCast(bytes[i] & 0xFF);
+    }
+    return out[0..len];
+}
+
+fn read_file_words(path_word: i64) ?[*]i64 {
+    var path_buf: [4096]u8 = undefined;
+    const path = path_binary_to_slice(path_word, &path_buf) orelse return null;
+    if (path.len >= 4096) return null;
+    path_buf[path.len] = 0;
+    const z_path: [:0]u8 = path_buf[0..path.len :0];
+    const file = c.fopen(z_path.ptr, "rb") orelse return null;
+    defer _ = c.fclose(file);
+    if (c.fseek(file, 0, c.SEEK_END) != 0) return null;
+    const size = c.ftell(file);
+    if (size < 0 or size > 32 * 1024 * 1024) return null;
+    if (c.fseek(file, 0, c.SEEK_SET) != 0) return null;
+    const file_len: usize = @intCast(size);
+    const words = alloc_words(file_len + 1) orelse return null;
+    words[0] = @intCast(file_len);
+    for (0..file_len) |i| {
+        const ch = c.fgetc(file);
+        if (ch == c.EOF) return null;
+        words[i + 1] = ch;
+    }
+    return words;
+}
+
+/// Reads a file into a binary term; nil for missing files, non-binary paths,
+/// or oversized content.
+pub export fn ex_term_file_read(path_word: i64) i64 {
+    const words = read_file_words(path_word) orelse return nil_word;
+    return word_from_ptr(words, tag_binary);
+}
+
+/// Reads a file and splits it into a list of line binaries (without trailing
+/// newlines); nil on read failure.
+pub export fn ex_term_file_read_lines(path_word: i64) i64 {
+    const words = read_file_words(path_word) orelse return nil_word;
+    const len: usize = @intCast(words[0]);
+    var result = nil_word;
+    var line_start: usize = len;
+    var i: usize = len;
+    while (i > 0) {
+        i -= 1;
+        if (words[i + 1] == '\n') {
+            // 行是 [i+1, line_start)
+            const line_len = line_start - (i + 1);
+            const line = alloc_words(line_len + 1) orelse return nil_word;
+            line[0] = @intCast(line_len);
+            var j: usize = 0;
+            while (j < line_len) : (j += 1) {
+                line[j + 1] = words[i + 1 + j];
+            }
+            result = ex_term_list_cons(word_from_ptr(line, tag_binary), result);
+            line_start = i;
+        }
+    }
+    // 剩余行 [0, line_start)（无换行结尾或首行）
+    if (line_start > 0) {
+        const line_len = line_start;
+        const line = alloc_words(line_len + 1) orelse return nil_word;
+        line[0] = @intCast(line_len);
+        var j: usize = 0;
+        while (j < line_len) : (j += 1) {
+            line[j + 1] = words[j];
+        }
+        result = ex_term_list_cons(word_from_ptr(line, tag_binary), result);
+    }
+    return result;
+}
+
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
@@ -1135,6 +1214,8 @@ comptime {
     @export(&ex_term_mapset_from_list, .{ .name = "ex.term.mapset_from_list" });
     @export(&ex_term_mapset_member, .{ .name = "ex.term.mapset_member" });
     @export(&ex_term_mapset_put, .{ .name = "ex.term.mapset_put" });
+    @export(&ex_term_file_read, .{ .name = "ex.term.file_read" });
+    @export(&ex_term_file_read_lines, .{ .name = "ex.term.file_read_lines" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
@@ -1435,6 +1516,34 @@ fn test_mapper_double(item: i64) callconv(.c) i64 {
 
 fn test_predicate_even(item: i64) callconv(.c) i64 {
     return if (@rem(item, 2) == 0) 1 else 0;
+}
+
+fn test_binary_from_string(s: []const u8) i64 {
+    var list = nil_word;
+    var i: usize = s.len;
+    while (i > 0) {
+        i -= 1;
+        list = ex_term_list_cons(@as(i64, s[i]) << @intCast(tag_shift), list);
+    }
+    return ex_term_binary_from_list(list);
+}
+
+test "term ABI file read and lines" {
+    const tmp_path = "/tmp/batata_zig_file_test.txt";
+    const wf = c.fopen(tmp_path, "wb") orelse unreachable;
+    _ = c.fwrite("alpha\nbeta\ngamma", 1, 16, wf);
+    _ = c.fclose(wf);
+    const path_word = test_binary_from_string(tmp_path);
+    const content = ex_term_file_read(path_word);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_binary(content));
+    try std.testing.expectEqual(@as(i64, 16), ex_term_binary_length(content));
+    const expected_content = test_binary_from_string("alpha\nbeta\ngamma");
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(content, expected_content));
+    const lines = ex_term_file_read_lines(path_word);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(lines));
+    const first = ex_term_list_head(lines);
+    try std.testing.expectEqual(@as(i64, 5), ex_term_binary_length(first));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_file_read(test_binary_from_string("/tmp/definitely_missing_batata_file"))));
 }
 
 test "term ABI mailbox and integer untag" {
