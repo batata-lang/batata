@@ -54,4 +54,53 @@ defmodule Batata.Native.Enumerable do
   @doc "All tags the runtime dispatches on (internal + batata extensions)."
   @spec runtime_tags() :: [atom()]
   def runtime_tags, do: @runtime_tags
+
+  @doc """
+  Compile-time plan for an impl's count/reduce: `:runtime_tag` (the Zig
+  runtime implements it by term tag) or `:unsupported` with a reason (the
+  impl's Elixir implementation is outside the slice, so a native count/reduce
+  cannot be compiled yet — MISSING_IMPL discipline, never silent).
+  """
+  @spec compile_plan(module()) :: %{
+          count: :runtime_tag | :unsupported,
+          reduce: :runtime_tag | :unsupported,
+          reason: String.t() | nil
+        }
+  def compile_plan(impl) do
+    if internal?(impl) do
+      %{count: :runtime_tag, reduce: :runtime_tag, reason: nil}
+    else
+      %{
+        count: :unsupported,
+        reduce: :unsupported,
+        reason:
+          "#{inspect(impl)} Enumerable is outside the slice; a native count/reduce requires a Provider plan or BEAM"
+      }
+    end
+  end
+
+  @doc """
+  Plans for all consolidated impls, for diagnostics and dispatch-table
+  generation.
+  """
+  @spec plans() :: [{module(), map()}]
+  def plans do
+    impls() |> Enum.map(&{&1, compile_plan(&1)})
+  end
+
+  @doc """
+  Registers a project-provided native count/reduce for an external impl,
+  returning the registration descriptor consumed by the runtime callback
+  table (`ex.term.register_callback`). Returns nil when the impl is already
+  internal or no plan is provided.
+  """
+  @spec register_native(module(), %{count: integer(), reduce: integer()}) ::
+          {:ok, [{integer(), atom()}]} | nil
+  def register_native(impl, %{count: count_id, reduce: reduce_id}) do
+    if internal?(impl) do
+      nil
+    else
+      {:ok, [{count_id, :count}, {reduce_id, :reduce}]}
+    end
+  end
 end
