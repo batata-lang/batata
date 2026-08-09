@@ -394,6 +394,8 @@ fn enumerate_step(acc: i64, item: i64, continuation: i64) i64 {
         return if (item_v == 0) 0 else @rem(acc, item_v);
     } else if (continuation == 12) { // rem(item, acc)
         return if (acc == 0) 0 else @rem(word_value(item), acc);
+    } else if (continuation == 15) { // count: acc + 1 per item
+        return acc + 1;
     }
     return acc; // return-accumulator
 }
@@ -411,6 +413,39 @@ pub export fn ex_term_enumerable_reduce_c(
     continuation: i64,
     capture: i64,
 ) i64 {
+    if (continuation == 14) {
+        // product with capture: acc + item * capture
+        switch (word_tag(enumerable)) {
+            tag_list => {
+                var current = enumerable;
+                var result = acc;
+                while (word_tag(current) == tag_list) {
+                    result += word_value(list_cell(current)[0]) * capture;
+                    current = list_cell(current)[1];
+                }
+                return result;
+            },
+            tag_tuple => {
+                const len = tuple_len(enumerable);
+                var result = acc;
+                var i: usize = 0;
+                while (i < len) : (i += 1) {
+                    result += word_value(tuple_elems(enumerable)[i]) * capture;
+                }
+                return result;
+            },
+            tag_binary => {
+                const len = binary_len(enumerable);
+                var result = acc;
+                var i: usize = 0;
+                while (i < len) : (i += 1) {
+                    result += binary_bytes(enumerable)[i] * capture;
+                }
+                return result;
+            },
+            else => return acc,
+        }
+    }
     if (continuation != 13) return ex_term_enumerable_reduce(enumerable, acc, continuation);
     switch (word_tag(enumerable)) {
         tag_list => {
@@ -442,6 +477,29 @@ pub export fn ex_term_enumerable_reduce_c(
         },
         else => return acc,
     }
+}
+
+/// Reduces an inclusive integer range (ascending or descending) by
+/// continuation, reusing the enumerable_reduce continuation table.
+pub export fn ex_term_enumerable_reduce_range(
+    start: i64,
+    stop: i64,
+    acc: i64,
+    continuation: i64,
+) i64 {
+    var result = acc;
+    if (start <= stop) {
+        var i = start;
+        while (i <= stop) : (i += 1) {
+            result = enumerate_step(result, i << @intCast(tag_shift), continuation);
+        }
+    } else {
+        var i = start;
+        while (i >= stop) : (i -= 1) {
+            result = enumerate_step(result, i << @intCast(tag_shift), continuation);
+        }
+    }
+    return result;
 }
 
 /// Returns the head of a list word; nil for non-lists or the empty list.
@@ -820,6 +878,7 @@ comptime {
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
     @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
+    @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
@@ -983,6 +1042,12 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 12));
     try std.testing.expectEqual(@as(i64, 23), ex_term_enumerable_reduce_c(list, 0, 13, 10));
     try std.testing.expectEqual(@as(i64, 26), ex_term_enumerable_reduce_c(tuple, 3, 13, 10));
+    try std.testing.expectEqual(@as(i64, 30), ex_term_enumerable_reduce_c(list, 0, 14, 10));
+    try std.testing.expectEqual(@as(i64, 6), ex_term_enumerable_reduce_range(1, 3, 0, 1));
+    try std.testing.expectEqual(@as(i64, 6), ex_term_enumerable_reduce_range(3, 1, 0, 1));
+    try std.testing.expectEqual(@as(i64, 6), ex_term_enumerable_reduce_range(1, 3, 1, 6));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce_range(1, 3, 0, 15));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_enumerable_reduce_range(3, 1, 0, 15));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));

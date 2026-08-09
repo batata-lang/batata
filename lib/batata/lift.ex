@@ -178,6 +178,10 @@ defmodule Batata.Lift do
         {:ok, capture} = capture_addend(body, item, acc_var)
         {:ok, {:capture_sum, capture}}
 
+      capture_product_pattern?(body, item, acc_var) ->
+        capture = capture_product_addend(body, item)
+        {:ok, {:capture_product, capture}}
+
       map_values_sum_pattern?(body, item, acc_var) ->
         {:ok, :map_values_sum}
 
@@ -191,7 +195,7 @@ defmodule Batata.Lift do
         {:ok, :return_acc}
 
       combination_pattern?(body, item, acc_var) ->
-        {:ok, {:combination, body, var_name(item), var_name(acc_var)}}
+        {:ok, {:combination, body, tree_var_name(item), tree_var_name(acc_var)}}
 
       true ->
         :error
@@ -224,7 +228,7 @@ defmodule Batata.Lift do
 
   defp subtract_pattern?(_body, _item, _acc_var), do: false
 
-  defp subtract_direction({:-, _, [left, right]}, _item, acc_var) do
+  defp subtract_direction({:-, _, [left, _right]}, _item, acc_var) do
     if same_var?(left, acc_var), do: :subtract_acc_first, else: :subtract_item_first
   end
 
@@ -237,7 +241,7 @@ defmodule Batata.Lift do
 
   defp div_rem_pattern?(_body, _item, _acc_var), do: false
 
-  defp div_rem_direction({op, _, [left, right]}, _item, acc_var) do
+  defp div_rem_direction({op, _, [left, _right]}, _item, acc_var) do
     prefix = if op == :div, do: :div, else: :rem
     if same_var?(left, acc_var), do: :"#{prefix}_acc_first", else: :"#{prefix}_item_first"
   end
@@ -258,6 +262,29 @@ defmodule Batata.Lift do
 
   defp capture_addend(_body, _item, _acc_var), do: :error
 
+  # `fn item, acc -> acc + item * capture end` / `item * capture + acc`:
+  # product with a captured scalar.
+  defp capture_product_pattern?({:+, _, [left, right]}, item, acc_var) do
+    (capture_product_addend(left, item) != nil and same_var?(right, acc_var)) or
+      (capture_product_addend(right, item) != nil and same_var?(left, acc_var))
+  end
+
+  defp capture_product_pattern?(_body, _item, _acc_var), do: false
+
+  defp capture_product_addend({:+, _, [left, right]}, item) do
+    capture_product_addend(left, item) || capture_product_addend(right, item)
+  end
+
+  defp capture_product_addend({:*, _, [left, right]}, item) do
+    cond do
+      same_var?(left, item) and addend?(right) -> right
+      same_var?(right, item) and addend?(left) -> left
+      true -> nil
+    end
+  end
+
+  defp capture_product_addend(_body, _item), do: nil
+
   # `fn {_k, v}, acc -> acc + v end` / `v + acc`: map value accumulation.
   defp map_values_sum_pattern?(body, item, acc_var),
     do: map_entry_add_pattern?(body, item, acc_var, :value)
@@ -274,13 +301,13 @@ defmodule Batata.Lift do
       body
       |> collect_add_vars()
       |> MapSet.new()
-      |> MapSet.equal?(MapSet.new([var_name(key_var), var_name(value_var), var_name(acc_var)]))
+      |> MapSet.equal?(
+        MapSet.new([tree_var_name(key_var), tree_var_name(value_var), tree_var_name(acc_var)])
+      )
     else
       :error -> false
     end
   end
-
-  defp map_entries_sum_pattern?(_body, _item, _acc_var), do: false
 
   defp map_entry_add_pattern?({:+, _, [left, right]}, item, acc_var, selector) do
     with {:ok, entry_var} <- map_entry_var(item, selector) do
@@ -315,7 +342,7 @@ defmodule Batata.Lift do
   defp collect_add_vars({name, _, _}) when is_atom(name), do: [name]
   defp collect_add_vars(_), do: []
 
-  defp var_name({name, _, _}), do: name
+  defp tree_var_name({name, _, _}), do: name
 
   # Combination reducer: the body is a pure arithmetic tree (+/-/*) over the
   # item, the accumulator, and integer literals. Only list-literal
@@ -325,7 +352,7 @@ defmodule Batata.Lift do
       body
       |> collect_tree_vars()
       |> MapSet.new()
-      |> MapSet.subset?(MapSet.new([var_name(item), var_name(acc_var)]))
+      |> MapSet.subset?(MapSet.new([tree_var_name(item), tree_var_name(acc_var)]))
   end
 
   defp arithmetic_tree?({op, _, [left, right]}) when op in [:+, :-, :*],
@@ -1119,17 +1146,51 @@ defmodule Batata.Lift do
 
   # Closure-shaped enumerable reduce with a captured scalar (continuation
   # 13 = sum with capture).
-  defp lift_enum_reduce_capture(enumerable_word, acc0, capture_i64, ctx, block) do
+  defp lift_enum_reduce_capture(
+         enumerable_word,
+         acc0,
+         capture_i64,
+         ctx,
+         block,
+         continuation \\ 13
+       ) do
     i64 = integer_type(ctx)
 
     create_op(
       "ex.enumerable_reduce_c",
-      [enumerable_word, acc0, lit(13, ctx, block), capture_i64],
+      [enumerable_word, acc0, lit(continuation, ctx, block), capture_i64],
       [i64],
       ctx,
       block
     )
   end
+
+  # Inclusive integer range reduce through the runtime (continuation table).
+  defp lift_enum_range_reduce(start, stop, acc0, continuation, ctx, block) do
+    i64 = integer_type(ctx)
+
+    create_op(
+      "ex.enumerable_reduce_range",
+      [start, stop, acc0, lit(continuation, ctx, block)],
+      [i64],
+      ctx,
+      block
+    )
+  end
+
+  defp range_ast?({:.., _, [start, stop]}), do: {true, start, stop}
+  defp range_ast?(_ast), do: false
+
+  defp range_continuation(:sum), do: 1
+  defp range_continuation(:product), do: 6
+  defp range_continuation(:subtract_acc_first), do: 7
+  defp range_continuation(:subtract_item_first), do: 8
+  defp range_continuation(:div_acc_first), do: 9
+  defp range_continuation(:div_item_first), do: 10
+  defp range_continuation(:rem_acc_first), do: 11
+  defp range_continuation(:rem_item_first), do: 12
+  defp range_continuation(:return_acc), do: 2
+  defp range_continuation(_pattern), do: nil
 
   # `Enum.map/2` with a constant mapper (`fn _x -> c end`) compiles to a
   # descending cursor loop that conses the constant onto the accumulator,
@@ -1405,92 +1466,25 @@ defmodule Batata.Lift do
          block,
          env
        ) do
-    {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
     {acc, env} = lift_expr(acc_ast, ctx, block, env)
-    enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
     acc_value = lift_value(acc, ctx, block, env)
 
-    case pattern do
-      :sum ->
-        if is_list(enumerable_ast) do
-          # A list literal keeps the compile-time cursor loop (M3); other
-          # enumerables (tuple/binary literals or variables) dispatch through
-          # the runtime's tag-based enumerable reduce.
-          {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
+    case range_ast?(enumerable_ast) do
+      {true, start_ast, stop_ast} ->
+        case range_continuation(pattern) do
+          nil ->
+            raise Error, "range enumerables support only scalar reducers"
+
+          cont ->
+            {start, env} = lift_expr(start_ast, ctx, block, env)
+            {stop, env} = lift_expr(stop_ast, ctx, block, env)
+            {lift_enum_range_reduce(start, stop, acc_value, cont, ctx, block), env}
         end
 
-      :product ->
-        if is_list(enumerable_ast) do
-          {lift_enum_product_loop(enumerable_word, acc_value, ctx, block), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
-        end
-
-      :subtract_acc_first ->
-        if is_list(enumerable_ast) do
-          {lift_enum_subtract_loop(enumerable_word, acc_value, :acc_first, ctx, block), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 7, ctx, block), env}
-        end
-
-      :subtract_item_first ->
-        if is_list(enumerable_ast) do
-          {lift_enum_subtract_loop(enumerable_word, acc_value, :item_first, ctx, block), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
-        end
-
-      :div_acc_first ->
-        # Integer division/remainder reduce through the runtime (the ex
-        # dialect has no div/rem ops).
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 9, ctx, block), env}
-
-      :div_item_first ->
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 10, ctx, block), env}
-
-      :rem_acc_first ->
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 11, ctx, block), env}
-
-      :rem_item_first ->
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 12, ctx, block), env}
-
-      {:capture_sum, capture_ast} ->
-        {capture, env} = lift_expr(capture_ast, ctx, block, env)
-        capture_i64 = enum_capture_i64(capture, ctx, block)
-        {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block), env}
-
-      {:combination, body_ast, item_name, acc_name} ->
-        unless is_list(enumerable_ast) do
-          raise Error,
-                "combination reducers require a list literal enumerable"
-        end
-
-        {lift_enum_combo_loop(
-           enumerable_word,
-           acc_value,
-           body_ast,
-           item_name,
-           acc_name,
-           ctx,
-           block
-         ), env}
-
-      :map_values_sum ->
-        # Map reduce sums entry values through runtime continuation 3.
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 3, ctx, block), env}
-
-      :map_keys_sum ->
-        # Map reduce sums entry keys through runtime continuation 4.
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 4, ctx, block), env}
-
-      :map_entries_sum ->
-        # Map reduce sums key + value per entry through runtime continuation 5.
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 5, ctx, block), env}
-
-      :return_acc ->
-        {acc_value, env}
+      false ->
+        {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+        enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+        lift_reduce_pattern(pattern, enumerable_ast, enumerable_word, acc_value, ctx, block, env)
     end
   end
 
@@ -1750,6 +1744,104 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_reduce_pattern(
+         pattern,
+         enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    case pattern do
+      :sum ->
+        if is_list(enumerable_ast) do
+          # A list literal keeps the compile-time cursor loop (M3); other
+          # enumerables (tuple/binary literals or variables) dispatch through
+          # the runtime's tag-based enumerable reduce.
+          {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
+        end
+
+      :product ->
+        if is_list(enumerable_ast) do
+          {lift_enum_product_loop(enumerable_word, acc_value, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
+        end
+
+      :subtract_acc_first ->
+        if is_list(enumerable_ast) do
+          {lift_enum_subtract_loop(enumerable_word, acc_value, :acc_first, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 7, ctx, block), env}
+        end
+
+      :subtract_item_first ->
+        if is_list(enumerable_ast) do
+          {lift_enum_subtract_loop(enumerable_word, acc_value, :item_first, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
+        end
+
+      :div_acc_first ->
+        # Integer division/remainder reduce through the runtime (the ex
+        # dialect has no div/rem ops).
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 9, ctx, block), env}
+
+      :div_item_first ->
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 10, ctx, block), env}
+
+      :rem_acc_first ->
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 11, ctx, block), env}
+
+      :rem_item_first ->
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 12, ctx, block), env}
+
+      {:capture_sum, capture_ast} ->
+        {capture, env} = lift_expr(capture_ast, ctx, block, env)
+        capture_i64 = enum_capture_i64(capture, ctx, block)
+        {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block), env}
+
+      {:capture_product, capture_ast} ->
+        {capture, env} = lift_expr(capture_ast, ctx, block, env)
+        capture_i64 = enum_capture_i64(capture, ctx, block)
+        {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block, 14), env}
+
+      {:combination, body_ast, item_name, acc_name} ->
+        unless is_list(enumerable_ast) do
+          raise Error,
+                "combination reducers require a list literal enumerable"
+        end
+
+        {lift_enum_combo_loop(
+           enumerable_word,
+           acc_value,
+           body_ast,
+           item_name,
+           acc_name,
+           ctx,
+           block
+         ), env}
+
+      :map_values_sum ->
+        # Map reduce sums entry values through runtime continuation 3.
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 3, ctx, block), env}
+
+      :map_keys_sum ->
+        # Map reduce sums entry keys through runtime continuation 4.
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 4, ctx, block), env}
+
+      :map_entries_sum ->
+        # Map reduce sums key + value per entry through runtime continuation 5.
+        {lift_enum_reduce_runtime(enumerable_word, acc_value, 5, ctx, block), env}
+
+      :return_acc ->
+        {acc_value, env}
+    end
+  end
+
   defp catch_all_clause?({:->, _, [[pattern], _body]}) do
     match?({name, _, nil} when is_atom(name), pattern)
   end
@@ -1766,6 +1858,12 @@ defmodule Batata.Lift do
   defp module_ref(_), do: :error
 
   # Resolves a module-qualified stdlib call through the domain registry.
+  defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
+    {start, env} = lift_expr(start_ast, ctx, block, env)
+    {stop, env} = lift_expr(stop_ast, ctx, block, env)
+    {lift_enum_range_reduce(start, stop, lit(0, ctx, block), 15, ctx, block), env}
+  end
+
   defp lift_stdlib_call(module, fun, args, ctx, block, env) do
     case Batata.Stdlib.class({module, fun, length(args)}) do
       :native_term ->

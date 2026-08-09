@@ -140,6 +140,23 @@ defmodule Batata.StdlibTest do
                  "Enum.reduce({1, 2}, 0, fn x, a -> a + x + 10 end)",
                  ctx
                )
+
+      assert 30 ==
+               execute(
+                 "c = 10\nEnum.reduce([1, 2], 0, fn x, a -> a + x * c end)",
+                 ctx
+               )
+
+      assert 27 ==
+               execute(
+                 "c = 3\nEnum.reduce({4, 5}, 0, fn x, a -> x * c + a end)",
+                 ctx
+               )
+
+      assert 3 == execute("Enum.count(1..3)", ctx)
+      assert 6 == execute("Enum.reduce(1..3, 0, fn x, a -> x + a end)", ctx)
+      assert 6 == execute("Enum.reduce(3..1, 0, fn x, a -> x + a end)", ctx)
+      assert 6 == execute("Enum.reduce(1..3, 1, fn x, a -> x * a end)", ctx)
     end
 
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do
@@ -193,10 +210,17 @@ defmodule Batata.StdlibTest do
 
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.reduce({1, 2, 3}, 0, fn x, a -> a + x * 2 end)", ctx)
+          execute("Enum.reduce({1, 2, 3}, 0, fn x, a -> a * x + x end)", ctx)
         end
 
       assert error.message =~ "combination reducers require a list literal"
+
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute("Enum.reduce(1..3, 0, fn x, a -> a * x + x end)", ctx)
+        end
+
+      assert error.message =~ "range enumerables support only scalar reducers"
 
       error =
         assert_raise Batata.Lift.Error, fn ->
