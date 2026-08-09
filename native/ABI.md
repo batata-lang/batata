@@ -51,6 +51,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.clock_budget_left` | `() -> i64` | remaining budget clamped to >= 0; -1 when no budget is set |
 | `ex.term.clock_epoch` | `() -> i64` | current continuation-generation counter |
 | `ex.term.clock_bump_epoch` | `() -> i64` | bump the epoch (message arrival / scheduler round); returns the new value |
+| `ex.term.yield_mark` | `() -> i64` | record one preemptive yield at a slice boundary; returns the yield count |
+| `ex.term.yield_count` | `() -> i64` | number of preemptive yields so far |
 | `ex.term.to_int` | `(word: i64) -> i64` | untag an integer term to its scalar value; 0 for non-integers |
 | `ex.term.make_fun` | `(fn_idx: i64, env_len: i64, e0..e3: i64) -> i64` | closure word referencing `__fn_*` by index with up to four captured env words |
 | `ex.term.fun_idx` | `(fun: i64) -> i64` | function index of a closure; 0 for non-functions |
