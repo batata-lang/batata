@@ -187,6 +187,10 @@ const Continuation = struct {
     arg: i64 = 0,
     acc: i64 = 0,
     cursor: i64 = 0,
+    // Receive-type continuations (selective-receive mailbox scans) are
+    // invalidated by message arrival, so the scan restarts and observes the
+    // new message; loop-type continuations (pure cursor loops) are not.
+    receive: bool = false,
 };
 
 const Process = struct {
@@ -311,12 +315,53 @@ pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     const pid_id: usize = @intCast(word_payload(pid));
     if (pid_id == 0 or pid_id > @as(usize, @intCast(process_count))) return nil_word;
     if (!processes[pid_id - 1].mailbox.push(msg)) return nil_word;
+    // Message arrival invalidates a pending selective-receive continuation:
+    // the scan restarts and observes the new message (epoch invalidation
+    // wiring, #35 slice 6). Loop continuations are unaffected.
+    const target = &processes[pid_id - 1];
+    if (target.cont.active and target.cont.receive) {
+        target.clock.epoch += 1;
+    }
     return msg;
 }
 
 /// Dequeues the oldest message; nil when the mailbox is empty.
 pub export fn ex_term_receive() i64 {
     return current_proc().mailbox.pop() orelse nil_word;
+}
+
+/// The nil term word (atom id 0).
+pub export fn ex_term_nil() i64 {
+    return nil_word;
+}
+
+/// Number of messages in the current process's mailbox.
+pub export fn ex_term_mailbox_len() i64 {
+    return @intCast(current_proc().mailbox.len);
+}
+
+/// The message at `cursor` (0-based from the mailbox head) without removing
+/// it; nil when out of range.
+pub export fn ex_term_mailbox_peek(cursor: i64) i64 {
+    const proc = current_proc();
+    if (cursor < 0 or cursor >= @as(i64, @intCast(proc.mailbox.len))) return nil_word;
+    const index = (proc.mailbox.head + @as(usize, @intCast(cursor))) % mailbox_cap;
+    return proc.mailbox.queue[index];
+}
+
+/// Removes the message at `cursor`, shifting later messages forward; returns
+/// 1, or nil when out of range.
+pub export fn ex_term_mailbox_remove(cursor: i64) i64 {
+    const proc = current_proc();
+    if (cursor < 0 or cursor >= @as(i64, @intCast(proc.mailbox.len))) return nil_word;
+    var i: usize = @intCast(cursor);
+    while (i + 1 < proc.mailbox.len) : (i += 1) {
+        const to = (proc.mailbox.head + i) % mailbox_cap;
+        const from = (proc.mailbox.head + i + 1) % mailbox_cap;
+        proc.mailbox.queue[to] = proc.mailbox.queue[from];
+    }
+    proc.mailbox.len -= 1;
+    return 1;
 }
 
 /// Resets the mailbox. The compiled entry function calls this at the start of
@@ -353,16 +398,40 @@ pub export fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
         .arg = arg,
         .acc = acc,
         .cursor = cursor,
+        .receive = false,
+    };
+    return 1;
+}
+
+/// Saves a selective-receive continuation (mailbox scan state): unlike a
+/// cursor-loop continuation, message arrival invalidates it.
+pub export fn ex_term_receive_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
+    const proc = current_proc();
+    proc.cont = .{
+        .active = true,
+        .epoch = proc.clock.epoch,
+        .arg = arg,
+        .acc = acc,
+        .cursor = cursor,
+        .receive = true,
     };
     return 1;
 }
 
 /// 1 when the current process has a continuation saved at the current epoch;
 /// a message arrival bumps the epoch, so stale continuations read as not
-/// pending and the entry restarts from the top.
+/// pending.
 pub export fn ex_term_cont_pending() i64 {
     const proc = current_proc();
     return if (proc.cont.active and proc.cont.epoch == proc.clock.epoch) 1 else 0;
+}
+
+/// 1 when the current process has any saved continuation (valid or stale).
+/// The entry's mailbox reset is gated on this: a resume — even one whose
+/// continuation was invalidated by a message arrival — must keep the messages
+/// that arrived while the process was suspended.
+pub export fn ex_term_cont_active() i64 {
+    return if (current_proc().cont.active) 1 else 0;
 }
 
 /// Clears the current process's saved continuation.
@@ -1432,11 +1501,17 @@ comptime {
     @export(&ex_term_self, .{ .name = "ex.term.self" });
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
+    @export(&ex_term_nil, .{ .name = "ex.term.nil" });
+    @export(&ex_term_mailbox_len, .{ .name = "ex.term.mailbox_len" });
+    @export(&ex_term_mailbox_peek, .{ .name = "ex.term.mailbox_peek" });
+    @export(&ex_term_mailbox_remove, .{ .name = "ex.term.mailbox_remove" });
     @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
     @export(&ex_term_spawn, .{ .name = "ex.term.spawn" });
     @export(&ex_term_process_table_reset, .{ .name = "ex.term.process_table_reset" });
     @export(&ex_term_cont_save, .{ .name = "ex.term.cont_save" });
+    @export(&ex_term_receive_cont_save, .{ .name = "ex.term.receive_cont_save" });
     @export(&ex_term_cont_pending, .{ .name = "ex.term.cont_pending" });
+    @export(&ex_term_cont_active, .{ .name = "ex.term.cont_active" });
     @export(&ex_term_cont_clear, .{ .name = "ex.term.cont_clear" });
     @export(&ex_term_cont_load_arg, .{ .name = "ex.term.cont_load_arg" });
     @export(&ex_term_cont_load_acc, .{ .name = "ex.term.cont_load_acc" });
@@ -1840,9 +1915,8 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_self()));
 
     // reduction clock: init budget, tick charges, exhausted -> 1, epoch.
-    // Message delivery does not bump the epoch in this slice (a plain FIFO
-    // receive must not be invalidated by arrival), so the first explicit
-    // bump returns 1.
+    // Message delivery bumps the epoch only for receive-type continuations
+    // (selective-receive scans), so the first explicit bump returns 1.
     try std.testing.expectEqual(@as(i64, 1), ex_term_clock_bump_epoch());
     try std.testing.expectEqual(@as(i64, 10), ex_term_clock_init(10));
     try std.testing.expectEqual(@as(i64, 10), ex_term_clock_budget_left());
@@ -1890,6 +1964,34 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_cont_save(1, 2, 3));
     try std.testing.expectEqual(@as(i64, 3), ex_term_clock_bump_epoch());
     try std.testing.expectEqual(@as(i64, 0), ex_term_cont_pending());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_clear());
+
+    // mailbox scan: len/peek/remove support selective receive
+    try std.testing.expectEqual(@as(i64, 0), ex_term_mailbox_len());
+    try std.testing.expectEqual(one, ex_term_send(pid1, one));
+    try std.testing.expectEqual(two, ex_term_send(pid1, two));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_mailbox_len());
+    try std.testing.expectEqual(one, ex_term_mailbox_peek(0));
+    try std.testing.expectEqual(two, ex_term_mailbox_peek(1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_mailbox_peek(2)));
+    // removing the middle message (index 1) leaves [one]
+    try std.testing.expectEqual(@as(i64, 1), ex_term_mailbox_remove(1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_mailbox_len());
+    try std.testing.expectEqual(one, ex_term_mailbox_peek(0));
+    try std.testing.expectEqual(one, ex_term_receive());
+
+    // receive-type continuation: a message arrival invalidates it, so the
+    // selective-receive scan restarts and observes the new message
+    try std.testing.expectEqual(@as(i64, 1), ex_term_receive_cont_save(0, 0, 1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_cont_pending());
+    try std.testing.expectEqual(one, ex_term_send(pid1, one));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_pending());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_cont_clear());
+
+    // loop-type continuation: a message arrival does NOT invalidate it
+    try std.testing.expectEqual(@as(i64, 1), ex_term_cont_save(1, 2, 3));
+    try std.testing.expectEqual(one, ex_term_send(pid1, one));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_cont_pending());
     try std.testing.expectEqual(@as(i64, 0), ex_term_cont_clear());
 
     // scheduler: spawn registers entries; schedule_next round-robins
