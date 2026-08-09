@@ -124,6 +124,21 @@ defmodule Batata.Stdlib.HashSet do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.Stream do
+  @moduledoc """
+  Stream-domain declarations. `map`/`filter` are handled by recognition;
+  `take`/`drop` lower to runtime list slicing.
+  """
+
+  @class_map %{
+    {Stream, :take, 2} => :native_term,
+    {Stream, :drop, 2} => :native_term
+  }
+
+  @doc "Returns stream-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.String do
   @moduledoc """
   String-domain declarations.
@@ -209,6 +224,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.Map.class_map(),
                Batata.Stdlib.MapSet.class_map(),
                Batata.Stdlib.HashSet.class_map(),
+               Batata.Stdlib.Stream.class_map(),
                Batata.Stdlib.String.class_map(),
                Batata.Stdlib.Base.class_map(),
                Batata.Stdlib.Integer.class_map(),

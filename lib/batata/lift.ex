@@ -2133,6 +2133,16 @@ defmodule Batata.Lift do
   defp native_term_call(MapSet, :put, [set, member], ctx, block),
     do: create_op("ex.mapset_put", [set, member], [ex_type("dyn", ctx)], ctx, block)
 
+  defp native_term_call(Stream, :take, [list, n], ctx, block) do
+    n_int = create_op("ex.to_int", [n], [integer_type(ctx)], ctx, block)
+    create_op("ex.stream_take", [list, n_int], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp native_term_call(Stream, :drop, [list, n], ctx, block) do
+    n_int = create_op("ex.to_int", [n], [integer_type(ctx)], ctx, block)
+    create_op("ex.stream_drop", [list, n_int], [ex_type("dyn", ctx)], ctx, block)
+  end
+
   defp native_term_call(_module, :elem, [tuple, index], ctx, block) do
     index_int = create_op("ex.to_int", [index], [MLIR.Type.i64()], ctx, block)
     index0 = create_op("ex.sub", [index_int, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)

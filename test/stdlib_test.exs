@@ -232,6 +232,28 @@ defmodule Batata.StdlibTest do
                  ctx
                )
 
+      assert 3 ==
+               execute(
+                 "Enum.reduce(Stream.take([1, 2, 3, 4], 2), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 0 == execute("Enum.count(Stream.take([1, 2, 3], 0))", ctx)
+
+      assert 9 ==
+               execute(
+                 "Enum.reduce(Stream.drop([1, 2, 3, 4], 1), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
+      assert 0 == execute("Enum.count(Stream.drop([1, 2, 3], 9))", ctx)
+
+      assert 4 ==
+               execute(
+                 "Enum.reduce(Stream.take(Stream.filter([1, 2, 3, 4, 5], fn x -> rem(x, 2) == 1 end), 2), 0, fn x, a -> x + a end)",
+                 ctx
+               )
+
       assert 16 ==
                execute(
                  "Enum.reduce(<<1, 2, 3>>, 1, fn x, a -> a * x + 1 end)",

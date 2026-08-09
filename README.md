@@ -114,7 +114,9 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   the first external Enumerable impl native-ized via a slice representation;
   `Stream.map/2` and `Stream.filter/2` compile eagerly (mapper/predicate
   extracted to synthetic functions, `ex.term.stream_filter` for filtering) —
-  for side-effect-free streams the eager result matches consumption.
+  for side-effect-free streams the eager result matches consumption;
+  `Stream.take/2` and `Stream.drop/2` slice lists in the runtime
+  (`ex.term.stream_take` / `stream_drop`).
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
