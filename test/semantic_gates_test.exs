@@ -28,6 +28,12 @@ defmodule Batata.SemanticGatesTest do
     {"Enum map then reduce",
      "Enum.reduce(Enum.map([1, 2, 3], fn x -> x + 10 end), 0, fn x, a -> x + a end)",
      "Enum.reduce(Enum.map([1, 2, 3], fn x -> x + 10 end), 0, fn x, a -> x + a end)"},
+    {"Enum/String pipeline",
+     "Enum.reduce(Enum.map([1, 2, 3], fn x -> x + 10 end), String.to_integer(\"1\"), fn x, a -> x + a end)",
+     "Enum.reduce(Enum.map([1, 2, 3], fn x -> x + 10 end), String.to_integer(\"1\"), fn x, a -> x + a end)"},
+    {"Enum count in case",
+     "case Enum.count(%{1 => 2, 3 => 4}) do 2 -> tuple_size({1, 2}); _ -> 0 end",
+     "case Enum.count(%{1 => 2, 3 => 4}) do 2 -> tuple_size({1, 2}); _ -> 0 end"},
     {"String length utf8", "String.length(\"aé中\")", "String.length(\"aé中\")"},
     {"String/Integer roundtrip", "String.to_integer(Integer.to_string(42))",
      "String.to_integer(Integer.to_string(42))"},
@@ -37,6 +43,8 @@ defmodule Batata.SemanticGatesTest do
      "f = fn x -> x + 1 end\nf.(2) + f.(3)"},
     {"receive", "pid = self()\nsend(pid, 42)\nreceive do 42 -> 43 end",
      "pid = self()\nsend(pid, 42)\nreceive do 42 -> 43 end"},
+    {"receive in try", "try do pid = self(); send(pid, 7); receive do x -> x end catch _ -> 0 end",
+     "try do pid = self(); send(pid, 7); receive do x -> x end catch _ -> 0 end"},
     {"try/throw", "try do throw(42) catch 42 -> 10 end", "try do throw(42) catch 42 -> 10 end"},
     {"try normal path", "try do 7 catch _ -> 0 end", "try do 7 catch _ -> 0 end"}
   ]

@@ -23,10 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Warn about stacked Beaver ref drift
+        if: github.event_name == 'pull_request' && env.BEAVER_REF == 'main'
+        run: |
+          echo "::warning title=BEAVER_REF defaulting to main::If this PR depends on an unmerged beaver branch, set repository variable BEAVER_REF before opening or updating the PR to avoid silently testing against main."
+
       - name: Checkout beaver and kinda
         run: |
           git clone --depth 1 --branch "$BEAVER_REF" https://github.com/beaver-lodge/beaver.git
           git clone --depth 1 https://github.com/beaver-lodge/kinda.git
+          echo "Resolved BEAVER_REF=$BEAVER_REF at commit $(git -C beaver rev-parse --short HEAD)"
 
       - uses: erlef/setup-beam@v1
         with:

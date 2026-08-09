@@ -126,6 +126,20 @@ Protocol consolidation starts with the native provider layer:
   `:beamer_callback` / `:unsupported`) for an `{module, function, arity}`;
   `Batata.Stdlib.plan/1` mirrors the built-in registry as a plan.
 
+## Release readiness
+
+Release process and gates are tracked in
+[`RELEASE_READINESS.md`](./RELEASE_READINESS.md).
+
+Current release contract is:
+
+- the declared stdlib surface in `Batata.Stdlib` is the supported boundary;
+- undeclared/unsupported/callback-only entries must fail explicitly;
+- `native/ABI.md` and `native/term_runtime.zig` stay lockstep for intrinsic
+  symbols;
+- release candidates must pass `mix format --check-formatted`, `mix test`, and
+  `mix hex.build` dry-run packaging.
+
 ## Dev setup
 
 ## Dev setup
