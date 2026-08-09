@@ -135,8 +135,11 @@ clock:
   preemptive yield;
 - slice 2: `ex.reduction_tick` is injected into every `scf.while` back edge
   (once per iteration); with `Batata.execute/3`'s `reduction_budget` option
-  the loop stops when the budget is exhausted (hard budget; true
-  yield/resume is slice 3), and without a budget the tick is a no-op.
+  the loop records a yield (`ex.yield_mark`) and resumes immediately (the
+  single-actor slice has no other process to schedule), so results stay
+  consistent across slices; without a budget the tick is a no-op. The
+  `clock_epoch`/`clock_bump_epoch` primitives let a scheduler invalidate
+  continuations.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

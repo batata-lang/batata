@@ -184,6 +184,12 @@ var process = Process{
     .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
 };
 
+// Preemptive yield accounting (#35 slice 3): the compiled loop driver
+// charges slices of the reduction budget; each slice boundary is a yield
+// point. The epoch is checked across slices (a message arrival or scheduler
+// round bumps it, invalidating the continuation).
+var yield_count: i64 = 0;
+
 // A stack of setjmp buffers for non-local exits (`throw`). The setjmp call
 // itself happens in the compiled code (so its frame stays live); the runtime
 // only tracks the buffers and performs the longjmp. The scalar slice has no
@@ -288,6 +294,17 @@ pub export fn ex_term_clock_epoch() i64 {
 pub export fn ex_term_clock_bump_epoch() i64 {
     process.clock.epoch += 1;
     return process.clock.epoch;
+}
+
+/// Number of preemptive yields so far (slice boundaries in the loop driver).
+pub export fn ex_term_yield_count() i64 {
+    return yield_count;
+}
+
+/// Records one yield at a slice boundary and bumps the yield counter.
+pub export fn ex_term_yield_mark() i64 {
+    yield_count += 1;
+    return yield_count;
 }
 
 /// Untags an integer term word to its scalar value; 0 for non-integers (the
@@ -1246,6 +1263,8 @@ comptime {
     @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
     @export(&ex_term_clock_epoch, .{ .name = "ex.term.clock_epoch" });
     @export(&ex_term_clock_bump_epoch, .{ .name = "ex.term.clock_bump_epoch" });
+    @export(&ex_term_yield_count, .{ .name = "ex.term.yield_count" });
+    @export(&ex_term_yield_mark, .{ .name = "ex.term.yield_mark" });
     @export(&ex_term_to_int, .{ .name = "ex.term.to_int" });
     @export(&ex_term_jmp_buf_size, .{ .name = "ex.term.jmp_buf_size" });
     @export(&ex_term_setjmp_addr, .{ .name = "ex.term.setjmp_addr" });
@@ -1645,6 +1664,12 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_clock_bump_epoch());
     try std.testing.expectEqual(@as(i64, 2), ex_term_clock_epoch());
     try std.testing.expectEqual(@as(i64, 0), ex_term_clock_budget_left());
+
+    // yield accounting
+    try std.testing.expectEqual(@as(i64, 0), ex_term_yield_count());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_yield_mark());
+    try std.testing.expectEqual(@as(i64, 2), ex_term_yield_mark());
+    try std.testing.expectEqual(@as(i64, 2), ex_term_yield_count());
 }
 
 test "term ABI throw unwinds to the innermost try" {

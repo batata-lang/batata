@@ -702,6 +702,7 @@ defmodule Batata.Lift do
       |> Enum.reduce(%{}, fn {value, pattern}, env ->
         Map.put(env, param_name(pattern), value)
       end)
+      |> Map.put(:__budget__, budget)
 
     # The entry function starts a fresh actor: reset the mailbox and the
     # reduction clock so each program run observes a clean process (budget 0
@@ -757,7 +758,7 @@ defmodule Batata.Lift do
   # body dispatches on the argument with ex.case, matching each clause's
   # pattern (the cursor-loop foundation for recursive scanners). M2 requires
   # a single argument and a final catch-all clause.
-  defp lift_definitions(definitions, ctx, ip, _budget) do
+  defp lift_definitions(definitions, ctx, ip, budget) do
     %Frontend.Definition{kind: kind, name: name, arity: arity} = hd(definitions)
 
     unless kind in [:def, :defp] do
@@ -769,13 +770,13 @@ defmodule Batata.Lift do
     cond do
       arity == 1 ->
         case detect_scanner(name, clauses) do
-          {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip)
+          {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip, budget)
           :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip)
         end
 
       arity >= 2 ->
         case detect_accumulator_scanner(name, clauses) do
-          {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip)
+          {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip, budget)
           :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip)
         end
 
@@ -1066,7 +1067,7 @@ defmodule Batata.Lift do
   defp terminator_base(body) when is_integer(body), do: body
   defp terminator_base(_body), do: :skip
 
-  defp lift_scanner_loop(name, %{base: base, delta: delta, head_width: width}, ctx, ip) do
+  defp lift_scanner_loop(name, %{base: base, delta: delta, head_width: width}, ctx, ip, budget) do
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
     i64 = integer_type(ctx)
@@ -1076,7 +1077,7 @@ defmodule Batata.Lift do
     [arg] = block |> Walker.arguments() |> Enum.to_list()
 
     base_val = lit(base, ctx, block)
-    acc_result = emit_cursor_while(block, arg, base_val, width, delta, ctx)
+    acc_result = emit_cursor_while(block, arg, base_val, width, delta, ctx, budget)
     create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -1090,7 +1091,7 @@ defmodule Batata.Lift do
     |> MLIR.Operation.create()
   end
 
-  defp lift_reduce_loop(name, %{delta: delta, head_width: width}, ctx, ip) do
+  defp lift_reduce_loop(name, %{delta: delta, head_width: width}, ctx, ip, budget) do
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
 
@@ -1098,7 +1099,7 @@ defmodule Batata.Lift do
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
     [arg, acc0] = block |> Walker.arguments() |> Enum.to_list()
 
-    acc_result = emit_cursor_while(block, arg, acc0, width, delta, ctx)
+    acc_result = emit_cursor_while(block, arg, acc0, width, delta, ctx, budget)
     create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -1115,7 +1116,7 @@ defmodule Batata.Lift do
   # scf.while keeps the ex.func body to a single block: the before region
   # carries (arg, acc, cursor) and conditions on the next head segment
   # existing; the after region advances the accumulator and cursor.
-  defp emit_cursor_while(block, arg, acc, width, delta, ctx) do
+  defp emit_cursor_while(block, arg, acc, width, delta, ctx, budget) do
     i64 = integer_type(ctx)
 
     locs = [
@@ -1141,7 +1142,7 @@ defmodule Batata.Lift do
 
     cond = cmp(len, next_cursor, "sge", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1)
+    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1, budget)
     create_op("scf.condition", [budget_cond, b_arg, b_acc, b_cursor], [], ctx, before_block)
 
     [a_arg, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
@@ -1172,43 +1173,88 @@ defmodule Batata.Lift do
   # `Enum.reduce/3` with a `fn item, acc -> item + acc end` reducer compiles
   # to a cursor loop over the list: carries (list, acc, cursor), reads each
   # element via `ex.list_get`, untags it, and accumulates.
-  defp lift_enum_sum_loop(list_word, acc0, ctx, block) do
-    lift_enum_cursor_loop(list_word, acc0, {"ex.add", :acc_first}, ctx, block)
+  defp lift_enum_sum_loop(list_word, acc0, ctx, block, budget) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.add", :acc_first}, ctx, block, budget)
   end
 
-  # #35 slice 2: charge one reduction per loop iteration (the scf.while
-  # before region runs once per iteration) and stop the loop when the budget
-  # is exhausted. With no budget set (runtime budget 0) the tick is a no-op.
-  defp inject_reduction_tick(before_block, ctx, cond_i1) do
+  # #35 slice 2/3: charge one reduction per loop iteration (the scf.while
+  # before region runs once per iteration). With a budget set, an exhausted
+  # budget records a yield and resets the budget so the loop continues (the
+  # single-actor slice resumes immediately); without a budget the tick is a
+  # no-op. The epoch primitives let a scheduler bump invalidate continuations.
+  defp inject_reduction_tick(before_block, ctx, cond_i1, budget) do
     i64 = integer_type(ctx)
 
     ticked =
       create_op("ex.reduction_tick", [lit(1, ctx, before_block)], [i64], ctx, before_block)
 
-    not_exhausted =
-      create_op(
-        "ex.cmp",
-        [ticked, lit(0, ctx, before_block), predicate: MLIR.Attribute.string("eq")],
-        [i64],
-        ctx,
-        before_block
-      )
+    if budget == nil do
+      not_exhausted =
+        create_op(
+          "ex.cmp",
+          [ticked, lit(0, ctx, before_block), predicate: MLIR.Attribute.string("eq")],
+          [i64],
+          ctx,
+          before_block
+        )
 
-    not_exhausted_i1 =
-      create_op("arith.trunci", [not_exhausted], [MLIR.Type.i1()], ctx, before_block)
+      not_exhausted_i1 =
+        create_op("arith.trunci", [not_exhausted], [MLIR.Type.i1()], ctx, before_block)
 
-    create_op("arith.andi", [cond_i1, not_exhausted_i1], [MLIR.Type.i1()], ctx, before_block)
+      create_op("arith.andi", [cond_i1, not_exhausted_i1], [MLIR.Type.i1()], ctx, before_block)
+    else
+      # Budgeted: exhausted -> yield_mark + clock_init(budget); condition
+      # stays as-is (immediate resume).
+      exhausted =
+        create_op(
+          "ex.cmp",
+          [ticked, lit(0, ctx, before_block), predicate: MLIR.Attribute.string("ne")],
+          [i64],
+          ctx,
+          before_block
+        )
+
+      exhausted_i1 =
+        create_op("arith.trunci", [exhausted], [MLIR.Type.i1()], ctx, before_block)
+
+      if_region = MLIR.CAPI.mlirRegionCreate()
+      if_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(if_region, if_block)
+
+      else_region = MLIR.CAPI.mlirRegionCreate()
+      else_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(else_region, else_block)
+
+      create_op("ex.yield_mark", [], [i64], ctx, if_block)
+      create_op("ex.clock_init", [lit(budget, ctx, if_block)], [i64], ctx, if_block)
+      create_op("scf.yield", [cond_i1], [], ctx, if_block)
+      create_op("scf.yield", [cond_i1], [], ctx, else_block)
+
+      if_op =
+        %Beaver.SSA{
+          op: "scf.if",
+          ip: before_block,
+          ctx: ctx,
+          arguments: [exhausted_i1],
+          results: [MLIR.Type.i1()],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [if_region, else_region] end
+        }
+        |> MLIR.Operation.create()
+
+      if_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+    end
   end
 
-  defp lift_enum_product_loop(list_word, acc0, ctx, block) do
-    lift_enum_cursor_loop(list_word, acc0, {"ex.mul", :acc_first}, ctx, block)
+  defp lift_enum_product_loop(list_word, acc0, ctx, block, budget) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.mul", :acc_first}, ctx, block, budget)
   end
 
-  defp lift_enum_subtract_loop(list_word, acc0, order, ctx, block) do
-    lift_enum_cursor_loop(list_word, acc0, {"ex.sub", order}, ctx, block)
+  defp lift_enum_subtract_loop(list_word, acc0, order, ctx, block, budget) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.sub", order}, ctx, block, budget)
   end
 
-  defp lift_enum_cursor_loop(list_word, acc0, {accumulate_op, order}, ctx, block) do
+  defp lift_enum_cursor_loop(list_word, acc0, {accumulate_op, order}, ctx, block, budget) do
     i64 = integer_type(ctx)
     locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
     list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
@@ -1226,7 +1272,7 @@ defmodule Batata.Lift do
     len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
     cond = cmp(b_cursor, len, "slt", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1)
+    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1, budget)
     create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
     [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
@@ -1334,29 +1380,31 @@ defmodule Batata.Lift do
   # `Enum.map/2` with a constant mapper (`fn _x -> c end`) compiles to a
   # descending cursor loop that conses the constant onto the accumulator,
   # preserving list order without a reverse.
-  defp lift_enum_const_map(list_word, value, ctx, block) do
+  defp lift_enum_const_map(list_word, value, ctx, block, budget) do
     lift_enum_map_loop(
       list_word,
       ctx,
       block,
-      fn _item, b -> lit(value, ctx, b) end
+      fn _item, b -> lit(value, ctx, b) end,
+      budget
     )
   end
 
   # `Enum.map/2` with a capture-add mapper (`fn x -> x + c end`) compiles to
   # the same descending loop, adding the captured scalar to each element.
-  defp lift_enum_capture_map(list_word, capture_i64, ctx, block) do
+  defp lift_enum_capture_map(list_word, capture_i64, ctx, block, budget) do
     lift_enum_map_loop(
       list_word,
       ctx,
       block,
       fn item, b ->
         create_op("ex.add", [item, capture_i64], [integer_type(ctx)], ctx, b)
-      end
+      end,
+      budget
     )
   end
 
-  defp lift_enum_map_loop(list_word, ctx, block, mapper_fun) do
+  defp lift_enum_map_loop(list_word, ctx, block, mapper_fun, budget) do
     i64 = integer_type(ctx)
     list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
     len = create_op("ex.list_length", [list_word], [i64], ctx, block)
@@ -1378,7 +1426,7 @@ defmodule Batata.Lift do
     [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
     cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1)
+    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1, budget)
     create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
     [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
@@ -1598,12 +1646,12 @@ defmodule Batata.Lift do
         {enumerable_word, env}
 
       {:const, value} ->
-        {lift_enum_const_map(enumerable_word, value, ctx, block), env}
+        {lift_enum_const_map(enumerable_word, value, ctx, block, env[:__budget__]), env}
 
       {:add_capture, capture_ast} ->
         {capture, env} = lift_expr(capture_ast, ctx, block, env)
         capture_i64 = enum_capture_i64(capture, ctx, block)
-        {lift_enum_capture_map(enumerable_word, capture_i64, ctx, block), env}
+        {lift_enum_capture_map(enumerable_word, capture_i64, ctx, block, env[:__budget__]), env}
 
       {:mapper, mapper_name} ->
         addr =
@@ -1957,28 +2005,42 @@ defmodule Batata.Lift do
           # A list literal keeps the compile-time cursor loop (M3); other
           # enumerables (tuple/binary literals or variables) dispatch through
           # the runtime's tag-based enumerable reduce.
-          {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block), env}
+          {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block, env[:__budget__]), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
         end
 
       :product ->
         if is_list(enumerable_ast) do
-          {lift_enum_product_loop(enumerable_word, acc_value, ctx, block), env}
+          {lift_enum_product_loop(enumerable_word, acc_value, ctx, block, env[:__budget__]), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
         end
 
       :subtract_acc_first ->
         if is_list(enumerable_ast) do
-          {lift_enum_subtract_loop(enumerable_word, acc_value, :acc_first, ctx, block), env}
+          {lift_enum_subtract_loop(
+             enumerable_word,
+             acc_value,
+             :acc_first,
+             ctx,
+             block,
+             env[:__budget__]
+           ), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 7, ctx, block), env}
         end
 
       :subtract_item_first ->
         if is_list(enumerable_ast) do
-          {lift_enum_subtract_loop(enumerable_word, acc_value, :item_first, ctx, block), env}
+          {lift_enum_subtract_loop(
+             enumerable_word,
+             acc_value,
+             :item_first,
+             ctx,
+             block,
+             env[:__budget__]
+           ), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
         end
