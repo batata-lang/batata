@@ -162,13 +162,32 @@ defmodule Batata.Lift do
 
   defp reduce_pattern({:fn, _, [{:->, _, [[item, acc_var], body]}]}) do
     cond do
-      sum_pattern?(body, item, acc_var) -> {:ok, :sum}
-      product_pattern?(body, item, acc_var) -> {:ok, :product}
-      map_values_sum_pattern?(body, item, acc_var) -> {:ok, :map_values_sum}
-      map_keys_sum_pattern?(body, item, acc_var) -> {:ok, :map_keys_sum}
-      map_entries_sum_pattern?(body, item, acc_var) -> {:ok, :map_entries_sum}
-      same_var?(body, acc_var) -> {:ok, :return_acc}
-      true -> :error
+      sum_pattern?(body, item, acc_var) ->
+        {:ok, :sum}
+
+      product_pattern?(body, item, acc_var) ->
+        {:ok, :product}
+
+      subtract_pattern?(body, item, acc_var) ->
+        {:ok, subtract_direction(body, item, acc_var)}
+
+      map_values_sum_pattern?(body, item, acc_var) ->
+        {:ok, :map_values_sum}
+
+      map_keys_sum_pattern?(body, item, acc_var) ->
+        {:ok, :map_keys_sum}
+
+      map_entries_sum_pattern?(body, item, acc_var) ->
+        {:ok, :map_entries_sum}
+
+      same_var?(body, acc_var) ->
+        {:ok, :return_acc}
+
+      combination_pattern?(body, item, acc_var) ->
+        {:ok, {:combination, body, var_name(item), var_name(acc_var)}}
+
+      true ->
+        :error
     end
   end
 
@@ -188,6 +207,19 @@ defmodule Batata.Lift do
   end
 
   defp product_pattern?(_body, _item, _acc_var), do: false
+
+  # `fn item, acc -> acc - item end` (acc first) and `item - acc` (item
+  # first): subtraction is order-sensitive.
+  defp subtract_pattern?({:-, _, [left, right]}, item, acc_var) do
+    (same_var?(left, acc_var) and same_var?(right, item)) or
+      (same_var?(left, item) and same_var?(right, acc_var))
+  end
+
+  defp subtract_pattern?(_body, _item, _acc_var), do: false
+
+  defp subtract_direction({:-, _, [left, right]}, _item, acc_var) do
+    if same_var?(left, acc_var), do: :subtract_acc_first, else: :subtract_item_first
+  end
 
   # `fn {_k, v}, acc -> acc + v end` / `v + acc`: map value accumulation.
   defp map_values_sum_pattern?(body, item, acc_var),
@@ -247,6 +279,30 @@ defmodule Batata.Lift do
   defp collect_add_vars(_), do: []
 
   defp var_name({name, _, _}), do: name
+
+  # Combination reducer: the body is a pure arithmetic tree (+/-/*) over the
+  # item, the accumulator, and integer literals. Only list-literal
+  # enumerables can carry it (the cursor loop compiles the body).
+  defp combination_pattern?(body, item, acc_var) do
+    arithmetic_tree?(body) and
+      body
+      |> collect_tree_vars()
+      |> MapSet.new()
+      |> MapSet.subset?(MapSet.new([var_name(item), var_name(acc_var)]))
+  end
+
+  defp arithmetic_tree?({op, _, [left, right]}) when op in [:+, :-, :*],
+    do: arithmetic_tree?(left) and arithmetic_tree?(right)
+
+  defp arithmetic_tree?(integer) when is_integer(integer), do: true
+  defp arithmetic_tree?({name, _, _}) when is_atom(name), do: true
+  defp arithmetic_tree?(_), do: false
+
+  defp collect_tree_vars({op, _, [left, right]}) when op in [:+, :-, :*],
+    do: collect_tree_vars(left) ++ collect_tree_vars(right)
+
+  defp collect_tree_vars({name, _, _}) when is_atom(name), do: [name]
+  defp collect_tree_vars(_), do: []
 
   # `fn item -> item + capture end` / `capture + item` where capture is a free
   # variable of the fn (resolved from the enclosing env) or an integer
@@ -888,14 +944,18 @@ defmodule Batata.Lift do
   # to a cursor loop over the list: carries (list, acc, cursor), reads each
   # element via `ex.list_get`, untags it, and accumulates.
   defp lift_enum_sum_loop(list_word, acc0, ctx, block) do
-    lift_enum_cursor_loop(list_word, acc0, "ex.add", ctx, block)
+    lift_enum_cursor_loop(list_word, acc0, {"ex.add", :acc_first}, ctx, block)
   end
 
   defp lift_enum_product_loop(list_word, acc0, ctx, block) do
-    lift_enum_cursor_loop(list_word, acc0, "ex.mul", ctx, block)
+    lift_enum_cursor_loop(list_word, acc0, {"ex.mul", :acc_first}, ctx, block)
   end
 
-  defp lift_enum_cursor_loop(list_word, acc0, accumulate_op, ctx, block) do
+  defp lift_enum_subtract_loop(list_word, acc0, order, ctx, block) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.sub", order}, ctx, block)
+  end
+
+  defp lift_enum_cursor_loop(list_word, acc0, {accumulate_op, order}, ctx, block) do
     i64 = integer_type(ctx)
     locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
     list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
@@ -922,7 +982,67 @@ defmodule Batata.Lift do
       create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
 
     item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
-    acc_next = create_op(accumulate_op, [a_acc, item_i64], [i64], ctx, after_block)
+
+    acc_next =
+      case order do
+        :acc_first -> create_op(accumulate_op, [a_acc, item_i64], [i64], ctx, after_block)
+        :item_first -> create_op(accumulate_op, [item_i64, a_acc], [i64], ctx, after_block)
+      end
+
+    cursor_next =
+      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
+
+    cursor0 = lit(0, ctx, block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [list_i64, acc0, cursor0],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+  end
+
+  # Combination reducer over a list literal: the cursor loop's after region
+  # compiles the reducer body with the item (untagged) and accumulator bound
+  # to the loop variables.
+  defp lift_enum_combo_loop(list_word, acc0, body_ast, item_name, acc_name, ctx, block) do
+    i64 = integer_type(ctx)
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, block)
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
+    len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
+    cond = cmp(b_cursor, len, "slt", ctx, before_block)
+    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
+
+    [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+
+    item =
+      create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+    item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+    env = %{item_name => item_i64, acc_name => a_acc}
+    {acc_next, _env} = lift_expr(body_ast, ctx, after_block, env)
 
     cursor_next =
       create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
@@ -1256,6 +1376,36 @@ defmodule Batata.Lift do
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
         end
+
+      :subtract_acc_first ->
+        if is_list(enumerable_ast) do
+          {lift_enum_subtract_loop(enumerable_word, acc_value, :acc_first, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 7, ctx, block), env}
+        end
+
+      :subtract_item_first ->
+        if is_list(enumerable_ast) do
+          {lift_enum_subtract_loop(enumerable_word, acc_value, :item_first, ctx, block), env}
+        else
+          {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
+        end
+
+      {:combination, body_ast, item_name, acc_name} ->
+        unless is_list(enumerable_ast) do
+          raise Error,
+                "combination reducers require a list literal enumerable"
+        end
+
+        {lift_enum_combo_loop(
+           enumerable_word,
+           acc_value,
+           body_ast,
+           item_name,
+           acc_name,
+           ctx,
+           block
+         ), env}
 
       :map_values_sum ->
         # Map reduce sums entry values through runtime continuation 3.

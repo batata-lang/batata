@@ -107,6 +107,11 @@ defmodule Batata.StdlibTest do
       assert 12 == execute("Enum.reduce([1, 2, 3], 2, fn x, a -> a * x end)", ctx)
       assert 24 == execute("Enum.reduce({2, 3, 4}, 1, fn x, a -> x * a end)", ctx)
       assert 6 == execute("Enum.reduce(<<2, 3>>, 1, fn x, a -> x * a end)", ctx)
+      assert 4 == execute("Enum.reduce([1, 2, 3], 10, fn x, a -> a - x end)", ctx)
+      assert 4 == execute("Enum.reduce({1, 2, 3}, 10, fn x, a -> a - x end)", ctx)
+      assert -8 == execute("Enum.reduce([1, 2, 3], 10, fn x, a -> x - a end)", ctx)
+      assert 12 == execute("Enum.reduce([1, 2, 3], 0, fn x, a -> a + x * 2 end)", ctx)
+      assert 16 == execute("Enum.reduce([1, 2, 3], 1, fn x, a -> a * x + 1 end)", ctx)
     end
 
     test "executes const and capture-add Enum.map/2 mappers", %{ctx: ctx} do
@@ -153,10 +158,17 @@ defmodule Batata.StdlibTest do
     test "rejects unrecognized Enum mapper/reducer shapes explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.reduce([1, 2, 3], 0, fn x, a -> x - a end)", ctx)
+          execute("Enum.reduce([1, 2, 3], 0, fn x, a -> x / a end)", ctx)
         end
 
       assert error.message =~ "requires BEAM callback interop"
+
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute("Enum.reduce({1, 2, 3}, 0, fn x, a -> a + x * 2 end)", ctx)
+        end
+
+      assert error.message =~ "combination reducers require a list literal"
 
       error =
         assert_raise Batata.Lift.Error, fn ->
