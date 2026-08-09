@@ -142,8 +142,6 @@ Current release contract is:
 
 ## Dev setup
 
-## Dev setup
-
 Beaver and Kinda are pre-release, so development uses local checkouts:
 
 ```sh
