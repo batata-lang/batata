@@ -132,7 +132,11 @@ clock:
 - clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /
   `clock_epoch` / `clock_bump_epoch`) charge reductions and expose the
   continuation-generation counter, ready for loop back-edge injection and
-  preemptive yield (next slice).
+  preemptive yield;
+- slice 2: `ex.reduction_tick` is injected into every `scf.while` back edge
+  (once per iteration); with `Batata.execute/3`'s `reduction_budget` option
+  the loop stops when the budget is exhausted (hard budget; true
+  yield/resume is slice 3), and without a budget the tick is a no-op.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

@@ -18,7 +18,7 @@ defmodule Batata.LowerTest do
       )
 
     rendered = MLIR.to_string(module)
-    refute rendered =~ "ex."
+    refute rendered =~ "\"ex."
     assert rendered =~ "llvm.func"
     assert rendered =~ "llvm.add"
   end

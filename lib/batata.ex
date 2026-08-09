@@ -17,11 +17,11 @@ defmodule Batata do
   operations.
   """
   @spec compile(String.t(), MLIR.Context.t()) :: MLIR.Module.t()
-  def compile(source, ctx) do
+  def compile(source, ctx, opts \\ []) do
     module =
       source
       |> Batata.Frontend.from_source()
-      |> Batata.Lift.module_to_ir(ctx: ctx)
+      |> Batata.Lift.module_to_ir(ctx: ctx, reduction_budget: opts[:reduction_budget])
       |> Beaver.Deferred.create(ctx)
 
     module
@@ -50,10 +50,10 @@ defmodule Batata do
   The JIT engine and module are destroyed before returning.
   """
   @spec execute(String.t(), MLIR.Context.t()) :: term()
-  def execute(source, ctx) do
+  def execute(source, ctx, opts \\ []) do
     module =
       source
-      |> compile(ctx)
+      |> compile(ctx, opts)
       |> Batata.Lower.to_llvm(ctx, c_interface: true)
       |> MLIR.verify!()
 
