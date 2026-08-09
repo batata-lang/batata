@@ -129,7 +129,7 @@ defmodule Batata.Lift do
           |> Enum.map(&count_enum_cursor_loops/1)
           |> Enum.sum()
 
-        total = (if scanner?, do: 1, else: 0) + enum_loops
+        total = if(scanner?, do: 1, else: 0) + enum_loops
 
         if total > 1 do
           raise Error,
@@ -1312,15 +1312,24 @@ defmodule Batata.Lift do
     c0_i1 = create_op("arith.trunci", [cmp(p0, 0, "eq", ctx, block)], [i1], ctx, block)
 
     # Park process 0 when it completed on the first slice.
-    build_scf_if(c0_i1, ctx, block, [], fn b ->
-      create_op("ex.process_done", [unbox(r0, ctx, b)], [i64], ctx, b)
-      []
-    end, fn _b -> [] end)
+    build_scf_if(
+      c0_i1,
+      ctx,
+      block,
+      [],
+      fn b ->
+        create_op("ex.process_done", [unbox(r0, ctx, b)], [i64], ctx, b)
+        []
+      end,
+      fn _b -> [] end
+    )
 
     r0_i64 = unbox(r0, ctx, block)
     zero = lit(0, ctx, block)
+
     main_res0 =
       build_scf_if(c0_i1, ctx, block, [i64], fn _b -> [r0_i64] end, fn _b -> [zero] end)
+
     main_res0 = hd(main_res0)
 
     # Scheduler loop: while any process is runnable, switch to the next one
@@ -1350,32 +1359,39 @@ defmodule Batata.Lift do
     # the spawned closure through the closure dispatch. Both branches yield
     # i64 so the select stays scalar through conversion.
     res =
-      build_scf_if(is_main, ctx, after_block, [i64], fn b ->
-        [unbox(call_entry(ctx, b), ctx, b)]
-      end, fn b ->
-        # Spawned entries are closures dispatched through `__fn_dispatch`;
-        # without anonymous functions the branch is unreachable (schedule_next
-        # always returns process 0), so fall back to the compiled entry.
-        if has_dispatch do
-          entry_word = create_op("ex.to_word", [entry], [dyn], ctx, b)
-
-          [
-            create_op(
-              "ex.apply",
-              [
-                entry_word,
-                arg_count: MLIR.Attribute.integer(MLIR.Type.i64(), 0),
-                operandSegmentSizes: segment_sizes([1, 0, 0, 0, 0])
-              ],
-              [i64],
-              ctx,
-              b
-            )
-          ]
-        else
+      build_scf_if(
+        is_main,
+        ctx,
+        after_block,
+        [i64],
+        fn b ->
           [unbox(call_entry(ctx, b), ctx, b)]
+        end,
+        fn b ->
+          # Spawned entries are closures dispatched through `__fn_dispatch`;
+          # without anonymous functions the branch is unreachable (schedule_next
+          # always returns process 0), so fall back to the compiled entry.
+          if has_dispatch do
+            entry_word = create_op("ex.to_word", [entry], [dyn], ctx, b)
+
+            [
+              create_op(
+                "ex.apply",
+                [
+                  entry_word,
+                  arg_count: MLIR.Attribute.integer(MLIR.Type.i64(), 0),
+                  operandSegmentSizes: segment_sizes([1, 0, 0, 0, 0])
+                ],
+                [i64],
+                ctx,
+                b
+              )
+            ]
+          else
+            [unbox(call_entry(ctx, b), ctx, b)]
+          end
         end
-      end)
+      )
 
     res = hd(res)
     pending = create_op("ex.cont_pending", [], [i64], ctx, after_block)
@@ -1383,10 +1399,17 @@ defmodule Batata.Lift do
     completed_i1 =
       create_op("arith.trunci", [cmp(pending, 0, "eq", ctx, after_block)], [i1], ctx, after_block)
 
-    build_scf_if(completed_i1, ctx, after_block, [], fn b ->
-      create_op("ex.process_done", [res], [i64], ctx, b)
-      []
-    end, fn _b -> [] end)
+    build_scf_if(
+      completed_i1,
+      ctx,
+      after_block,
+      [],
+      fn b ->
+        create_op("ex.process_done", [res], [i64], ctx, b)
+        []
+      end,
+      fn _b -> [] end
+    )
 
     update_i1 = create_op("arith.andi", [completed_i1, is_main], [i1], ctx, after_block)
 
@@ -1501,7 +1524,10 @@ defmodule Batata.Lift do
 
     cond = cmp(len, next_cursor, "sge", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1, budget, b_arg, b_acc, b_cursor)
+
+    budget_cond =
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_arg, b_acc, b_cursor)
+
     create_op("scf.condition", [budget_cond, b_arg, b_acc, b_cursor], [], ctx, before_block)
 
     [a_arg, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
@@ -1590,6 +1616,7 @@ defmodule Batata.Lift do
 
       create_op("ex.cont_save", [arg, acc, cursor], [i64], ctx, if_block)
       create_op("ex.yield_mark", [], [i64], ctx, if_block)
+
       false_i1 =
         create_op("arith.trunci", [lit(0, ctx, if_block)], [MLIR.Type.i1()], ctx, if_block)
 
@@ -1697,7 +1724,10 @@ defmodule Batata.Lift do
     len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
     cond = cmp(b_cursor, len, "slt", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor)
+
+    budget_cond =
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor)
+
     create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
     [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
@@ -1853,7 +1883,10 @@ defmodule Batata.Lift do
     [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
     cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
     cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
-    budget_cond = inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor)
+
+    budget_cond =
+      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor)
+
     create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
 
     [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
@@ -1929,12 +1962,19 @@ defmodule Batata.Lift do
           {value, env}
         else
           gate_value =
-            build_scf_if(pending_i1, ctx, block, [integer_type(ctx)], fn _b ->
-              [loop_result]
-            end, fn b ->
-              {rest_value, _rest_env} = lift_block_gated(rest, ctx, b, env)
-              [rest_value]
-            end)
+            build_scf_if(
+              pending_i1,
+              ctx,
+              block,
+              [integer_type(ctx)],
+              fn _b ->
+                [loop_result]
+              end,
+              fn b ->
+                {rest_value, _rest_env} = lift_block_gated(rest, ctx, b, env)
+                [rest_value]
+              end
+            )
             |> hd()
 
           {gate_value, env}
@@ -2118,19 +2158,19 @@ defmodule Batata.Lift do
 
     {value, env} =
       case pattern do
-      :identity ->
+        :identity ->
           {enumerable_word, env}
 
-      {:const, value} ->
+        {:const, value} ->
           {lift_enum_const_map(enumerable_word, value, ctx, block, env[:__budget__]), env}
 
-      {:add_capture, capture_ast} ->
+        {:add_capture, capture_ast} ->
           {capture, env} = lift_expr(capture_ast, ctx, block, env)
           capture_i64 = enum_capture_i64(capture, ctx, block)
 
           {lift_enum_capture_map(enumerable_word, capture_i64, ctx, block, env[:__budget__]), env}
 
-      {:mapper, mapper_name} ->
+        {:mapper, mapper_name} ->
           addr =
             create_op(
               "ex.func_addr",
@@ -2186,6 +2226,7 @@ defmodule Batata.Lift do
       false ->
         {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
         enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+
         {value, env} =
           lift_reduce_pattern(
             pattern,
