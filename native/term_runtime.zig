@@ -402,6 +402,48 @@ fn word_value(word: i64) i64 {
     return if (is_int(word)) word_payload(word) else 0;
 }
 
+/// Closure-shaped enumerable reduce: a captured scalar participates in the
+/// step. continuation 13 = sum with capture (acc + item + capture). The
+/// capture is the reducer's captured environment (a scalar i64 word).
+pub export fn ex_term_enumerable_reduce_c(
+    enumerable: i64,
+    acc: i64,
+    continuation: i64,
+    capture: i64,
+) i64 {
+    if (continuation != 13) return ex_term_enumerable_reduce(enumerable, acc, continuation);
+    switch (word_tag(enumerable)) {
+        tag_list => {
+            var current = enumerable;
+            var result = acc;
+            while (word_tag(current) == tag_list) {
+                result += word_value(list_cell(current)[0]) + capture;
+                current = list_cell(current)[1];
+            }
+            return result;
+        },
+        tag_tuple => {
+            const len = tuple_len(enumerable);
+            var result = acc;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                result += word_value(tuple_elems(enumerable)[i]) + capture;
+            }
+            return result;
+        },
+        tag_binary => {
+            const len = binary_len(enumerable);
+            var result = acc;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                result += binary_bytes(enumerable)[i] + capture;
+            }
+            return result;
+        },
+        else => return acc,
+    }
+}
+
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
@@ -777,6 +819,7 @@ comptime {
     @export(&ex_term_map_length, .{ .name = "ex.term.map_length" });
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
+    @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
@@ -938,6 +981,8 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 10));
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 11));
     try std.testing.expectEqual(@as(i64, 0), ex_term_enumerable_reduce(list, 10, 12));
+    try std.testing.expectEqual(@as(i64, 23), ex_term_enumerable_reduce_c(list, 0, 13, 10));
+    try std.testing.expectEqual(@as(i64, 26), ex_term_enumerable_reduce_c(tuple, 3, 13, 10));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));

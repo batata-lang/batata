@@ -174,6 +174,10 @@ defmodule Batata.Lift do
       div_rem_pattern?(body, item, acc_var) ->
         {:ok, div_rem_direction(body, item, acc_var)}
 
+      capture_sum_pattern?(body, item, acc_var) ->
+        {:ok, capture} = capture_addend(body, item, acc_var)
+        {:ok, {:capture_sum, capture}}
+
       map_values_sum_pattern?(body, item, acc_var) ->
         {:ok, :map_values_sum}
 
@@ -237,6 +241,22 @@ defmodule Batata.Lift do
     prefix = if op == :div, do: :div, else: :rem
     if same_var?(left, acc_var), do: :"#{prefix}_acc_first", else: :"#{prefix}_item_first"
   end
+
+  # `fn item, acc -> acc + item + capture end` / `capture + item + acc`:
+  # sum with a captured scalar (variable or integer literal).
+  defp capture_sum_pattern?(body, item, acc_var) do
+    match?({:ok, _capture}, capture_addend(body, item, acc_var))
+  end
+
+  defp capture_addend({:+, _, [left, right]}, item, acc_var) do
+    cond do
+      sum_pattern?(left, item, acc_var) and addend?(right) -> {:ok, right}
+      sum_pattern?(right, item, acc_var) and addend?(left) -> {:ok, left}
+      true -> :error
+    end
+  end
+
+  defp capture_addend(_body, _item, _acc_var), do: :error
 
   # `fn {_k, v}, acc -> acc + v end` / `v + acc`: map value accumulation.
   defp map_values_sum_pattern?(body, item, acc_var),
@@ -1097,6 +1117,20 @@ defmodule Batata.Lift do
     )
   end
 
+  # Closure-shaped enumerable reduce with a captured scalar (continuation
+  # 13 = sum with capture).
+  defp lift_enum_reduce_capture(enumerable_word, acc0, capture_i64, ctx, block) do
+    i64 = integer_type(ctx)
+
+    create_op(
+      "ex.enumerable_reduce_c",
+      [enumerable_word, acc0, lit(13, ctx, block), capture_i64],
+      [i64],
+      ctx,
+      block
+    )
+  end
+
   # `Enum.map/2` with a constant mapper (`fn _x -> c end`) compiles to a
   # descending cursor loop that conses the constant onto the accumulator,
   # preserving list order without a reverse.
@@ -1421,6 +1455,11 @@ defmodule Batata.Lift do
 
       :rem_item_first ->
         {lift_enum_reduce_runtime(enumerable_word, acc_value, 12, ctx, block), env}
+
+      {:capture_sum, capture_ast} ->
+        {capture, env} = lift_expr(capture_ast, ctx, block, env)
+        capture_i64 = enum_capture_i64(capture, ctx, block)
+        {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block), env}
 
       {:combination, body_ast, item_name, acc_name} ->
         unless is_list(enumerable_ast) do
