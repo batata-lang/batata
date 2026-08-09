@@ -75,7 +75,9 @@ The Enum slice adds the first callback-shaped stdlib calls:
   arithmetic combination reducers (e.g. `a + x * 2`) compile the reducer body
   into the cursor loop for list literals; integer `div/2` and `rem/2`
   reducers (order-sensitive, zero divisor yields 0) dispatch through runtime
-  continuations 9-12.
+  continuations 9-12; capture-sum reducers (`fn x, a -> a + x + c end`, c a
+  captured scalar or literal) dispatch through `ex.term.enumerable_reduce_c`
+  (continuation 13).
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
