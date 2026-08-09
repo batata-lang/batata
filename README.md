@@ -70,7 +70,10 @@ The Enum slice adds the first callback-shaped stdlib calls:
   key-sum through continuation 4; `fn {k, v}, acc -> acc + k + v end`
   (any addition order) sums key and value per entry through continuation 5;
   product reducers (`fn x, a -> x * a end`) use the cursor loop for list
-  literals and runtime continuation 6 otherwise.
+  literals and runtime continuation 6 otherwise; subtraction is
+  order-sensitive (`a - x` vs `x - a`, runtime continuations 7/8); arbitrary
+  arithmetic combination reducers (e.g. `a + x * 2`) compile the reducer body
+  into the cursor loop for list literals.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
