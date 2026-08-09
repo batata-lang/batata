@@ -96,6 +96,16 @@ M5 starts the `native_elixirc` equivalent (see
   a runnable AOT binary with verified symbols (`zig cc` links the Zig term
   runtime).
 
+Protocol consolidation starts with the native provider layer:
+
+- `Batata.Native.Provider` is a `defprotocol` extension point
+  (`native_plan/1`, `@fallback_to_any true`); project-local IR nodes
+  contribute replacement plans through `defimpl`, and consolidation exposes
+  the closed-world provider set at compile time (`Registry.impls/0`);
+- `Batata.Stdlib.Plan` carries the replacement class (`:native_term` /
+  `:beamer_callback` / `:unsupported`) for an `{module, function, arity}`;
+  `Batata.Stdlib.plan/1` mirrors the built-in registry as a plan.
+
 ## Dev setup
 
 ## Dev setup
