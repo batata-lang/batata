@@ -95,6 +95,35 @@ defmodule Batata.Stdlib.Binary do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.MapSet do
+  @moduledoc """
+  MapSet-domain declarations. Sets are represented as deduplicated lists in
+  the slice; `Enum` operations over them reuse the list paths.
+  """
+
+  @class_map %{
+    {MapSet, :new, 1} => :native_term,
+    {MapSet, :member?, 2} => :native_term,
+    {MapSet, :put, 2} => :native_term
+  }
+
+  @doc "Returns mapset-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
+defmodule Batata.Stdlib.HashSet do
+  @moduledoc """
+  HashSet-domain declarations (alias of the MapSet representation).
+  """
+
+  @class_map %{
+    {HashSet, :new, 1} => :native_term
+  }
+
+  @doc "Returns hashset-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.String do
   @moduledoc """
   String-domain declarations.
@@ -178,6 +207,8 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.Kernel.class_map(),
                Batata.Stdlib.List.class_map(),
                Batata.Stdlib.Map.class_map(),
+               Batata.Stdlib.MapSet.class_map(),
+               Batata.Stdlib.HashSet.class_map(),
                Batata.Stdlib.String.class_map(),
                Batata.Stdlib.Base.class_map(),
                Batata.Stdlib.Integer.class_map(),

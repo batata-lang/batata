@@ -107,7 +107,11 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
   functions called through `ex.term.enumerable_map_fun` for any
   list/tuple/binary; reduce bodies generalize beyond arithmetic trees — any
   slice-compilable expression over item/acc (including `div`/`rem`, now
-  `ex.div`/`ex.rem`, and comparisons) compiles into the extracted reducer.
+  `ex.div`/`ex.rem`, and comparisons) compiles into the extracted reducer;
+- slice extension for sets: `MapSet.new/1` / `member?/2` / `put/2` (and
+  `HashSet.new/1`) compile to deduplicated list words
+  (`ex.term.mapset_*`), so `Enum` operations over sets reuse the list paths —
+  the first external Enumerable impl native-ized via a slice representation.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

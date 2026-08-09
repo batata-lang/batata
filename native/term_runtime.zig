@@ -662,6 +662,42 @@ pub export fn ex_term_call_callback(fn_id: i64, arg: i64) i64 {
     return callback(arg);
 }
 
+fn list_contains(list: i64, word: i64) bool {
+    var current = list;
+    while (word_tag(current) == tag_list) {
+        if (list_cell(current)[0] == word) return true;
+        current = list_cell(current)[1];
+    }
+    return false;
+}
+
+/// Builds a set (unique members) from a list. Members keep their term words;
+/// duplicate members are dropped. Order is not preserved (sets are unordered).
+pub export fn ex_term_mapset_from_list(list: i64) i64 {
+    var result = nil_word;
+    var current = list;
+    while (word_tag(current) == tag_list) {
+        const item = list_cell(current)[0];
+        if (!list_contains(result, item)) {
+            result = ex_term_list_cons(item, result);
+        }
+        current = list_cell(current)[1];
+    }
+    return result;
+}
+
+/// Membership check: 1 when the set contains the member word, else 0.
+pub export fn ex_term_mapset_member(set: i64, member: i64) i64 {
+    return if (word_tag(set) == tag_list and list_contains(set, member)) 1 else 0;
+}
+
+/// Adds a member to a set (deduplicated); the original set is returned when
+/// the member is already present.
+pub export fn ex_term_mapset_put(set: i64, member: i64) i64 {
+    if (ex_term_mapset_member(set, member) == 1) return set;
+    return ex_term_list_cons(member, set);
+}
+
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
     if (word_tag(list) != tag_list) return nil_word;
@@ -1045,6 +1081,9 @@ comptime {
     @export(&ex_term_enumerable_reduce_fun, .{ .name = "ex.term.enumerable_reduce_fun" });
     @export(&ex_term_register_callback, .{ .name = "ex.term.register_callback" });
     @export(&ex_term_call_callback, .{ .name = "ex.term.call_callback" });
+    @export(&ex_term_mapset_from_list, .{ .name = "ex.term.mapset_from_list" });
+    @export(&ex_term_mapset_member, .{ .name = "ex.term.mapset_member" });
+    @export(&ex_term_mapset_put, .{ .name = "ex.term.mapset_put" });
     @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
     @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
@@ -1254,6 +1293,17 @@ test "term ABI reads" {
         ex_term_register_callback(0, &test_callback),
     );
     try std.testing.expectEqual(@as(i64, 42), ex_term_call_callback(0, 10));
+
+    // MapSet: dedupe construction, membership, put
+    const dup_list = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(one, nil_word)));
+    const set = ex_term_mapset_from_list(dup_list);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(set));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_mapset_member(set, one));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_mapset_member(set, two));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_mapset_member(set, 24));
+    const set2 = ex_term_mapset_put(set, 24);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(set2));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_list_length(ex_term_mapset_put(set, one)));
 
     // word equality
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(one, one));
