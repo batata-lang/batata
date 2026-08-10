@@ -108,7 +108,8 @@ jobs:
             -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc 2>&1)"
           echo "$output"
           echo "$output" | grep -q '"reuse_success": 1000000'
-          echo "$output" | grep -q '"no_reuse_failures": [1-9]'
+          echo "$output" | grep -q '"reuse_last_index": [0-9]'
+          echo "$output" | grep -q '"no_reuse_last_index": 1000000'
 
       - name: Build Hex package
         # Simulate publishing: declare deps as Hex constraints (no path

@@ -235,6 +235,9 @@ const Process = struct {
     last_worker: std.atomic.Value(u32) = .init(0),
     last_thread_id: std.atomic.Value(usize) = .init(0),
     pid: i64,
+    // BEAM-style pid serial (#50 stage 2): recycled slots bump the
+    // generation, so a stale pid referencing a recycled slot is rejected.
+    generation: u32 = 1,
     mailbox: Mailbox = .{},
     clock: Clock,
     // Closure word of the spawned entry; 0 for the initial process, whose
@@ -371,7 +374,8 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
 fn init_processes() void {
     const instance = runtime();
     instance.processes[0] = .{
-        .pid = (1 << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom)),
+        .pid = pid_of(0, 1),
+        .generation = 1,
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
     };
     instance.process_count = 1;
@@ -394,9 +398,31 @@ fn current_proc() *Process {
     return &instance.processes[current_process];
 }
 
-fn pid_of(index: usize) i64 {
-    return (@as(i64, @intCast(index + 1)) << @intCast(tag_shift)) |
-        @as(i64, @intCast(tag_atom));
+// pid layout: payload = (generation << index_bits) | (index + 1), tagged as an
+// atom. index_bits = 24 supports ~16M concurrent slots; the generation is the
+// BEAM serial that makes recycled-slot pids unique over time.
+const index_bits: u6 = 24;
+const index_mask: i64 = (1 << @intCast(index_bits)) - 1;
+
+fn pid_of(index: usize, generation: u32) i64 {
+    const payload = (@as(i64, @intCast(generation)) << @intCast(index_bits)) |
+        @as(i64, @intCast(index + 1));
+    return (payload << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom));
+}
+
+fn pid_index(pid: i64) usize {
+    const id = (word_payload(pid) & index_mask) - 1;
+    return if (id < 0) 0 else @intCast(id);
+}
+
+/// Resolves a pid to its process, validating the generation: a stale pid
+/// whose slot has been recycled carries an old serial and resolves to null.
+/// The caller must hold the scheduler lock (the process table may reallocate).
+fn resolve_pid(instance: *Runtime, pid: i64) ?*Process {
+    const index = pid_index(pid);
+    if (index >= instance.process_count) return null;
+    const proc = &instance.processes[index];
+    return if (proc.pid == pid) proc else null;
 }
 
 /// Resets the process table to a single fresh initial process with the given
@@ -406,7 +432,7 @@ fn pid_of(index: usize) i64 {
 /// is out of range.
 pub export fn ex_term_process_table_reset(cap: i64) i64 {
     const instance = runtime();
-    if (cap < 1 or cap > max_process_cap) return nil_word;
+    if (cap < 1) return nil_word;
     const new_cap: usize = @intCast(cap);
     if (instance.processes.len != new_cap) {
         if (instance.processes.len > 0) std.heap.page_allocator.free(instance.processes);
@@ -495,17 +521,15 @@ pub export fn ex_term_self() i64 {
 /// plain FIFO receive must observe the message on resume.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     _ = current_proc();
-    const instance = runtime();
     if (word_tag(pid) != tag_atom) return nil_word;
-    const pid_id: usize = @intCast(word_payload(pid));
-    if (pid_id == 0 or pid_id > @as(usize, @intCast(instance.process_count))) return nil_word;
-    if (!instance.processes[pid_id - 1].mailbox.push(msg)) return nil_word;
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const target = resolve_pid(instance, pid) orelse return nil_word;
+    if (!target.mailbox.push(msg)) return nil_word;
     // Message arrival invalidates a pending selective-receive continuation:
     // the scan restarts and observes the new message (epoch invalidation
     // wiring, #35 slice 6). Loop continuations are unaffected.
-    const target = &instance.processes[pid_id - 1];
-    instance.scheduler_lock.lock();
-    defer instance.scheduler_lock.unlock();
     target.state_lock.lock();
     defer target.state_lock.unlock();
     if (target.cont.active and target.cont.receive) {
@@ -600,35 +624,61 @@ pub export fn ex_term_mailbox_clear() i64 {
 }
 
 /// Spawns a new process with its own mailbox, clock and entry closure;
-/// returns its pid (atom word with id = process index + 1), or nil when the
-/// table is full. A completed process's slot is recycled first (#50 stage 1),
-/// so `process_count` grows only to the concurrency peak.
+/// returns its pid (atom word with generation + slot serial, #50 stage 2).
+/// A completed process's slot is recycled first (stage 1) with a bumped
+/// generation; otherwise the table grows dynamically, so spawn only fails on
+/// allocation failure. `process_count` grows only to the concurrency peak.
 pub export fn ex_term_spawn(fun: i64) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
 
+    const reused = instance.free_count > 0;
     const index =
-        if (instance.free_count > 0) blk: {
+        if (reused) blk: {
             instance.free_count -= 1;
             break :blk instance.free_slots[instance.free_count];
-        } else if (instance.process_count < instance.process_cap) blk: {
+        } else blk: {
+            if (instance.process_count >= instance.processes.len) {
+                grow_process_table(instance, instance.process_count + 1);
+            }
             const fresh = instance.process_count;
             instance.process_count += 1;
             break :blk fresh;
-        } else {
-            return nil_word;
         };
+
+    const generation: u32 = if (reused) instance.processes[index].generation +% 1 else 1;
 
     // Reset the recycled slot completely: mailbox, continuation, clock,
     // status, result and entry are all fresh, so no message or continuation
     // residue from the previous occupant leaks into the new process.
     instance.processes[index] = .{
-        .pid = pid_of(index),
+        .pid = pid_of(index, generation),
+        .generation = generation,
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
         .entry = fun,
     };
     return instance.processes[index].pid;
+}
+
+/// Grows the process table (and its free list) to cover `needed` slots. The
+/// caller holds the scheduler lock; allocation failure aborts.
+fn grow_process_table(instance: *Runtime, needed: usize) void {
+    if (needed <= instance.processes.len) return;
+    const new_cap = @max(instance.processes.len * 2, needed);
+
+    const new_processes = std.heap.page_allocator.alloc(Process, new_cap) catch
+        @panic("failed to grow Batata process table");
+    @memcpy(new_processes[0..instance.process_count], instance.processes[0..instance.process_count]);
+    std.heap.page_allocator.free(instance.processes);
+    instance.processes = new_processes;
+
+    const new_free = std.heap.page_allocator.alloc(usize, new_cap) catch
+        @panic("failed to grow Batata process free list");
+    @memcpy(new_free[0..instance.free_count], instance.free_slots[0..instance.free_count]);
+    std.heap.page_allocator.free(instance.free_slots);
+    instance.free_slots = new_free;
+    instance.process_cap = new_cap;
 }
 
 /// Saves the current process's cursor-loop continuation (list, acc, cursor)
@@ -875,7 +925,7 @@ pub export fn ex_term_worker_run(
     if (started != background_count) return -1;
 
     active_runtime = instance;
-    return ex_term_process_result(pid_of(0));
+    return ex_term_process_result(pid_of(0, 1));
 }
 
 pub export fn ex_term_worker_count() i64 {
@@ -893,9 +943,10 @@ pub export fn ex_term_worker_migrations() i64 {
 pub export fn ex_term_process_thread_id(pid: i64) i64 {
     const instance = runtime();
     if (word_tag(pid) != tag_atom) return 0;
-    const pid_id: usize = @intCast(word_payload(pid));
-    if (pid_id == 0 or pid_id > instance.process_count) return 0;
-    return @intCast(instance.processes[pid_id - 1].last_thread_id.load(.acquire));
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const proc = resolve_pid(instance, pid) orelse return 0;
+    return @intCast(proc.last_thread_id.load(.acquire));
 }
 
 /// Closure word of the current process's entry; 0 for the initial process
@@ -949,9 +1000,7 @@ pub export fn ex_term_process_result(pid: i64) i64 {
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
     if (word_tag(pid) != tag_atom) return nil_word;
-    const pid_id: usize = @intCast(word_payload(pid));
-    if (pid_id == 0 or pid_id > @as(usize, @intCast(instance.process_count))) return nil_word;
-    const proc = &instance.processes[pid_id - 1];
+    const proc = resolve_pid(instance, pid) orelse return nil_word;
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
     return if (proc.status == .done) proc.result else nil_word;
@@ -2512,25 +2561,26 @@ test "term ABI mailbox and integer untag" {
     try std.testing.expectEqual(pid4, ex_term_schedule_next());
 }
 
-test "process table capacity is configurable and enforced by spawn" {
-    // cap = 1: the initial process occupies the only slot, so spawn is full
+test "process table capacity is an initial allocation that grows on spawn" {
+    // cap = 1: the initial process occupies the only slot; spawn grows the
+    // table dynamically (#50 stage 2) instead of failing.
     try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(1));
-    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
-    try std.testing.expectEqual(nil_word, ex_term_spawn(nil_word));
-    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
-
-    // cap = 2: exactly one spawned process fits, the next spawn is full
-    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(2));
     try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
     _ = ex_term_spawn(nil_word);
     try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
-    try std.testing.expectEqual(nil_word, ex_term_spawn(nil_word));
-    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+
+    // cap = 2: a burst of spawns beyond the initial allocation still succeeds
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(2));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
+    _ = ex_term_spawn(nil_word);
+    _ = ex_term_spawn(nil_word);
+    _ = ex_term_spawn(nil_word);
+    _ = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(@as(i64, 5), ex_term_processes_runnable());
 
     // out-of-range capacities are rejected and leave the table untouched
     try std.testing.expectEqual(nil_word, ex_term_process_table_reset(0));
-    try std.testing.expectEqual(nil_word, ex_term_process_table_reset(4097));
-    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+    try std.testing.expectEqual(@as(i64, 5), ex_term_processes_runnable());
 }
 
 const RuntimeIsolationProbe = struct {
@@ -2685,7 +2735,7 @@ const WorkerPoolProbe = struct {
 var worker_pool_probe: *WorkerPoolProbe = undefined;
 
 fn test_actor_dispatch(pid: i64) callconv(.c) i64 {
-    const slot: usize = @intCast(word_payload(pid) - 1);
+    const slot = pid_index(pid);
     worker_pool_probe.thread_ids[slot] = std.Thread.getCurrentId();
     _ = worker_pool_probe.active.fetchAdd(1, .acq_rel);
     _ = worker_pool_probe.ready.fetchAdd(1, .acq_rel);
@@ -2703,13 +2753,13 @@ test "worker pool overlaps independent actors on distinct OS threads" {
 
     var probe = WorkerPoolProbe{};
     worker_pool_probe = &probe;
-    try std.testing.expectEqual(pid_of(0), ex_term_worker_run(2, &test_actor_dispatch));
+    try std.testing.expectEqual(pid_of(0, 1), ex_term_worker_run(2, &test_actor_dispatch));
     try std.testing.expectEqual(second_pid, ex_term_process_result(second_pid));
     try std.testing.expect(probe.thread_ids[0] != probe.thread_ids[1]);
     try std.testing.expectEqual(@as(u32, 2), probe.max_active.load(.acquire));
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_count());
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_max_active());
-    try std.testing.expect(ex_term_process_thread_id(pid_of(0)) != ex_term_process_thread_id(second_pid));
+    try std.testing.expect(ex_term_process_thread_id(pid_of(0, 1)) != ex_term_process_thread_id(second_pid));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
@@ -2737,21 +2787,31 @@ test "completed process slots are recycled by spawn (#50 stage 1)" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_processes_runnable());
 
     // Spawn recycles completed slots (LIFO: p4, p3, then p2), so
-    // process_count never grows past the concurrency peak.
+    // process_count never grows past the concurrency peak. The recycled slot
+    // carries a bumped pid generation (#50 stage 2): the new pid differs from
+    // the old one but indexes the same slot.
     const r1 = ex_term_spawn(fun);
     const r2 = ex_term_spawn(fun);
     const r3 = ex_term_spawn(fun);
-    try std.testing.expectEqual(p4, r1);
-    try std.testing.expectEqual(p3, r2);
-    try std.testing.expectEqual(p2, r3);
+    try std.testing.expect(pid_index(r1) == pid_index(p4));
+    try std.testing.expect(pid_index(r2) == pid_index(p3));
+    try std.testing.expect(pid_index(r3) == pid_index(p2));
+    try std.testing.expect(r1 != p4 and r2 != p3 and r3 != p2);
     try std.testing.expectEqual(@as(i64, 3), ex_term_processes_runnable());
+
+    // The stale pids are rejected by the generation check; the fresh pids
+    // resolve and deliver.
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_send(p4, one)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_send(p3, one)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_send(p2, one)));
+    try std.testing.expectEqual(one, ex_term_send(r1, one));
 
     // The recycled p2 slot's mailbox was cleared: the message sent before
     // completion must not leak into the new occupant. Claim until we reach
     // the recycled p2 slot (r3).
     var reached_p2 = false;
     for (0..8) |_| {
-        if (ex_term_process_claim_next(1) == p2) {
+        if (pid_index(ex_term_process_claim_next(1)) == pid_index(p2)) {
             reached_p2 = true;
             break;
         }
@@ -2759,9 +2819,11 @@ test "completed process slots are recycled by spawn (#50 stage 1)" {
     try std.testing.expect(reached_p2);
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));
 
-    // No free slots remain (r3 stays runnable) and the table is at capacity:
-    // spawn returns nil.
-    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_spawn(fun)));
+    // No free slots remain (r3 stays runnable) and the table is at its
+    // initial capacity: spawn grows the table dynamically (#50 stage 2).
+    const grown = ex_term_spawn(fun);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(grown));
+    try std.testing.expectEqual(@as(i64, 4), ex_term_processes_runnable());
 }
 
 test "term ABI throw unwinds to the innermost try" {
