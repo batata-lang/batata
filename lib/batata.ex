@@ -33,7 +33,7 @@ defmodule Batata do
         workers: Keyword.get(opts, :workers, 1),
         process_cap: opts[:process_cap]
       )
-      |> Beaver.Deferred.create(ctx)
+      |> Beaver.Deferred.resolve(ctx)
 
     module
     |> Batata.Transform.run!([
@@ -135,7 +135,7 @@ defmodule Batata do
     module =
       snapshot
       |> Batata.Lift.module_to_ir(ctx: ctx)
-      |> Beaver.Deferred.create(ctx)
+      |> Beaver.Deferred.resolve(ctx)
       |> Batata.Transform.run!([
         Batata.Transform.InlineScalarCalls,
         Batata.Transform.ExpandCase

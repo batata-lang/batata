@@ -9,7 +9,7 @@ defmodule Batata.TransformTest do
     source
     |> Frontend.from_source()
     |> Lift.module_to_ir(ctx: ctx)
-    |> Beaver.Deferred.create(ctx)
+    |> Beaver.Deferred.resolve(ctx)
     |> Transform.run!([InlineScalarCalls])
     |> MLIR.verify!()
   end
