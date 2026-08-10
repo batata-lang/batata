@@ -7,7 +7,7 @@ defmodule Batata do
   information-preserving IR-to-IR transforms run (`Batata.Transform`, e.g.
   scalar call inlining), then `ex` lowers to `func`/`arith`/`scf`/`cf` and
   finally to LLVM via `Beaver.MLIR.Conversion.Plan`. Both JIT (`execute/2`)
-  and AOT (`build/3`) execution are supported.
+  and AOT (`build/4`) execution are supported.
   """
 
   alias Batata.Lower
@@ -89,7 +89,7 @@ defmodule Batata do
 
     try do
       return = I64.make(0)
-      MLIR.ExecutionEngine.invoke!(jit, "main", [], return)
+      MLIR.ExecutionEngine.invoke!(jit, "main", [], return, dirty: :cpu_bound)
       Native.to_term(return)
     after
       MLIR.ExecutionEngine.destroy(jit)
@@ -118,7 +118,7 @@ defmodule Batata do
 
       cc driver.c libMath.a -o run_math
   """
-  @spec build(String.t(), Path.t(), MLIR.Context.t()) :: %{
+  @spec build(String.t(), Path.t(), MLIR.Context.t(), keyword()) :: %{
           archive: Path.t(),
           driver: Path.t(),
           object: Path.t(),
@@ -127,7 +127,9 @@ defmodule Batata do
           artifact_index: Path.t(),
           manifest: Path.t()
         }
-  def build(source, output_dir, ctx) do
+  def build(source, output_dir, ctx, opts \\ []) do
+    validate_reduction_budget!(opts[:reduction_budget])
+
     snapshot =
       source
       |> Batata.Frontend.from_source()
@@ -135,7 +137,7 @@ defmodule Batata do
 
     module =
       snapshot
-      |> Batata.Lift.module_to_ir(ctx: ctx)
+      |> Batata.Lift.module_to_ir(Keyword.put(opts, :ctx, ctx))
       |> Beaver.Deferred.resolve(ctx)
       |> Batata.Transform.run!([
         Batata.Transform.InlineScalarCalls,

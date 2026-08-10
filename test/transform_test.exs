@@ -32,7 +32,7 @@ defmodule Batata.TransformTest do
       )
 
     rendered = MLIR.to_string(module, generic: true)
-    refute rendered =~ ~s{"ex.call"}
+    refute rendered =~ ~s{callee = "add"}
     assert rendered =~ ~s{"ex.add"}
   end
 
@@ -54,7 +54,7 @@ defmodule Batata.TransformTest do
       )
 
     rendered = MLIR.to_string(module, generic: true)
-    refute rendered =~ ~s{"ex.call"}
+    refute rendered =~ ~s{callee = "add"}
     assert rendered =~ ~s{"ex.add"}
   end
 

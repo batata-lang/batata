@@ -35,4 +35,42 @@ defmodule Batata.AOTTest do
     {stdout, 0} = System.cmd(binary, [])
     assert stdout == "6\n"
   end
+
+  @tag :tmp_dir
+  test "runs a multi-worker AOT program in its own runtime session", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output =
+      Batata.build(
+        """
+        defmodule Parallel do
+          def main() do
+            me = self()
+            spawn(fn -> send(me, 7) end)
+
+            receive do
+              value when is_integer(value) -> value
+            end
+          end
+        end
+        """,
+        tmp_dir,
+        ctx,
+        workers: 2,
+        reduction_budget: 2
+      )
+
+    binary = Path.join(tmp_dir, "run_parallel")
+
+    {_, 0} =
+      System.cmd(
+        "zig",
+        ["cc", output.driver, output.archive, output.runtime_lib, "-lc", "-o", binary],
+        stderr_to_stdout: true
+      )
+
+    {stdout, 0} = System.cmd(binary, [])
+    assert stdout == "7\n"
+  end
 end
