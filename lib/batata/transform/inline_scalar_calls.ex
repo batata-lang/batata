@@ -122,23 +122,26 @@ defmodule Batata.Transform.InlineScalarCalls do
     name = call |> attribute_string("callee")
     arity = call |> attribute_integer("arity")
 
-    # The scheduler driver's calls to the compiled entry must stay opaque:
-    # inlining the resumable entry (which the driver re-invokes per slice)
-    # would break the process-continuation handoff.
-    if name == "__batata_entry" do
-      :skip
-    else
-      case Map.fetch(callees, {name, arity}) do
-        {:ok, callee} ->
-          cond do
-            scalar?(callee) and scalar_args?(call) -> {:inline, callee}
-            scalar_return?(callee) and not scalar_typed?(call) -> {:retype, callee}
-            true -> :skip
-          end
+    resolve_action(call, name, arity, callees)
+  end
 
-        :error ->
-          :skip
-      end
+  # The scheduler driver's calls to the compiled entry must stay opaque:
+  # inlining the resumable entry (which the driver re-invokes per slice)
+  # would break the process-continuation handoff.
+  defp resolve_action(_call, "__batata_entry", _arity, _callees), do: :skip
+
+  defp resolve_action(call, name, arity, callees) do
+    case Map.fetch(callees, {name, arity}) do
+      {:ok, callee} -> action_for_callee(call, callee)
+      :error -> :skip
+    end
+  end
+
+  defp action_for_callee(call, callee) do
+    cond do
+      scalar?(callee) and scalar_args?(call) -> {:inline, callee}
+      scalar_return?(callee) and not scalar_typed?(call) -> {:retype, callee}
+      true -> :skip
     end
   end
 
@@ -226,27 +229,38 @@ defmodule Batata.Transform.InlineScalarCalls do
     [returned] = terminator |> Walker.operands() |> Enum.to_list()
 
     IRRewriter.with_rewriter(owner, fn rewriter ->
-      RewriterBase.with_insertion_point(rewriter, {:before, call}, fn ->
-        IRMapping.with_mapping(fn mapping ->
-          Enum.zip(callee_args, args)
-          |> Enum.each(fn {from, to} -> IRMapping.map(mapping, from, to) end)
-
-          block
-          |> Walker.operations()
-          |> Enum.to_list()
-          |> Enum.reject(&MLIR.equal?(&1, terminator))
-          |> Enum.each(&IRMapping.clone(mapping, &1, rewriter))
-
-          value = IRMapping.lookup_or_default(mapping, returned)
-          [call_result] = call |> Walker.results() |> Enum.to_list()
-          RewriterBase.replace(rewriter, call_result, value)
-          RewriterBase.erase_op(rewriter, call)
-        end)
-      end)
+      inline_at_call(rewriter, call, block, terminator, returned, callee_args, args)
     end)
 
     :ok
   end
+
+  defp inline_at_call(rewriter, call, block, terminator, returned, callee_args, args) do
+    RewriterBase.with_insertion_point(rewriter, {:before, call}, fn ->
+      clone_inline_body(rewriter, call, block, terminator, returned, callee_args, args)
+    end)
+  end
+
+  defp clone_inline_body(rewriter, call, block, terminator, returned, callee_args, args) do
+    IRMapping.with_mapping(fn mapping ->
+      callee_args
+      |> Enum.zip(args)
+      |> Enum.each(&map_argument(mapping, &1))
+
+      block
+      |> Walker.operations()
+      |> Enum.to_list()
+      |> Enum.reject(&MLIR.equal?(&1, terminator))
+      |> Enum.each(&IRMapping.clone(mapping, &1, rewriter))
+
+      value = IRMapping.lookup_or_default(mapping, returned)
+      [call_result] = call |> Walker.results() |> Enum.to_list()
+      RewriterBase.replace(rewriter, call_result, value)
+      RewriterBase.erase_op(rewriter, call)
+    end)
+  end
+
+  defp map_argument(mapping, {from, to}), do: IRMapping.map(mapping, from, to)
 
   # A callee is in the scalar slice when every parameter and the return value
   # are i64.

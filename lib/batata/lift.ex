@@ -48,7 +48,7 @@ defmodule Batata.Lift do
       body = MLIR.CAPI.mlirModuleGetBody(module)
       budget = Keyword.get(opts, :reduction_budget)
       batching = Keyword.get(opts, :reduction_batching) != false
-      batch_size = if budget == nil, do: nil, else: if(batching, do: budget, else: 1)
+      batch_size = reduction_batch_size(budget, batching)
 
       {definitions, entry_name} =
         if driver_needed?(mod.definitions, budget) do
@@ -77,6 +77,10 @@ defmodule Batata.Lift do
       module
     end)
   end
+
+  defp reduction_batch_size(nil, _batching), do: nil
+  defp reduction_batch_size(budget, true), do: budget
+  defp reduction_batch_size(_budget, false), do: 1
 
   # The entry function (`main` for the JIT path, `batata_main` for the AOT
   # path) is renamed to `__batata_entry` so the generated scheduler driver
@@ -109,38 +113,40 @@ defmodule Batata.Lift do
   # With a reduction budget every cursor loop becomes resumable; each process
   # owns a single (arg, acc, cursor) continuation slot, so a function may
   # contain at most one budgeted cursor loop in this slice.
-  defp enforce_resumable_plan(groups, budget) do
-    if budget != nil do
-      Enum.each(groups, fn {_key, definitions} ->
-        [%Frontend.Definition{name: name, arity: arity} | _] = definitions
-        clauses = Enum.flat_map(definitions, & &1.clauses)
+  defp enforce_resumable_plan(_groups, nil), do: :ok
 
-        scanner? =
-          if length(definitions) > 1 do
-            case arity do
-              1 -> match?({:ok, _}, detect_scanner(name, clauses))
-              arity when arity >= 2 -> match?({:ok, _}, detect_accumulator_scanner(name, clauses))
-              _ -> false
-            end
-          else
-            false
-          end
+  defp enforce_resumable_plan(groups, _budget) do
+    Enum.each(groups, &enforce_resumable_group!/1)
+  end
 
-        enum_loops =
-          definitions
-          |> Enum.map(&count_enum_cursor_loops/1)
-          |> Enum.sum()
+  defp enforce_resumable_group!({_key, definitions}) do
+    [%Frontend.Definition{name: name, arity: arity} | _] = definitions
+    clauses = Enum.flat_map(definitions, & &1.clauses)
+    scanner? = resumable_scanner?(definitions, name, arity, clauses)
 
-        total = if(scanner?, do: 1, else: 0) + enum_loops
+    enum_loops =
+      definitions
+      |> Enum.map(&count_enum_cursor_loops/1)
+      |> Enum.sum()
 
-        if total > 1 do
-          raise Error,
-                "preemptive multi-loop functions are unsupported in the scheduler slice: " <>
-                  "#{name} has #{total} budgeted cursor loops (one continuation slot per process)"
-        end
-      end)
+    total = if(scanner?, do: 1, else: 0) + enum_loops
+
+    if total > 1 do
+      raise Error,
+            "preemptive multi-loop functions are unsupported in the scheduler slice: " <>
+              "#{name} has #{total} budgeted cursor loops (one continuation slot per process)"
     end
   end
+
+  defp resumable_scanner?([_definition], _name, _arity, _clauses), do: false
+
+  defp resumable_scanner?(_definitions, name, 1, clauses),
+    do: match?({:ok, _}, detect_scanner(name, clauses))
+
+  defp resumable_scanner?(_definitions, name, arity, clauses) when arity >= 2,
+    do: match?({:ok, _}, detect_accumulator_scanner(name, clauses))
+
+  defp resumable_scanner?(_definitions, _name, _arity, _clauses), do: false
 
   defp count_enum_cursor_loops(%Frontend.Definition{clauses: clauses}) do
     clauses
@@ -270,59 +276,71 @@ defmodule Batata.Lift do
     end)
   end
 
-  defp recognize_enum_node(node, state) do
-    case node do
-      {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node ->
-        if enum_alias?(alias_parts) or stream_alias?(alias_parts) do
-          case map_pattern(fn_ast) do
-            {:ok, {:mapper, body_ast, item_name}} ->
-              {marker, state} = extract_mapper(body_ast, item_name, enumerable, state)
-              {marker, state}
+  defp recognize_enum_node(
+         {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node,
+         state
+       ) do
+    if enum_alias?(alias_parts) or stream_alias?(alias_parts) do
+      recognize_map_node(fn_ast, enumerable, node, state)
+    else
+      {node, state}
+    end
+  end
 
-            {:ok, pattern} ->
-              {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
+  defp recognize_enum_node(
+         {{:., _, [{:__aliases__, _, alias_parts}, :filter]}, _, [enumerable, fn_ast]} = node,
+         state
+       ) do
+    if stream_alias?(alias_parts) do
+      recognize_filter_node(fn_ast, enumerable, node, state)
+    else
+      {node, state}
+    end
+  end
 
-            :error ->
-              {node, state}
-          end
-        else
-          {node, state}
-        end
+  defp recognize_enum_node(
+         {{:., _, [{:__aliases__, _, alias_parts}, :reduce]}, _, [enumerable, acc, fn_ast]} =
+           node,
+         state
+       ) do
+    if enum_alias?(alias_parts) do
+      recognize_reduce_node(fn_ast, enumerable, acc, node, state)
+    else
+      {node, state}
+    end
+  end
 
-      {{:., _, [{:__aliases__, _, alias_parts}, :filter]}, _, [enumerable, fn_ast]} = node ->
-        if stream_alias?(alias_parts) do
-          case predicate_pattern(fn_ast) do
-            {:ok, body_ast, item_name} ->
-              {marker, state} = extract_predicate(body_ast, item_name, enumerable, state)
-              {marker, state}
+  defp recognize_enum_node(node, state), do: {node, state}
 
-            :error ->
-              {node, state}
-          end
-        else
-          {node, state}
-        end
+  defp recognize_map_node(fn_ast, enumerable, node, state) do
+    case map_pattern(fn_ast) do
+      {:ok, {:mapper, body_ast, item_name}} ->
+        extract_mapper(body_ast, item_name, enumerable, state)
 
-      {{:., _, [{:__aliases__, _, alias_parts}, :reduce]}, _, [enumerable, acc, fn_ast]} = node ->
-        if enum_alias?(alias_parts) do
-          case reduce_pattern(fn_ast) do
-            {:ok, {:combination, body_ast, item_name, acc_name}} ->
-              {marker, state} =
-                extract_combination_reducer(body_ast, item_name, acc_name, enumerable, acc, state)
+      {:ok, pattern} ->
+        {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
 
-              {marker, state}
+      :error ->
+        {node, state}
+    end
+  end
 
-            {:ok, pattern} ->
-              {{:__enum_call__, [], [:reduce, pattern, enumerable, acc]}, state}
+  defp recognize_filter_node(fn_ast, enumerable, node, state) do
+    case predicate_pattern(fn_ast) do
+      {:ok, body_ast, item_name} -> extract_predicate(body_ast, item_name, enumerable, state)
+      :error -> {node, state}
+    end
+  end
 
-            :error ->
-              {node, state}
-          end
-        else
-          {node, state}
-        end
+  defp recognize_reduce_node(fn_ast, enumerable, acc, node, state) do
+    case reduce_pattern(fn_ast) do
+      {:ok, {:combination, body_ast, item_name, acc_name}} ->
+        extract_combination_reducer(body_ast, item_name, acc_name, enumerable, acc, state)
 
-      node ->
+      {:ok, pattern} ->
+        {{:__enum_call__, [], [:reduce, pattern, enumerable, acc]}, state}
+
+      :error ->
         {node, state}
     end
   end
@@ -432,22 +450,36 @@ defmodule Batata.Lift do
             {:ok, {:add_capture, capture_ast}}
 
           :error ->
-            if arithmetic_tree?(body) and
-                 body
-                 |> collect_tree_vars()
-                 |> MapSet.new()
-                 |> MapSet.subset?(MapSet.new([tree_var_name(item)])) do
-              {:ok, {:mapper, body, tree_var_name(item)}}
-            else
-              :error
-            end
+            arithmetic_mapper_pattern(body, item)
         end
     end
   end
 
   defp map_pattern(_), do: :error
 
+  defp arithmetic_mapper_pattern(body, item) do
+    if arithmetic_tree?(body) and
+         body
+         |> collect_tree_vars()
+         |> MapSet.new()
+         |> MapSet.subset?(MapSet.new([tree_var_name(item)])) do
+      {:ok, {:mapper, body, tree_var_name(item)}}
+    else
+      :error
+    end
+  end
+
   defp reduce_pattern({:fn, _, [{:->, _, [[item, acc_var], body]}]}) do
+    with :error <- basic_reduce_pattern(body, item, acc_var),
+         :error <- captured_reduce_pattern(body, item, acc_var),
+         :error <- map_reduce_pattern(body, item, acc_var) do
+      terminal_reduce_pattern(body, item, acc_var)
+    end
+  end
+
+  defp reduce_pattern(_), do: :error
+
+  defp basic_reduce_pattern(body, item, acc_var) do
     cond do
       sum_pattern?(body, item, acc_var) ->
         {:ok, :sum}
@@ -461,6 +493,13 @@ defmodule Batata.Lift do
       div_rem_pattern?(body, item, acc_var) ->
         {:ok, div_rem_direction(body, item, acc_var)}
 
+      true ->
+        :error
+    end
+  end
+
+  defp captured_reduce_pattern(body, item, acc_var) do
+    cond do
       capture_sum_pattern?(body, item, acc_var) ->
         {:ok, capture} = capture_addend(body, item, acc_var)
         {:ok, {:capture_sum, capture}}
@@ -469,6 +508,13 @@ defmodule Batata.Lift do
         capture = capture_product_addend(body, item)
         {:ok, {:capture_product, capture}}
 
+      true ->
+        :error
+    end
+  end
+
+  defp map_reduce_pattern(body, item, acc_var) do
+    cond do
       map_values_sum_pattern?(body, item, acc_var) ->
         {:ok, :map_values_sum}
 
@@ -478,6 +524,13 @@ defmodule Batata.Lift do
       map_entries_sum_pattern?(body, item, acc_var) ->
         {:ok, :map_entries_sum}
 
+      true ->
+        :error
+    end
+  end
+
+  defp terminal_reduce_pattern(body, item, acc_var) do
+    cond do
       same_var?(body, acc_var) ->
         {:ok, :return_acc}
 
@@ -488,8 +541,6 @@ defmodule Batata.Lift do
         :error
     end
   end
-
-  defp reduce_pattern(_), do: :error
 
   defp sum_pattern?({:+, _, [left, right]}, item, acc_var) do
     (same_var?(left, item) and same_var?(right, acc_var)) or
@@ -1184,25 +1235,24 @@ defmodule Batata.Lift do
       Enum.split_while(segments, &(not match?({:"::", _, [_, {:binary, _, nil}]}, &1)))
 
     if Enum.all?(bytes, &byte_segment?/1) do
-      case rest do
-        [] ->
-          {:ok, length(bytes), nil}
-
-        [{:"::", _, [rest_pat, {:binary, _, nil}]}] ->
-          case rest_pat do
-            {name, _, nil} when is_atom(name) and name != :_ -> {:ok, length(bytes), rest_pat}
-            _ -> :skip
-          end
-
-        _ ->
-          :skip
-      end
+      parse_binary_rest(rest, length(bytes))
     else
       :skip
     end
   end
 
   defp binary_segments(_), do: :skip
+
+  defp parse_binary_rest([], width), do: {:ok, width, nil}
+
+  defp parse_binary_rest(
+         [{:"::", _, [{name, _, nil} = rest_pattern, {:binary, _, nil}]}],
+         width
+       )
+       when is_atom(name) and name != :_,
+       do: {:ok, width, rest_pattern}
+
+  defp parse_binary_rest(_rest, _width), do: :skip
 
   defp byte_segment?({:"::", _, [_, 8]}), do: true
   defp byte_segment?(pat) when is_integer(pat), do: true
@@ -1675,10 +1725,21 @@ defmodule Batata.Lift do
   # per-iteration hot path. Returns `{budget_cond, next_countdown}`; without a
   # budget the loop condition passes through and no countdown is produced.
   defp inject_reduction_tick(
+         _before_block,
+         _ctx,
+         cond_i1,
+         nil,
+         _state,
+         _receive?,
+         _batch_size
+       ),
+       do: {cond_i1, nil}
+
+  defp inject_reduction_tick(
          before_block,
          ctx,
          cond_i1,
-         budget,
+         _budget,
          {arg, acc, cursor, countdown},
          receive?,
          batch_size
@@ -1686,67 +1747,68 @@ defmodule Batata.Lift do
     i64 = integer_type(ctx)
     i1 = MLIR.Type.i1()
 
-    if budget == nil do
-      {cond_i1, nil}
-    else
-      countdown_next =
-        create_op("ex.sub", [countdown, lit(1, ctx, before_block)], [i64], ctx, before_block)
+    countdown_next =
+      create_op("ex.sub", [countdown, lit(1, ctx, before_block)], [i64], ctx, before_block)
 
-      at_batch_i1 =
-        create_op(
-          "arith.trunci",
-          [cmp(countdown_next, 0, "eq", ctx, before_block)],
-          [MLIR.Type.i1()],
-          ctx,
-          before_block
-        )
+    at_batch_i1 =
+      create_op(
+        "arith.trunci",
+        [cmp(countdown_next, 0, "eq", ctx, before_block)],
+        [MLIR.Type.i1()],
+        ctx,
+        before_block
+      )
 
-      [budget_cond, next_countdown] =
-        build_scf_if(
-          at_batch_i1,
-          ctx,
-          before_block,
-          [i1, i64],
-          fn b ->
-            ticked = create_op("ex.reduction_tick", [lit(batch_size, ctx, b)], [i64], ctx, b)
+    [budget_cond, next_countdown] =
+      build_scf_if(
+        at_batch_i1,
+        ctx,
+        before_block,
+        [i1, i64],
+        fn b ->
+          ticked = create_op("ex.reduction_tick", [lit(batch_size, ctx, b)], [i64], ctx, b)
 
-            exhausted_i1 =
-              create_op(
-                "arith.trunci",
-                [cmp(ticked, 0, "ne", ctx, b)],
-                [MLIR.Type.i1()],
-                ctx,
-                b
-              )
-
-            build_scf_if(
-              exhausted_i1,
+          exhausted_i1 =
+            create_op(
+              "arith.trunci",
+              [cmp(ticked, 0, "ne", ctx, b)],
+              [MLIR.Type.i1()],
               ctx,
-              b,
-              [i1, i64],
-              fn tb ->
-                # Selective-receive scans save a receive-type continuation so a
-                # message arrival invalidates it (epoch wiring); cursor loops save
-                # a loop-type continuation that message arrival must not affect.
-                save_op = if receive?, do: "ex.receive_cont_save", else: "ex.cont_save"
-                create_op(save_op, [arg, acc, cursor], [i64], ctx, tb)
-                create_op("ex.yield_mark", [], [i64], ctx, tb)
-                false_i1 = create_op("arith.trunci", [lit(0, ctx, tb)], [MLIR.Type.i1()], ctx, tb)
-                [false_i1, lit(0, ctx, tb)]
-              end,
-              fn tb ->
-                [cond_i1, lit(batch_size, ctx, tb)]
-              end
+              b
             )
-          end,
-          fn _b ->
-            [cond_i1, countdown_next]
-          end
-        )
 
-      {budget_cond, next_countdown}
-    end
+          build_scf_if(
+            exhausted_i1,
+            ctx,
+            b,
+            [i1, i64],
+            fn tb ->
+              # Selective-receive scans save a receive-type continuation so a
+              # message arrival invalidates it (epoch wiring); cursor loops save
+              # a loop-type continuation that message arrival must not affect.
+              create_op(continuation_save_op(receive?), [arg, acc, cursor], [i64], ctx, tb)
+              create_op("ex.yield_mark", [], [i64], ctx, tb)
+
+              false_i1 =
+                create_op("arith.trunci", [lit(0, ctx, tb)], [MLIR.Type.i1()], ctx, tb)
+
+              [false_i1, lit(0, ctx, tb)]
+            end,
+            fn tb ->
+              [cond_i1, lit(batch_size, ctx, tb)]
+            end
+          )
+        end,
+        fn _b ->
+          [cond_i1, countdown_next]
+        end
+      )
+
+    {budget_cond, next_countdown}
   end
+
+  defp continuation_save_op(true), do: "ex.receive_cont_save"
+  defp continuation_save_op(false), do: "ex.cont_save"
 
   # Computes the initial (arg, acc, cursor) state of a cursor loop. Without a
   # budget the loop runs the fresh init inline (single invocation). With a
@@ -2262,38 +2324,32 @@ defmodule Batata.Lift do
   defp lift_block_gated([expression | rest], ctx, block, env) do
     {value, env} = lift_expr(expression, ctx, block, env)
 
-    case Map.pop(env, :__yield_gate__) do
-      {nil, env} ->
-        if rest == [] do
-          {value, env}
-        else
-          lift_block_gated(rest, ctx, block, env)
-        end
+    env
+    |> Map.pop(:__yield_gate__)
+    |> continue_lift_block(value, rest, ctx, block)
+  end
 
-      {{pending_i1, loop_result}, env} ->
-        if rest == [] do
-          # The loop is the function tail: no post-loop body to gate.
-          {value, env}
-        else
-          gate_value =
-            build_scf_if(
-              pending_i1,
-              ctx,
-              block,
-              [integer_type(ctx)],
-              fn _b ->
-                [loop_result]
-              end,
-              fn b ->
-                {rest_value, _rest_env} = lift_block_gated(rest, ctx, b, env)
-                [rest_value]
-              end
-            )
-            |> hd()
+  defp continue_lift_block({_yield_gate, env}, value, [], _ctx, _block), do: {value, env}
 
-          {gate_value, env}
+  defp continue_lift_block({nil, env}, _value, rest, ctx, block),
+    do: lift_block_gated(rest, ctx, block, env)
+
+  defp continue_lift_block({{pending_i1, loop_result}, env}, _value, rest, ctx, block) do
+    gate_value =
+      build_scf_if(
+        pending_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn _block -> [loop_result] end,
+        fn rest_block ->
+          {rest_value, _rest_env} = lift_block_gated(rest, ctx, rest_block, env)
+          [rest_value]
         end
-    end
+      )
+      |> hd()
+
+    {gate_value, env}
   end
 
   # Records that a budgeted cursor loop was just lifted: the caller computes
@@ -3395,7 +3451,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_reduce_pattern(
-         pattern,
+         :sum,
          enumerable_ast,
          enumerable_word,
          acc_value,
@@ -3403,131 +3459,216 @@ defmodule Batata.Lift do
          block,
          env
        ) do
-    case pattern do
-      :sum ->
-        if is_list(enumerable_ast) do
-          # A list literal keeps the compile-time cursor loop (M3); other
-          # enumerables (tuple/binary literals or variables) dispatch through
-          # the runtime's tag-based enumerable reduce.
-          {lift_enum_sum_loop(
-             enumerable_word,
-             acc_value,
-             ctx,
-             block,
-             env[:__budget__],
-             env[:__batch_size__]
-           ), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
-        end
-
-      :product ->
-        if is_list(enumerable_ast) do
-          {lift_enum_product_loop(
-             enumerable_word,
-             acc_value,
-             ctx,
-             block,
-             env[:__budget__],
-             env[:__batch_size__]
-           ), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
-        end
-
-      :subtract_acc_first ->
-        if is_list(enumerable_ast) do
-          {lift_enum_subtract_loop(
-             enumerable_word,
-             acc_value,
-             :acc_first,
-             ctx,
-             block,
-             env[:__budget__],
-             env[:__batch_size__]
-           ), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 7, ctx, block), env}
-        end
-
-      :subtract_item_first ->
-        if is_list(enumerable_ast) do
-          {lift_enum_subtract_loop(
-             enumerable_word,
-             acc_value,
-             :item_first,
-             ctx,
-             block,
-             env[:__budget__],
-             env[:__batch_size__]
-           ), env}
-        else
-          {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
-        end
-
-      :div_acc_first ->
-        # Integer division/remainder reduce through the runtime (the ex
-        # dialect has no div/rem ops).
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 9, ctx, block), env}
-
-      :div_item_first ->
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 10, ctx, block), env}
-
-      :rem_acc_first ->
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 11, ctx, block), env}
-
-      :rem_item_first ->
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 12, ctx, block), env}
-
-      {:capture_sum, capture_ast} ->
-        {capture, env} = lift_expr(capture_ast, ctx, block, env)
-        capture_i64 = enum_capture_i64(capture, ctx, block)
-        {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block), env}
-
-      {:capture_product, capture_ast} ->
-        {capture, env} = lift_expr(capture_ast, ctx, block, env)
-        capture_i64 = enum_capture_i64(capture, ctx, block)
-        {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block, 14), env}
-
-      {:combination, reducer_name} ->
-        # Any enumerable: the reducer was extracted to `__enum_reducer_N`,
-        # whose address is handed to the runtime's arbitrary-closure reduce.
-        addr =
-          create_op(
-            "ex.func_addr",
-            [sym_name: MLIR.Attribute.string(to_string(reducer_name))],
-            [MLIR.Type.function([integer_type(ctx), integer_type(ctx)], [integer_type(ctx)])],
-            ctx,
-            block
-          )
-
-        {
-          create_op(
-            "ex.enumerable_reduce_fun",
-            [enumerable_word, acc_value, addr],
-            [integer_type(ctx)],
-            ctx,
-            block
-          ),
-          env
-        }
-
-      :map_values_sum ->
-        # Map reduce sums entry values through runtime continuation 3.
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 3, ctx, block), env}
-
-      :map_keys_sum ->
-        # Map reduce sums entry keys through runtime continuation 4.
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 4, ctx, block), env}
-
-      :map_entries_sum ->
-        # Map reduce sums key + value per entry through runtime continuation 5.
-        {lift_enum_reduce_runtime(enumerable_word, acc_value, 5, ctx, block), env}
-
-      :return_acc ->
-        {acc_value, env}
+    if is_list(enumerable_ast) do
+      # A list literal keeps the compile-time cursor loop (M3); other
+      # enumerables (tuple/binary literals or variables) dispatch through
+      # the runtime's tag-based enumerable reduce.
+      {lift_enum_sum_loop(
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env[:__budget__],
+         env[:__batch_size__]
+       ), env}
+    else
+      {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
     end
   end
+
+  defp lift_reduce_pattern(
+         :product,
+         enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    if is_list(enumerable_ast) do
+      {lift_enum_product_loop(
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env[:__budget__],
+         env[:__batch_size__]
+       ), env}
+    else
+      {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
+    end
+  end
+
+  defp lift_reduce_pattern(
+         :subtract_acc_first,
+         enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    lift_subtract_pattern(
+      enumerable_ast,
+      enumerable_word,
+      acc_value,
+      :acc_first,
+      7,
+      ctx,
+      block,
+      env
+    )
+  end
+
+  defp lift_reduce_pattern(
+         :subtract_item_first,
+         enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    lift_subtract_pattern(
+      enumerable_ast,
+      enumerable_word,
+      acc_value,
+      :item_first,
+      8,
+      ctx,
+      block,
+      env
+    )
+  end
+
+  defp lift_reduce_pattern(
+         pattern,
+         _enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       )
+       when pattern in [
+              :div_acc_first,
+              :div_item_first,
+              :rem_acc_first,
+              :rem_item_first,
+              :map_values_sum,
+              :map_keys_sum,
+              :map_entries_sum
+            ] do
+    continuation = reduce_continuation(pattern)
+    {lift_enum_reduce_runtime(enumerable_word, acc_value, continuation, ctx, block), env}
+  end
+
+  defp lift_reduce_pattern(
+         {:capture_sum, capture_ast},
+         _enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    {capture, env} = lift_expr(capture_ast, ctx, block, env)
+    capture_i64 = enum_capture_i64(capture, ctx, block)
+    {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block), env}
+  end
+
+  defp lift_reduce_pattern(
+         {:capture_product, capture_ast},
+         _enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    {capture, env} = lift_expr(capture_ast, ctx, block, env)
+    capture_i64 = enum_capture_i64(capture, ctx, block)
+    {lift_enum_reduce_capture(enumerable_word, acc_value, capture_i64, ctx, block, 14), env}
+  end
+
+  defp lift_reduce_pattern(
+         {:combination, reducer_name},
+         _enumerable_ast,
+         enumerable_word,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    # Any enumerable: the reducer was extracted to `__enum_reducer_N`,
+    # whose address is handed to the runtime's arbitrary-closure reduce.
+    addr =
+      create_op(
+        "ex.func_addr",
+        [sym_name: MLIR.Attribute.string(to_string(reducer_name))],
+        [MLIR.Type.function([integer_type(ctx), integer_type(ctx)], [integer_type(ctx)])],
+        ctx,
+        block
+      )
+
+    {
+      create_op(
+        "ex.enumerable_reduce_fun",
+        [enumerable_word, acc_value, addr],
+        [integer_type(ctx)],
+        ctx,
+        block
+      ),
+      env
+    }
+  end
+
+  defp lift_reduce_pattern(
+         :return_acc,
+         _enumerable_ast,
+         _enumerable_word,
+         acc_value,
+         _ctx,
+         _block,
+         env
+       ) do
+    {acc_value, env}
+  end
+
+  defp lift_subtract_pattern(
+         enumerable_ast,
+         enumerable_word,
+         acc_value,
+         direction,
+         continuation,
+         ctx,
+         block,
+         env
+       ) do
+    if is_list(enumerable_ast) do
+      {lift_enum_subtract_loop(
+         enumerable_word,
+         acc_value,
+         direction,
+         ctx,
+         block,
+         env[:__budget__],
+         env[:__batch_size__]
+       ), env}
+    else
+      {lift_enum_reduce_runtime(enumerable_word, acc_value, continuation, ctx, block), env}
+    end
+  end
+
+  # Integer division/remainder and map projections reduce through runtime
+  # continuations (the ex dialect has no div/rem operations).
+  defp reduce_continuation(:map_values_sum), do: 3
+  defp reduce_continuation(:map_keys_sum), do: 4
+  defp reduce_continuation(:map_entries_sum), do: 5
+  defp reduce_continuation(:div_acc_first), do: 9
+  defp reduce_continuation(:div_item_first), do: 10
+  defp reduce_continuation(:rem_acc_first), do: 11
+  defp reduce_continuation(:rem_item_first), do: 12
 
   defp catch_all_clause?({:->, _, [[pattern], _body]}) do
     match?({name, _, nil} when is_atom(name), pattern)
@@ -3570,20 +3711,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_stdlib_call(:erlang, :monotonic_time, [unit_ast], ctx, block, env) do
-    divisor =
-      case unit_ast do
-        :native -> 1
-        :nanosecond -> 1
-        :microsecond -> 1_000
-        :millisecond -> 1_000_000
-        :second -> 1_000_000_000
-        :minute -> 60 * 1_000_000_000
-        :hour -> 3_600 * 1_000_000_000
-        :day -> 86_400 * 1_000_000_000
-        unit when is_integer(unit) and unit > 0 -> unit
-        _ -> raise Error, "unsupported monotonic_time unit: #{inspect(unit_ast)}"
-      end
-
+    divisor = monotonic_time_divisor(unit_ast)
     native = create_op("ex.native_time", [], [integer_type(ctx)], ctx, block)
 
     {
@@ -3651,6 +3779,20 @@ defmodule Batata.Lift do
         raise Error,
               "unsupported stdlib call: #{inspect(module)}.#{fun}/#{length(args)}"
     end
+  end
+
+  defp monotonic_time_divisor(:native), do: 1
+  defp monotonic_time_divisor(:nanosecond), do: 1
+  defp monotonic_time_divisor(:microsecond), do: 1_000
+  defp monotonic_time_divisor(:millisecond), do: 1_000_000
+  defp monotonic_time_divisor(:second), do: 1_000_000_000
+  defp monotonic_time_divisor(:minute), do: 60 * 1_000_000_000
+  defp monotonic_time_divisor(:hour), do: 3_600 * 1_000_000_000
+  defp monotonic_time_divisor(:day), do: 86_400 * 1_000_000_000
+  defp monotonic_time_divisor(unit) when is_integer(unit) and unit > 0, do: unit
+
+  defp monotonic_time_divisor(unit) do
+    raise Error, "unsupported monotonic_time unit: #{inspect(unit)}"
   end
 
   # Lowering for `:native_term` registry entries: operands arrive boxed as
@@ -3986,22 +4128,20 @@ defmodule Batata.Lift do
   defp untag_int_binds(parsed, bindss, ctx, block) do
     parsed
     |> Enum.zip(bindss)
-    |> Enum.map(fn {%{guard: guard}, binds} ->
-      case integer_guard_var(guard) do
-        nil ->
-          binds
-
-        var ->
-          Enum.map(binds, fn
-            {^var, value} ->
-              {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
-
-            other ->
-              other
-          end)
-      end
-    end)
+    |> Enum.map(&untag_clause_int_binds(&1, ctx, block))
   end
+
+  defp untag_clause_int_binds({%{guard: guard}, binds}, ctx, block) do
+    case integer_guard_var(guard) do
+      nil -> binds
+      var -> Enum.map(binds, &untag_int_bind(&1, var, ctx, block))
+    end
+  end
+
+  defp untag_int_bind({var, value}, var, ctx, block),
+    do: {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
+
+  defp untag_int_bind(bind, _var, _ctx, _block), do: bind
 
   defp integer_guard_var({:is_integer, _, [{var, _, nil}]}) when is_atom(var), do: var
   defp integer_guard_var(_guard), do: nil

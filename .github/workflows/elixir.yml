@@ -86,7 +86,7 @@ jobs:
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
       - name: Run Credo
-        run: mix credo --strict --ignore-checks CyclomaticComplexity,Nesting
+        run: mix credo --strict
         env:
           BEAVER_PATH: ${{ github.workspace }}/beaver
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
