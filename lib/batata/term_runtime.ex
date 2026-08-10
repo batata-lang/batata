@@ -64,23 +64,25 @@ defmodule Batata.TermRuntime do
     if not force? and fresh?(path) do
       path
     else
-      lock = {{__MODULE__, Path.expand(path)}, self()}
-
-      case :global.trans(
-             lock,
-             fn ->
-               if force? or not fresh?(path), do: build_and_publish!(kind, path)
-               path
-             end,
-             [node()]
-           ) do
-        {:aborted, reason} ->
-          raise "failed to lock Batata runtime artifact #{path}: #{inspect(reason)}"
-
-        result ->
-          result
-      end
+      ensure_under_lock!(kind, path, force?)
     end
+  end
+
+  defp ensure_under_lock!(kind, path, force?) do
+    lock = {{__MODULE__, Path.expand(path)}, self()}
+
+    case :global.trans(lock, fn -> refresh_artifact!(kind, path, force?) end, [node()]) do
+      {:aborted, reason} ->
+        raise "failed to lock Batata runtime artifact #{path}: #{inspect(reason)}"
+
+      result ->
+        result
+    end
+  end
+
+  defp refresh_artifact!(kind, path, force?) do
+    if force? or not fresh?(path), do: build_and_publish!(kind, path)
+    path
   end
 
   defp fresh?(path), do: usable?(path) and not stale?(path)
