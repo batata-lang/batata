@@ -1642,6 +1642,89 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "erlang.monotonic_time is non-decreasing", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = erlang.monotonic_time()
+                   b = erlang.monotonic_time()
+                   b >= a
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "erlang.monotonic_time converts native units to the requested unit", %{ctx: ctx} do
+    # `:millisecond` divides the native (nanosecond) clock by 1_000_000; the
+    # two reads are taken back to back so the residual is well under 10ms.
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   ms = erlang.monotonic_time(:millisecond)
+                   ns = erlang.monotonic_time()
+                   delta = ns - ms * 1000000
+                   delta * delta < 100000000000000
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "erlang.unique_integer hands out increasing positive values", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = erlang.unique_integer()
+                   b = erlang.unique_integer()
+                   b > a
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "erlang.unique_integer([:negative]) hands out decreasing values", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = erlang.unique_integer([:negative])
+                   b = erlang.unique_integer([:negative])
+                   b < a
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "erlang.unique_integer([:monotonic, :positive]) is monotonic across calls", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   a = erlang.unique_integer([:monotonic, :positive])
+                   b = erlang.unique_integer([:positive])
+                   b > a
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "try catches a thrown value and untags it", %{ctx: ctx} do
     assert 43 ==
              Batata.execute(

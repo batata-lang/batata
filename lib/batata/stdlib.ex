@@ -34,7 +34,11 @@ defmodule Batata.Stdlib.Kernel do
     {:erlang, :is_map, 1} => :native_term,
     {:erlang, :is_tuple, 1} => :native_term,
     {:erlang, :self, 0} => :native_term,
-    {:erlang, :send, 2} => :native_term
+    {:erlang, :send, 2} => :native_term,
+    {:erlang, :monotonic_time, 0} => :native_term,
+    {:erlang, :monotonic_time, 1} => :native_term,
+    {:erlang, :unique_integer, 0} => :native_term,
+    {:erlang, :unique_integer, 1} => :native_term
   }
 
   @doc "Returns kernel-domain stdlib replacement declarations."
