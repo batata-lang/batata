@@ -148,18 +148,37 @@ const Clock = struct {
     epoch: i64,
 };
 
+const SignalKind = enum(u8) { message, exit, down };
+
+const Signal = struct {
+    kind: SignalKind,
+    sender: i64,
+    payload: i64,
+    sequence: u64,
+};
+
+// Every delivery enters one ordered per-process signal queue. Receives expose
+// only message payloads for now; exit and DOWN signals use the same envelope
+// in the next supervision layer.
 const Mailbox = struct {
     lock: RuntimeMutex = .{},
-    queue: [mailbox_cap]i64 = undefined,
+    queue: [mailbox_cap]Signal = undefined,
     head: usize = 0,
     len: usize = 0,
+    next_sequence: u64 = 0,
 
-    fn push(self: *Mailbox, msg: i64) bool {
+    fn push(self: *Mailbox, sender: i64, msg: i64) bool {
         self.lock.lock();
         defer self.lock.unlock();
         if (self.len >= mailbox_cap) return false;
         const index = (self.head + self.len) % mailbox_cap;
-        self.queue[index] = msg;
+        self.queue[index] = .{
+            .kind = .message,
+            .sender = sender,
+            .payload = msg,
+            .sequence = self.next_sequence,
+        };
+        self.next_sequence +%= 1;
         self.len += 1;
         return true;
     }
@@ -168,7 +187,7 @@ const Mailbox = struct {
         self.lock.lock();
         defer self.lock.unlock();
         if (self.len == 0) return null;
-        const msg = self.queue[self.head];
+        const msg = self.queue[self.head].payload;
         self.head = (self.head + 1) % mailbox_cap;
         self.len -= 1;
         return msg;
@@ -188,6 +207,13 @@ const Mailbox = struct {
     }
 
     fn peek(self: *Mailbox, cursor: usize) ?i64 {
+        self.lock.lock();
+        defer self.lock.unlock();
+        if (cursor >= self.len) return null;
+        return self.queue[(self.head + cursor) % mailbox_cap].payload;
+    }
+
+    fn peekSignal(self: *Mailbox, cursor: usize) ?Signal {
         self.lock.lock();
         defer self.lock.unlock();
         if (cursor >= self.len) return null;
@@ -551,13 +577,13 @@ pub export fn ex_term_self() i64 {
 /// Message delivery does not bump the recipient's epoch in this slice: a
 /// plain FIFO receive must observe the message on resume.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
-    _ = current_proc();
+    const sender = current_proc().pid;
     if (word_tag(pid) != tag_atom) return nil_word;
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
     const target = resolve_pid(instance, pid) orelse return nil_word;
-    if (!target.mailbox.push(msg)) return nil_word;
+    if (!target.mailbox.push(sender, msg)) return nil_word;
     // Message arrival invalidates a pending selective-receive continuation:
     // the scan restarts and observes the new message (epoch invalidation
     // wiring, #35 slice 6). Loop continuations are unaffected.
@@ -871,10 +897,12 @@ pub export fn ex_term_process_wait(cursor: i64) i64 {
     if (cursor < 0) return -1;
     const instance = runtime();
     const proc = current_proc();
-    proc.mailbox.lock.lock();
-    defer proc.mailbox.lock.unlock();
+    // Global lock order is scheduler -> mailbox -> process state. Send uses
+    // the same order, preventing both lost wakeups and lock inversion.
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
+    proc.mailbox.lock.lock();
+    defer proc.mailbox.lock.unlock();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
 
@@ -2544,6 +2572,12 @@ test "term ABI mailbox and integer untag" {
     // send enqueues in FIFO order and returns the message
     try std.testing.expectEqual(one, ex_term_send(pid, one));
     try std.testing.expectEqual(two, ex_term_send(pid, two));
+    const first_signal = current_proc().mailbox.peekSignal(0).?;
+    const second_signal = current_proc().mailbox.peekSignal(1).?;
+    try std.testing.expectEqual(SignalKind.message, first_signal.kind);
+    try std.testing.expectEqual(pid, first_signal.sender);
+    try std.testing.expectEqual(@as(u64, 0), first_signal.sequence);
+    try std.testing.expectEqual(@as(u64, 1), second_signal.sequence);
     try std.testing.expectEqual(one, ex_term_receive());
     try std.testing.expectEqual(two, ex_term_receive());
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));

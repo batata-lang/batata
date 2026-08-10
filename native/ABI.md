@@ -176,6 +176,12 @@ Predicates return `1` or `0` as an `i64`.
 - Runtime reset and destroy require that no worker is entered. Heap allocation,
   process scheduling, counters, callbacks, actor state, and mailboxes are
   synchronized while a runtime is shared by entered workers.
+- Each mailbox is backed by one ordered signal queue. Message envelopes retain
+  their sender and a monotonically increasing arrival sequence; exit and DOWN
+  signals will use the same queue. Public receive operations currently expose
+  message payloads only.
+- Operations that need multiple locks acquire them in the global order
+  scheduler, mailbox, then process state.
 - A selective receive parks only while the mailbox length is not beyond its
   completed scan cursor. Send appends before waking the actor, establishing
   the mailbox happens-before edge and preventing lost wakeups.
