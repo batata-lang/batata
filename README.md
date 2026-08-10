@@ -147,9 +147,12 @@ clock:
 - process slots are recycled (tsai/beaver#50 stage 1): a completed process's
   slot is pushed on a free list and reused by the next `spawn`, so the table
   only ever grows to the concurrency peak, not the cumulative spawn count.
-  Slot 0 (the per-run entry process) is never recycled; a full table still
-  returns nil from `spawn`; `process_cap` configures the bound (default 256,
-  max 4096);
+  Slot 0 (the per-run entry process) is never recycled; `process_cap`
+  configures the initial allocation (default 256);
+- the process table grows dynamically and pids carry a BEAM-style generation
+  serial (#50 stage 2): spawn never fails on capacity (only allocation
+  failure), and a stale pid referencing a recycled slot is rejected, so old
+  references cannot address a new occupant of the same slot;
 - a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
   (the mailbox moved from globals into the process);
 - clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /

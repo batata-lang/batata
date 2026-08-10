@@ -1524,9 +1524,9 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "spawn returns nil when the process table is full at a configured cap", %{ctx: ctx} do
-    # cap = 1: the initial process occupies the only slot, so the spawned
-    # closure never runs and its send never lands; the direct send wins.
+  test "process_cap is an initial allocation that grows on spawn (#50 stage 2)", %{ctx: ctx} do
+    # cap = 1: the spawned closure still runs (the table grows dynamically),
+    # but main's direct send wins the FIFO receive before the actor's message.
     assert 0 ==
              Batata.execute(
                """
@@ -1545,34 +1545,6 @@ defmodule Batata.ExecuteTest do
                """,
                ctx,
                process_cap: 1
-             )
-  end
-
-  test "configured cap admits exactly that many spawned processes", %{ctx: ctx} do
-    # cap = 2: the first spawned process fits and delivers 7; the second is
-    # rejected (its send never lands), so the selective receive only ever
-    # sees the first spawned message and the direct sentinel.
-    assert 0 ==
-             Batata.execute(
-               """
-               defmodule Math do
-                 def main() do
-                   me = self()
-                   spawn(fn -> send(me, 7) end)
-                   spawn(fn -> send(me, 8) end)
-
-                   receive do
-                     7 -> 0
-                     _ -> 1
-                   after
-                     :infinity -> 2
-                   end
-                 end
-               end
-               """,
-               ctx,
-               process_cap: 2,
-               reduction_budget: 2
              )
   end
 

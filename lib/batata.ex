@@ -72,7 +72,8 @@ defmodule Batata do
   Set `workers: n` to run independent actors on a fixed pool of `n` OS
   workers. The default is `1`, preserving the deterministic serial scheduler.
   Set `process_cap: n` (1..4096, default 256) to size the actor process
-  table; `spawn` returns nil once the table is full.
+  table's initial allocation; it grows dynamically on spawn (#50 stage 2), so
+  `spawn` only fails on allocation failure.
 
   The JIT engine and module are destroyed before returning.
   """
