@@ -75,19 +75,29 @@ defmodule Batata.Lift do
         lift_definitions(definitions, ctx, body, budget, batch_size)
       end)
 
-      if entry_name != nil and driver_needed?(definitions, budget, workers) do
-        has_dispatch = dispatch_exists?(definitions)
-
-        if workers > 1 do
-          lift_actor_step(ctx, body, has_dispatch)
-          lift_parallel_driver(entry_name, ctx, body, workers)
-        else
-          lift_driver(entry_name, ctx, body, budget, has_dispatch)
-        end
-      end
+      maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers)
 
       module
     end)
+  end
+
+  defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers), do: :ok
+
+  defp maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers) do
+    if driver_needed?(definitions, budget, workers) do
+      lift_selected_driver(entry_name, definitions, ctx, body, budget, workers)
+    end
+  end
+
+  defp lift_selected_driver(entry_name, definitions, ctx, body, budget, workers) do
+    has_dispatch = dispatch_exists?(definitions)
+
+    if workers > 1 do
+      lift_actor_step(ctx, body, has_dispatch)
+      lift_parallel_driver(entry_name, ctx, body, workers)
+    else
+      lift_driver(entry_name, ctx, body, budget, has_dispatch)
+    end
   end
 
   defp reduction_batch_size(nil, _batching), do: nil
@@ -3072,12 +3082,16 @@ defmodule Batata.Lift do
   # (found, result, cursor); with a reduction budget the scan is preemptible
   # and saves a receive-type continuation, which a message arrival
   # invalidates — the scan then restarts and observes the new message.
+  defp blocking_receive?(nil), do: true
+  defp blocking_receive?({:infinity, _body}), do: true
+  defp blocking_receive?(_after_clause), do: false
+
   defp lift_selective_receive(clauses, ctx, block, env, after_clause) do
     i64 = integer_type(ctx)
     i1 = MLIR.Type.i1()
     budget = env[:__budget__]
     parsed = Enum.map(clauses, &parse_term_clause/1)
-    blocking? = after_clause == nil or match?({:infinity, _}, after_clause)
+    blocking? = blocking_receive?(after_clause)
 
     {state_found, state_result, state_cursor, state_countdown, arity} =
       if budget == nil do
