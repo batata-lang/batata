@@ -158,7 +158,13 @@ clock:
   wall-clock milliseconds (`ex.term.monotonic_time`, start tracked per process
   via `receive_start`/`receive_start_set`); `0` times out immediately after
   one scan round and `:infinity` waits forever. The FIFO path (catch-all)
-  waits only when the mailbox is empty.
+  waits only when the mailbox is empty;
+- slice 8: the logical-clock mapping for `erlang.monotonic_time/0,1` and
+  `erlang.unique_integer/0,1` (`ex.term.native_time` — BEAM native nanoseconds —
+  with unit conversion in the lift; `ex.term.unique_integer` — a runtime
+  counter handing out fresh increasing (or, with `[:negative]`, decreasing)
+  values, naturally monotonic across processes in the single-threaded
+  runtime).
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

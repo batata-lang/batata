@@ -2956,6 +2956,20 @@ defmodule Batata.Lift do
     raise Error, "malformed receive after clause: #{inspect(other)}"
   end
 
+  # `erlang.unique_integer/1` modifiers: a literal list of
+  # `:positive`/`:negative`/`:monotonic`; negative selects the decreasing
+  # series (the single-threaded counter is naturally monotonic, so
+  # `:monotonic` needs no extra handling).
+  defp unique_integer_modifiers(modifiers) when is_list(modifiers) do
+    if Enum.all?(modifiers, &(&1 in [:positive, :negative, :monotonic])) do
+      {:ok, :negative in modifiers}
+    else
+      :error
+    end
+  end
+
+  defp unique_integer_modifiers(_modifiers), do: :error
+
   defp ensure_receive_catch_all(clauses) do
     if catch_all_clause?(List.last(clauses)) do
       clauses
@@ -3095,6 +3109,10 @@ defmodule Batata.Lift do
   defp module_ref({:__aliases__, _, [:"Elixir", module]}) when is_atom(module),
     do: {:ok, Module.concat([:"Elixir", module])}
 
+  # A bare lowercase atom module reference (`erlang.monotonic_time()` parses
+  # the module as `{:erlang, meta, nil}`).
+  defp module_ref({module, _, nil}) when is_atom(module), do: {:ok, module}
+
   defp module_ref(module) when is_atom(module), do: {:ok, module}
   defp module_ref(_), do: :error
 
@@ -3109,6 +3127,54 @@ defmodule Batata.Lift do
     else
       raise Error, "Date.new requires integer literal arguments in this slice"
     end
+  end
+
+  # Logical-clock mapping (#35 slice 8): `erlang.monotonic_time/0,1` reads the
+  # runtime's native clock (nanoseconds) and converts to the requested unit;
+  # `erlang.unique_integer/0,1` hands out fresh increasing (or, for
+  # `:negative`, decreasing) values from the runtime counter.
+  defp lift_stdlib_call(:erlang, :monotonic_time, [], ctx, block, env) do
+    {create_op("ex.native_time", [], [integer_type(ctx)], ctx, block), env}
+  end
+
+  defp lift_stdlib_call(:erlang, :monotonic_time, [unit_ast], ctx, block, env) do
+    divisor =
+      case unit_ast do
+        :native -> 1
+        :nanosecond -> 1
+        :microsecond -> 1_000
+        :millisecond -> 1_000_000
+        :second -> 1_000_000_000
+        :minute -> 60 * 1_000_000_000
+        :hour -> 3_600 * 1_000_000_000
+        :day -> 86_400 * 1_000_000_000
+        unit when is_integer(unit) and unit > 0 -> unit
+        _ -> raise Error, "unsupported monotonic_time unit: #{inspect(unit_ast)}"
+      end
+
+    native = create_op("ex.native_time", [], [integer_type(ctx)], ctx, block)
+
+    {
+      create_op("ex.div", [native, lit(divisor, ctx, block)], [integer_type(ctx)], ctx, block),
+      env
+    }
+  end
+
+  defp lift_stdlib_call(:erlang, :unique_integer, [], ctx, block, env) do
+    {create_op("ex.unique_integer", [lit(0, ctx, block)], [integer_type(ctx)], ctx, block), env}
+  end
+
+  defp lift_stdlib_call(:erlang, :unique_integer, [modifiers_ast], ctx, block, env) do
+    negative =
+      case unique_integer_modifiers(modifiers_ast) do
+        {:ok, negative?} -> negative?
+        :error -> raise Error, "unsupported unique_integer modifiers: #{inspect(modifiers_ast)}"
+      end
+
+    flag = if negative, do: 1, else: 0
+
+    {create_op("ex.unique_integer", [lit(flag, ctx, block)], [integer_type(ctx)], ctx, block),
+     env}
   end
 
   defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do

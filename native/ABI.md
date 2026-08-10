@@ -50,6 +50,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.mailbox_remove` | `(cursor: i64) -> i64` | remove the message at `cursor`, shifting later messages forward |
 | `ex.term.nil` | `() -> i64` | the nil term word (atom id 0) |
 | `ex.term.monotonic_time` | `() -> i64` | wall-clock milliseconds (monotonic) for `receive ... after` timeouts |
+| `ex.term.native_time` | `() -> i64` | BEAM native time unit (nanoseconds) for `erlang.monotonic_time/0,1` |
+| `ex.term.unique_integer` | `(negative: i64) -> i64` | fresh logical-clock value for `erlang.unique_integer/0,1`; `negative` selects the decreasing series |
 | `ex.term.receive_start` | `() -> i64` | the current process's `receive ... after` timeout start (0 = not started) |
 | `ex.term.receive_start_set` | `(value: i64) -> i64` | set the current process's `receive ... after` timeout start |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |

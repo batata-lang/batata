@@ -226,6 +226,7 @@ fn init_processes() void {
     };
     process_count = 1;
     current_process = 0;
+    unique_integer_counter = 0;
 }
 
 fn current_proc() *Process {
@@ -255,6 +256,12 @@ pub export fn ex_term_process_table_reset() i64 {
 // point. The epoch is checked across slices (a message arrival or scheduler
 // round bumps it, invalidating the continuation).
 var yield_count: i64 = 0;
+
+// Logical-clock counter for `erlang.unique_integer/0,1`: every call hands out
+// a fresh value, so positive results are strictly increasing and negative
+// results strictly decreasing (the single-threaded runtime makes them
+// naturally monotonic across processes as well).
+var unique_integer_counter: i64 = 0;
 
 // A stack of setjmp buffers for non-local exits (`throw`). The setjmp call
 // itself happens in the compiled code (so its frame stays live); the runtime
@@ -357,6 +364,21 @@ pub export fn ex_term_monotonic_time() i64 {
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(i64, ts.tv_sec) * 1000 +
         @divTrunc(@as(i64, ts.tv_nsec), 1_000_000);
+}
+
+/// The BEAM native time unit (nanoseconds on 64-bit) for
+/// `erlang.monotonic_time/0,1`.
+pub export fn ex_term_native_time() i64 {
+    var ts: c.struct_timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return @as(i64, ts.tv_sec) * 1_000_000_000 + @as(i64, ts.tv_nsec);
+}
+
+/// Hands out a fresh logical-clock value for `erlang.unique_integer/0,1`;
+/// `negative` selects the decreasing negative series.
+pub export fn ex_term_unique_integer(negative: i64) i64 {
+    unique_integer_counter += 1;
+    return if (negative == 0) unique_integer_counter else -unique_integer_counter;
 }
 
 /// Number of messages in the current process's mailbox.
@@ -1527,6 +1549,8 @@ comptime {
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
     @export(&ex_term_nil, .{ .name = "ex.term.nil" });
     @export(&ex_term_monotonic_time, .{ .name = "ex.term.monotonic_time" });
+    @export(&ex_term_native_time, .{ .name = "ex.term.native_time" });
+    @export(&ex_term_unique_integer, .{ .name = "ex.term.unique_integer" });
     @export(&ex_term_receive_start, .{ .name = "ex.term.receive_start" });
     @export(&ex_term_receive_start_set, .{ .name = "ex.term.receive_start_set" });
     @export(&ex_term_mailbox_len, .{ .name = "ex.term.mailbox_len" });
