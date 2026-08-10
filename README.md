@@ -134,6 +134,9 @@ clock:
   scheduler threads safely. Actors within one invocation are still dispatched
   by one round-robin worker; the parallel worker scheduler is tracked in
   [tsai/beaver#42](http://localhost:3000/tsai/beaver/issues/42);
+- a shared runtime exposes atomic actor claim/release ownership and locked
+  FIFO mailboxes, including concurrent sends from multiple workers. The
+  generated driver does not start those workers until the trampoline layer;
 - a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
   (the mailbox moved from globals into the process);
 - clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /

@@ -36,8 +36,9 @@ and reuses its arena allocation.
 
 This boundary does not yet make the actors inside one execution parallel: its
 generated scheduler still dispatches them on one worker in round-robin order.
-Cross-worker actors require an explicit shared runtime instance and
-thread-safe mailboxes rather than exposing thread-local term pointers.
+The runtime now provides atomic actor claim/release and locked cross-worker
+mailbox delivery; the remaining step is a worker pool that invokes actor
+entries through a stable trampoline.
 
 Heap layouts (all fields are `i64` words):
 
@@ -82,6 +83,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.cont_load_arg` / `cont_load_acc` / `cont_load_cursor` | `() -> i64` | saved loop state; nil when none is pending |
 | `ex.term.receive_cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save a selective-receive scan continuation; a message arrival invalidates it (epoch bump), unlike a cursor-loop continuation |
 | `ex.term.schedule_next` | `() -> i64` | round-robin to the next runnable process and return its pid |
+| `ex.term.process_claim_next` | `(worker_id: i64) -> i64` | atomically claim one runnable actor for a non-zero worker id; nil when none is available |
+| `ex.term.process_release` | `() -> i64` | release the current claimed actor after a yielded slice |
 | `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
 | `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
@@ -160,6 +163,9 @@ Predicates return `1` or `0` as an `i64`.
 - An uncaught `ex.term.throw` panics.
 - Each runtime lazily owns a fixed 32 MiB bump arena; it is reset and reused
   between executions. GC is a later milestone.
+- Runtime reset and destroy require that no worker is entered. Heap allocation,
+  process scheduling, counters, callbacks, actor state, and mailboxes are
+  synchronized while a runtime is shared by entered workers.
 - The mailbox is a fixed 64-slot FIFO for a single actor; blocking receives
   and `after` timeouts arrive with the scheduler.
 
