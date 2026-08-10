@@ -227,6 +227,10 @@ fn init_processes() void {
     process_count = 1;
     current_process = 0;
     unique_integer_counter = 0;
+    // Each program run starts with a fresh bump arena: the scheduler driver
+    // calls `process_table_reset` at the top, so terms allocated by a
+    // previous run must not accumulate toward the fixed heap limit.
+    bump = 0;
 }
 
 fn current_proc() *Process {

@@ -47,6 +47,8 @@ defmodule Batata.Lift do
       module = MLIR.Module.create!("module {}", ctx: ctx)
       body = MLIR.CAPI.mlirModuleGetBody(module)
       budget = Keyword.get(opts, :reduction_budget)
+      batching = Keyword.get(opts, :reduction_batching) != false
+      batch_size = if budget == nil, do: nil, else: if(batching, do: budget, else: 1)
 
       {definitions, entry_name} =
         if driver_needed?(mod.definitions, budget) do
@@ -65,7 +67,7 @@ defmodule Batata.Lift do
       enforce_resumable_plan(groups, budget)
 
       Enum.each(groups, fn {_key, definitions} ->
-        lift_definitions(definitions, ctx, body, budget)
+        lift_definitions(definitions, ctx, body, budget, batch_size)
       end)
 
       if entry_name != nil and driver_needed?(definitions, budget) do
@@ -824,7 +826,8 @@ defmodule Batata.Lift do
          %Frontend.Definition{kind: kind, name: name, arity: arity, clauses: clauses},
          ctx,
          ip,
-         budget
+         budget,
+         batch_size
        ) do
     unless kind in [:def, :defp] do
       raise Error, "unsupported definition kind: #{inspect(kind)}"
@@ -851,6 +854,7 @@ defmodule Batata.Lift do
         Map.put(env, param_name(pattern), value)
       end)
       |> Map.put(:__budget__, budget)
+      |> Map.put(:__batch_size__, batch_size)
 
     # The entry function starts a fresh actor: reset the mailbox and the
     # reduction clock so each program run observes a clean process (#35).
@@ -929,15 +933,15 @@ defmodule Batata.Lift do
     |> elem(1)
   end
 
-  defp lift_definitions([definition], ctx, ip, budget) do
-    lift_definition(definition, ctx, ip, budget)
+  defp lift_definitions([definition], ctx, ip, budget, batch_size) do
+    lift_definition(definition, ctx, ip, budget, batch_size)
   end
 
   # Multiple `def` forms with the same name/arity become one ex.func whose
   # body dispatches on the argument with ex.case, matching each clause's
   # pattern (the cursor-loop foundation for recursive scanners). M2 requires
   # a single argument and a final catch-all clause.
-  defp lift_definitions(definitions, ctx, ip, budget) do
+  defp lift_definitions(definitions, ctx, ip, budget, batch_size) do
     %Frontend.Definition{kind: kind, name: name, arity: arity} = hd(definitions)
 
     unless kind in [:def, :defp] do
@@ -949,13 +953,13 @@ defmodule Batata.Lift do
     cond do
       arity == 1 ->
         case detect_scanner(name, clauses) do
-          {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip, budget)
+          {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip, budget, batch_size)
           :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip)
         end
 
       arity >= 2 ->
         case detect_accumulator_scanner(name, clauses) do
-          {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip, budget)
+          {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip, budget, batch_size)
           :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip)
         end
 
@@ -1246,7 +1250,14 @@ defmodule Batata.Lift do
   defp terminator_base(body) when is_integer(body), do: body
   defp terminator_base(_body), do: :skip
 
-  defp lift_scanner_loop(name, %{base: base, delta: delta, head_width: width}, ctx, ip, budget) do
+  defp lift_scanner_loop(
+         name,
+         %{base: base, delta: delta, head_width: width},
+         ctx,
+         ip,
+         budget,
+         batch_size
+       ) do
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
     i64 = integer_type(ctx)
@@ -1256,7 +1267,7 @@ defmodule Batata.Lift do
     [arg] = block |> Walker.arguments() |> Enum.to_list()
 
     base_val = lit(base, ctx, block)
-    acc_result = emit_cursor_while(block, arg, base_val, width, delta, ctx, budget)
+    acc_result = emit_cursor_while(block, arg, base_val, width, delta, ctx, budget, batch_size)
     create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -1270,7 +1281,7 @@ defmodule Batata.Lift do
     |> MLIR.Operation.create()
   end
 
-  defp lift_reduce_loop(name, %{delta: delta, head_width: width}, ctx, ip, budget) do
+  defp lift_reduce_loop(name, %{delta: delta, head_width: width}, ctx, ip, budget, batch_size) do
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
 
@@ -1278,7 +1289,7 @@ defmodule Batata.Lift do
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
     [arg, acc0] = block |> Walker.arguments() |> Enum.to_list()
 
-    acc_result = emit_cursor_while(block, arg, acc0, width, delta, ctx, budget)
+    acc_result = emit_cursor_while(block, arg, acc0, width, delta, ctx, budget, batch_size)
     create_op("ex.return", [acc_result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -1502,71 +1513,153 @@ defmodule Batata.Lift do
   # scf.while keeps the ex.func body to a single block: the before region
   # carries (arg, acc, cursor) and conditions on the next head segment
   # existing; the after region advances the accumulator and cursor.
-  defp emit_cursor_while(block, arg, acc, width, delta, ctx, budget) do
+  defp emit_cursor_while(block, arg, acc, width, delta, ctx, budget, batch_size) do
     i64 = integer_type(ctx)
 
-    locs = [
-      MLIR.Location.unknown(ctx: ctx),
-      MLIR.Location.unknown(ctx: ctx),
-      MLIR.Location.unknown(ctx: ctx)
-    ]
+    if budget == nil do
+      # Without a budget the loop is a plain 3-value cursor loop: no
+      # countdown, no tick (#41 fast path).
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+      before = MLIR.CAPI.mlirRegionCreate()
+      before_block = MLIR.Block.create([i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
-    before = MLIR.CAPI.mlirRegionCreate()
-    before_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+      after_region = MLIR.CAPI.mlirRegionCreate()
+      after_block = MLIR.Block.create([i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    after_region = MLIR.CAPI.mlirRegionCreate()
-    after_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+      [b_arg, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+      word = create_op("ex.to_word", [b_arg], [ex_type("dyn", ctx)], ctx, before_block)
+      len = create_op("ex.binary_length", [word], [i64], ctx, before_block)
 
-    [b_arg, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
-    word = create_op("ex.to_word", [b_arg], [ex_type("dyn", ctx)], ctx, before_block)
-    len = create_op("ex.binary_length", [word], [i64], ctx, before_block)
+      next_cursor =
+        create_op("ex.add", [b_cursor, lit(width, ctx, before_block)], [i64], ctx, before_block)
 
-    next_cursor =
-      create_op("ex.add", [b_cursor, lit(width, ctx, before_block)], [i64], ctx, before_block)
+      cond = cmp(len, next_cursor, "sge", ctx, before_block)
+      cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+      create_op("scf.condition", [cond_i1, b_arg, b_acc, b_cursor], [], ctx, before_block)
 
-    cond = cmp(len, next_cursor, "sge", ctx, before_block)
-    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+      [a_arg, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
 
-    budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_arg, b_acc, b_cursor, false)
+      acc_next =
+        create_op("ex.add", [a_acc, lit(delta, ctx, after_block)], [i64], ctx, after_block)
 
-    create_op("scf.condition", [budget_cond, b_arg, b_acc, b_cursor], [], ctx, before_block)
+      cursor_next =
+        create_op("ex.add", [a_cursor, lit(width, ctx, after_block)], [i64], ctx, after_block)
 
-    [a_arg, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-    acc_next = create_op("ex.add", [a_acc, lit(delta, ctx, after_block)], [i64], ctx, after_block)
+      create_op("scf.yield", [a_arg, acc_next, cursor_next], [], ctx, after_block)
 
-    cursor_next =
-      create_op("ex.add", [a_cursor, lit(width, ctx, after_block)], [i64], ctx, after_block)
+      {state_arg, state_acc, state_cursor} =
+        resumable_loop_state(
+          block,
+          ctx,
+          budget,
+          fn b ->
+            {arg, acc, lit(0, ctx, b)}
+          end,
+          batch_size
+        )
 
-    create_op("scf.yield", [a_arg, acc_next, cursor_next], [], ctx, after_block)
+      while_op =
+        %Beaver.SSA{
+          op: "scf.while",
+          ip: block,
+          ctx: ctx,
+          arguments: [state_arg, state_acc, state_cursor],
+          results: [i64, i64, i64],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [before, after_region] end
+        }
+        |> MLIR.Operation.create()
 
-    {state_arg, state_acc, state_cursor} =
-      resumable_loop_state(block, ctx, budget, fn b ->
-        {arg, acc, lit(0, ctx, b)}
-      end)
+      while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    else
+      # Budgeted: 4-value state (arg, acc, cursor, countdown); the countdown
+      # is reset per slice (see resumable_loop_state) so it never needs a
+      # runtime continuation slot (#41).
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 4)
+      before = MLIR.CAPI.mlirRegionCreate()
+      before_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
-    while_op =
-      %Beaver.SSA{
-        op: "scf.while",
-        ip: block,
-        ctx: ctx,
-        arguments: [state_arg, state_acc, state_cursor],
-        results: [i64, i64, i64],
-        loc: MLIR.Location.unknown(),
-        filler: fn -> [before, after_region] end
-      }
-      |> MLIR.Operation.create()
+      after_region = MLIR.CAPI.mlirRegionCreate()
+      after_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+      [b_arg, b_acc, b_cursor, b_countdown] =
+        before_block |> Walker.arguments() |> Enum.to_list()
+
+      word = create_op("ex.to_word", [b_arg], [ex_type("dyn", ctx)], ctx, before_block)
+      len = create_op("ex.binary_length", [word], [i64], ctx, before_block)
+
+      next_cursor =
+        create_op("ex.add", [b_cursor, lit(width, ctx, before_block)], [i64], ctx, before_block)
+
+      cond = cmp(len, next_cursor, "sge", ctx, before_block)
+      cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+
+      {budget_cond, next_countdown} =
+        inject_reduction_tick(
+          before_block,
+          ctx,
+          cond_i1,
+          budget,
+          {b_arg, b_acc, b_cursor, b_countdown},
+          false,
+          batch_size
+        )
+
+      create_op(
+        "scf.condition",
+        [budget_cond, b_arg, b_acc, b_cursor, next_countdown],
+        [],
+        ctx,
+        before_block
+      )
+
+      [a_arg, a_acc, a_cursor, a_countdown] =
+        after_block |> Walker.arguments() |> Enum.to_list()
+
+      acc_next =
+        create_op("ex.add", [a_acc, lit(delta, ctx, after_block)], [i64], ctx, after_block)
+
+      cursor_next =
+        create_op("ex.add", [a_cursor, lit(width, ctx, after_block)], [i64], ctx, after_block)
+
+      create_op("scf.yield", [a_arg, acc_next, cursor_next, a_countdown], [], ctx, after_block)
+
+      {state_arg, state_acc, state_cursor, state_countdown} =
+        resumable_loop_state(
+          block,
+          ctx,
+          budget,
+          fn b ->
+            {arg, acc, lit(0, ctx, b)}
+          end,
+          batch_size
+        )
+
+      while_op =
+        %Beaver.SSA{
+          op: "scf.while",
+          ip: block,
+          ctx: ctx,
+          arguments: [state_arg, state_acc, state_cursor, state_countdown],
+          results: [i64, i64, i64, i64],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [before, after_region] end
+        }
+        |> MLIR.Operation.create()
+
+      while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    end
   end
 
   # `Enum.reduce/3` with a `fn item, acc -> item + acc end` reducer compiles
   # to a cursor loop over the list: carries (list, acc, cursor), reads each
   # element via `ex.list_get`, untags it, and accumulates.
-  defp lift_enum_sum_loop(list_word, acc0, ctx, block, budget) do
-    lift_enum_cursor_loop(list_word, acc0, {"ex.add", :acc_first}, ctx, block, budget)
+  defp lift_enum_sum_loop(list_word, acc0, ctx, block, budget, batch_size) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.add", :acc_first}, ctx, block, budget, batch_size)
   end
 
   # #35 slice 2/3: charge one reduction per loop iteration (the scf.while
@@ -1575,66 +1668,83 @@ defmodule Batata.Lift do
   # continuation (arg, acc, cursor) to the runtime and records a yield; the
   # condition becomes false so the loop exits and the entry returns control
   # to the scheduler driver, which resumes the saved state later (#35 slice 5).
-  defp inject_reduction_tick(before_block, ctx, cond_i1, budget, arg, acc, cursor, receive?) do
+  # #35 slice 2/3: charge reductions on the scf.while back edge. #41 batching:
+  # the loop carries a pure-arith countdown iter_arg; only when it reaches
+  # zero does the before region call `ex.reduction_tick(batch)` once (charging
+  # the whole batch) and reset the countdown, so the clock check is out of the
+  # per-iteration hot path. Returns `{budget_cond, next_countdown}`; without a
+  # budget the loop condition passes through and no countdown is produced.
+  defp inject_reduction_tick(
+         before_block,
+         ctx,
+         cond_i1,
+         budget,
+         {arg, acc, cursor, countdown},
+         receive?,
+         batch_size
+       ) do
     i64 = integer_type(ctx)
+    i1 = MLIR.Type.i1()
 
     if budget == nil do
-      # Without a budget there is nothing to charge: the loop condition passes
-      # through untouched and no reduction_tick call is emitted (#41 fast
-      # path).
-      cond_i1
+      {cond_i1, nil}
     else
-      ticked =
-        create_op("ex.reduction_tick", [lit(1, ctx, before_block)], [i64], ctx, before_block)
+      countdown_next =
+        create_op("ex.sub", [countdown, lit(1, ctx, before_block)], [i64], ctx, before_block)
 
-      # Budgeted: exhausted -> cont_save + yield_mark; condition becomes false
-      # so the loop exits (a real preemptive yield, not an immediate resume).
-      exhausted =
+      at_batch_i1 =
         create_op(
-          "ex.cmp",
-          [ticked, lit(0, ctx, before_block), predicate: MLIR.Attribute.string("ne")],
-          [i64],
+          "arith.trunci",
+          [cmp(countdown_next, 0, "eq", ctx, before_block)],
+          [MLIR.Type.i1()],
           ctx,
           before_block
         )
 
-      exhausted_i1 =
-        create_op("arith.trunci", [exhausted], [MLIR.Type.i1()], ctx, before_block)
+      [budget_cond, next_countdown] =
+        build_scf_if(
+          at_batch_i1,
+          ctx,
+          before_block,
+          [i1, i64],
+          fn b ->
+            ticked = create_op("ex.reduction_tick", [lit(batch_size, ctx, b)], [i64], ctx, b)
 
-      if_region = MLIR.CAPI.mlirRegionCreate()
-      if_block = MLIR.Block.create([], [])
-      MLIR.CAPI.mlirRegionAppendOwnedBlock(if_region, if_block)
+            exhausted_i1 =
+              create_op(
+                "arith.trunci",
+                [cmp(ticked, 0, "ne", ctx, b)],
+                [MLIR.Type.i1()],
+                ctx,
+                b
+              )
 
-      else_region = MLIR.CAPI.mlirRegionCreate()
-      else_block = MLIR.Block.create([], [])
-      MLIR.CAPI.mlirRegionAppendOwnedBlock(else_region, else_block)
+            build_scf_if(
+              exhausted_i1,
+              ctx,
+              b,
+              [i1, i64],
+              fn tb ->
+                # Selective-receive scans save a receive-type continuation so a
+                # message arrival invalidates it (epoch wiring); cursor loops save
+                # a loop-type continuation that message arrival must not affect.
+                save_op = if receive?, do: "ex.receive_cont_save", else: "ex.cont_save"
+                create_op(save_op, [arg, acc, cursor], [i64], ctx, tb)
+                create_op("ex.yield_mark", [], [i64], ctx, tb)
+                false_i1 = create_op("arith.trunci", [lit(0, ctx, tb)], [MLIR.Type.i1()], ctx, tb)
+                [false_i1, lit(0, ctx, tb)]
+              end,
+              fn tb ->
+                [cond_i1, lit(batch_size, ctx, tb)]
+              end
+            )
+          end,
+          fn _b ->
+            [cond_i1, countdown_next]
+          end
+        )
 
-      # Selective-receive scans save a receive-type continuation so a message
-      # arrival invalidates it (epoch wiring); cursor loops save a loop-type
-      # continuation that message arrival must not affect.
-      save_op = if receive?, do: "ex.receive_cont_save", else: "ex.cont_save"
-      create_op(save_op, [arg, acc, cursor], [i64], ctx, if_block)
-      create_op("ex.yield_mark", [], [i64], ctx, if_block)
-
-      false_i1 =
-        create_op("arith.trunci", [lit(0, ctx, if_block)], [MLIR.Type.i1()], ctx, if_block)
-
-      create_op("scf.yield", [false_i1], [], ctx, if_block)
-      create_op("scf.yield", [cond_i1], [], ctx, else_block)
-
-      if_op =
-        %Beaver.SSA{
-          op: "scf.if",
-          ip: before_block,
-          ctx: ctx,
-          arguments: [exhausted_i1],
-          results: [MLIR.Type.i1()],
-          loc: MLIR.Location.unknown(),
-          filler: fn -> [if_region, else_region] end
-        }
-        |> MLIR.Operation.create()
-
-      if_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+      {budget_cond, next_countdown}
     end
   end
 
@@ -1645,12 +1755,18 @@ defmodule Batata.Lift do
   # continuation — when one is pending at the current epoch, the state is
   # restored from the runtime so the loop resumes where it yielded; otherwise
   # the fresh init runs.
-  defp resumable_loop_state(block, ctx, budget, fresh_init) do
+  # #41 batching: with a budget the loop state gains a fourth countdown
+  # iter_arg (batch_size..0). The countdown is a derived quantity — each slice
+  # restarts it at batch_size — so it does not need a runtime continuation
+  # slot: the resume branch loads (arg, acc, cursor) and restarts the
+  # countdown, and the fresh branch does the same alongside the fresh init.
+  defp resumable_loop_state(block, ctx, budget, fresh_init, batch_size \\ nil) do
     if budget == nil do
       fresh_init.(block)
     else
       i64 = integer_type(ctx)
       create_op("ex.clock_init", [lit(budget, ctx, block)], [i64], ctx, block)
+      batch_size = batch_size || budget
 
       # Resume on any saved continuation (valid or stale): the cursor-loop
       # state is positionally valid even after a message arrival invalidates
@@ -1670,17 +1786,19 @@ defmodule Batata.Lift do
       arg_v = create_op("ex.cont_load_arg", [], [i64], ctx, resume_block)
       acc_v = create_op("ex.cont_load_acc", [], [i64], ctx, resume_block)
       cursor_v = create_op("ex.cont_load_cursor", [], [i64], ctx, resume_block)
+      countdown_v = lit(batch_size, ctx, resume_block)
       # The continuation is consumed by the resume: a completed loop must not
       # read as still pending (the driver parks a process only when the entry
       # returns with no pending continuation).
       create_op("ex.cont_clear", [], [i64], ctx, resume_block)
-      create_op("scf.yield", [arg_v, acc_v, cursor_v], [], ctx, resume_block)
+      create_op("scf.yield", [arg_v, acc_v, cursor_v, countdown_v], [], ctx, resume_block)
 
       fresh_region = MLIR.CAPI.mlirRegionCreate()
       fresh_block = MLIR.Block.create([], [])
       MLIR.CAPI.mlirRegionAppendOwnedBlock(fresh_region, fresh_block)
       {arg_f, acc_f, cursor_f} = fresh_init.(fresh_block)
-      create_op("scf.yield", [arg_f, acc_f, cursor_f], [], ctx, fresh_block)
+      countdown_f = lit(batch_size, ctx, fresh_block)
+      create_op("scf.yield", [arg_f, acc_f, cursor_f, countdown_f], [], ctx, fresh_block)
 
       if_op =
         %Beaver.SSA{
@@ -1688,86 +1806,183 @@ defmodule Batata.Lift do
           ip: block,
           ctx: ctx,
           arguments: [active_i1],
-          results: [i64, i64, i64],
+          results: [i64, i64, i64, i64],
           loc: MLIR.Location.unknown(),
           filler: fn -> [resume_region, fresh_region] end
         }
         |> MLIR.Operation.create()
 
-      [arg, acc, cursor] = if_op |> MLIR.Operation.results() |> Enum.to_list()
-      {arg, acc, cursor}
+      [arg, acc, cursor, countdown] = if_op |> MLIR.Operation.results() |> Enum.to_list()
+      {arg, acc, cursor, countdown}
     end
   end
 
-  defp lift_enum_product_loop(list_word, acc0, ctx, block, budget) do
-    lift_enum_cursor_loop(list_word, acc0, {"ex.mul", :acc_first}, ctx, block, budget)
+  defp lift_enum_product_loop(list_word, acc0, ctx, block, budget, batch_size) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.mul", :acc_first}, ctx, block, budget, batch_size)
   end
 
-  defp lift_enum_subtract_loop(list_word, acc0, order, ctx, block, budget) do
-    lift_enum_cursor_loop(list_word, acc0, {"ex.sub", order}, ctx, block, budget)
+  defp lift_enum_subtract_loop(list_word, acc0, order, ctx, block, budget, batch_size) do
+    lift_enum_cursor_loop(list_word, acc0, {"ex.sub", order}, ctx, block, budget, batch_size)
   end
 
-  defp lift_enum_cursor_loop(list_word, acc0, {accumulate_op, order}, ctx, block, budget) do
+  defp lift_enum_cursor_loop(
+         list_word,
+         acc0,
+         {accumulate_op, order},
+         ctx,
+         block,
+         budget,
+         batch_size
+       ) do
     i64 = integer_type(ctx)
-    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
 
-    {state_list, state_acc, state_cursor} =
-      resumable_loop_state(block, ctx, budget, fn b ->
-        list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, b)
-        {list_i64, acc0, lit(0, ctx, b)}
-      end)
+    if budget == nil do
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
 
-    before = MLIR.CAPI.mlirRegionCreate()
-    before_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+      {state_list, state_acc, state_cursor} =
+        resumable_loop_state(
+          block,
+          ctx,
+          budget,
+          fn b ->
+            list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, b)
+            {list_i64, acc0, lit(0, ctx, b)}
+          end,
+          batch_size
+        )
 
-    after_region = MLIR.CAPI.mlirRegionCreate()
-    after_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+      before = MLIR.CAPI.mlirRegionCreate()
+      before_block = MLIR.Block.create([i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
-    [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
-    b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
-    len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
-    cond = cmp(b_cursor, len, "slt", ctx, before_block)
-    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+      after_region = MLIR.CAPI.mlirRegionCreate()
+      after_block = MLIR.Block.create([i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor, false)
+      [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+      b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
+      len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
+      cond = cmp(b_cursor, len, "slt", ctx, before_block)
+      cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+      create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
 
-    create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
+      [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
 
-    [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-    a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+      item =
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
 
-    item =
-      create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+      item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
 
-    item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+      acc_next =
+        case order do
+          :acc_first -> create_op(accumulate_op, [a_acc, item_i64], [i64], ctx, after_block)
+          :item_first -> create_op(accumulate_op, [item_i64, a_acc], [i64], ctx, after_block)
+        end
 
-    acc_next =
-      case order do
-        :acc_first -> create_op(accumulate_op, [a_acc, item_i64], [i64], ctx, after_block)
-        :item_first -> create_op(accumulate_op, [item_i64, a_acc], [i64], ctx, after_block)
-      end
+      cursor_next =
+        create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
 
-    cursor_next =
-      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+      create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
 
-    create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
+      while_op =
+        %Beaver.SSA{
+          op: "scf.while",
+          ip: block,
+          ctx: ctx,
+          arguments: [state_list, state_acc, state_cursor],
+          results: [i64, i64, i64],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [before, after_region] end
+        }
+        |> MLIR.Operation.create()
 
-    while_op =
-      %Beaver.SSA{
-        op: "scf.while",
-        ip: block,
-        ctx: ctx,
-        arguments: [state_list, state_acc, state_cursor],
-        results: [i64, i64, i64],
-        loc: MLIR.Location.unknown(),
-        filler: fn -> [before, after_region] end
-      }
-      |> MLIR.Operation.create()
+      while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    else
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 4)
 
-    while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+      {state_list, state_acc, state_cursor, state_countdown} =
+        resumable_loop_state(
+          block,
+          ctx,
+          budget,
+          fn b ->
+            list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, b)
+            {list_i64, acc0, lit(0, ctx, b)}
+          end,
+          batch_size
+        )
+
+      before = MLIR.CAPI.mlirRegionCreate()
+      before_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+      after_region = MLIR.CAPI.mlirRegionCreate()
+      after_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+      [b_list, b_acc, b_cursor, b_countdown] =
+        before_block |> Walker.arguments() |> Enum.to_list()
+
+      b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
+      len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
+      cond = cmp(b_cursor, len, "slt", ctx, before_block)
+      cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+
+      {budget_cond, next_countdown} =
+        inject_reduction_tick(
+          before_block,
+          ctx,
+          cond_i1,
+          budget,
+          {b_list, b_acc, b_cursor, b_countdown},
+          false,
+          batch_size
+        )
+
+      create_op(
+        "scf.condition",
+        [budget_cond, b_list, b_acc, b_cursor, next_countdown],
+        [],
+        ctx,
+        before_block
+      )
+
+      [a_list, a_acc, a_cursor, a_countdown] =
+        after_block |> Walker.arguments() |> Enum.to_list()
+
+      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+
+      item =
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+      item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+
+      acc_next =
+        case order do
+          :acc_first -> create_op(accumulate_op, [a_acc, item_i64], [i64], ctx, after_block)
+          :item_first -> create_op(accumulate_op, [item_i64, a_acc], [i64], ctx, after_block)
+        end
+
+      cursor_next =
+        create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+      create_op("scf.yield", [a_list, acc_next, cursor_next, a_countdown], [], ctx, after_block)
+
+      while_op =
+        %Beaver.SSA{
+          op: "scf.while",
+          ip: block,
+          ctx: ctx,
+          arguments: [state_list, state_acc, state_cursor, state_countdown],
+          results: [i64, i64, i64, i64],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [before, after_region] end
+        }
+        |> MLIR.Operation.create()
+
+      while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    end
   end
 
   # Combination reducer over a list literal: the cursor loop's after region
@@ -1839,19 +2054,20 @@ defmodule Batata.Lift do
   # `Enum.map/2` with a constant mapper (`fn _x -> c end`) compiles to a
   # descending cursor loop that conses the constant onto the accumulator,
   # preserving list order without a reverse.
-  defp lift_enum_const_map(list_word, value, ctx, block, budget) do
+  defp lift_enum_const_map(list_word, value, ctx, block, budget, batch_size) do
     lift_enum_map_loop(
       list_word,
       ctx,
       block,
       fn _item, b -> lit(value, ctx, b) end,
-      budget
+      budget,
+      batch_size
     )
   end
 
   # `Enum.map/2` with a capture-add mapper (`fn x -> x + c end`) compiles to
   # the same descending loop, adding the captured scalar to each element.
-  defp lift_enum_capture_map(list_word, capture_i64, ctx, block, budget) do
+  defp lift_enum_capture_map(list_word, capture_i64, ctx, block, budget, batch_size) do
     lift_enum_map_loop(
       list_word,
       ctx,
@@ -1859,77 +2075,169 @@ defmodule Batata.Lift do
       fn item, b ->
         create_op("ex.add", [item, capture_i64], [integer_type(ctx)], ctx, b)
       end,
-      budget
+      budget,
+      batch_size
     )
   end
 
-  defp lift_enum_map_loop(list_word, ctx, block, mapper_fun, budget) do
+  defp lift_enum_map_loop(list_word, ctx, block, mapper_fun, budget, batch_size) do
     i64 = integer_type(ctx)
 
-    {state_list, state_acc, state_cursor} =
-      resumable_loop_state(block, ctx, budget, fn b ->
-        list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, b)
-        len = create_op("ex.list_length", [list_word], [i64], ctx, b)
-        cursor0 = create_op("ex.sub", [len, lit(1, ctx, b)], [i64], ctx, b)
-        nil_dyn = create_term_op("ex.list", [], ctx, b)
-        nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, b)
-        {list_i64, nil_i64, cursor0}
-      end)
+    if budget == nil do
+      {state_list, state_acc, state_cursor} =
+        resumable_loop_state(
+          block,
+          ctx,
+          budget,
+          fn b ->
+            list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, b)
+            len = create_op("ex.list_length", [list_word], [i64], ctx, b)
+            cursor0 = create_op("ex.sub", [len, lit(1, ctx, b)], [i64], ctx, b)
+            nil_dyn = create_term_op("ex.list", [], ctx, b)
+            nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, b)
+            {list_i64, nil_i64, cursor0}
+          end,
+          batch_size
+        )
 
-    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+      before = MLIR.CAPI.mlirRegionCreate()
+      before_block = MLIR.Block.create([i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
-    before = MLIR.CAPI.mlirRegionCreate()
-    before_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+      after_region = MLIR.CAPI.mlirRegionCreate()
+      after_block = MLIR.Block.create([i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    after_region = MLIR.CAPI.mlirRegionCreate()
-    after_block = MLIR.Block.create([i64, i64, i64], locs)
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+      [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+      cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
+      cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+      create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
 
-    [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
-    cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
-    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+      [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
 
-    budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_list, b_acc, b_cursor, false)
+      item =
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
 
-    create_op("scf.condition", [budget_cond, b_list, b_acc, b_cursor], [], ctx, before_block)
+      item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+      mapped = mapper_fun.(item_i64, after_block)
+      mapped_term = box_term(mapped, ctx, after_block)
+      acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("dyn", ctx)], ctx, after_block)
 
-    [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-    a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+      acc_next_dyn =
+        create_op("ex.list_cons", [mapped_term, acc_dyn], [ex_type("dyn", ctx)], ctx, after_block)
 
-    item =
-      create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+      acc_next = create_op("ex.unbox", [acc_next_dyn], [i64], ctx, after_block)
 
-    item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
-    mapped = mapper_fun.(item_i64, after_block)
-    mapped_term = box_term(mapped, ctx, after_block)
-    acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("dyn", ctx)], ctx, after_block)
+      cursor_next =
+        create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
 
-    acc_next_dyn =
-      create_op("ex.list_cons", [mapped_term, acc_dyn], [ex_type("dyn", ctx)], ctx, after_block)
+      create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
 
-    acc_next = create_op("ex.unbox", [acc_next_dyn], [i64], ctx, after_block)
+      while_op =
+        %Beaver.SSA{
+          op: "scf.while",
+          ip: block,
+          ctx: ctx,
+          arguments: [state_list, state_acc, state_cursor],
+          results: [i64, i64, i64],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [before, after_region] end
+        }
+        |> MLIR.Operation.create()
 
-    cursor_next =
-      create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+      acc_i64 = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+      create_op("ex.to_word", [acc_i64], [ex_type("dyn", ctx)], ctx, block)
+    else
+      {state_list, state_acc, state_cursor, state_countdown} =
+        resumable_loop_state(
+          block,
+          ctx,
+          budget,
+          fn b ->
+            list_i64 = create_op("ex.unbox", [list_word], [i64], ctx, b)
+            len = create_op("ex.list_length", [list_word], [i64], ctx, b)
+            cursor0 = create_op("ex.sub", [len, lit(1, ctx, b)], [i64], ctx, b)
+            nil_dyn = create_term_op("ex.list", [], ctx, b)
+            nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, b)
+            {list_i64, nil_i64, cursor0}
+          end,
+          batch_size
+        )
 
-    create_op("scf.yield", [a_list, acc_next, cursor_next], [], ctx, after_block)
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 4)
+      before = MLIR.CAPI.mlirRegionCreate()
+      before_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
-    while_op =
-      %Beaver.SSA{
-        op: "scf.while",
-        ip: block,
-        ctx: ctx,
-        arguments: [state_list, state_acc, state_cursor],
-        results: [i64, i64, i64],
-        loc: MLIR.Location.unknown(),
-        filler: fn -> [before, after_region] end
-      }
-      |> MLIR.Operation.create()
+      after_region = MLIR.CAPI.mlirRegionCreate()
+      after_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    acc_i64 = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
-    create_op("ex.to_word", [acc_i64], [ex_type("dyn", ctx)], ctx, block)
+      [b_list, b_acc, b_cursor, b_countdown] =
+        before_block |> Walker.arguments() |> Enum.to_list()
+
+      cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
+      cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+
+      {budget_cond, next_countdown} =
+        inject_reduction_tick(
+          before_block,
+          ctx,
+          cond_i1,
+          budget,
+          {b_list, b_acc, b_cursor, b_countdown},
+          false,
+          batch_size
+        )
+
+      create_op(
+        "scf.condition",
+        [budget_cond, b_list, b_acc, b_cursor, next_countdown],
+        [],
+        ctx,
+        before_block
+      )
+
+      [a_list, a_acc, a_cursor, a_countdown] =
+        after_block |> Walker.arguments() |> Enum.to_list()
+
+      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+
+      item =
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+
+      item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
+      mapped = mapper_fun.(item_i64, after_block)
+      mapped_term = box_term(mapped, ctx, after_block)
+      acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("dyn", ctx)], ctx, after_block)
+
+      acc_next_dyn =
+        create_op("ex.list_cons", [mapped_term, acc_dyn], [ex_type("dyn", ctx)], ctx, after_block)
+
+      acc_next = create_op("ex.unbox", [acc_next_dyn], [i64], ctx, after_block)
+
+      cursor_next =
+        create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+      create_op("scf.yield", [a_list, acc_next, cursor_next, a_countdown], [], ctx, after_block)
+
+      while_op =
+        %Beaver.SSA{
+          op: "scf.while",
+          ip: block,
+          ctx: ctx,
+          arguments: [state_list, state_acc, state_cursor, state_countdown],
+          results: [i64, i64, i64, i64],
+          loc: MLIR.Location.unknown(),
+          filler: fn -> [before, after_region] end
+        }
+        |> MLIR.Operation.create()
+
+      acc_i64 = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+      create_op("ex.to_word", [acc_i64], [ex_type("dyn", ctx)], ctx, block)
+    end
   end
 
   defp enum_capture_i64(capture, ctx, block) do
@@ -2187,13 +2495,27 @@ defmodule Batata.Lift do
           {enumerable_word, env}
 
         {:const, value} ->
-          {lift_enum_const_map(enumerable_word, value, ctx, block, env[:__budget__]), env}
+          {lift_enum_const_map(
+             enumerable_word,
+             value,
+             ctx,
+             block,
+             env[:__budget__],
+             env[:__batch_size__]
+           ), env}
 
         {:add_capture, capture_ast} ->
           {capture, env} = lift_expr(capture_ast, ctx, block, env)
           capture_i64 = enum_capture_i64(capture, ctx, block)
 
-          {lift_enum_capture_map(enumerable_word, capture_i64, ctx, block, env[:__budget__]), env}
+          {lift_enum_capture_map(
+             enumerable_word,
+             capture_i64,
+             ctx,
+             block,
+             env[:__budget__],
+             env[:__batch_size__]
+           ), env}
 
         {:mapper, mapper_name} ->
           addr =
@@ -2587,21 +2909,39 @@ defmodule Batata.Lift do
     budget = env[:__budget__]
     parsed = Enum.map(clauses, &parse_term_clause/1)
 
-    {state_found, state_result, state_cursor} =
-      resumable_loop_state(block, ctx, budget, fn b ->
-        {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
-      end)
+    {state_found, state_result, state_cursor, state_countdown, arity} =
+      if budget == nil do
+        {s_f, s_r, s_c} =
+          resumable_loop_state(block, ctx, budget, fn b ->
+            {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
+          end)
 
-    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+        {s_f, s_r, s_c, nil, 3}
+      else
+        {s_f, s_r, s_c, s_cd} =
+          resumable_loop_state(
+            block,
+            ctx,
+            budget,
+            fn b ->
+              {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
+            end,
+            env[:__batch_size__]
+          )
+
+        {s_f, s_r, s_c, s_cd, 4}
+      end
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), arity)
     before = MLIR.CAPI.mlirRegionCreate()
-    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    before_block = MLIR.Block.create(List.duplicate(i64, arity), locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
     after_region = MLIR.CAPI.mlirRegionCreate()
-    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    after_block = MLIR.Block.create(List.duplicate(i64, arity), locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    [b_found, b_result, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    [b_found, b_result, b_cursor | b_rest] = before_block |> Walker.arguments() |> Enum.to_list()
     len = create_op("ex.mailbox_len", [], [i64], ctx, before_block)
 
     not_found_i1 =
@@ -2631,12 +2971,27 @@ defmodule Batata.Lift do
         not_found_i1
       end
 
-    budget_cond =
-      inject_reduction_tick(before_block, ctx, cond_i1, budget, b_found, b_result, b_cursor, true)
+    {budget_cond, next_countdown} =
+      inject_reduction_tick(
+        before_block,
+        ctx,
+        cond_i1,
+        budget,
+        {b_found, b_result, b_cursor, List.first(b_rest) || lit(0, ctx, before_block)},
+        true,
+        env[:__batch_size__]
+      )
 
-    create_op("scf.condition", [budget_cond, b_found, b_result, b_cursor], [], ctx, before_block)
+    create_op(
+      "scf.condition",
+      [budget_cond, b_found, b_result, b_cursor] ++
+        if(next_countdown == nil, do: [], else: [next_countdown]),
+      [],
+      ctx,
+      before_block
+    )
 
-    [a_found, a_result, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    [a_found, a_result, a_cursor | a_rest] = after_block |> Walker.arguments() |> Enum.to_list()
     len = create_op("ex.mailbox_len", [], [i64], ctx, after_block)
 
     more_i1 =
@@ -2648,49 +3003,57 @@ defmodule Batata.Lift do
         after_block
       )
 
-    if after_clause == nil do
-      msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
-
-      {n_found, n_result, n_cursor} =
+    {n_found, n_result, n_cursor} =
+      if after_clause == nil do
+        msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
         receive_match_try(parsed, msg, a_cursor, env, ctx, after_block, i64)
+      else
+        [f, r, c] =
+          build_scf_if(
+            more_i1,
+            ctx,
+            after_block,
+            [i64, i64, i64],
+            fn b ->
+              msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, b)
+              {f, r, c} = receive_match_try(parsed, msg, a_cursor, env, ctx, b, i64)
+              [f, r, c]
+            end,
+            fn b ->
+              {f, r, c} =
+                receive_timeout_check(after_clause, a_found, a_result, a_cursor, env, ctx, b)
 
-      create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
-    else
-      [n_found, n_result, n_cursor] =
-        build_scf_if(
-          more_i1,
-          ctx,
-          after_block,
-          [i64, i64, i64],
-          fn b ->
-            msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, b)
-            {f, r, c} = receive_match_try(parsed, msg, a_cursor, env, ctx, b, i64)
-            [f, r, c]
-          end,
-          fn b ->
-            {f, r, c} =
-              receive_timeout_check(after_clause, a_found, a_result, a_cursor, env, ctx, b)
+              [f, r, c]
+            end
+          )
 
-            [f, r, c]
-          end
-        )
+        {f, r, c}
+      end
 
-      create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
-    end
+    create_op(
+      "scf.yield",
+      [n_found, n_result, n_cursor] ++
+        if(next_countdown == nil, do: [], else: [List.first(a_rest)]),
+      [],
+      ctx,
+      after_block
+    )
 
     while_op =
       %Beaver.SSA{
         op: "scf.while",
         ip: block,
         ctx: ctx,
-        arguments: [state_found, state_result, state_cursor],
-        results: [i64, i64, i64],
+        arguments:
+          [state_found, state_result, state_cursor] ++
+            if(next_countdown == nil, do: [], else: [state_countdown]),
+        results: List.duplicate(i64, arity),
         loc: MLIR.Location.unknown(),
         filler: fn -> [before, after_region] end
       }
       |> MLIR.Operation.create()
 
-    [found, result, _cursor] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    [found, result, _cursor | _rest] = while_op |> MLIR.Operation.results() |> Enum.to_list()
     found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
     nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
     nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
@@ -2861,21 +3224,39 @@ defmodule Batata.Lift do
     budget = env[:__budget__]
     clauses = ensure_receive_catch_all(clauses)
 
-    {state_found, state_result, state_cursor} =
-      resumable_loop_state(block, ctx, budget, fn b ->
-        {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
-      end)
+    {state_found, state_result, state_cursor, state_countdown, arity} =
+      if budget == nil do
+        {s_f, s_r, s_c} =
+          resumable_loop_state(block, ctx, budget, fn b ->
+            {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
+          end)
 
-    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+        {s_f, s_r, s_c, nil, 3}
+      else
+        {s_f, s_r, s_c, s_cd} =
+          resumable_loop_state(
+            block,
+            ctx,
+            budget,
+            fn b ->
+              {lit(0, ctx, b), lit(0, ctx, b), lit(0, ctx, b)}
+            end,
+            env[:__batch_size__]
+          )
+
+        {s_f, s_r, s_c, s_cd, 4}
+      end
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), arity)
     before = MLIR.CAPI.mlirRegionCreate()
-    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    before_block = MLIR.Block.create(List.duplicate(i64, arity), locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
 
     after_region = MLIR.CAPI.mlirRegionCreate()
-    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    after_block = MLIR.Block.create(List.duplicate(i64, arity), locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
-    [b_found, b_result, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    [b_found, b_result, b_cursor | b_rest] = before_block |> Walker.arguments() |> Enum.to_list()
 
     not_found_i1 =
       create_op(
@@ -2886,21 +3267,27 @@ defmodule Batata.Lift do
         before_block
       )
 
-    budget_cond =
+    {budget_cond, next_countdown} =
       inject_reduction_tick(
         before_block,
         ctx,
         not_found_i1,
         budget,
-        b_found,
-        b_result,
-        b_cursor,
-        true
+        {b_found, b_result, b_cursor, List.first(b_rest) || lit(0, ctx, before_block)},
+        true,
+        env[:__batch_size__]
       )
 
-    create_op("scf.condition", [budget_cond, b_found, b_result, b_cursor], [], ctx, before_block)
+    create_op(
+      "scf.condition",
+      [budget_cond, b_found, b_result, b_cursor] ++
+        if(next_countdown == nil, do: [], else: [next_countdown]),
+      [],
+      ctx,
+      before_block
+    )
 
-    [a_found, a_result, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    [a_found, a_result, a_cursor | a_rest] = after_block |> Walker.arguments() |> Enum.to_list()
     msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, after_block)
     nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, after_block)
     is_empty = create_op("ex.term_eq", [msg, nil_dyn], [i64], ctx, after_block)
@@ -2924,21 +3311,30 @@ defmodule Batata.Lift do
         end
       )
 
-    create_op("scf.yield", [n_found, n_result, n_cursor], [], ctx, after_block)
+    create_op(
+      "scf.yield",
+      [n_found, n_result, n_cursor] ++
+        if(next_countdown == nil, do: [], else: [List.first(a_rest)]),
+      [],
+      ctx,
+      after_block
+    )
 
     while_op =
       %Beaver.SSA{
         op: "scf.while",
         ip: block,
         ctx: ctx,
-        arguments: [state_found, state_result, state_cursor],
-        results: [i64, i64, i64],
+        arguments:
+          [state_found, state_result, state_cursor] ++
+            if(next_countdown == nil, do: [], else: [state_countdown]),
+        results: List.duplicate(i64, arity),
         loc: MLIR.Location.unknown(),
         filler: fn -> [before, after_region] end
       }
       |> MLIR.Operation.create()
 
-    [found, result, _cursor] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    [found, result, _cursor | _rest] = while_op |> MLIR.Operation.results() |> Enum.to_list()
     found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
     nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
     nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
@@ -3013,14 +3409,28 @@ defmodule Batata.Lift do
           # A list literal keeps the compile-time cursor loop (M3); other
           # enumerables (tuple/binary literals or variables) dispatch through
           # the runtime's tag-based enumerable reduce.
-          {lift_enum_sum_loop(enumerable_word, acc_value, ctx, block, env[:__budget__]), env}
+          {lift_enum_sum_loop(
+             enumerable_word,
+             acc_value,
+             ctx,
+             block,
+             env[:__budget__],
+             env[:__batch_size__]
+           ), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 1, ctx, block), env}
         end
 
       :product ->
         if is_list(enumerable_ast) do
-          {lift_enum_product_loop(enumerable_word, acc_value, ctx, block, env[:__budget__]), env}
+          {lift_enum_product_loop(
+             enumerable_word,
+             acc_value,
+             ctx,
+             block,
+             env[:__budget__],
+             env[:__batch_size__]
+           ), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 6, ctx, block), env}
         end
@@ -3033,7 +3443,8 @@ defmodule Batata.Lift do
              :acc_first,
              ctx,
              block,
-             env[:__budget__]
+             env[:__budget__],
+             env[:__batch_size__]
            ), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 7, ctx, block), env}
@@ -3047,7 +3458,8 @@ defmodule Batata.Lift do
              :item_first,
              ctx,
              block,
-             env[:__budget__]
+             env[:__budget__],
+             env[:__batch_size__]
            ), env}
         else
           {lift_enum_reduce_runtime(enumerable_word, acc_value, 8, ctx, block), env}
