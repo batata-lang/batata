@@ -1436,6 +1436,30 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "wakes a parallel selective receive without losing the send", %{ctx: ctx} do
+    assert 57 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 42) end)
+                   sum = Enum.reduce([1, 2, 3, 4, 5], 0, fn x, a -> x + a end)
+
+                   receive do
+                     42 -> sum + 42
+                   after
+                     :infinity -> 0
+                   end
+                 end
+               end
+               """,
+               ctx,
+               workers: 2,
+               reduction_budget: 2
+             )
+  end
+
   test "rejects invalid worker counts", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/workers must be an integer between 1 and 64/, fn ->
       Batata.execute(

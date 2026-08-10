@@ -209,7 +209,7 @@ const Mailbox = struct {
     }
 };
 
-const ProcessStatus = enum(u8) { runnable, done };
+const ProcessStatus = enum(u8) { runnable, waiting, done };
 
 // Preemptive scheduler continuation (#35 slice 5): a budgeted cursor loop
 // saves its (arg, acc, cursor) state here before yielding. The scheduler
@@ -232,6 +232,8 @@ const Continuation = struct {
 const Process = struct {
     state_lock: RuntimeMutex = .{},
     owner: std.atomic.Value(u32) = .init(0),
+    last_worker: std.atomic.Value(u32) = .init(0),
+    last_thread_id: std.atomic.Value(usize) = .init(0),
     pid: i64,
     mailbox: Mailbox = .{},
     clock: Clock,
@@ -258,6 +260,10 @@ const Runtime = struct {
     scheduler_lock: RuntimeMutex = .{},
     counter_lock: RuntimeMutex = .{},
     callback_lock: RuntimeMutex = .{},
+    configured_workers: std.atomic.Value(u32) = .init(1),
+    active_actors: std.atomic.Value(u32) = .init(0),
+    max_active_actors: std.atomic.Value(u32) = .init(0),
+    migrations: std.atomic.Value(u64) = .init(0),
     heap: ?[]i64 = null,
     bump: usize = 0,
     processes: [process_cap]Process = undefined,
@@ -466,11 +472,14 @@ pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     // the scan restarts and observes the new message (epoch invalidation
     // wiring, #35 slice 6). Loop continuations are unaffected.
     const target = &instance.processes[pid_id - 1];
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
     target.state_lock.lock();
     defer target.state_lock.unlock();
     if (target.cont.active and target.cont.receive) {
         target.clock.epoch += 1;
     }
+    if (target.status == .waiting) target.status = .runnable;
     return msg;
 }
 
@@ -696,6 +705,10 @@ pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
         const proc = &instance.processes[index];
         if (proc.status != .runnable) continue;
         if (proc.owner.cmpxchgStrong(0, owner, .acq_rel, .acquire) == null) {
+            const previous_worker = proc.last_worker.swap(owner, .acq_rel);
+            if (previous_worker != 0 and previous_worker != owner) {
+                _ = instance.migrations.fetchAdd(1, .acq_rel);
+            }
             current_process = index;
             instance.claim_cursor = (index + 1) % instance.process_count;
             return proc.pid;
@@ -712,6 +725,38 @@ pub export fn ex_term_process_release() i64 {
     return pid;
 }
 
+/// Parks the current actor only when no message was appended beyond the
+/// completed selective-receive scan cursor. Holding the mailbox lock across
+/// the state transition prevents a lost wakeup with a concurrent send.
+pub export fn ex_term_process_wait(cursor: i64) i64 {
+    if (cursor < 0) return -1;
+    const instance = runtime();
+    const proc = current_proc();
+    proc.mailbox.lock.lock();
+    defer proc.mailbox.lock.unlock();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+
+    if (proc.mailbox.len <= @as(usize, @intCast(cursor))) {
+        proc.status = .waiting;
+        return 1;
+    }
+    return 0;
+}
+
+fn processes_unfinished() usize {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    var count: usize = 0;
+    for (0..instance.process_count) |index| {
+        if (instance.processes[index].status != .done) count += 1;
+    }
+    return count;
+}
+
 const Worker = struct {
     instance: *Runtime,
     id: u32,
@@ -724,20 +769,16 @@ const Worker = struct {
         while (true) {
             const pid = ex_term_process_claim_next(self.id);
             if (pid != nil_word) {
+                current_proc().last_thread_id.store(@intCast(std.Thread.getCurrentId()), .release);
+                const active = self.instance.active_actors.fetchAdd(1, .acq_rel) + 1;
+                update_atomic_max(&self.instance.max_active_actors, active);
                 const result = self.dispatcher(pid);
-                // A cross-worker send may invalidate a selective-receive
-                // continuation between dispatcher return and this check.
-                // `active` still means the actor yielded and must be
-                // rescheduled; its next entry restarts the stale scan.
-                if (ex_term_cont_active() != 0) {
-                    _ = ex_term_process_release();
-                } else {
-                    _ = ex_term_process_done(result);
-                }
+                _ = self.instance.active_actors.fetchSub(1, .acq_rel);
+                _ = ex_term_process_done(result);
                 continue;
             }
 
-            if (ex_term_processes_runnable() == 0) break;
+            if (processes_unfinished() == 0) break;
             std.Thread.yield() catch {};
         }
 
@@ -745,6 +786,13 @@ const Worker = struct {
         current_process = 0;
     }
 };
+
+fn update_atomic_max(value: *std.atomic.Value(u32), candidate: u32) void {
+    var current = value.load(.acquire);
+    while (candidate > current) {
+        current = value.cmpxchgWeak(current, candidate, .acq_rel, .acquire) orelse return;
+    }
+}
 
 /// Runs all actors to completion using exactly `worker_count` OS workers.
 /// The caller participates as worker 1; additional workers are joined before
@@ -755,6 +803,10 @@ pub export fn ex_term_worker_run(
 ) i64 {
     if (worker_count <= 0 or worker_count > 64 or dispatcher == null) return -1;
     const instance = runtime();
+    instance.configured_workers.store(@intCast(worker_count), .release);
+    instance.active_actors.store(0, .release);
+    instance.max_active_actors.store(0, .release);
+    instance.migrations.store(0, .release);
     const count: usize = @intCast(worker_count);
     const background_count = count - 1;
     const threads = std.heap.page_allocator.alloc(std.Thread, background_count) catch return -1;
@@ -780,6 +832,26 @@ pub export fn ex_term_worker_run(
     return ex_term_process_result(pid_of(0));
 }
 
+pub export fn ex_term_worker_count() i64 {
+    return runtime().configured_workers.load(.acquire);
+}
+
+pub export fn ex_term_worker_max_active() i64 {
+    return runtime().max_active_actors.load(.acquire);
+}
+
+pub export fn ex_term_worker_migrations() i64 {
+    return @intCast(runtime().migrations.load(.acquire));
+}
+
+pub export fn ex_term_process_thread_id(pid: i64) i64 {
+    const instance = runtime();
+    if (word_tag(pid) != tag_atom) return 0;
+    const pid_id: usize = @intCast(word_payload(pid));
+    if (pid_id == 0 or pid_id > instance.process_count) return 0;
+    return @intCast(instance.processes[pid_id - 1].last_thread_id.load(.acquire));
+}
+
 /// Closure word of the current process's entry; 0 for the initial process
 /// (the compiled `__batata_entry`).
 pub export fn ex_term_current_entry() i64 {
@@ -797,9 +869,10 @@ pub export fn ex_term_process_done(result: i64) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
-    proc.status = .done;
-    proc.result = result;
-    proc.cont.active = false;
+    if (!proc.cont.active and proc.status != .waiting) {
+        proc.status = .done;
+        proc.result = result;
+    }
     proc.owner.store(0, .release);
     return result;
 }
@@ -1879,7 +1952,12 @@ comptime {
     @export(&ex_term_schedule_next, .{ .name = "ex.term.schedule_next" });
     @export(&ex_term_process_claim_next, .{ .name = "ex.term.process_claim_next" });
     @export(&ex_term_process_release, .{ .name = "ex.term.process_release" });
+    @export(&ex_term_process_wait, .{ .name = "ex.term.process_wait" });
     @export(&ex_term_worker_run, .{ .name = "ex.term.worker_run" });
+    @export(&ex_term_worker_count, .{ .name = "ex.term.worker_count" });
+    @export(&ex_term_worker_max_active, .{ .name = "ex.term.worker_max_active" });
+    @export(&ex_term_worker_migrations, .{ .name = "ex.term.worker_migrations" });
+    @export(&ex_term_process_thread_id, .{ .name = "ex.term.process_thread_id" });
     @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
     @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
     @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
@@ -2555,6 +2633,9 @@ test "worker pool overlaps independent actors on distinct OS threads" {
     try std.testing.expectEqual(second_pid, ex_term_process_result(second_pid));
     try std.testing.expect(probe.thread_ids[0] != probe.thread_ids[1]);
     try std.testing.expectEqual(@as(u32, 2), probe.max_active.load(.acquire));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_worker_count());
+    try std.testing.expectEqual(@as(i64, 2), ex_term_worker_max_active());
+    try std.testing.expect(ex_term_process_thread_id(pid_of(0)) != ex_term_process_thread_id(second_pid));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
