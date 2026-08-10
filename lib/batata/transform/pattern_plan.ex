@@ -89,33 +89,32 @@ defmodule Batata.Transform.PatternPlan do
   @spec guard_refinements(Macro.t(), [atom()]) :: [GuardRefinement.t()]
   def guard_refinements(guard, vars) do
     guard
-    |> Macro.prewalk([], fn
-      {predicate, _, [var_ast]} = ast, acc when predicate in @type_predicates ->
-        case var_ast do
-          {name, _, nil} when is_atom(name) ->
-            if name in vars do
-              refinement = %GuardRefinement{
-                var: name,
-                path: [],
-                predicate: predicate,
-                type: type(predicate)
-              }
-
-              {ast, [refinement | acc]}
-            else
-              {ast, acc}
-            end
-
-          _ ->
-            {ast, acc}
-        end
-
-      ast, acc ->
-        {ast, acc}
-    end)
+    |> Macro.prewalk([], fn ast, acc -> collect_guard_refinement(ast, acc, vars) end)
     |> elem(1)
     |> Enum.reverse()
   end
+
+  defp collect_guard_refinement(
+         {predicate, _, [{name, _, nil}]} = ast,
+         acc,
+         vars
+       )
+       when predicate in @type_predicates and is_atom(name) do
+    if name in vars do
+      refinement = %GuardRefinement{
+        var: name,
+        path: [],
+        predicate: predicate,
+        type: type(predicate)
+      }
+
+      {ast, [refinement | acc]}
+    else
+      {ast, acc}
+    end
+  end
+
+  defp collect_guard_refinement(ast, acc, _vars), do: {ast, acc}
 
   defp type(:is_integer), do: :integer
   defp type(:is_atom), do: :atom
