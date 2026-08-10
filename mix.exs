@@ -8,6 +8,7 @@ defmodule Batata.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      test_ignore_filters: [&String.starts_with?(&1, "test/fixtures/")],
       deps: deps(),
       description: description(),
       docs: docs(),
@@ -27,6 +28,7 @@ defmodule Batata.MixProject do
     [
       beaver_dep(),
       kinda_dep(),
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false}
     ]
   end

@@ -72,18 +72,16 @@ defmodule Batata.Native.Enumerable do
           reason: String.t() | nil
         }
   def compile_plan(impl) do
-    cond do
-      internal?(impl) or impl in @slice_native_external ->
-        %{count: :runtime_tag, reduce: :runtime_tag, to_list: :runtime_tag, reason: nil}
-
-      true ->
-        %{
-          count: :unsupported,
-          reduce: :unsupported,
-          to_list: :unsupported,
-          reason:
-            "#{inspect(impl)} Enumerable is outside the slice; a native count/reduce requires a Provider plan or BEAM"
-        }
+    if internal?(impl) or impl in @slice_native_external do
+      %{count: :runtime_tag, reduce: :runtime_tag, to_list: :runtime_tag, reason: nil}
+    else
+      %{
+        count: :unsupported,
+        reduce: :unsupported,
+        to_list: :unsupported,
+        reason:
+          "#{inspect(impl)} Enumerable is outside the slice; a native count/reduce requires a Provider plan or BEAM"
+      }
     end
   end
 

@@ -140,7 +140,7 @@ defmodule Batata.ExportTest do
   end
 
   @tag :tmp_dir
-  test "diff raises without an export bundle", %{ctx: ctx, tmp_dir: tmp_dir} do
+  test "diff raises without an export bundle", %{tmp_dir: tmp_dir} do
     empty = Path.join(tmp_dir, "empty")
     File.mkdir_p!(empty)
 

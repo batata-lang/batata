@@ -582,24 +582,28 @@ defmodule Batata.Lift do
   # a pure addition tree over exactly the key, value, and accumulator
   # variables, each once.
   defp map_entries_sum_pattern?(body, item, acc_var) do
-    with {:ok, key_var, value_var} <- map_entry_vars(item) do
-      body
-      |> collect_add_vars()
-      |> MapSet.new()
-      |> MapSet.equal?(
-        MapSet.new([tree_var_name(key_var), tree_var_name(value_var), tree_var_name(acc_var)])
-      )
-    else
-      :error -> false
+    case map_entry_vars(item) do
+      {:ok, key_var, value_var} ->
+        body
+        |> collect_add_vars()
+        |> MapSet.new()
+        |> MapSet.equal?(
+          MapSet.new([tree_var_name(key_var), tree_var_name(value_var), tree_var_name(acc_var)])
+        )
+
+      :error ->
+        false
     end
   end
 
   defp map_entry_add_pattern?({:+, _, [left, right]}, item, acc_var, selector) do
-    with {:ok, entry_var} <- map_entry_var(item, selector) do
-      (same_var?(left, entry_var) and same_var?(right, acc_var)) or
-        (same_var?(left, acc_var) and same_var?(right, entry_var))
-    else
-      :error -> false
+    case map_entry_var(item, selector) do
+      {:ok, entry_var} ->
+        (same_var?(left, entry_var) and same_var?(right, acc_var)) or
+          (same_var?(left, acc_var) and same_var?(right, entry_var))
+
+      :error ->
+        false
     end
   end
 

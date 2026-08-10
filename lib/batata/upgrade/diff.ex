@@ -132,7 +132,7 @@ defmodule Batata.Upgrade.Diff do
   defp artifact_digest(%{bundle: %{"artifact_digest" => digest}}, _index), do: digest
 
   defp artifact_digest(_bundle, index) do
-    index["files"] |> Enum.map(& &1["digest"]) |> Enum.join() |> hash()
+    index["files"] |> Enum.map_join(& &1["digest"]) |> hash()
   end
 
   defp count_status(surface, status) do
