@@ -21,10 +21,16 @@ defmodule Batata do
   """
   @spec compile(String.t(), MLIR.Context.t()) :: MLIR.Module.t()
   def compile(source, ctx, opts \\ []) do
+    validate_reduction_budget!(opts[:reduction_budget])
+
     module =
       source
       |> Batata.Frontend.from_source()
-      |> Batata.Lift.module_to_ir(ctx: ctx, reduction_budget: opts[:reduction_budget])
+      |> Batata.Lift.module_to_ir(
+        ctx: ctx,
+        reduction_budget: opts[:reduction_budget],
+        reduction_batching: opts[:reduction_batching]
+      )
       |> Beaver.Deferred.create(ctx)
 
     module
@@ -33,6 +39,17 @@ defmodule Batata do
       Batata.Transform.ExpandCase
     ])
     |> MLIR.verify!()
+  end
+
+  # The reduction budget drives the batched tick (`ex.reduction_tick(budget)`
+  # once per budget iterations, #41): it must be a positive integer when set.
+  defp validate_reduction_budget!(nil), do: :ok
+
+  defp validate_reduction_budget!(budget) when is_integer(budget) and budget > 0, do: :ok
+
+  defp validate_reduction_budget!(budget) do
+    raise ArgumentError,
+          "reduction_budget must be a positive integer or nil, got: #{inspect(budget)}"
   end
 
   @doc """
