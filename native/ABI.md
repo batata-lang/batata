@@ -93,8 +93,10 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.process_thread_id` | `(pid: i64) -> i64` | last OS thread ID that executed the actor |
 | `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
 | `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |
+| `ex.term.process_exit` | `(reason: i64) -> i64` | mark the current process abnormally exited, record its reason and release its worker owner |
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
 | `ex.term.process_result` | `(pid: i64) -> i64` | result of a completed process; nil when unknown or still runnable |
+| `ex.term.process_exit_reason` | `(pid: i64) -> i64` | abnormal exit reason; nil for live, normally completed, stale or unknown pids |
 | `ex.term.clock_init` | `(budget: i64) -> i64` | set the reduction budget and reset the used counter |
 | `ex.term.clock_tick` | `(cost: i64) -> i64` | charge reductions; 1 when the budget is exhausted (yield), else 0 |
 | `ex.term.clock_budget_left` | `() -> i64` | remaining budget clamped to >= 0; -1 when no budget is set |
@@ -166,7 +168,9 @@ Predicates return `1` or `0` as an `i64`.
 - `ex.term.map_from_list` requires an even-length list.
 - `ex.term.binary_from_list` reads each segment's integer payload as a byte.
 - `ex.term.try_push` overflows at 16 nested try regions; deeper nesting aborts.
-- An uncaught `ex.term.throw` panics.
+- A worker trampoline catches an otherwise uncaught `ex.term.throw`, records
+  an abnormal process exit and continues running other actors. A throw outside
+  an actor worker boundary still aborts.
 - Each runtime lazily owns a fixed 32 MiB bump arena; it is reset and reused
   between executions. GC is a later milestone.
 - Runtime reset and destroy require that no worker is entered. Heap allocation,

@@ -209,7 +209,7 @@ const Mailbox = struct {
     }
 };
 
-const ProcessStatus = enum(u8) { runnable, waiting, done };
+const ProcessStatus = enum(u8) { runnable, waiting, done, exited };
 
 // Preemptive scheduler continuation (#35 slice 5): a budgeted cursor loop
 // saves its (arg, acc, cursor) state here before yielding. The scheduler
@@ -245,6 +245,7 @@ const Process = struct {
     entry: i64 = 0,
     status: ProcessStatus = .runnable,
     result: i64 = nil_word,
+    exit_reason: i64 = nil_word,
     cont: Continuation = .{},
     // `receive ... after` timeout start (monotonic milliseconds); 0 means the
     // wait loop has not completed its first scan round yet.
@@ -493,6 +494,10 @@ pub export fn ex_term_process_table_reset(cap: i64) i64 {
 threadlocal var jmp_stack: [16]*c.jmp_buf = undefined;
 threadlocal var jmp_depth: usize = 0;
 threadlocal var throw_value: i64 = 0;
+// The worker boundary is distinct from user try frames, so programs retain
+// all 16 nested catch slots. An otherwise uncaught throw lands here and exits
+// only the current actor instead of panicking the native runtime.
+threadlocal var uncaught_boundary: ?*c.jmp_buf = null;
 
 /// Size of the C `jmp_buf` so the compiled code can allocate it on its own
 /// stack.
@@ -520,11 +525,13 @@ pub export fn ex_term_try_pop() i64 {
     return 0;
 }
 
-/// Throws a value to the innermost try region. Uncaught throws abort.
+/// Throws a value to the innermost try region. A worker catches otherwise
+/// uncaught values at the actor boundary; calls outside a worker still abort.
 pub export fn ex_term_throw(value: i64) noreturn {
     throw_value = value;
-    if (jmp_depth == 0) @panic("uncaught throw");
-    c.longjmp(jmp_stack[jmp_depth - 1], 1);
+    if (jmp_depth > 0) c.longjmp(jmp_stack[jmp_depth - 1], 1);
+    if (uncaught_boundary) |boundary| c.longjmp(boundary, 1);
+    @panic("uncaught throw outside an actor boundary");
 }
 
 /// Returns the value delivered by the most recent throw (called from the
@@ -884,7 +891,8 @@ fn processes_unfinished() usize {
     defer instance.scheduler_lock.unlock();
     var count: usize = 0;
     for (0..instance.process_count) |index| {
-        if (instance.processes[index].status != .done) count += 1;
+        const status = instance.processes[index].status;
+        if (status != .done and status != .exited) count += 1;
     }
     return count;
 }
@@ -905,9 +913,21 @@ const Worker = struct {
                 current_proc().last_thread_id.store(@intCast(std.Thread.getCurrentId()), .release);
                 const active = self.instance.active_actors.fetchAdd(1, .acq_rel) + 1;
                 update_atomic_max(&self.instance.max_active_actors, active);
-                const result = self.dispatcher(pid);
-                _ = self.instance.active_actors.fetchSub(1, .acq_rel);
-                _ = ex_term_process_done(result);
+                var boundary: c.jmp_buf = undefined;
+                uncaught_boundary = &boundary;
+
+                if (c.setjmp(&boundary) == 0) {
+                    const result = self.dispatcher(pid);
+                    uncaught_boundary = null;
+                    _ = self.instance.active_actors.fetchSub(1, .acq_rel);
+                    _ = ex_term_process_done(result);
+                } else {
+                    const reason = throw_value;
+                    jmp_depth = 0;
+                    uncaught_boundary = null;
+                    _ = self.instance.active_actors.fetchSub(1, .acq_rel);
+                    _ = ex_term_process_exit(reason);
+                }
                 continue;
             }
 
@@ -1019,6 +1039,29 @@ pub export fn ex_term_process_done(result: i64) i64 {
     return result;
 }
 
+/// Marks the current process as abnormally exited and records its reason.
+/// The owner is always released so other actors and workers can continue.
+pub export fn ex_term_process_exit(reason: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+
+    if (proc.status != .done and proc.status != .exited) {
+        proc.status = .exited;
+        proc.exit_reason = reason;
+        proc.cont.active = false;
+        if (current_process > 0 and instance.free_count < instance.free_slots.len) {
+            instance.free_slots[instance.free_count] = current_process;
+            instance.free_count += 1;
+        }
+    }
+    proc.owner.store(0, .release);
+    return reason;
+}
+
 /// Number of runnable processes (the scheduler driver loops while > 0).
 pub export fn ex_term_processes_runnable() i64 {
     const instance = runtime();
@@ -1042,6 +1085,19 @@ pub export fn ex_term_process_result(pid: i64) i64 {
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
     return if (proc.status == .done) proc.result else nil_word;
+}
+
+/// Returns an abnormally exited process's reason; nil for a live, normally
+/// completed, stale or unknown pid.
+pub export fn ex_term_process_exit_reason(pid: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    if (word_tag(pid) != tag_atom) return nil_word;
+    const proc = resolve_pid(instance, pid) orelse return nil_word;
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return if (proc.status == .exited) proc.exit_reason else nil_word;
 }
 
 /// Sets the reduction budget and resets the used counter (epoch untouched).
@@ -2100,8 +2156,10 @@ comptime {
     @export(&ex_term_process_thread_id, .{ .name = "ex.term.process_thread_id" });
     @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
     @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
+    @export(&ex_term_process_exit, .{ .name = "ex.term.process_exit" });
     @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
     @export(&ex_term_process_result, .{ .name = "ex.term.process_result" });
+    @export(&ex_term_process_exit_reason, .{ .name = "ex.term.process_exit_reason" });
     @export(&ex_term_clock_init, .{ .name = "ex.term.clock_init" });
     @export(&ex_term_clock_tick, .{ .name = "ex.term.clock_tick" });
     @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
@@ -2798,6 +2856,48 @@ test "worker pool overlaps independent actors on distinct OS threads" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_count());
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_max_active());
     try std.testing.expect(ex_term_process_thread_id(pid_of(0, 1)) != ex_term_process_thread_id(second_pid));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+const FailureBoundaryProbe = struct {
+    completed: std.atomic.Value(u32) = .init(0),
+};
+
+var failure_boundary_probe: *FailureBoundaryProbe = undefined;
+
+fn failure_boundary_dispatch(pid: i64) callconv(.c) i64 {
+    if (pid_index(pid) == 1) ex_term_throw(77 << @intCast(tag_shift));
+    _ = failure_boundary_probe.completed.fetchAdd(1, .acq_rel);
+    return pid;
+}
+
+test "uncaught throw exits only its actor and workers continue" {
+    const handle = ex_term_runtime_create();
+    _ = ex_term_runtime_enter(handle);
+    _ = ex_term_process_table_reset(default_process_cap);
+    const failed_pid = ex_term_spawn(nil_word);
+    const survivor_pid = ex_term_spawn(nil_word);
+
+    var probe = FailureBoundaryProbe{};
+    failure_boundary_probe = &probe;
+    try std.testing.expectEqual(pid_of(0, 1), ex_term_worker_run(2, &failure_boundary_dispatch));
+
+    const reason = 77 << @intCast(tag_shift);
+    try std.testing.expectEqual(@as(u32, 2), probe.completed.load(.acquire));
+    try std.testing.expectEqual(reason, ex_term_process_exit_reason(failed_pid));
+    try std.testing.expectEqual(nil_word, ex_term_process_result(failed_pid));
+    try std.testing.expectEqual(survivor_pid, ex_term_process_result(survivor_pid));
+    try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(survivor_pid));
+
+    // Reusing the failed slot bumps its generation and clears the recorded
+    // reason. The stale pid can no longer observe its previous occupant.
+    var replacement = ex_term_spawn(nil_word);
+    while (pid_index(replacement) != pid_index(failed_pid)) {
+        replacement = ex_term_spawn(nil_word);
+    }
+    try std.testing.expect(replacement != failed_pid);
+    try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(failed_pid));
+    try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(replacement));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
