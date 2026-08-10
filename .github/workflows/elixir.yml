@@ -105,7 +105,7 @@ jobs:
         # without recycling; the JSON assertions guard against regressions.
         run: |
           output="$(zig run -O ReleaseFast --dep runtime \
-            -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc)"
+            -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc 2>&1)"
           echo "$output"
           echo "$output" | grep -q '"reuse_success": 1000000'
           echo "$output" | grep -q '"no_reuse_failures": [1-9]'
