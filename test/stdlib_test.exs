@@ -20,6 +20,10 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
+      assert Stdlib.class({Process, :link, 1}) == :native_term
+      assert Stdlib.class({Process, :monitor, 1}) == :native_term
+      assert Stdlib.class({Process, :flag, 2}) == :native_term
+      assert Stdlib.class({:erlang, :exit, 2}) == :native_term
     end
 
     test "returns nil outside the declared surface" do

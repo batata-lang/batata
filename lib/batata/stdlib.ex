@@ -35,6 +35,12 @@ defmodule Batata.Stdlib.Kernel do
     {:erlang, :is_tuple, 1} => :native_term,
     {:erlang, :self, 0} => :native_term,
     {:erlang, :send, 2} => :native_term,
+    {:erlang, :exit, 2} => :native_term,
+    {:erlang, :link, 1} => :native_term,
+    {:erlang, :unlink, 1} => :native_term,
+    {:erlang, :monitor, 2} => :native_term,
+    {:erlang, :demonitor, 1} => :native_term,
+    {:erlang, :process_flag, 2} => :native_term,
     {:erlang, :monotonic_time, 0} => :native_term,
     {:erlang, :monotonic_time, 1} => :native_term,
     {:erlang, :unique_integer, 0} => :native_term,
@@ -55,6 +61,24 @@ defmodule Batata.Stdlib.List do
   }
 
   @doc "Returns list-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
+defmodule Batata.Stdlib.Process do
+  @moduledoc """
+  Process supervision primitives backed by the native actor runtime.
+  """
+
+  @class_map %{
+    {Process, :exit, 2} => :native_term,
+    {Process, :link, 1} => :native_term,
+    {Process, :unlink, 1} => :native_term,
+    {Process, :monitor, 1} => :native_term,
+    {Process, :demonitor, 1} => :native_term,
+    {Process, :flag, 2} => :native_term
+  }
+
+  @doc "Returns process-domain stdlib replacement declarations."
   def class_map, do: @class_map
 end
 
@@ -243,6 +267,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.List.class_map(),
                Batata.Stdlib.Map.class_map(),
                Batata.Stdlib.MapSet.class_map(),
+               Batata.Stdlib.Process.class_map(),
                Batata.Stdlib.HashSet.class_map(),
                Batata.Stdlib.Stream.class_map(),
                Batata.Stdlib.File.class_map(),
