@@ -35,7 +35,7 @@ defmodule Batata.Lift do
   @doc """
   Builds a `builtin.module` of `ex.func` operations for the snapshot.
 
-  Returns a `Beaver.Deferred`; materialize it with `Beaver.Deferred.create/2`
+  Returns a `Beaver.Deferred`; materialize it with `Beaver.Deferred.resolve/2`
   against the MLIR context.
   """
   def module_to_ir(%Frontend.Module{} = mod, opts) do
@@ -4829,7 +4829,7 @@ defmodule Batata.Lift do
 
   defp ex_type(name, ctx) do
     Beaver.Slang.create_constrained_element(:type, "ex", name, [], ctx: ctx)
-    |> Beaver.Deferred.create(ctx)
+    |> Beaver.Deferred.resolve(ctx)
   end
 
   defp segment_sizes(sizes) do
