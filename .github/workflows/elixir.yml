@@ -37,10 +37,19 @@ jobs:
             echo "beaver_ref=main" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout beaver and kinda
+      - name: Checkout beaver
         run: |
           git clone --depth 1 --branch "${{ steps.beaver_ref.outputs.beaver_ref }}" https://github.com/beaver-lodge/beaver.git
-          git clone --depth 1 https://github.com/beaver-lodge/kinda.git
+
+      - name: Checkout kinda
+        run: |
+          git clone https://github.com/beaver-lodge/kinda.git
+          ref="$(awk 'NF && $1 !~ /^#/ {print $1; exit}' beaver/kinda.ref 2>/dev/null || true)"
+          if [ -n "$ref" ] && git -C kinda cat-file -e "$ref^{commit}" 2>/dev/null; then
+            git -C kinda checkout -q "$ref"
+          elif [ -n "$ref" ]; then
+            echo "warning: paired kinda ref $ref unavailable, using main" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: erlef/setup-beam@v1
         with:
