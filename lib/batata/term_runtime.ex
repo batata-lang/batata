@@ -49,14 +49,7 @@ defmodule Batata.TermRuntime do
   """
   @spec ensure_built!(keyword()) :: Path.t()
   def ensure_built!(opts \\ []) do
-    path = shared_lib_path()
-
-    if usable?(path) and not stale?(path) and not Keyword.get(opts, :force, false) do
-      path
-    else
-      build!(:dynamic, path)
-      path
-    end
+    ensure_artifact!(:dynamic, shared_lib_path(), Keyword.get(opts, :force, false))
   end
 
   @doc """
@@ -64,16 +57,33 @@ defmodule Batata.TermRuntime do
   """
   @spec ensure_static_built!() :: Path.t()
   def ensure_static_built! do
-    path = static_lib_path()
+    ensure_artifact!(:static, static_lib_path(), false)
+  end
 
-    if usable?(path) and not stale?(path) do
+  defp ensure_artifact!(kind, path, force?) do
+    if not force? and fresh?(path) do
       path
     else
-      build!(:static, path)
-    end
+      lock = {{__MODULE__, Path.expand(path)}, self()}
 
-    path
+      case :global.trans(
+             lock,
+             fn ->
+               if force? or not fresh?(path), do: build_and_publish!(kind, path)
+               path
+             end,
+             [node()]
+           ) do
+        {:aborted, reason} ->
+          raise "failed to lock Batata runtime artifact #{path}: #{inspect(reason)}"
+
+        result ->
+          result
+      end
+    end
   end
+
+  defp fresh?(path), do: usable?(path) and not stale?(path)
 
   defp usable?(path), do: File.exists?(path) and File.stat!(path).size > 0
 
@@ -84,6 +94,44 @@ defmodule Batata.TermRuntime do
     source = Path.join(native_dir(), "term_runtime.zig")
 
     File.exists?(source) and File.stat!(source).mtime > File.stat!(path).mtime
+  end
+
+  defp build_and_publish!(kind, path) do
+    temporary = temporary_path(path)
+
+    try do
+      build!(kind, temporary)
+      publish!(temporary, path)
+    after
+      File.rm(temporary)
+    end
+  end
+
+  defp temporary_path(path) do
+    extension = Path.extname(path)
+    basename = Path.basename(path, extension)
+    unique = "#{System.pid()}-#{System.unique_integer([:positive, :monotonic])}"
+
+    Path.join(Path.dirname(path), ".#{basename}.#{unique}.tmp#{extension}")
+  end
+
+  defp publish!(temporary, path) do
+    case File.rename(temporary, path) do
+      :ok ->
+        :ok
+
+      # POSIX rename replaces atomically. Windows does not replace an existing
+      # destination, but callers in this VM still hold the artifact lock.
+      {:error, :eexist} ->
+        File.rm!(path)
+        File.rename!(temporary, path)
+
+      {:error, reason} ->
+        raise File.Error,
+          reason: reason,
+          action: "publish Batata runtime artifact",
+          path: path
+    end
   end
 
   defp build!(:dynamic, path) do
