@@ -74,7 +74,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.receive_start` | `() -> i64` | the current process's `receive ... after` timeout start (0 = not started) |
 | `ex.term.receive_start_set` | `(value: i64) -> i64` | set the current process's `receive ... after` timeout start |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
-| `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns its pid (atom), nil when the process table is full (capacity configurable via `process_table_reset`, default 256, max 4096) |
+| `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns its pid (atom), nil when the process table is full. Completed process slots are recycled first (#50 stage 1), so `process_count` grows only to the concurrency peak; capacity configurable via `process_table_reset` (default 256, max 4096) |
 | `ex.term.process_table_reset` | `(cap: i64) -> i64` | reset the process table to a single fresh initial process with the given capacity (1..4096); returns 1, or nil when the capacity is out of range; the scheduler driver calls this at program start |
 | `ex.term.cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save the current process's cursor-loop continuation at the current epoch |
 | `ex.term.cont_pending` | `() -> i64` | 1 when a continuation is saved at the current epoch (a stale epoch reads 0, so the entry restarts) |

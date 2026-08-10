@@ -273,6 +273,13 @@ const Runtime = struct {
     processes: []Process = &.{},
     process_cap: usize = default_process_cap,
     process_count: usize = 1,
+    // Free-list of completed process slots (#50 stage 1): `process_done`
+    // pushes the slot index, `spawn` pops it first and resets the slot, so a
+    // long-running runtime reuses slots instead of growing `process_count`
+    // past the concurrency peak. Slot 0 (the per-run entry process) is never
+    // recycled.
+    free_slots: []usize = &.{},
+    free_count: usize = 0,
     claim_cursor: usize = 0,
     processes_initialized: bool = false,
     yield_count: i64 = 0,
@@ -283,6 +290,7 @@ const Runtime = struct {
     fn deinit(self: *Runtime) void {
         if (self.heap) |words| std.heap.page_allocator.free(words);
         if (self.processes.len > 0) std.heap.page_allocator.free(self.processes);
+        if (self.free_slots.len > 0) std.heap.page_allocator.free(self.free_slots);
         std.heap.page_allocator.destroy(self);
     }
 };
@@ -297,6 +305,8 @@ fn create_runtime() *Runtime {
     instance.* = .{};
     instance.processes = std.heap.page_allocator.alloc(Process, instance.process_cap) catch
         @panic("failed to allocate Batata process table");
+    instance.free_slots = std.heap.page_allocator.alloc(usize, instance.process_cap) catch
+        @panic("failed to allocate Batata process free list");
     return instance;
 }
 
@@ -365,6 +375,7 @@ fn init_processes() void {
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
     };
     instance.process_count = 1;
+    instance.free_count = 0;
     instance.claim_cursor = 0;
     current_process = 0;
     instance.unique_integer_counter = 0;
@@ -399,8 +410,11 @@ pub export fn ex_term_process_table_reset(cap: i64) i64 {
     const new_cap: usize = @intCast(cap);
     if (instance.processes.len != new_cap) {
         if (instance.processes.len > 0) std.heap.page_allocator.free(instance.processes);
+        if (instance.free_slots.len > 0) std.heap.page_allocator.free(instance.free_slots);
         instance.processes = std.heap.page_allocator.alloc(Process, new_cap) catch
             @panic("failed to allocate Batata process table");
+        instance.free_slots = std.heap.page_allocator.alloc(usize, new_cap) catch
+            @panic("failed to allocate Batata process free list");
         instance.process_cap = new_cap;
     }
     // Starting an execution also resets all thread-owned transient state. The
@@ -587,19 +601,33 @@ pub export fn ex_term_mailbox_clear() i64 {
 
 /// Spawns a new process with its own mailbox, clock and entry closure;
 /// returns its pid (atom word with id = process index + 1), or nil when the
-/// table is full.
+/// table is full. A completed process's slot is recycled first (#50 stage 1),
+/// so `process_count` grows only to the concurrency peak.
 pub export fn ex_term_spawn(fun: i64) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
-    if (instance.process_count >= instance.process_cap) return nil_word;
-    const index = instance.process_count;
+
+    const index =
+        if (instance.free_count > 0) blk: {
+            instance.free_count -= 1;
+            break :blk instance.free_slots[instance.free_count];
+        } else if (instance.process_count < instance.process_cap) blk: {
+            const fresh = instance.process_count;
+            instance.process_count += 1;
+            break :blk fresh;
+        } else {
+            return nil_word;
+        };
+
+    // Reset the recycled slot completely: mailbox, continuation, clock,
+    // status, result and entry are all fresh, so no message or continuation
+    // residue from the previous occupant leaks into the new process.
     instance.processes[index] = .{
         .pid = pid_of(index),
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
         .entry = fun,
     };
-    instance.process_count += 1;
     return instance.processes[index].pid;
 }
 
@@ -890,6 +918,13 @@ pub export fn ex_term_process_done(result: i64) i64 {
     if (!proc.cont.active and proc.status != .waiting) {
         proc.status = .done;
         proc.result = result;
+        // Recycle the slot for future spawns (#50 stage 1). Slot 0 is the
+        // per-run entry process and is always reset by the driver, never
+        // recycled.
+        if (current_process > 0 and instance.free_count < instance.free_slots.len) {
+            instance.free_slots[instance.free_count] = current_process;
+            instance.free_count += 1;
+        }
     }
     proc.owner.store(0, .release);
     return result;
@@ -2676,6 +2711,57 @@ test "worker pool overlaps independent actors on distinct OS threads" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_max_active());
     try std.testing.expect(ex_term_process_thread_id(pid_of(0)) != ex_term_process_thread_id(second_pid));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+test "completed process slots are recycled by spawn (#50 stage 1)" {
+    const one: i64 = 1 << @intCast(tag_shift);
+
+    _ = ex_term_process_table_reset(4);
+    const fun = ex_term_make_fun(1, 0, 0, 0, 0, 0);
+
+    const p2 = ex_term_spawn(fun);
+    const p3 = ex_term_spawn(fun);
+    const p4 = ex_term_spawn(fun);
+    try std.testing.expectEqual(@as(i64, 4), ex_term_processes_runnable());
+
+    // A message lands in p2's mailbox; then main and all three complete
+    // (claim order is index 0..3; slot 0 is never recycled).
+    _ = ex_term_send(p2, one);
+    for (0..4) |_| {
+        _ = ex_term_process_claim_next(1);
+        _ = ex_term_process_done(one);
+    }
+    try std.testing.expectEqual(@as(i64, 0), ex_term_processes_runnable());
+    _ = ex_term_process_claim_next(1);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_process_claim_next(1)));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_processes_runnable());
+
+    // Spawn recycles completed slots (LIFO: p4, p3, then p2), so
+    // process_count never grows past the concurrency peak.
+    const r1 = ex_term_spawn(fun);
+    const r2 = ex_term_spawn(fun);
+    const r3 = ex_term_spawn(fun);
+    try std.testing.expectEqual(p4, r1);
+    try std.testing.expectEqual(p3, r2);
+    try std.testing.expectEqual(p2, r3);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_processes_runnable());
+
+    // The recycled p2 slot's mailbox was cleared: the message sent before
+    // completion must not leak into the new occupant. Claim until we reach
+    // the recycled p2 slot (r3).
+    var reached_p2 = false;
+    for (0..8) |_| {
+        if (ex_term_process_claim_next(1) == p2) {
+            reached_p2 = true;
+            break;
+        }
+    }
+    try std.testing.expect(reached_p2);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));
+
+    // No free slots remain (r3 stays runnable) and the table is at capacity:
+    // spawn returns nil.
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_spawn(fun)));
 }
 
 test "term ABI throw unwinds to the innermost try" {
