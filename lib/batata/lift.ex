@@ -853,10 +853,10 @@ defmodule Batata.Lift do
       |> Map.put(:__budget__, budget)
 
     # The entry function starts a fresh actor: reset the mailbox and the
-    # reduction clock so each program run observes a clean process (budget 0
-    # keeps the tick a no-op when no explicit budget is set) (#35). Under a
-    # reduction budget the mailbox is cleared only on the first slice: a
-    # resumed slice must keep messages that arrived while it was suspended.
+    # reduction clock so each program run observes a clean process (#35).
+    # Without a reduction budget no clock op is emitted at all (#41 fast
+    # path); with a budget the mailbox is cleared only on the first slice so
+    # a resumed slice keeps messages that arrived while it was suspended.
     if name in [:__batata_entry, :main] and uses_mailbox?(body_ast) do
       if budget == nil do
         create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, block)
@@ -890,8 +890,8 @@ defmodule Batata.Lift do
       end
     end
 
-    if name in [:__batata_entry, :main] do
-      create_op("ex.clock_init", [lit(budget || 0, ctx, block)], [integer_type(ctx)], ctx, block)
+    if name in [:__batata_entry, :main] and budget != nil do
+      create_op("ex.clock_init", [lit(budget, ctx, block)], [integer_type(ctx)], ctx, block)
     end
 
     {return_value, env} = lift_block(List.wrap(body_ast), ctx, block, env)
@@ -1578,24 +1578,15 @@ defmodule Batata.Lift do
   defp inject_reduction_tick(before_block, ctx, cond_i1, budget, arg, acc, cursor, receive?) do
     i64 = integer_type(ctx)
 
-    ticked =
-      create_op("ex.reduction_tick", [lit(1, ctx, before_block)], [i64], ctx, before_block)
-
     if budget == nil do
-      not_exhausted =
-        create_op(
-          "ex.cmp",
-          [ticked, lit(0, ctx, before_block), predicate: MLIR.Attribute.string("eq")],
-          [i64],
-          ctx,
-          before_block
-        )
-
-      not_exhausted_i1 =
-        create_op("arith.trunci", [not_exhausted], [MLIR.Type.i1()], ctx, before_block)
-
-      create_op("arith.andi", [cond_i1, not_exhausted_i1], [MLIR.Type.i1()], ctx, before_block)
+      # Without a budget there is nothing to charge: the loop condition passes
+      # through untouched and no reduction_tick call is emitted (#41 fast
+      # path).
+      cond_i1
     else
+      ticked =
+        create_op("ex.reduction_tick", [lit(1, ctx, before_block)], [i64], ctx, before_block)
+
       # Budgeted: exhausted -> cont_save + yield_mark; condition becomes false
       # so the loop exits (a real preemptive yield, not an immediate resume).
       exhausted =
