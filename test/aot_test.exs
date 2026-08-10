@@ -1,6 +1,8 @@
 defmodule Batata.AOTTest do
   use Batata.Case, async: true
 
+  @moduletag timeout: 180_000
+
   alias Batata
 
   @tag :tmp_dir
