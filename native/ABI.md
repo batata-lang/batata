@@ -94,6 +94,12 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
 | `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |
 | `ex.term.process_exit` | `(reason: i64) -> i64` | mark the current process abnormally exited, record its reason and release its worker owner |
+| `ex.term.process_trap_exit` | `(enabled: i64) -> i64` | set the current process's trap-exit flag and return its previous 0/1 value |
+| `ex.term.link` | `(pid: i64, exit_tag: i64, normal_tag: i64) -> i64` | create a symmetric process link; nil on stale pid or relation-capacity exhaustion |
+| `ex.term.unlink` | `(pid: i64) -> i64` | remove both sides of a process link; returns 1 when the pid is live |
+| `ex.term.exit` | `(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64) -> i64` | send an exit signal without linking; trapping targets receive `{EXIT, from, reason}` |
+| `ex.term.monitor` | `(pid: i64, down_tag: i64, process_tag: i64, normal_tag: i64) -> i64` | monitor a live process and return a fresh tagged-integer reference |
+| `ex.term.demonitor` | `(reference: i64) -> i64` | remove a monitor owned by the current process; returns 1 when found |
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
 | `ex.term.process_result` | `(pid: i64) -> i64` | result of a completed process; nil when unknown or still runnable |
 | `ex.term.process_exit_reason` | `(pid: i64) -> i64` | abnormal exit reason; nil for live, normally completed, stale or unknown pids |
@@ -180,6 +186,9 @@ Predicates return `1` or `0` as an `i64`.
   their sender and a monotonically increasing arrival sequence; exit and DOWN
   signals will use the same queue. Public receive operations currently expose
   message payloads only.
+- Links and monitors are bounded to 32 relations per process in this runtime
+  slice. Compiled code supplies the hashed `EXIT`, `DOWN`, `process`, and
+  `normal` atom words because atom identifiers belong to the program ABI.
 - Operations that need multiple locks acquire them in the global order
   scheduler, mailbox, then process state.
 - A selective receive parks only while the mailbox length is not beyond its

@@ -167,20 +167,24 @@ const Mailbox = struct {
     len: usize = 0,
     next_sequence: u64 = 0,
 
-    fn push(self: *Mailbox, sender: i64, msg: i64) bool {
+    fn pushSignal(self: *Mailbox, kind: SignalKind, sender: i64, payload: i64) bool {
         self.lock.lock();
         defer self.lock.unlock();
         if (self.len >= mailbox_cap) return false;
         const index = (self.head + self.len) % mailbox_cap;
         self.queue[index] = .{
-            .kind = .message,
+            .kind = kind,
             .sender = sender,
-            .payload = msg,
+            .payload = payload,
             .sequence = self.next_sequence,
         };
         self.next_sequence +%= 1;
         self.len += 1;
         return true;
+    }
+
+    fn push(self: *Mailbox, sender: i64, msg: i64) bool {
+        return self.pushSignal(.message, sender, msg);
     }
 
     fn pop(self: *Mailbox) ?i64 {
@@ -236,6 +240,21 @@ const Mailbox = struct {
 };
 
 const ProcessStatus = enum(u8) { runnable, waiting, done, exited };
+const relation_cap: usize = 32;
+
+const Link = struct {
+    peer: i64,
+    exit_tag: i64,
+    normal_tag: i64,
+};
+
+const Monitor = struct {
+    watcher: i64,
+    reference: i64,
+    down_tag: i64,
+    process_tag: i64,
+    normal_tag: i64,
+};
 
 // Preemptive scheduler continuation (#35 slice 5): a budgeted cursor loop
 // saves its (arg, acc, cursor) state here before yielding. The scheduler
@@ -272,6 +291,11 @@ const Process = struct {
     status: ProcessStatus = .runnable,
     result: i64 = nil_word,
     exit_reason: i64 = nil_word,
+    trap_exit: bool = false,
+    links: [relation_cap]Link = undefined,
+    link_count: usize = 0,
+    monitors: [relation_cap]Monitor = undefined,
+    monitor_count: usize = 0,
     cont: Continuation = .{},
     // `receive ... after` timeout start (monotonic milliseconds); 0 means the
     // wait loop has not completed its first scan round yet.
@@ -311,6 +335,7 @@ const Runtime = struct {
     processes_initialized: bool = false,
     yield_count: i64 = 0,
     unique_integer_counter: i64 = 0,
+    monitor_ref_counter: i64 = 0,
     callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 =
         [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap,
 
@@ -371,6 +396,26 @@ fn alloc_words(count: usize) ?[*]i64 {
     return words[start..][0..count].ptr;
 }
 
+fn tuple3(a: i64, b: i64, d: i64) i64 {
+    const words = alloc_words(4) orelse return nil_word;
+    words[0] = 3;
+    words[1] = a;
+    words[2] = b;
+    words[3] = d;
+    return word_from_ptr(words, tag_tuple);
+}
+
+fn tuple5(a: i64, b: i64, d: i64, e: i64, f: i64) i64 {
+    const words = alloc_words(6) orelse return nil_word;
+    words[0] = 5;
+    words[1] = a;
+    words[2] = b;
+    words[3] = d;
+    words[4] = e;
+    words[5] = f;
+    return word_from_ptr(words, tag_tuple);
+}
+
 /// Allocates an isolated execution instance and returns its opaque handle.
 pub export fn ex_term_runtime_create() i64 {
     return @bitCast(@intFromPtr(create_runtime()));
@@ -426,6 +471,7 @@ fn init_processes() void {
     current_process = 0;
     current_process_ptr = initial;
     instance.unique_integer_counter = 0;
+    instance.monitor_ref_counter = 0;
     // Each program run starts with a fresh bump arena: the scheduler driver
     // calls `process_table_reset` at the top, so terms allocated by a
     // previous run must not accumulate toward the fixed heap limit.
@@ -1044,6 +1090,107 @@ pub export fn ex_term_current_entry() i64 {
     return proc.entry;
 }
 
+// The caller holds scheduler_lock. Signal delivery follows the remaining
+// global lock order (mailbox -> process state) and wakes a waiting actor.
+fn deliver_signal_locked(
+    target: *Process,
+    kind: SignalKind,
+    sender: i64,
+    payload: i64,
+) bool {
+    if (!target.mailbox.pushSignal(kind, sender, payload)) return false;
+    target.state_lock.lock();
+    defer target.state_lock.unlock();
+    if (target.cont.active and target.cont.receive) target.clock.epoch += 1;
+    if (target.status == .waiting) target.status = .runnable;
+    return true;
+}
+
+fn remove_link_locked(proc: *Process, peer: i64) void {
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    var i: usize = 0;
+    while (i < proc.link_count) {
+        if (proc.links[i].peer == peer) {
+            proc.link_count -= 1;
+            proc.links[i] = proc.links[proc.link_count];
+            return;
+        }
+        i += 1;
+    }
+}
+
+fn notify_monitors_locked(instance: *Runtime, proc: *Process, reason: ?i64) void {
+    for (proc.monitors[0..proc.monitor_count]) |monitor| {
+        const watcher = resolve_pid(instance, monitor.watcher) orelse continue;
+        const down = tuple5(
+            monitor.down_tag,
+            monitor.reference,
+            monitor.process_tag,
+            proc.pid,
+            reason orelse monitor.normal_tag,
+        );
+        if (down != nil_word) _ = deliver_signal_locked(watcher, .down, proc.pid, down);
+    }
+    proc.monitor_count = 0;
+}
+
+fn detach_watched_by_locked(instance: *Runtime, watcher_pid: i64) void {
+    for (instance.processes[0..instance.process_count]) |target| {
+        target.state_lock.lock();
+        var i: usize = 0;
+        while (i < target.monitor_count) {
+            if (target.monitors[i].watcher == watcher_pid) {
+                target.monitor_count -= 1;
+                target.monitors[i] = target.monitors[target.monitor_count];
+            } else {
+                i += 1;
+            }
+        }
+        target.state_lock.unlock();
+    }
+}
+
+fn propagate_exit_locked(instance: *Runtime, proc: *Process, reason: i64) void {
+    proc.state_lock.lock();
+    if (proc.status == .done or proc.status == .exited) {
+        proc.state_lock.unlock();
+        return;
+    }
+    proc.status = .exited;
+    proc.exit_reason = reason;
+    proc.cont.active = false;
+    const link_count = proc.link_count;
+    proc.link_count = 0;
+    proc.state_lock.unlock();
+
+    // Scheduler serialization keeps the detached link array stable while the
+    // termination wave removes reverse links and visits peers.
+    for (proc.links[0..link_count]) |link| {
+        const peer = resolve_pid(instance, link.peer) orelse continue;
+        remove_link_locked(peer, proc.pid);
+        peer.state_lock.lock();
+        const traps = peer.trap_exit;
+        const peer_terminal = peer.status == .done or peer.status == .exited;
+        peer.state_lock.unlock();
+        if (peer_terminal) continue;
+        if (traps) {
+            const exit_message = tuple3(link.exit_tag, proc.pid, reason);
+            if (exit_message != nil_word) _ = deliver_signal_locked(peer, .exit, proc.pid, exit_message);
+        } else if (reason != link.normal_tag) {
+            propagate_exit_locked(instance, peer, reason);
+        }
+    }
+
+    notify_monitors_locked(instance, proc, reason);
+    detach_watched_by_locked(instance, proc.pid);
+    if (pid_index(proc.pid) > 0 and instance.free_count < instance.free_slots.len) {
+        instance.free_slots[instance.free_count] = pid_index(proc.pid);
+        instance.free_count += 1;
+    }
+    proc.owner.store(0, .release);
+}
+
 /// Marks the current process done and stores its result.
 pub export fn ex_term_process_done(result: i64) i64 {
     const instance = runtime();
@@ -1051,17 +1198,34 @@ pub export fn ex_term_process_done(result: i64) i64 {
     defer instance.scheduler_lock.unlock();
     const proc = current_proc();
     proc.state_lock.lock();
-    defer proc.state_lock.unlock();
     if (!proc.cont.active and proc.status != .waiting) {
         proc.status = .done;
         proc.result = result;
+        const link_count = proc.link_count;
+        proc.link_count = 0;
+        proc.state_lock.unlock();
+
+        for (proc.links[0..link_count]) |link| {
+            const peer = resolve_pid(instance, link.peer) orelse continue;
+            remove_link_locked(peer, proc.pid);
+            peer.state_lock.lock();
+            const traps = peer.trap_exit;
+            peer.state_lock.unlock();
+            if (traps) {
+                const exit_message = tuple3(link.exit_tag, proc.pid, link.normal_tag);
+                if (exit_message != nil_word) _ = deliver_signal_locked(peer, .exit, proc.pid, exit_message);
+            }
+        }
+        notify_monitors_locked(instance, proc, null);
+        detach_watched_by_locked(instance, proc.pid);
         // Recycle the slot for future spawns (#50 stage 1). Slot 0 is the
-        // per-run entry process and is always reset by the driver, never
-        // recycled.
+        // per-run entry process and is always reset by the driver.
         if (current_process > 0 and instance.free_count < instance.free_slots.len) {
             instance.free_slots[instance.free_count] = current_process;
             instance.free_count += 1;
         }
+    } else {
+        proc.state_lock.unlock();
     }
     proc.owner.store(0, .release);
     return result;
@@ -1074,20 +1238,128 @@ pub export fn ex_term_process_exit(reason: i64) i64 {
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
     const proc = current_proc();
+    propagate_exit_locked(instance, proc, reason);
+    return reason;
+}
+
+/// Sets the current process's trap-exit flag and returns its previous value.
+pub export fn ex_term_process_trap_exit(enabled: i64) i64 {
+    const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
+    const previous: i64 = if (proc.trap_exit) 1 else 0;
+    proc.trap_exit = enabled != 0;
+    return previous;
+}
 
-    if (proc.status != .done and proc.status != .exited) {
-        proc.status = .exited;
-        proc.exit_reason = reason;
-        proc.cont.active = false;
-        if (current_process > 0 and instance.free_count < instance.free_slots.len) {
-            instance.free_slots[instance.free_count] = current_process;
-            instance.free_count += 1;
-        }
+/// Creates a symmetric link. Atom words for EXIT and normal are supplied by
+/// compiled code because atom identifiers are program hashes, not runtime IDs.
+pub export fn ex_term_link(pid: i64, exit_tag: i64, normal_tag: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const source = current_proc();
+    const target = resolve_pid(instance, pid) orelse return nil_word;
+    if (source == target) return pid;
+
+    source.state_lock.lock();
+    target.state_lock.lock();
+    defer target.state_lock.unlock();
+    defer source.state_lock.unlock();
+    if (source.status == .done or source.status == .exited or
+        target.status == .done or target.status == .exited or
+        source.link_count >= relation_cap or target.link_count >= relation_cap) return nil_word;
+    for (source.links[0..source.link_count]) |link| if (link.peer == pid) return pid;
+    source.links[source.link_count] = .{ .peer = pid, .exit_tag = exit_tag, .normal_tag = normal_tag };
+    source.link_count += 1;
+    target.links[target.link_count] = .{ .peer = source.pid, .exit_tag = exit_tag, .normal_tag = normal_tag };
+    target.link_count += 1;
+    return pid;
+}
+
+/// Removes both sides of a link; returns 1 when the target pid is live.
+pub export fn ex_term_unlink(pid: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const source = current_proc();
+    const target = resolve_pid(instance, pid) orelse return 0;
+    remove_link_locked(source, pid);
+    remove_link_locked(target, source.pid);
+    return 1;
+}
+
+/// Sends an exit signal without creating a link. A trapping target receives
+/// `{EXIT, from, reason}`; a non-trapping target exits unless reason is normal.
+pub export fn ex_term_exit(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const source_pid = current_proc().pid;
+    const target = resolve_pid(instance, pid) orelse return nil_word;
+    target.state_lock.lock();
+    const traps = target.trap_exit;
+    const terminal = target.status == .done or target.status == .exited;
+    target.state_lock.unlock();
+    if (terminal) return nil_word;
+    if (traps) {
+        const exit_message = tuple3(exit_tag, source_pid, reason);
+        if (exit_message == nil_word or !deliver_signal_locked(target, .exit, source_pid, exit_message))
+            return nil_word;
+    } else if (reason != normal_tag) {
+        propagate_exit_locked(instance, target, reason);
     }
-    proc.owner.store(0, .release);
     return reason;
+}
+
+/// Monitors a live process and returns a fresh tagged-integer reference.
+pub export fn ex_term_monitor(
+    pid: i64,
+    down_tag: i64,
+    process_tag: i64,
+    normal_tag: i64,
+) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const target = resolve_pid(instance, pid) orelse return nil_word;
+    target.state_lock.lock();
+    defer target.state_lock.unlock();
+    if (target.status == .done or target.status == .exited or target.monitor_count >= relation_cap)
+        return nil_word;
+    instance.monitor_ref_counter += 1;
+    const reference = instance.monitor_ref_counter << @intCast(tag_shift);
+    target.monitors[target.monitor_count] = .{
+        .watcher = current_proc().pid,
+        .reference = reference,
+        .down_tag = down_tag,
+        .process_tag = process_tag,
+        .normal_tag = normal_tag,
+    };
+    target.monitor_count += 1;
+    return reference;
+}
+
+/// Removes a monitor owned by the current process; returns 1 when found.
+pub export fn ex_term_demonitor(reference: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const watcher = current_proc().pid;
+    for (instance.processes[0..instance.process_count]) |target| {
+        target.state_lock.lock();
+        for (0..target.monitor_count) |i| {
+            const monitor = target.monitors[i];
+            if (monitor.watcher == watcher and monitor.reference == reference) {
+                target.monitor_count -= 1;
+                target.monitors[i] = target.monitors[target.monitor_count];
+                target.state_lock.unlock();
+                return 1;
+            }
+        }
+        target.state_lock.unlock();
+    }
+    return 0;
 }
 
 /// Number of runnable processes (the scheduler driver loops while > 0).
@@ -2185,6 +2457,12 @@ comptime {
     @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
     @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
     @export(&ex_term_process_exit, .{ .name = "ex.term.process_exit" });
+    @export(&ex_term_process_trap_exit, .{ .name = "ex.term.process_trap_exit" });
+    @export(&ex_term_link, .{ .name = "ex.term.link" });
+    @export(&ex_term_unlink, .{ .name = "ex.term.unlink" });
+    @export(&ex_term_exit, .{ .name = "ex.term.exit" });
+    @export(&ex_term_monitor, .{ .name = "ex.term.monitor" });
+    @export(&ex_term_demonitor, .{ .name = "ex.term.demonitor" });
     @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
     @export(&ex_term_process_result, .{ .name = "ex.term.process_result" });
     @export(&ex_term_process_exit_reason, .{ .name = "ex.term.process_exit_reason" });
@@ -2933,6 +3211,88 @@ test "uncaught throw exits only its actor and workers continue" {
     try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(failed_pid));
     try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(replacement));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+test "links and monitors deliver ordered EXIT and DOWN signals" {
+    const exit_tag: i64 = (101 << @intCast(tag_shift)) | tag_atom;
+    const down_tag: i64 = (102 << @intCast(tag_shift)) | tag_atom;
+    const process_tag: i64 = (103 << @intCast(tag_shift)) | tag_atom;
+    const normal_tag: i64 = (104 << @intCast(tag_shift)) | tag_atom;
+    const reason: i64 = (105 << @intCast(tag_shift)) | tag_atom;
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const parent = ex_term_self();
+    const child = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_process_trap_exit(1));
+    try std.testing.expectEqual(child, ex_term_link(child, exit_tag, normal_tag));
+    const reference = ex_term_monitor(child, down_tag, process_tag, normal_tag);
+    try std.testing.expect(is_int(reference));
+
+    try std.testing.expectEqual(child, ex_term_schedule_next());
+    try std.testing.expectEqual(reason, ex_term_process_exit(reason));
+    try std.testing.expectEqual(parent, ex_term_schedule_next());
+    try std.testing.expectEqual(@as(i64, 2), ex_term_mailbox_len());
+
+    const exit_signal = current_proc().mailbox.peekSignal(0).?;
+    const down_signal = current_proc().mailbox.peekSignal(1).?;
+    try std.testing.expectEqual(SignalKind.exit, exit_signal.kind);
+    try std.testing.expectEqual(SignalKind.down, down_signal.kind);
+    try std.testing.expect(exit_signal.sequence < down_signal.sequence);
+    try std.testing.expectEqual(exit_tag, ex_term_tuple_get(exit_signal.payload, 0));
+    try std.testing.expectEqual(child, ex_term_tuple_get(exit_signal.payload, 1));
+    try std.testing.expectEqual(reason, ex_term_tuple_get(exit_signal.payload, 2));
+    try std.testing.expectEqual(down_tag, ex_term_tuple_get(down_signal.payload, 0));
+    try std.testing.expectEqual(reference, ex_term_tuple_get(down_signal.payload, 1));
+    try std.testing.expectEqual(process_tag, ex_term_tuple_get(down_signal.payload, 2));
+    try std.testing.expectEqual(child, ex_term_tuple_get(down_signal.payload, 3));
+    try std.testing.expectEqual(reason, ex_term_tuple_get(down_signal.payload, 4));
+}
+
+test "unlink and demonitor suppress supervision signals" {
+    const tag: i64 = (111 << @intCast(tag_shift)) | tag_atom;
+    const reason: i64 = (112 << @intCast(tag_shift)) | tag_atom;
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const parent = ex_term_self();
+    const child = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(child, ex_term_link(child, tag, tag));
+    const reference = ex_term_monitor(child, tag, tag, tag);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_unlink(child));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_demonitor(reference));
+
+    try std.testing.expectEqual(child, ex_term_schedule_next());
+    try std.testing.expectEqual(reason, ex_term_process_exit(reason));
+    try std.testing.expectEqual(parent, ex_term_schedule_next());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_mailbox_len());
+    try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(parent));
+}
+
+test "linked failures cascade while normal exits only notify trappers" {
+    const exit_tag: i64 = (121 << @intCast(tag_shift)) | tag_atom;
+    const normal_tag: i64 = (122 << @intCast(tag_shift)) | tag_atom;
+    const failure: i64 = (123 << @intCast(tag_shift)) | tag_atom;
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const parent = ex_term_self();
+    const child = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(child, ex_term_link(child, exit_tag, normal_tag));
+    try std.testing.expectEqual(child, ex_term_schedule_next());
+    _ = ex_term_process_exit(failure);
+    try std.testing.expectEqual(failure, ex_term_process_exit_reason(parent));
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const trapping_parent = ex_term_self();
+    const normal_child = ex_term_spawn(nil_word);
+    _ = ex_term_process_trap_exit(1);
+    _ = ex_term_link(normal_child, exit_tag, normal_tag);
+    try std.testing.expectEqual(normal_child, ex_term_schedule_next());
+    _ = ex_term_process_done(0);
+    try std.testing.expectEqual(trapping_parent, ex_term_schedule_next());
+    const exit_message = ex_term_receive();
+    try std.testing.expectEqual(exit_tag, ex_term_tuple_get(exit_message, 0));
+    try std.testing.expectEqual(normal_child, ex_term_tuple_get(exit_message, 1));
+    try std.testing.expectEqual(normal_tag, ex_term_tuple_get(exit_message, 2));
+    try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(trapping_parent));
 }
 
 const ConcurrentGrowthProbe = struct {
