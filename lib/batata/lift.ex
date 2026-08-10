@@ -51,12 +51,7 @@ defmodule Batata.Lift do
       batch_size = reduction_batch_size(budget, batching)
       {workers, process_cap} = validate_runtime_options!(opts)
 
-      {definitions, entry_name} =
-        if driver_needed?(mod.definitions, budget, workers) do
-          rename_entry(mod.definitions)
-        else
-          {mod.definitions, nil}
-        end
+      {definitions, entry_name} = rename_entry(mod.definitions)
 
       definitions =
         definitions
@@ -83,6 +78,8 @@ defmodule Batata.Lift do
   defp maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
     if driver_needed?(definitions, budget, workers) do
       lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
+    else
+      lift_execution_driver(entry_name, ctx, body)
     end
   end
 
@@ -118,8 +115,9 @@ defmodule Batata.Lift do
   end
 
   # The entry function (`main` for the JIT path, `batata_main` for the AOT
-  # path) is renamed to `__batata_entry` so the generated scheduler driver
-  # can take its name and re-invoke it to resume a preempted process. Returns
+  # path) is renamed to `__batata_entry` so every host entry can establish an
+  # isolated runtime session before executing user code. Scheduler drivers can
+  # also re-invoke the renamed entry to resume a preempted process. Returns
   # {definitions, original_entry_name}.
   defp rename_entry(definitions) do
     case Enum.find(definitions, &entry_definition?/1) do
@@ -215,9 +213,9 @@ defmodule Batata.Lift do
     match?({:const, _}, pattern) or match?({:add_capture, _}, pattern)
   end
 
-  # The scheduler driver is generated when a reduction budget is set (the
-  # entry may be preempted and must be resumed) or when the source spawns
-  # processes (they must be executed to completion).
+  # The scheduler variant of the execution driver is generated when a
+  # reduction budget is set (the entry may be preempted and must be resumed)
+  # or when the source spawns processes (they must be executed to completion).
   defp driver_needed?(definitions, budget, workers) do
     workers > 1 or budget != nil or Enum.any?(definitions, &definition_spawns?/1)
   end
@@ -1447,12 +1445,51 @@ defmodule Batata.Lift do
     |> MLIR.Operation.create()
   end
 
+  # Even scalar programs run behind a host entry that owns an explicit native
+  # runtime. This keeps JIT and AOT executions isolated without relying on the
+  # compatibility runtime associated with an OS thread.
+  defp lift_execution_driver(entry_name, ctx, ip) do
+    region = MLIR.CAPI.mlirRegionCreate()
+    block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+
+    runtime = enter_runtime(ctx, block)
+    result = call_entry(ctx, block) |> unbox(ctx, block)
+    leave_runtime(runtime, ctx, block)
+    create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(entry_name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  defp enter_runtime(ctx, block) do
+    i64 = integer_type(ctx)
+    runtime = create_op("ex.runtime_create", [], [i64], ctx, block)
+    create_op("ex.runtime_enter", [runtime], [i64], ctx, block)
+    runtime
+  end
+
+  defp leave_runtime(runtime, ctx, block) do
+    i64 = integer_type(ctx)
+    create_op("ex.runtime_leave", [], [i64], ctx, block)
+    create_op("ex.runtime_destroy", [runtime], [i64], ctx, block)
+    :ok
+  end
+
   defp lift_parallel_driver(entry_name, ctx, ip, workers, process_cap) do
     i64 = integer_type(ctx)
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
+    runtime = enter_runtime(ctx, block)
     create_op("ex.process_table_reset", [lit(process_cap, ctx, block)], [i64], ctx, block)
 
     dispatcher =
@@ -1473,6 +1510,7 @@ defmodule Batata.Lift do
         block
       )
 
+    leave_runtime(runtime, ctx, block)
     create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -1500,6 +1538,8 @@ defmodule Batata.Lift do
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+
+    runtime = enter_runtime(ctx, block)
 
     # Each program run starts with a fresh actor table at the configured cap.
     create_op("ex.process_table_reset", [lit(process_cap, ctx, block)], [i64], ctx, block)
@@ -1631,6 +1671,7 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     final = while_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+    leave_runtime(runtime, ctx, block)
     create_op("ex.return", [final, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{

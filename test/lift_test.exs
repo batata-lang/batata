@@ -3,6 +3,17 @@ defmodule Batata.LiftTest do
 
   alias Batata.{Frontend, Lift}
 
+  @execution_driver_ops [
+    "ex.func",
+    "ex.call",
+    "ex.unbox",
+    "ex.runtime_create",
+    "ex.runtime_enter",
+    "ex.runtime_leave",
+    "ex.runtime_destroy",
+    "ex.return"
+  ]
+
   defp lift!(source, ctx) do
     source
     |> Frontend.from_source()
@@ -46,16 +57,19 @@ defmodule Batata.LiftTest do
       )
 
     assert Enum.sort(op_names(module)) ==
-             Enum.sort([
-               "builtin.module",
-               "ex.func",
-               "ex.lit",
-               "ex.lit",
-               "ex.lit",
-               "ex.add",
-               "ex.add",
-               "ex.return"
-             ])
+             Enum.sort(
+               @execution_driver_ops ++
+                 [
+                   "builtin.module",
+                   "ex.func",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.add",
+                   "ex.add",
+                   "ex.return"
+                 ]
+             )
   end
 
   test "lifts tuple and list literals plus predicates into ex IR", %{ctx: ctx} do
@@ -72,22 +86,25 @@ defmodule Batata.LiftTest do
       )
 
     assert Enum.sort(op_names(module)) ==
-             Enum.sort([
-               "builtin.module",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.func",
-               "ex.lit",
-               "ex.lit",
-               "ex.lit",
-               "ex.list",
-               "ex.tuple",
-               "ex.is_tuple",
-               "ex.return"
-             ])
+             Enum.sort(
+               @execution_driver_ops ++
+                 [
+                   "builtin.module",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.func",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.list",
+                   "ex.tuple",
+                   "ex.is_tuple",
+                   "ex.return"
+                 ]
+             )
   end
 
   test "lifts map, binary and string literals into ex IR", %{ctx: ctx} do
@@ -105,25 +122,28 @@ defmodule Batata.LiftTest do
       )
 
     assert Enum.sort(op_names(module)) ==
-             Enum.sort([
-               "builtin.module",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.box",
-               "ex.func",
-               "ex.lit",
-               "ex.lit",
-               "ex.lit",
-               "ex.lit",
-               "ex.map",
-               "ex.binary",
-               "ex.is_map",
-               "ex.is_binary",
-               "ex.return"
-             ])
+             Enum.sort(
+               @execution_driver_ops ++
+                 [
+                   "builtin.module",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.box",
+                   "ex.func",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.map",
+                   "ex.binary",
+                   "ex.is_map",
+                   "ex.is_binary",
+                   "ex.return"
+                 ]
+             )
   end
 
   test "lifts an empty list into ex IR", %{ctx: ctx} do
@@ -140,14 +160,17 @@ defmodule Batata.LiftTest do
       )
 
     assert Enum.sort(op_names(module)) ==
-             Enum.sort([
-               "builtin.module",
-               "ex.box",
-               "ex.func",
-               "ex.list",
-               "ex.is_list",
-               "ex.return"
-             ])
+             Enum.sort(
+               @execution_driver_ops ++
+                 [
+                   "builtin.module",
+                   "ex.box",
+                   "ex.func",
+                   "ex.list",
+                   "ex.is_list",
+                   "ex.return"
+                 ]
+             )
   end
 
   test "lifts case into ex.case/ex.clause with patterns and catch-all", %{ctx: ctx} do
@@ -168,22 +191,25 @@ defmodule Batata.LiftTest do
       )
 
     assert Enum.sort(op_names(module)) ==
-             Enum.sort([
-               "builtin.module",
-               "ex.func",
-               "ex.lit",
-               "ex.lit",
-               "ex.lit",
-               "ex.lit",
-               "ex.case",
-               "ex.clause",
-               "ex.clause",
-               "ex.clause",
-               "ex.yield",
-               "ex.yield",
-               "ex.yield",
-               "ex.return"
-             ])
+             Enum.sort(
+               @execution_driver_ops ++
+                 [
+                   "builtin.module",
+                   "ex.func",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.lit",
+                   "ex.case",
+                   "ex.clause",
+                   "ex.clause",
+                   "ex.clause",
+                   "ex.yield",
+                   "ex.yield",
+                   "ex.yield",
+                   "ex.return"
+                 ]
+             )
   end
 
   test "lifts case guards into ex.clause guard operands", %{ctx: ctx} do
@@ -327,7 +353,7 @@ defmodule Batata.LiftTest do
       )
 
     names = op_names(module)
-    assert Enum.count(names, &(&1 == "ex.func")) == 2
+    assert Enum.count(names, &(&1 == "ex.func")) == 3
     assert Enum.count(names, &(&1 == "ex.case")) == 1
     assert Enum.count(names, &(&1 == "ex.clause")) == 3
   end
@@ -447,8 +473,8 @@ defmodule Batata.LiftTest do
       )
 
     names = op_names(module)
-    # main, the extracted __fn_*, and the closure dispatch function.
-    assert Enum.count(names, &(&1 == "ex.func")) == 3
+    # The execution driver, __batata_entry, extracted __fn_* and closure dispatch.
+    assert Enum.count(names, &(&1 == "ex.func")) == 4
     assert "ex.call" in names
 
     rendered = MLIR.to_string(module, generic: true)
