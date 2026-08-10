@@ -177,8 +177,11 @@ Predicates return `1` or `0` as an `i64`.
 - A worker trampoline catches an otherwise uncaught `ex.term.throw`, records
   an abnormal process exit and continues running other actors. A throw outside
   an actor worker boundary still aborts.
-- Each runtime lazily owns a fixed 32 MiB bump arena; it is reset and reused
-  between executions. GC is a later milestone.
+- Each runtime lazily owns a fixed 32 MiB bump arena shared by all of its
+  processes. Terms are immutable and remain valid after their allocating or
+  sending process exits and its slot is recycled. The whole arena is reset
+  between executions; constructors return their documented nil/failure value
+  on exhaustion. Per-process heaps and GC are a later milestone.
 - Runtime reset and destroy require that no worker is entered. Heap allocation,
   process scheduling, counters, callbacks, actor state, and mailboxes are
   synchronized while a runtime is shared by entered workers.

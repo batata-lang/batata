@@ -3307,6 +3307,29 @@ test "a completed dispatcher cannot overwrite an earlier explicit exit" {
     try std.testing.expectEqual(nil_word, ex_term_process_result(pid));
 }
 
+test "shared immutable terms survive sender exit and slot reuse" {
+    const ten: i64 = 10 << @intCast(tag_shift);
+    const thirty_two: i64 = 32 << @intCast(tag_shift);
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const receiver = ex_term_self();
+    const sender = ex_term_spawn(nil_word);
+    const list = ex_term_list_cons(ten, ex_term_list_cons(thirty_two, nil_word));
+    const tuple = ex_term_tuple_from_list(list);
+
+    try std.testing.expectEqual(sender, ex_term_schedule_next());
+    try std.testing.expectEqual(tuple, ex_term_send(receiver, tuple));
+    _ = ex_term_process_done(0);
+    try std.testing.expectEqual(receiver, ex_term_schedule_next());
+    const retained = ex_term_receive();
+
+    const replacement = ex_term_spawn(nil_word);
+    try std.testing.expect(pid_index(replacement) == pid_index(sender));
+    try std.testing.expect(replacement != sender);
+    try std.testing.expectEqual(ten, ex_term_tuple_get(retained, 0));
+    try std.testing.expectEqual(thirty_two, ex_term_tuple_get(retained, 1));
+}
+
 const ConcurrentGrowthProbe = struct {
     ready: std.atomic.Value(u32) = .init(0),
     reads: std.atomic.Value(u32) = .init(0),
