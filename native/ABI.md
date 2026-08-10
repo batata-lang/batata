@@ -45,7 +45,7 @@ Heap layouts (all fields are `i64` words):
 ```
 tuple:  [len] [elem × len]
 map:    [len] [entry × 2*len]   (flat key/value pairs; len = pair count)
-binary: [len] [byte × len]
+binary: [len: i64] [packed byte: u8 × len] [alignment padding]
 list:   cons cells [head] [tail]
 fun:    [fn_idx] [env_len] [env × env_len]
 ```
@@ -192,6 +192,9 @@ Predicates return `1` or `0` as an `i64`.
   executions; constructors return their documented nil/failure value only
   when allocation or the 128-segment (64 MiB at the default size) table is
   exhausted.
+- Binary payloads are byte-packed after their `i64` length header, reducing
+  payload storage from eight bytes per byte to one while keeping the tagged
+  root pointer 8-byte aligned.
 - Runtime reset and destroy require that no worker is entered. Heap allocation,
   process scheduling, counters, callbacks, actor state, and mailboxes are
   synchronized while a runtime is shared by entered workers.
