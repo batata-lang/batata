@@ -262,6 +262,7 @@ const Runtime = struct {
     bump: usize = 0,
     processes: [process_cap]Process = undefined,
     process_count: usize = 1,
+    claim_cursor: usize = 0,
     processes_initialized: bool = false,
     yield_count: i64 = 0,
     unique_integer_counter: i64 = 0,
@@ -350,6 +351,7 @@ fn init_processes() void {
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
     };
     instance.process_count = 1;
+    instance.claim_cursor = 0;
     current_process = 0;
     instance.unique_integer_counter = 0;
     // Each program run starts with a fresh bump arena: the scheduler driver
@@ -689,11 +691,13 @@ pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
 
-    for (0..instance.process_count) |index| {
+    for (0..instance.process_count) |offset| {
+        const index = (instance.claim_cursor + offset) % instance.process_count;
         const proc = &instance.processes[index];
         if (proc.status != .runnable) continue;
         if (proc.owner.cmpxchgStrong(0, owner, .acq_rel, .acquire) == null) {
             current_process = index;
+            instance.claim_cursor = (index + 1) % instance.process_count;
             return proc.pid;
         }
     }
@@ -706,6 +710,74 @@ pub export fn ex_term_process_release() i64 {
     const pid = proc.pid;
     proc.owner.store(0, .release);
     return pid;
+}
+
+const Worker = struct {
+    instance: *Runtime,
+    id: u32,
+    dispatcher: *const fn (i64) callconv(.c) i64,
+
+    fn run(self: @This()) void {
+        active_runtime = self.instance;
+        current_process = 0;
+
+        while (true) {
+            const pid = ex_term_process_claim_next(self.id);
+            if (pid != nil_word) {
+                const result = self.dispatcher(pid);
+                // A cross-worker send may invalidate a selective-receive
+                // continuation between dispatcher return and this check.
+                // `active` still means the actor yielded and must be
+                // rescheduled; its next entry restarts the stale scan.
+                if (ex_term_cont_active() != 0) {
+                    _ = ex_term_process_release();
+                } else {
+                    _ = ex_term_process_done(result);
+                }
+                continue;
+            }
+
+            if (ex_term_processes_runnable() == 0) break;
+            std.Thread.yield() catch {};
+        }
+
+        active_runtime = null;
+        current_process = 0;
+    }
+};
+
+/// Runs all actors to completion using exactly `worker_count` OS workers.
+/// The caller participates as worker 1; additional workers are joined before
+/// the entry process result is returned.
+pub export fn ex_term_worker_run(
+    worker_count: i64,
+    dispatcher: ?*const fn (i64) callconv(.c) i64,
+) i64 {
+    if (worker_count <= 0 or worker_count > 64 or dispatcher == null) return -1;
+    const instance = runtime();
+    const count: usize = @intCast(worker_count);
+    const background_count = count - 1;
+    const threads = std.heap.page_allocator.alloc(std.Thread, background_count) catch return -1;
+    defer std.heap.page_allocator.free(threads);
+
+    var started: usize = 0;
+    for (threads, 0..) |*thread, index| {
+        thread.* = std.Thread.spawn(.{}, Worker.run, .{
+            Worker{
+                .instance = instance,
+                .id = @intCast(index + 2),
+                .dispatcher = dispatcher.?,
+            },
+        }) catch break;
+        started += 1;
+    }
+
+    Worker.run(.{ .instance = instance, .id = 1, .dispatcher = dispatcher.? });
+    for (threads[0..started]) |thread| thread.join();
+    if (started != background_count) return -1;
+
+    active_runtime = instance;
+    return ex_term_process_result(pid_of(0));
 }
 
 /// Closure word of the current process's entry; 0 for the initial process
@@ -1807,6 +1879,7 @@ comptime {
     @export(&ex_term_schedule_next, .{ .name = "ex.term.schedule_next" });
     @export(&ex_term_process_claim_next, .{ .name = "ex.term.process_claim_next" });
     @export(&ex_term_process_release, .{ .name = "ex.term.process_release" });
+    @export(&ex_term_worker_run, .{ .name = "ex.term.worker_run" });
     @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
     @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
     @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
@@ -2447,6 +2520,41 @@ test "mailbox accepts concurrent cross-worker sends without loss" {
         try std.testing.expect(!seen[@intCast(value)]);
         seen[@intCast(value)] = true;
     }
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+const WorkerPoolProbe = struct {
+    ready: std.atomic.Value(u32) = .init(0),
+    active: std.atomic.Value(u32) = .init(0),
+    max_active: std.atomic.Value(u32) = .init(0),
+    thread_ids: [2]std.Thread.Id = undefined,
+};
+
+var worker_pool_probe: *WorkerPoolProbe = undefined;
+
+fn test_actor_dispatch(pid: i64) callconv(.c) i64 {
+    const slot: usize = @intCast(word_payload(pid) - 1);
+    worker_pool_probe.thread_ids[slot] = std.Thread.getCurrentId();
+    _ = worker_pool_probe.active.fetchAdd(1, .acq_rel);
+    _ = worker_pool_probe.ready.fetchAdd(1, .acq_rel);
+    while (worker_pool_probe.ready.load(.acquire) != 2) std.Thread.yield() catch {};
+    worker_pool_probe.max_active.store(2, .release);
+    _ = worker_pool_probe.active.fetchSub(1, .acq_rel);
+    return pid;
+}
+
+test "worker pool overlaps independent actors on distinct OS threads" {
+    const handle = ex_term_runtime_create();
+    _ = ex_term_runtime_enter(handle);
+    _ = ex_term_process_table_reset();
+    const second_pid = ex_term_spawn(nil_word);
+
+    var probe = WorkerPoolProbe{};
+    worker_pool_probe = &probe;
+    try std.testing.expectEqual(pid_of(0), ex_term_worker_run(2, &test_actor_dispatch));
+    try std.testing.expectEqual(second_pid, ex_term_process_result(second_pid));
+    try std.testing.expect(probe.thread_ids[0] != probe.thread_ids[1]);
+    try std.testing.expectEqual(@as(u32, 2), probe.max_active.load(.acquire));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 

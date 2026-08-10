@@ -135,8 +135,12 @@ clock:
   by one round-robin worker; the parallel worker scheduler is tracked in
   [tsai/beaver#42](http://localhost:3000/tsai/beaver/issues/42);
 - a shared runtime exposes atomic actor claim/release ownership and locked
-  FIFO mailboxes, including concurrent sends from multiple workers. The
-  generated driver does not start those workers until the trampoline layer;
+  FIFO mailboxes, including concurrent sends from multiple workers;
+- `Batata.execute/3` accepts `workers: 1..64` (default `1`). With more than one
+  worker, the generated driver passes a stable actor-entry trampoline to the
+  native fixed worker pool; workers claim actors, execute one reduction slice,
+  then complete or release them for migration. The pool joins before the main
+  process result is returned;
 - a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
   (the mailbox moved from globals into the process);
 - clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /

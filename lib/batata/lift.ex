@@ -49,9 +49,14 @@ defmodule Batata.Lift do
       budget = Keyword.get(opts, :reduction_budget)
       batching = Keyword.get(opts, :reduction_batching) != false
       batch_size = reduction_batch_size(budget, batching)
+      workers = Keyword.get(opts, :workers, 1)
+
+      unless is_integer(workers) and workers >= 1 and workers <= 64 do
+        raise Error, "workers must be an integer between 1 and 64"
+      end
 
       {definitions, entry_name} =
-        if driver_needed?(mod.definitions, budget) do
+        if driver_needed?(mod.definitions, budget, workers) do
           rename_entry(mod.definitions)
         else
           {mod.definitions, nil}
@@ -70,8 +75,15 @@ defmodule Batata.Lift do
         lift_definitions(definitions, ctx, body, budget, batch_size)
       end)
 
-      if entry_name != nil and driver_needed?(definitions, budget) do
-        lift_driver(entry_name, ctx, body, budget, dispatch_exists?(definitions))
+      if entry_name != nil and driver_needed?(definitions, budget, workers) do
+        has_dispatch = dispatch_exists?(definitions)
+
+        if workers > 1 do
+          lift_actor_step(ctx, body, has_dispatch)
+          lift_parallel_driver(entry_name, ctx, body, workers)
+        else
+          lift_driver(entry_name, ctx, body, budget, has_dispatch)
+        end
       end
 
       module
@@ -183,8 +195,8 @@ defmodule Batata.Lift do
   # The scheduler driver is generated when a reduction budget is set (the
   # entry may be preempted and must be resumed) or when the source spawns
   # processes (they must be executed to completion).
-  defp driver_needed?(definitions, budget) do
-    budget != nil or Enum.any?(definitions, &definition_spawns?/1)
+  defp driver_needed?(definitions, budget, workers) do
+    workers > 1 or budget != nil or Enum.any?(definitions, &definition_spawns?/1)
   end
 
   defp definition_spawns?(%Frontend.Definition{clauses: clauses}) do
@@ -1347,6 +1359,104 @@ defmodule Batata.Lift do
       ip: ip,
       ctx: ctx,
       arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  # Stable native trampoline invoked by the Zig worker pool. Runtime claim
+  # establishes the current actor before this function is entered; the pid
+  # argument keeps the callback ABI explicit even though dispatch reads the
+  # current process entry from Runtime.
+  defp lift_actor_step(ctx, ip, has_dispatch) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("dyn", ctx)
+    i1 = MLIR.Type.i1()
+    region = MLIR.CAPI.mlirRegionCreate()
+    block = MLIR.Block.create([i64], [MLIR.Location.unknown(ctx: ctx)])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+
+    entry = create_op("ex.current_entry", [], [i64], ctx, block)
+    is_main = create_op("arith.trunci", [cmp(entry, 0, "eq", ctx, block)], [i1], ctx, block)
+
+    result =
+      build_scf_if(
+        is_main,
+        ctx,
+        block,
+        [i64],
+        fn b -> [unbox(call_entry(ctx, b), ctx, b)] end,
+        fn b ->
+          if has_dispatch do
+            entry_word = create_op("ex.to_word", [entry], [dyn], ctx, b)
+
+            [
+              create_op(
+                "ex.apply",
+                [
+                  entry_word,
+                  arg_count: MLIR.Attribute.integer(MLIR.Type.i64(), 0),
+                  operandSegmentSizes: segment_sizes([1, 0, 0, 0, 0])
+                ],
+                [i64],
+                ctx,
+                b
+              )
+            ]
+          else
+            [unbox(call_entry(ctx, b), ctx, b)]
+          end
+        end
+      )
+      |> hd()
+
+    create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string("__batata_actor_step")],
+      results: [],
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+  end
+
+  defp lift_parallel_driver(entry_name, ctx, ip, workers) do
+    i64 = integer_type(ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+    block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+
+    create_op("ex.process_table_reset", [], [i64], ctx, block)
+
+    dispatcher =
+      create_op(
+        "ex.func_addr",
+        [sym_name: MLIR.Attribute.string("__batata_actor_step")],
+        [MLIR.Type.function([i64], [i64])],
+        ctx,
+        block
+      )
+
+    result =
+      create_op(
+        "ex.worker_run",
+        [lit(workers, ctx, block), dispatcher],
+        [i64],
+        ctx,
+        block
+      )
+
+    create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+
+    %Beaver.SSA{
+      op: "ex.func",
+      ip: ip,
+      ctx: ctx,
+      arguments: [sym_name: MLIR.Attribute.string(to_string(entry_name))],
       results: [],
       filler: fn -> [region] end
     }
