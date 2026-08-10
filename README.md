@@ -131,11 +131,11 @@ clock:
   compatibility entry lazily binds one instance per OS thread, while opaque
   runtime handles provide lifecycle and worker enter/leave boundaries.
   Independent `Batata.execute` invocations may occupy different BEAM
-  scheduler threads safely. Actors within one invocation are still dispatched
-  by one round-robin worker; the parallel worker scheduler is tracked in
-  [tsai/beaver#42](http://localhost:3000/tsai/beaver/issues/42);
+  scheduler threads safely. Actors within one invocation run on the configured
+  fixed worker pool;
 - a shared runtime exposes atomic actor claim/release ownership and locked
-  FIFO mailboxes, including concurrent sends from multiple workers;
+  ordered signal queues, including concurrent sends from multiple workers.
+  Message, exit, and DOWN envelopes share the same per-process arrival order;
 - selective receive parks an actor with its completed scan cursor; mailbox
   append and the waiting transition share a synchronization boundary, so a
   cross-worker send cannot be lost between scanning and parking;
@@ -155,6 +155,16 @@ clock:
   references cannot address a new occupant of the same slot;
 - a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
   (the mailbox moved from globals into the process);
+- uncaught throws stop only their actor. Links propagate abnormal exits,
+  monitors deliver ordered `DOWN` tuples, and `trap_exit` converts linked
+  exits to `EXIT` tuples; `Process.exit/link/unlink/monitor/demonitor/flag`
+  lower directly to this runtime contract;
+- terms are immutable and owned by the execution-wide 32 MiB arena, not by an
+  individual process. Sending therefore shares a stable term word without a
+  deep copy: a sender may exit and its process slot may be recycled while a
+  receiver still reads the term. Reset/destroy is the reclamation boundary;
+  arena exhaustion is represented by the constructor's existing nil/failure
+  result. Per-process GC and isolated heaps are intentionally not implied;
 - clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /
   `clock_epoch` / `clock_bump_epoch`) charge reductions and expose the
   continuation-generation counter, ready for loop back-edge injection and
@@ -197,6 +207,15 @@ clock:
   Erlang message-priority idiom: an urgent-first `receive` with an
   `after 0` fallback scans for the priority message and otherwise falls
   through to an ordinary `receive`.
+
+Preemption is intentionally limited to resumable safe points. Batched
+enumerable/range loop back-edges and selective-receive scans save explicit
+continuations before yielding; receive waits also park at a scheduler boundary.
+Function entry, arbitrary expressions, native calls, and general control-flow
+edges do not currently yield because the runtime has no stack/SSA continuation
+capable of resuming them without repeating effects. Extending coverage requires
+first defining that continuation representation; inserting ticks alone at
+those points would be incorrect.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:
