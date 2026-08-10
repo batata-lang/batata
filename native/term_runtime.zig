@@ -35,30 +35,10 @@ const nil_word: i64 = 1;
 //   list:   cons cells [head: i64] [tail: i64]
 //   fun:    [fn_idx: i64] [env_len: i64] [env: i64 ... env_len]
 
-// Each OS thread owns its execution heap and runtime globals. This is the
-// isolation boundary required before multiple Batata executions can safely
-// occupy different BEAM scheduler threads. Actor-level worker sharing comes
-// later; no state below may silently fall back to process-global storage.
+// Runtime instances own execution state. The compatibility path lazily binds
+// one instance per OS thread; explicit handles let future actor workers enter
+// the same execution without returning to process-global mutable storage.
 const heap_word_cap = 4 * 1024 * 1024;
-threadlocal var heap: ?[]i64 = null;
-threadlocal var bump: usize = 0;
-
-fn current_heap() []i64 {
-    if (heap) |words| return words;
-
-    const words = std.heap.page_allocator.alloc(i64, heap_word_cap) catch
-        @panic("failed to allocate Batata runtime heap");
-    heap = words;
-    return words;
-}
-
-fn alloc_words(count: usize) ?[*]i64 {
-    const words = current_heap();
-    if (bump + count > words.len) return null;
-    const start = bump;
-    bump += count;
-    return words[start..][0..count].ptr;
-}
 
 fn word_tag(word: i64) usize {
     return @as(usize, @bitCast(word)) & tag_mask;
@@ -223,31 +203,115 @@ const Process = struct {
 // `current` is the executing process; spawn allocates a new entry and returns
 // its pid; schedule_next round-robins runnable processes for the driver.
 const process_cap: usize = 8;
-threadlocal var processes: [process_cap]Process = undefined;
-threadlocal var process_count: usize = 1;
+const beam_callback_cap = 16;
+
+const Runtime = struct {
+    heap: ?[]i64 = null,
+    bump: usize = 0,
+    processes: [process_cap]Process = undefined,
+    process_count: usize = 1,
+    processes_initialized: bool = false,
+    yield_count: i64 = 0,
+    unique_integer_counter: i64 = 0,
+    callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 =
+        [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap,
+
+    fn deinit(self: *Runtime) void {
+        if (self.heap) |words| std.heap.page_allocator.free(words);
+        std.heap.page_allocator.destroy(self);
+    }
+};
+
+threadlocal var active_runtime: ?*Runtime = null;
+threadlocal var owned_runtime: ?*Runtime = null;
 threadlocal var current_process: usize = 0;
-threadlocal var processes_initialized = false;
+
+fn create_runtime() *Runtime {
+    const instance = std.heap.page_allocator.create(Runtime) catch
+        @panic("failed to allocate Batata runtime");
+    instance.* = .{};
+    return instance;
+}
+
+fn runtime() *Runtime {
+    if (active_runtime) |instance| return instance;
+    if (owned_runtime == null) owned_runtime = create_runtime();
+    active_runtime = owned_runtime;
+    return active_runtime.?;
+}
+
+fn current_heap() []i64 {
+    const instance = runtime();
+    if (instance.heap) |words| return words;
+
+    const words = std.heap.page_allocator.alloc(i64, heap_word_cap) catch
+        @panic("failed to allocate Batata runtime heap");
+    instance.heap = words;
+    return words;
+}
+
+fn alloc_words(count: usize) ?[*]i64 {
+    const instance = runtime();
+    const words = current_heap();
+    if (instance.bump + count > words.len) return null;
+    const start = instance.bump;
+    instance.bump += count;
+    return words[start..][0..count].ptr;
+}
+
+/// Allocates an isolated execution instance and returns its opaque handle.
+pub export fn ex_term_runtime_create() i64 {
+    return @bitCast(@intFromPtr(create_runtime()));
+}
+
+/// Binds an execution instance to the calling worker thread.
+pub export fn ex_term_runtime_enter(handle: i64) i64 {
+    if (handle == 0) return -1;
+    active_runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    current_process = 0;
+    return 0;
+}
+
+/// Leaves the explicit instance and restores the thread-owned compatibility
+/// runtime on the next ABI call.
+pub export fn ex_term_runtime_leave() i64 {
+    active_runtime = null;
+    current_process = 0;
+    return 0;
+}
+
+/// Releases an execution instance. All workers must leave it before destroy.
+pub export fn ex_term_runtime_destroy(handle: i64) i64 {
+    if (handle == 0) return -1;
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    if (active_runtime == instance) active_runtime = null;
+    if (owned_runtime == instance) owned_runtime = null;
+    instance.deinit();
+    return 0;
+}
 
 fn init_processes() void {
-    processes[0] = .{
+    const instance = runtime();
+    instance.processes[0] = .{
         .pid = (1 << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom)),
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
     };
-    process_count = 1;
+    instance.process_count = 1;
     current_process = 0;
-    unique_integer_counter = 0;
+    instance.unique_integer_counter = 0;
     // Each program run starts with a fresh bump arena: the scheduler driver
     // calls `process_table_reset` at the top, so terms allocated by a
     // previous run must not accumulate toward the fixed heap limit.
-    bump = 0;
+    instance.bump = 0;
 }
 
 fn current_proc() *Process {
-    if (!processes_initialized) {
+    const instance = runtime();
+    if (!instance.processes_initialized) {
         init_processes();
-        processes_initialized = true;
+        instance.processes_initialized = true;
     }
-    return &processes[current_process];
+    return &instance.processes[current_process];
 }
 
 fn pid_of(index: usize) i64 {
@@ -259,14 +323,15 @@ fn pid_of(index: usize) i64 {
 /// driver calls this at program start so each run observes a clean actor
 /// table (processes/mailboxes do not leak across `Batata.execute` calls).
 pub export fn ex_term_process_table_reset() i64 {
+    const instance = runtime();
     // Starting an execution also resets all thread-owned transient state. The
     // arena allocation itself is retained and reused by this scheduler thread.
-    bump = 0;
-    yield_count = 0;
+    instance.bump = 0;
+    instance.yield_count = 0;
     jmp_depth = 0;
     throw_value = 0;
     init_processes();
-    processes_initialized = true;
+    instance.processes_initialized = true;
     return 1;
 }
 
@@ -274,14 +339,10 @@ pub export fn ex_term_process_table_reset() i64 {
 // charges slices of the reduction budget; each slice boundary is a yield
 // point. The epoch is checked across slices (a message arrival or scheduler
 // round bumps it, invalidating the continuation).
-threadlocal var yield_count: i64 = 0;
-
 // Logical-clock counter for `erlang.unique_integer/0,1`: every call hands out
 // a fresh value, so positive results are strictly increasing and negative
 // results strictly decreasing (the single-threaded runtime makes them
 // naturally monotonic across processes as well).
-threadlocal var unique_integer_counter: i64 = 0;
-
 // A stack of setjmp buffers for non-local exits (`throw`). The setjmp call
 // itself happens in the compiled code (so its frame stays live); the runtime
 // only tracks the buffers and performs the longjmp. The scalar slice has no
@@ -341,14 +402,15 @@ pub export fn ex_term_self() i64 {
 /// plain FIFO receive must observe the message on resume.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     _ = current_proc();
+    const instance = runtime();
     if (word_tag(pid) != tag_atom) return nil_word;
     const pid_id: usize = @intCast(word_payload(pid));
-    if (pid_id == 0 or pid_id > @as(usize, @intCast(process_count))) return nil_word;
-    if (!processes[pid_id - 1].mailbox.push(msg)) return nil_word;
+    if (pid_id == 0 or pid_id > @as(usize, @intCast(instance.process_count))) return nil_word;
+    if (!instance.processes[pid_id - 1].mailbox.push(msg)) return nil_word;
     // Message arrival invalidates a pending selective-receive continuation:
     // the scan restarts and observes the new message (epoch invalidation
     // wiring, #35 slice 6). Loop continuations are unaffected.
-    const target = &processes[pid_id - 1];
+    const target = &instance.processes[pid_id - 1];
     if (target.cont.active and target.cont.receive) {
         target.clock.epoch += 1;
     }
@@ -396,8 +458,9 @@ pub export fn ex_term_native_time() i64 {
 /// Hands out a fresh logical-clock value for `erlang.unique_integer/0,1`;
 /// `negative` selects the decreasing negative series.
 pub export fn ex_term_unique_integer(negative: i64) i64 {
-    unique_integer_counter += 1;
-    return if (negative == 0) unique_integer_counter else -unique_integer_counter;
+    const instance = runtime();
+    instance.unique_integer_counter += 1;
+    return if (negative == 0) instance.unique_integer_counter else -instance.unique_integer_counter;
 }
 
 /// Number of messages in the current process's mailbox.
@@ -442,15 +505,16 @@ pub export fn ex_term_mailbox_clear() i64 {
 /// returns its pid (atom word with id = process index + 1), or nil when the
 /// table is full.
 pub export fn ex_term_spawn(fun: i64) i64 {
-    if (process_count >= process_cap) return nil_word;
-    const index = process_count;
-    processes[index] = .{
+    const instance = runtime();
+    if (instance.process_count >= process_cap) return nil_word;
+    const index = instance.process_count;
+    instance.processes[index] = .{
         .pid = pid_of(index),
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
         .entry = fun,
     };
-    process_count += 1;
-    return processes[index].pid;
+    instance.process_count += 1;
+    return instance.processes[index].pid;
 }
 
 /// Saves the current process's cursor-loop continuation (list, acc, cursor)
@@ -526,16 +590,17 @@ pub export fn ex_term_cont_load_cursor() i64 {
 /// and returns its pid. Stays on the current process when it is the only
 /// runnable one.
 pub export fn ex_term_schedule_next() i64 {
-    if (process_count <= 1) return processes[0].pid;
+    const instance = runtime();
+    if (instance.process_count <= 1) return instance.processes[0].pid;
     var i: usize = 1;
-    while (i <= process_count) : (i += 1) {
-        const index = (current_process + i) % process_count;
-        if (processes[index].status == .runnable) {
+    while (i <= instance.process_count) : (i += 1) {
+        const index = (current_process + i) % instance.process_count;
+        if (instance.processes[index].status == .runnable) {
             current_process = index;
-            return processes[index].pid;
+            return instance.processes[index].pid;
         }
     }
-    return processes[current_process].pid;
+    return instance.processes[current_process].pid;
 }
 
 /// Closure word of the current process's entry; 0 for the initial process
@@ -555,9 +620,10 @@ pub export fn ex_term_process_done(result: i64) i64 {
 
 /// Number of runnable processes (the scheduler driver loops while > 0).
 pub export fn ex_term_processes_runnable() i64 {
+    const instance = runtime();
     var count: i64 = 0;
-    for (0..process_count) |i| {
-        if (processes[i].status == .runnable) count += 1;
+    for (0..instance.process_count) |i| {
+        if (instance.processes[i].status == .runnable) count += 1;
     }
     return count;
 }
@@ -565,10 +631,11 @@ pub export fn ex_term_processes_runnable() i64 {
 /// Result of a completed process; nil when the process is unknown or still
 /// runnable.
 pub export fn ex_term_process_result(pid: i64) i64 {
+    const instance = runtime();
     if (word_tag(pid) != tag_atom) return nil_word;
     const pid_id: usize = @intCast(word_payload(pid));
-    if (pid_id == 0 or pid_id > @as(usize, @intCast(process_count))) return nil_word;
-    const proc = processes[pid_id - 1];
+    if (pid_id == 0 or pid_id > @as(usize, @intCast(instance.process_count))) return nil_word;
+    const proc = instance.processes[pid_id - 1];
     return if (proc.status == .done) proc.result else nil_word;
 }
 
@@ -607,13 +674,14 @@ pub export fn ex_term_clock_bump_epoch() i64 {
 
 /// Number of preemptive yields so far (slice boundaries in the loop driver).
 pub export fn ex_term_yield_count() i64 {
-    return yield_count;
+    return runtime().yield_count;
 }
 
 /// Records one yield at a slice boundary and bumps the yield counter.
 pub export fn ex_term_yield_mark() i64 {
-    yield_count += 1;
-    return yield_count;
+    const instance = runtime();
+    instance.yield_count += 1;
+    return instance.yield_count;
 }
 
 /// Untags an integer term word to its scalar value; 0 for non-integers (the
@@ -1073,9 +1141,6 @@ pub export fn ex_term_enumerable_reduce_fun(
 // for external types) register through `ex.term.register_callback`; compiled
 // code calls them through `ex.term.call_callback`. Unregistered ids return
 // the error sentinel -1.
-const beam_callback_cap = 16;
-threadlocal var callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 = [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap;
-
 /// Registers a native callback entry (fn_id, function pointer). Returns 0 on
 /// success, -1 when the id is out of range.
 pub export fn ex_term_register_callback(
@@ -1083,7 +1148,7 @@ pub export fn ex_term_register_callback(
     callback: ?*const fn (i64) callconv(.c) i64,
 ) i64 {
     if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
-    callbacks[@intCast(fn_id)] = callback;
+    runtime().callbacks[@intCast(fn_id)] = callback;
     return 0;
 }
 
@@ -1091,7 +1156,7 @@ pub export fn ex_term_register_callback(
 /// the id is out of range or not registered.
 pub export fn ex_term_call_callback(fn_id: i64, arg: i64) i64 {
     if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
-    const callback = callbacks[@intCast(fn_id)] orelse return -1;
+    const callback = runtime().callbacks[@intCast(fn_id)] orelse return -1;
     return callback(arg);
 }
 
@@ -1563,6 +1628,10 @@ pub export fn ex_term_is_map(word: i64) i64 {
 // identifiers cannot contain dots, so the C ABI symbols are re-exported under
 // the manifest names.
 comptime {
+    @export(&ex_term_runtime_create, .{ .name = "ex.term.runtime_create" });
+    @export(&ex_term_runtime_enter, .{ .name = "ex.term.runtime_enter" });
+    @export(&ex_term_runtime_leave, .{ .name = "ex.term.runtime_leave" });
+    @export(&ex_term_runtime_destroy, .{ .name = "ex.term.runtime_destroy" });
     @export(&ex_term_self, .{ .name = "ex.term.self" });
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
@@ -2126,6 +2195,29 @@ test "runtime state is isolated across concurrent OS threads" {
     try std.testing.expectEqual(@as(i64, 4), probe.runnable_counts[1]);
     try std.testing.expectEqual(@as(i64, 1), probe.yield_counts[0]);
     try std.testing.expectEqual(@as(i64, 3), probe.yield_counts[1]);
+}
+
+test "explicit runtime handles preserve isolated execution state" {
+    const first = ex_term_runtime_create();
+    const second = ex_term_runtime_create();
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(first));
+    _ = ex_term_process_table_reset();
+    try std.testing.expectEqual(@as(i64, 1), ex_term_unique_integer(0));
+    _ = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(second));
+    _ = ex_term_process_table_reset();
+    try std.testing.expectEqual(@as(i64, 1), ex_term_unique_integer(0));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(first));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_unique_integer(0));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(first));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(second));
 }
 
 test "term ABI throw unwinds to the innermost try" {
