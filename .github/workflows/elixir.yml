@@ -99,6 +99,17 @@ jobs:
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
+      - name: Run process-reuse benchmark
+        # The slot-recycling benchmark (#50 stage 1) must keep producing a
+        # full-success result under the small table and a failing baseline
+        # without recycling; the JSON assertions guard against regressions.
+        run: |
+          output="$(zig run -O ReleaseFast --dep runtime \
+            -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc 2>&1)"
+          echo "$output"
+          echo "$output" | grep -q '"reuse_success": 1000000'
+          echo "$output" | grep -q '"no_reuse_failures": [1-9]'
+
       - name: Build Hex package
         # Simulate publishing: declare deps as Hex constraints (no path
         # overrides) and reuse the test-env build so the tarball is produced
