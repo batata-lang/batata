@@ -49,11 +49,7 @@ defmodule Batata.Lift do
       budget = Keyword.get(opts, :reduction_budget)
       batching = Keyword.get(opts, :reduction_batching) != false
       batch_size = reduction_batch_size(budget, batching)
-      workers = Keyword.get(opts, :workers, 1)
-
-      unless is_integer(workers) and workers >= 1 and workers <= 64 do
-        raise Error, "workers must be an integer between 1 and 64"
-      end
+      {workers, process_cap} = validate_runtime_options!(opts)
 
       {definitions, entry_name} =
         if driver_needed?(mod.definitions, budget, workers) do
@@ -75,34 +71,51 @@ defmodule Batata.Lift do
         lift_definitions(definitions, ctx, body, budget, batch_size)
       end)
 
-      maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers)
+      maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
 
       module
     end)
   end
 
-  defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers), do: :ok
+  defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers, _process_cap),
+    do: :ok
 
-  defp maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers) do
+  defp maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
     if driver_needed?(definitions, budget, workers) do
-      lift_selected_driver(entry_name, definitions, ctx, body, budget, workers)
+      lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
     end
   end
 
-  defp lift_selected_driver(entry_name, definitions, ctx, body, budget, workers) do
+  defp lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
     has_dispatch = dispatch_exists?(definitions)
 
     if workers > 1 do
       lift_actor_step(ctx, body, has_dispatch)
-      lift_parallel_driver(entry_name, ctx, body, workers)
+      lift_parallel_driver(entry_name, ctx, body, workers, process_cap)
     else
-      lift_driver(entry_name, ctx, body, budget, has_dispatch)
+      lift_driver(entry_name, ctx, body, budget, has_dispatch, process_cap)
     end
   end
 
   defp reduction_batch_size(nil, _batching), do: nil
   defp reduction_batch_size(budget, true), do: budget
   defp reduction_batch_size(_budget, false), do: 1
+
+  defp validate_runtime_options!(opts) do
+    workers = Keyword.get(opts, :workers, 1)
+
+    unless is_integer(workers) and workers >= 1 and workers <= 64 do
+      raise Error, "workers must be an integer between 1 and 64"
+    end
+
+    process_cap = Keyword.get(opts, :process_cap) || 256
+
+    unless is_integer(process_cap) and process_cap >= 1 and process_cap <= 4096 do
+      raise Error, "process_cap must be an integer between 1 and 4096"
+    end
+
+    {workers, process_cap}
+  end
 
   # The entry function (`main` for the JIT path, `batata_main` for the AOT
   # path) is renamed to `__batata_entry` so the generated scheduler driver
@@ -1434,13 +1447,13 @@ defmodule Batata.Lift do
     |> MLIR.Operation.create()
   end
 
-  defp lift_parallel_driver(entry_name, ctx, ip, workers) do
+  defp lift_parallel_driver(entry_name, ctx, ip, workers, process_cap) do
     i64 = integer_type(ctx)
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
-    create_op("ex.process_table_reset", [], [i64], ctx, block)
+    create_op("ex.process_table_reset", [lit(process_cap, ctx, block)], [i64], ctx, block)
 
     dispatcher =
       create_op(
@@ -1479,7 +1492,7 @@ defmodule Batata.Lift do
   # continuation (budget exhausted) stays runnable and is resumed on a later
   # round from its saved loop state; a completed process is parked with its
   # result. The driver returns the entry's final result.
-  defp lift_driver(entry_name, ctx, ip, _budget, has_dispatch) do
+  defp lift_driver(entry_name, ctx, ip, _budget, has_dispatch, process_cap) do
     i64 = integer_type(ctx)
     dyn = ex_type("dyn", ctx)
     i1 = MLIR.Type.i1()
@@ -1488,8 +1501,8 @@ defmodule Batata.Lift do
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
-    # Each program run starts with a fresh actor table.
-    create_op("ex.process_table_reset", [], [i64], ctx, block)
+    # Each program run starts with a fresh actor table at the configured cap.
+    create_op("ex.process_table_reset", [lit(process_cap, ctx, block)], [i64], ctx, block)
 
     # First slice of process 0: run the compiled entry once.
     r0 = call_entry(ctx, block)

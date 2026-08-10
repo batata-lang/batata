@@ -40,8 +40,10 @@ defmodule Batata.TermRuntime do
   def shared_lib_path, do: Path.join(priv_dir(), shared_lib_name())
 
   @doc "Path of the static archive, built or not."
-  @spec static_lib_path() :: Path.t()
-  def static_lib_path, do: Path.join(priv_dir(), static_lib_name())
+  @spec static_lib_path(keyword()) :: Path.t()
+  def static_lib_path(opts \\ []) do
+    Path.join(Keyword.get(opts, :dir, priv_dir()), static_lib_name())
+  end
 
   @doc """
   Ensures the shared library exists, building it with `zig build-lib` when
@@ -54,10 +56,14 @@ defmodule Batata.TermRuntime do
 
   @doc """
   Ensures the static archive exists for AOT linking.
+
+  Set `dir:` to build into a custom directory (e.g. an ExUnit `@tag :tmp_dir`)
+  instead of the shared `priv/term_runtime` directory, so tests that rebuild
+  the artifact can run in parallel.
   """
-  @spec ensure_static_built!() :: Path.t()
-  def ensure_static_built! do
-    ensure_artifact!(:static, static_lib_path(), false)
+  @spec ensure_static_built!(keyword()) :: Path.t()
+  def ensure_static_built!(opts \\ []) do
+    ensure_artifact!(:static, static_lib_path(opts), Keyword.get(opts, :force, false))
   end
 
   defp ensure_artifact!(kind, path, force?) do

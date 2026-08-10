@@ -1,15 +1,16 @@
 defmodule Batata.TermRuntimeTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
-  test "publishes one complete static runtime under concurrent demand" do
-    path = Batata.TermRuntime.static_lib_path()
+  @tag :tmp_dir
+  test "publishes one complete static runtime under concurrent demand", %{tmp_dir: tmp_dir} do
+    path = Batata.TermRuntime.static_lib_path(dir: tmp_dir)
     File.rm(path)
 
     results =
       1..8
       |> Task.async_stream(
         fn _ ->
-          built = Batata.TermRuntime.ensure_static_built!()
+          built = Batata.TermRuntime.ensure_static_built!(dir: tmp_dir)
           {built, built |> File.read!() |> then(&:crypto.hash(:sha256, &1))}
         end,
         max_concurrency: 8,
