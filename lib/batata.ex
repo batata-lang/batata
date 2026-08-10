@@ -30,7 +30,8 @@ defmodule Batata do
         ctx: ctx,
         reduction_budget: opts[:reduction_budget],
         reduction_batching: opts[:reduction_batching],
-        workers: Keyword.get(opts, :workers, 1)
+        workers: Keyword.get(opts, :workers, 1),
+        process_cap: opts[:process_cap]
       )
       |> Beaver.Deferred.create(ctx)
 
@@ -70,6 +71,8 @@ defmodule Batata do
 
   Set `workers: n` to run independent actors on a fixed pool of `n` OS
   workers. The default is `1`, preserving the deterministic serial scheduler.
+  Set `process_cap: n` (1..4096, default 256) to size the actor process
+  table; `spawn` returns nil once the table is full.
 
   The JIT engine and module are destroyed before returning.
   """

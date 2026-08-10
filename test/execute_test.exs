@@ -1524,6 +1524,66 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "spawn returns nil when the process table is full at a configured cap", %{ctx: ctx} do
+    # cap = 1: the initial process occupies the only slot, so the spawned
+    # closure never runs and its send never lands; the direct send wins.
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 7) end)
+                   send(me, 42)
+
+                   receive do
+                     42 -> 0
+                     _ -> 1
+                   end
+                 end
+               end
+               """,
+               ctx,
+               process_cap: 1
+             )
+  end
+
+  test "configured cap admits exactly that many spawned processes", %{ctx: ctx} do
+    # cap = 2: the first spawned process fits and delivers 7; the second is
+    # rejected (its send never lands), so the selective receive only ever
+    # sees the first spawned message and the direct sentinel.
+    assert 0 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   me = self()
+                   spawn(fn -> send(me, 7) end)
+                   spawn(fn -> send(me, 8) end)
+
+                   receive do
+                     7 -> 0
+                     _ -> 1
+                   after
+                     :infinity -> 2
+                   end
+                 end
+               end
+               """,
+               ctx,
+               process_cap: 2,
+               reduction_budget: 2
+             )
+  end
+
+  test "rejects an out-of-range process_cap", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/process_cap must be an integer between 1 and 4096/, fn ->
+      Batata.execute("defmodule Math do\n  def main() do\n    1\n  end\nend\n", ctx,
+        process_cap: 0
+      )
+    end
+  end
+
   test "selective receive skips non-matching messages and removes the first match", %{ctx: ctx} do
     # Without a catch-all clause, the receive scans the mailbox: non-matching
     # messages stay queued and the first match is removed (#35 slice 6).

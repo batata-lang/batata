@@ -252,7 +252,11 @@ const Process = struct {
 // its own FIFO mailbox, reduction clock, entry, status and continuation.
 // `current` is the executing process; spawn allocates a new entry and returns
 // its pid; schedule_next round-robins runnable processes for the driver.
-const process_cap: usize = 8;
+// The capacity is configurable per execution (#42) via
+// `ex.term.process_table_reset(cap)`, bounded to keep the fixed-resource
+// runtime model; spawn returns nil when the table is full regardless of cap.
+const default_process_cap: usize = 256;
+const max_process_cap: usize = 4096;
 const beam_callback_cap = 16;
 
 const Runtime = struct {
@@ -266,7 +270,8 @@ const Runtime = struct {
     migrations: std.atomic.Value(u64) = .init(0),
     heap: ?[]i64 = null,
     bump: usize = 0,
-    processes: [process_cap]Process = undefined,
+    processes: []Process = &.{},
+    process_cap: usize = default_process_cap,
     process_count: usize = 1,
     claim_cursor: usize = 0,
     processes_initialized: bool = false,
@@ -277,6 +282,7 @@ const Runtime = struct {
 
     fn deinit(self: *Runtime) void {
         if (self.heap) |words| std.heap.page_allocator.free(words);
+        if (self.processes.len > 0) std.heap.page_allocator.free(self.processes);
         std.heap.page_allocator.destroy(self);
     }
 };
@@ -289,6 +295,8 @@ fn create_runtime() *Runtime {
     const instance = std.heap.page_allocator.create(Runtime) catch
         @panic("failed to allocate Batata runtime");
     instance.* = .{};
+    instance.processes = std.heap.page_allocator.alloc(Process, instance.process_cap) catch
+        @panic("failed to allocate Batata process table");
     return instance;
 }
 
@@ -380,11 +388,21 @@ fn pid_of(index: usize) i64 {
         @as(i64, @intCast(tag_atom));
 }
 
-/// Resets the process table to a single fresh initial process. The scheduler
-/// driver calls this at program start so each run observes a clean actor
-/// table (processes/mailboxes do not leak across `Batata.execute` calls).
-pub export fn ex_term_process_table_reset() i64 {
+/// Resets the process table to a single fresh initial process with the given
+/// capacity (1..max_process_cap). The scheduler driver calls this at program
+/// start so each run observes a clean actor table (processes/mailboxes do not
+/// leak across `Batata.execute` calls). Returns 1, or nil when the capacity
+/// is out of range.
+pub export fn ex_term_process_table_reset(cap: i64) i64 {
     const instance = runtime();
+    if (cap < 1 or cap > max_process_cap) return nil_word;
+    const new_cap: usize = @intCast(cap);
+    if (instance.processes.len != new_cap) {
+        if (instance.processes.len > 0) std.heap.page_allocator.free(instance.processes);
+        instance.processes = std.heap.page_allocator.alloc(Process, new_cap) catch
+            @panic("failed to allocate Batata process table");
+        instance.process_cap = new_cap;
+    }
     // Starting an execution also resets all thread-owned transient state. The
     // arena allocation itself is retained and reused by this scheduler thread.
     instance.bump = 0;
@@ -574,7 +592,7 @@ pub export fn ex_term_spawn(fun: i64) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
-    if (instance.process_count >= process_cap) return nil_word;
+    if (instance.process_count >= instance.process_cap) return nil_word;
     const index = instance.process_count;
     instance.processes[index] = .{
         .pid = pid_of(index),
@@ -2451,12 +2469,33 @@ test "term ABI mailbox and integer untag" {
 
     // process table reset: a fresh program run starts with only the initial
     // process, so spawns work again after a previous run filled the table
-    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
     try std.testing.expectEqual(@as(i64, 0), ex_term_current_entry());
     const pid4 = ex_term_spawn(fun);
     try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
     try std.testing.expectEqual(pid4, ex_term_schedule_next());
+}
+
+test "process table capacity is configurable and enforced by spawn" {
+    // cap = 1: the initial process occupies the only slot, so spawn is full
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
+    try std.testing.expectEqual(nil_word, ex_term_spawn(nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
+
+    // cap = 2: exactly one spawned process fits, the next spawn is full
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(2));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
+    _ = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+    try std.testing.expectEqual(nil_word, ex_term_spawn(nil_word));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+
+    // out-of-range capacities are rejected and leave the table untouched
+    try std.testing.expectEqual(nil_word, ex_term_process_table_reset(0));
+    try std.testing.expectEqual(nil_word, ex_term_process_table_reset(4097));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
 }
 
 const RuntimeIsolationProbe = struct {
@@ -2467,7 +2506,7 @@ const RuntimeIsolationProbe = struct {
     yield_counts: [2]i64 = undefined,
 
     fn run(self: *@This(), slot: usize, increments: usize, spawned: usize) void {
-        _ = ex_term_process_table_reset();
+        _ = ex_term_process_table_reset(default_process_cap);
         self.thread_ids[slot] = std.Thread.getCurrentId();
 
         for (0..increments) |_| _ = ex_term_unique_integer(0);
@@ -2504,13 +2543,13 @@ test "explicit runtime handles preserve isolated execution state" {
     const second = ex_term_runtime_create();
 
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(first));
-    _ = ex_term_process_table_reset();
+    _ = ex_term_process_table_reset(default_process_cap);
     try std.testing.expectEqual(@as(i64, 1), ex_term_unique_integer(0));
     _ = ex_term_spawn(nil_word);
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
 
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(second));
-    _ = ex_term_process_table_reset();
+    _ = ex_term_process_table_reset(default_process_cap);
     try std.testing.expectEqual(@as(i64, 1), ex_term_unique_integer(0));
     try std.testing.expectEqual(@as(i64, 1), ex_term_processes_runnable());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
@@ -2545,7 +2584,7 @@ const ActorClaimProbe = struct {
 test "workers claim distinct actors from one runtime" {
     const handle = ex_term_runtime_create();
     _ = ex_term_runtime_enter(handle);
-    _ = ex_term_process_table_reset();
+    _ = ex_term_process_table_reset(default_process_cap);
     _ = ex_term_spawn(nil_word);
     _ = ex_term_runtime_leave();
 
@@ -2578,7 +2617,7 @@ const MailboxSendProbe = struct {
 test "mailbox accepts concurrent cross-worker sends without loss" {
     const handle = ex_term_runtime_create();
     _ = ex_term_runtime_enter(handle);
-    _ = ex_term_process_table_reset();
+    _ = ex_term_process_table_reset(default_process_cap);
     const pid = ex_term_self();
     _ = ex_term_runtime_leave();
 
@@ -2624,7 +2663,7 @@ fn test_actor_dispatch(pid: i64) callconv(.c) i64 {
 test "worker pool overlaps independent actors on distinct OS threads" {
     const handle = ex_term_runtime_create();
     _ = ex_term_runtime_enter(handle);
-    _ = ex_term_process_table_reset();
+    _ = ex_term_process_table_reset(default_process_cap);
     const second_pid = ex_term_spawn(nil_word);
 
     var probe = WorkerPoolProbe{};
