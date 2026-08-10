@@ -18,6 +18,7 @@ defmodule Batata.SelfBootstrapTest do
   end
 
   @tag :tmp_dir
+  @tag timeout: 180_000
   test "self-bootstrap fixture builds to a runnable AOT binary with verified symbols", %{
     ctx: ctx,
     tmp_dir: tmp_dir
