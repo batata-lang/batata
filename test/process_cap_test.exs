@@ -1,10 +1,8 @@
 defmodule Batata.ProcessCapTest do
-  # Not async: concurrent `Batata.execute` runs share the implicit runtime's
-  # process table in this slice, so many-spawn tests would race with other
-  # tests' executions.
-  use Batata.Case, async: false
+  use Batata.Case, async: true
 
   alias Batata
+  alias Beaver.MLIR
 
   test "spawn grows the process table beyond the initial capacity (#50 stage 2)", %{ctx: ctx} do
     spawns =
@@ -65,5 +63,51 @@ defmodule Batata.ProcessCapTest do
                process_cap: 2,
                reduction_budget: 2
              )
+  end
+
+  test "concurrent execute calls isolate dynamically grown process tables" do
+    results =
+      1..8
+      |> Task.async_stream(
+        fn base ->
+          ctx = MLIR.Context.create()
+
+          source = """
+          defmodule ConcurrentActors#{base} do
+            def sum(0, acc), do: acc
+
+            def sum(n, acc) do
+              value = receive do
+                value when is_integer(value) -> value
+              end
+
+              sum(n - 1, acc + value)
+            end
+
+            def main() do
+              parent = self()
+              spawn(fn -> send(parent, #{base + 1}) end)
+              spawn(fn -> send(parent, #{base + 2}) end)
+              spawn(fn -> send(parent, #{base + 3}) end)
+              spawn(fn -> send(parent, #{base + 4}) end)
+              sum(4, 0)
+            end
+          end
+          """
+
+          try do
+            Batata.execute(source, ctx, process_cap: 2, reduction_budget: 2)
+          after
+            MLIR.Context.destroy(ctx)
+          end
+        end,
+        max_concurrency: 8,
+        timeout: 120_000,
+        ordered: false
+      )
+      |> Enum.map(fn {:ok, result} -> result end)
+      |> Enum.sort()
+
+    assert results == Enum.map(1..8, &(4 * &1 + 10))
   end
 end
