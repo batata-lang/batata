@@ -25,6 +25,17 @@ Heap objects are 8-byte aligned, so the low 3 bits of a container pointer are
 always zero and the tag can be OR-ed in. `nil` is the atom with id 0
 (`word == 1`); it doubles as the empty list, matching BEAM.
 
+The heap, process table, callback registry, scheduler counters, and exception
+stack are isolated per OS thread. Independent Batata executions may therefore
+run concurrently on different BEAM scheduler threads without sharing mutable
+runtime state. `ex.term.process_table_reset` starts a fresh execution on the
+current thread and reuses that thread's arena allocation.
+
+This boundary does not yet make the actors inside one execution parallel: its
+generated scheduler still dispatches them on one worker in round-robin order.
+Cross-worker actors require an explicit shared runtime instance and
+thread-safe mailboxes rather than exposing thread-local term pointers.
+
 Heap layouts (all fields are `i64` words):
 
 ```
@@ -140,7 +151,8 @@ Predicates return `1` or `0` as an `i64`.
 - `ex.term.binary_from_list` reads each segment's integer payload as a byte.
 - `ex.term.try_push` overflows at 16 nested try regions; deeper nesting aborts.
 - An uncaught `ex.term.throw` panics.
-- The runtime owns a fixed bump arena; GC is a later milestone.
+- Each OS thread lazily owns a fixed 32 MiB bump arena; it is reset and reused
+  between executions on that thread. GC is a later milestone.
 - The mailbox is a fixed 64-slot FIFO for a single actor; blocking receives
   and `after` timeouts arrive with the scheduler.
 
