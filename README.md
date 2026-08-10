@@ -136,6 +136,9 @@ clock:
   [tsai/beaver#42](http://localhost:3000/tsai/beaver/issues/42);
 - a shared runtime exposes atomic actor claim/release ownership and locked
   FIFO mailboxes, including concurrent sends from multiple workers;
+- selective receive parks an actor with its completed scan cursor; mailbox
+  append and the waiting transition share a synchronization boundary, so a
+  cross-worker send cannot be lost between scanning and parking;
 - `Batata.execute/3` accepts `workers: 1..64` (default `1`). With more than one
   worker, the generated driver passes a stable actor-entry trampoline to the
   native fixed worker pool; workers claim actors, execute one reduction slice,
@@ -243,3 +246,22 @@ mix test
 
 The Zig runtime is built on demand with `zig build-lib` (zig 0.16 is required
 and preinstalled in CI).
+
+Measure the native actor scheduler after a short warmup (the command emits one
+JSON object with 1/2/4-worker timings, speedups, maximum concurrent actors,
+migrations, and actor thread IDs):
+
+```sh
+zig run -O ReleaseFast --dep runtime \
+  -Mroot=bench/multicore_runtime.zig \
+  -Mruntime=native/term_runtime.zig -lc
+```
+
+This benchmark isolates invocation cost: it does not include Elixir parsing,
+MLIR lowering, or JIT construction.
+
+Run the native concurrency suite under ThreadSanitizer with:
+
+```sh
+zig test native/term_runtime.zig -lc -fsanitize-thread
+```

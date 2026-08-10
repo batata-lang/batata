@@ -85,7 +85,12 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.schedule_next` | `() -> i64` | round-robin to the next runnable process and return its pid |
 | `ex.term.process_claim_next` | `(worker_id: i64) -> i64` | atomically claim one runnable actor for a non-zero worker id; nil when none is available |
 | `ex.term.process_release` | `() -> i64` | release the current claimed actor after a yielded slice |
+| `ex.term.process_wait` | `(cursor: i64) -> i64` | atomically park the current actor when no message exists beyond the completed scan cursor |
 | `ex.term.worker_run` | `(worker_count: i64, dispatcher: fn(i64) -> i64) -> i64` | run claimed actors on a fixed OS-worker pool and return process 1's result |
+| `ex.term.worker_count` | `() -> i64` | configured worker count from the most recent pool run |
+| `ex.term.worker_max_active` | `() -> i64` | maximum actors simultaneously executing in the most recent pool run |
+| `ex.term.worker_migrations` | `() -> i64` | actor slice migrations between workers in the most recent pool run |
+| `ex.term.process_thread_id` | `(pid: i64) -> i64` | last OS thread ID that executed the actor |
 | `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
 | `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
@@ -167,6 +172,9 @@ Predicates return `1` or `0` as an `i64`.
 - Runtime reset and destroy require that no worker is entered. Heap allocation,
   process scheduling, counters, callbacks, actor state, and mailboxes are
   synchronized while a runtime is shared by entered workers.
+- A selective receive parks only while the mailbox length is not beyond its
+  completed scan cursor. Send appends before waking the actor, establishing
+  the mailbox happens-before edge and preventing lost wakeups.
 - The mailbox is a fixed 64-slot FIFO for a single actor; blocking receives
   and `after` timeouts arrive with the scheduler.
 

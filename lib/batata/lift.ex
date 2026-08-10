@@ -1887,8 +1887,11 @@ defmodule Batata.Lift do
               b
             )
 
+          should_yield_i1 =
+            create_op("arith.andi", [cond_i1, exhausted_i1], [MLIR.Type.i1()], ctx, b)
+
           build_scf_if(
-            exhausted_i1,
+            should_yield_i1,
             ctx,
             b,
             [i1, i64],
@@ -3074,6 +3077,7 @@ defmodule Batata.Lift do
     i1 = MLIR.Type.i1()
     budget = env[:__budget__]
     parsed = Enum.map(clauses, &parse_term_clause/1)
+    blocking? = after_clause == nil or match?({:infinity, _}, after_clause)
 
     {state_found, state_result, state_cursor, state_countdown, arity} =
       if budget == nil do
@@ -3129,7 +3133,7 @@ defmodule Batata.Lift do
       )
 
     cond_i1 =
-      if after_clause == nil do
+      if blocking? do
         create_op("arith.andi", [not_found_i1, more_i1], [i1], ctx, before_block)
       else
         # With `after`, a completed scan round (cursor >= len) is handled in
@@ -3170,7 +3174,7 @@ defmodule Batata.Lift do
       )
 
     {n_found, n_result, n_cursor} =
-      if after_clause == nil do
+      if blocking? do
         msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
         receive_match_try(parsed, msg, a_cursor, env, ctx, after_block, i64)
       else
@@ -3219,13 +3223,27 @@ defmodule Batata.Lift do
       }
       |> MLIR.Operation.create()
 
-    [found, result, _cursor | _rest] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    [found, result, cursor | _rest] = while_op |> MLIR.Operation.results() |> Enum.to_list()
     found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
     nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
     nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
 
     final =
-      build_scf_if(found_i1, ctx, block, [i64], fn _b -> [result] end, fn _b -> [nil_i64] end)
+      build_scf_if(
+        found_i1,
+        ctx,
+        block,
+        [i64],
+        fn _b -> [result] end,
+        fn b ->
+          if blocking? do
+            create_op("ex.receive_cont_save", [found, result, cursor], [i64], ctx, b)
+            create_op("ex.process_wait", [cursor], [i64], ctx, b)
+          end
+
+          [nil_i64]
+        end
+      )
       |> hd()
 
     {final, env}
