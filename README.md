@@ -144,6 +144,12 @@ clock:
   native fixed worker pool; workers claim actors, execute one reduction slice,
   then complete or release them for migration. The pool joins before the main
   process result is returned;
+- process slots are recycled (tsai/beaver#50 stage 1): a completed process's
+  slot is pushed on a free list and reused by the next `spawn`, so the table
+  only ever grows to the concurrency peak, not the cumulative spawn count.
+  Slot 0 (the per-run entry process) is never recycled; a full table still
+  returns nil from `spawn`; `process_cap` configures the bound (default 256,
+  max 4096);
 - a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
   (the mailbox moved from globals into the process);
 - clock primitives (`ex.term.clock_init` / `clock_tick` / `clock_budget_left` /
