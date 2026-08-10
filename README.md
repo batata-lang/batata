@@ -164,7 +164,13 @@ clock:
   with unit conversion in the lift; `ex.term.unique_integer` — a runtime
   counter handing out fresh increasing (or, with `[:negative]`, decreasing)
   values, naturally monotonic across processes in the single-threaded
-  runtime).
+  runtime);
+- slice 9: nested `receive` (an inner receive inside a clause body scans the
+  remaining mailbox independently) and atom literals — atom messages and
+  patterns lift to deterministic hash words (`atom_word`), enabling the
+  Erlang message-priority idiom: an urgent-first `receive` with an
+  `after 0` fallback scans for the priority message and otherwise falls
+  through to an ordinary `receive`.
 
 The String/Base slice adds UTF-8 and byte-string conversions in the Zig
 runtime:

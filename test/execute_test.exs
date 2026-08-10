@@ -1725,6 +1725,150 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "nested receive matches a second message inside the first clause body", %{ctx: ctx} do
+    # The outer selective scan removes the first match; the inner receive
+    # scans the remaining mailbox independently.
+    assert 4 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, {1, 2})
+                   send(pid, {3, 4})
+
+                   receive do
+                     {a, _} when a == 1 ->
+                       receive do
+                         {3, b} when is_integer(b) -> b
+                       end
+
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "atom messages match in FIFO and selective receive", %{ctx: ctx} do
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, :x)
+
+                   receive do
+                     :x -> 1
+                     _ -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, :a)
+                   send(pid, :b)
+
+                   receive do
+                     :b -> 2
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "message priority: urgent-first receive with after 0 fallback", %{ctx: ctx} do
+    # The first receive scans for :urgent with an immediate timeout; when a
+    # match exists it wins over ordinary messages.
+    assert 1 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, :normal)
+                   send(pid, :urgent)
+
+                   receive do
+                     :urgent -> 1
+                   after
+                     0 ->
+                       receive do
+                         _ -> 2
+                       end
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "message priority: fallback handles non-urgent messages", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, :normal)
+
+                   receive do
+                     :urgent -> 1
+                   after
+                     0 ->
+                       receive do
+                         _ -> 2
+                       end
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "nested receive composes with message priority", %{ctx: ctx} do
+    # Urgent message wins the outer scan; the inner receive then processes the
+    # next ordinary message.
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   pid = self()
+                   send(pid, :normal)
+                   send(pid, :urgent)
+                   send(pid, {1, 2})
+
+                   receive do
+                     :urgent ->
+                       receive do
+                         {1, a} when is_integer(a) -> a
+                       end
+                   after
+                     0 -> 0
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "try catches a thrown value and untags it", %{ctx: ctx} do
     assert 43 ==
              Batata.execute(

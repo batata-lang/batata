@@ -2022,6 +2022,25 @@ defmodule Batata.Lift do
     }
   end
 
+  # An atom literal in value position lifts to its tagged word: a
+  # deterministic hash payload (above the runtime's nil (0) and process pid
+  # (1..8) ids), so equality (`==`, message matching) is sound per
+  # compilation. `nil` is the runtime nil word.
+  defp lift_expr(atom, ctx, block, env) when is_atom(atom) do
+    word = atom_word(atom)
+
+    {
+      create_op(
+        "ex.to_word",
+        [lit(word, ctx, block)],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      ),
+      env
+    }
+  end
+
   defp lift_expr({:+, _, [left, right]}, ctx, block, env) do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
@@ -2749,6 +2768,9 @@ defmodule Batata.Lift do
 
           {value, clause_env} = lift_block(List.wrap(body), ctx, b, clause_env)
           value = lift_value(value, ctx, b, clause_env)
+          # The scan loop state is scalar; a body that returns a raw term word
+          # (e.g. a nested receive's message) is carried as its word value.
+          value = if term_operand?(value), do: unbox(value, ctx, b), else: value
           create_op("ex.mailbox_remove", [cursor], [i64], ctx, b)
           [lit(1, ctx, b), value, cursor]
         end,
@@ -2969,6 +2991,9 @@ defmodule Batata.Lift do
   end
 
   defp unique_integer_modifiers(_modifiers), do: :error
+
+  defp atom_word(nil), do: 1
+  defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
 
   defp ensure_receive_catch_all(clauses) do
     if catch_all_clause?(List.last(clauses)) do
@@ -3595,6 +3620,24 @@ defmodule Batata.Lift do
     else
       {nil, [{name, value}]}
     end
+  end
+
+  # An atom literal pattern (`receive do :urgent -> ... end`): compare the
+  # scrutinee word against the atom's deterministic hash word.
+  defp do_build_match(atom, value, ctx, block) when is_atom(atom) do
+    word = lit(atom_word(atom), ctx, block)
+    word_dyn = create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+
+    cond =
+      create_op(
+        "ex.term_eq",
+        [value, word_dyn],
+        [MLIR.Type.i64()],
+        ctx,
+        block
+      )
+
+    {cond, []}
   end
 
   defp do_build_match(integer, value, ctx, block) when is_integer(integer) do
