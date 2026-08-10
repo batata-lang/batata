@@ -1436,6 +1436,54 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "receives DOWN when a monitored actor exits normally", %{ctx: ctx} do
+    assert 42 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   child = spawn(fn -> 7 end)
+                   Process.monitor(child)
+
+                   receive do
+                     {:DOWN, _ref, :process, _pid, :normal} -> 42
+                   after
+                     :infinity -> 0
+                   end
+                 end
+               end
+               """,
+               ctx,
+               workers: 1,
+               reduction_budget: 2
+             )
+  end
+
+  test "trap_exit turns an explicit linked exit into a message", %{ctx: ctx} do
+    assert 43 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   Process.flag(:trap_exit, true)
+                   child = spawn(fn -> 7 end)
+                   Process.link(child)
+                   Process.exit(child, :boom)
+
+                   receive do
+                     {:EXIT, _pid, :boom} -> 43
+                   after
+                     :infinity -> 0
+                   end
+                 end
+               end
+               """,
+               ctx,
+               workers: 1,
+               reduction_budget: 2
+             )
+  end
+
   test "wakes a parallel selective receive without losing the send", %{ctx: ctx} do
     assert 57 ==
              Batata.execute(

@@ -3638,6 +3638,37 @@ defmodule Batata.Lift do
   defp atom_word(nil), do: 1
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
 
+  defp atom_term(atom, ctx, block) do
+    create_op(
+      "ex.to_word",
+      [lit(atom_word(atom), ctx, block)],
+      [ex_type("dyn", ctx)],
+      ctx,
+      block
+    )
+  end
+
+  defp boolean_term(value, ctx, block) do
+    condition = create_op("arith.trunci", [value], [MLIR.Type.i1()], ctx, block)
+
+    word =
+      build_scf_if(
+        condition,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b ->
+          [lit(atom_word(true), ctx, b)]
+        end,
+        fn b ->
+          [lit(atom_word(false), ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+  end
+
   defp ensure_receive_catch_all(clauses) do
     if catch_all_clause?(List.last(clauses)) do
       clauses
@@ -3933,6 +3964,33 @@ defmodule Batata.Lift do
      env}
   end
 
+  defp lift_stdlib_call(module, function, [flag, enabled], ctx, block, env)
+       when module in [Process, :erlang] and function in [:flag, :process_flag] do
+    unless flag == :trap_exit and is_boolean(enabled) do
+      raise Error, "only literal trap_exit boolean process flags are supported"
+    end
+
+    previous =
+      create_op(
+        "ex.process_trap_exit",
+        [lit(if(enabled, do: 1, else: 0), ctx, block)],
+        [integer_type(ctx)],
+        ctx,
+        block
+      )
+
+    {boolean_term(previous, ctx, block), env}
+  end
+
+  defp lift_stdlib_call(:erlang, :monitor, [type, pid_ast], ctx, block, env) do
+    unless type == :process do
+      raise Error, "only :process monitors are supported"
+    end
+
+    {pid, env} = lift_expr(pid_ast, ctx, block, env)
+    {native_term_call(Process, :monitor, [box_term(pid, ctx, block)], ctx, block), env}
+  end
+
   defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
     {start, env} = lift_expr(start_ast, ctx, block, env)
     {stop, env} = lift_expr(stop_ast, ctx, block, env)
@@ -4103,6 +4161,59 @@ defmodule Batata.Lift do
 
   defp native_term_call(_module, :spawn, [fun], ctx, block),
     do: create_op("ex.spawn", [fun], [ex_type("dyn", ctx)], ctx, block)
+
+  defp native_term_call(module, :link, [pid], ctx, block) when module in [Process, :erlang] do
+    _ =
+      create_op(
+        "ex.link",
+        [pid, atom_term(:EXIT, ctx, block), atom_term(:normal, ctx, block)],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      )
+
+    atom_term(true, ctx, block)
+  end
+
+  defp native_term_call(module, :unlink, [pid], ctx, block) when module in [Process, :erlang] do
+    _ = create_op("ex.unlink", [pid], [integer_type(ctx)], ctx, block)
+    atom_term(true, ctx, block)
+  end
+
+  defp native_term_call(module, :exit, [pid, reason], ctx, block)
+       when module in [Process, :erlang] do
+    _ =
+      create_op(
+        "ex.exit",
+        [pid, reason, atom_term(:EXIT, ctx, block), atom_term(:normal, ctx, block)],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      )
+
+    atom_term(true, ctx, block)
+  end
+
+  defp native_term_call(Process, :monitor, [pid], ctx, block) do
+    create_op(
+      "ex.monitor",
+      [
+        pid,
+        atom_term(:DOWN, ctx, block),
+        atom_term(:process, ctx, block),
+        atom_term(:normal, ctx, block)
+      ],
+      [ex_type("dyn", ctx)],
+      ctx,
+      block
+    )
+  end
+
+  defp native_term_call(module, :demonitor, [reference], ctx, block)
+       when module in [Process, :erlang] do
+    result = create_op("ex.demonitor", [reference], [integer_type(ctx)], ctx, block)
+    boolean_term(result, ctx, block)
+  end
 
   defp native_term_call(module, fun, _args, _ctx, _block) do
     raise Error, "no native_term lowering for #{inspect(module)}.#{fun}"
