@@ -7,7 +7,8 @@ on:
 
 env:
   # The beaver ref to test against; set BEAVER_REF as a repository variable
-  # while a stacked beaver PR is in flight, then unset it after merging.
+  # while a stacked beaver PR is in flight, then unset it after merging. The
+  # ref is resolved at runtime and falls back to main if it no longer exists.
   BEAVER_REF: ${{ vars.BEAVER_REF || 'main' }}
 
 permissions:
@@ -23,9 +24,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve beaver ref
+        id: beaver_ref
+        run: |
+          candidate="${{ env.BEAVER_REF }}"
+          if git ls-remote --exit-code --heads \
+            https://github.com/beaver-lodge/beaver.git "refs/heads/${candidate}" \
+            >/dev/null 2>&1; then
+            echo "beaver_ref=${candidate}" >> "$GITHUB_OUTPUT"
+          else
+            echo "warning: beaver branch ${candidate} not found, falling back to main" >> "$GITHUB_STEP_SUMMARY"
+            echo "beaver_ref=main" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout beaver and kinda
         run: |
-          git clone --depth 1 --branch "$BEAVER_REF" https://github.com/beaver-lodge/beaver.git
+          git clone --depth 1 --branch "${{ steps.beaver_ref.outputs.beaver_ref }}" https://github.com/beaver-lodge/beaver.git
           git clone --depth 1 https://github.com/beaver-lodge/kinda.git
 
       - uses: erlef/setup-beam@v1
@@ -40,6 +54,7 @@ jobs:
       - name: Install prebuilt LLVM/MLIR
         run: bash beaver/scripts/install-prebuilt-llvm.sh llvm-prebuilt
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           LLVM_EUDSL_ASSET_REVISION: latest
 
       - name: Install dependencies
