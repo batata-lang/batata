@@ -10,7 +10,10 @@ defmodule Batata do
   and AOT (`build/3`) execution are supported.
   """
 
+  alias Batata.Lower
   alias Beaver.MLIR
+  alias Beaver.Native
+  alias Beaver.Native.I64
 
   @doc """
   Parses and lowers Elixir source into a verified `builtin.module` of `ex`
@@ -39,7 +42,7 @@ defmodule Batata do
   def to_llvm(source, ctx) do
     source
     |> compile(ctx)
-    |> Batata.Lower.to_llvm(ctx)
+    |> Lower.to_llvm(ctx)
     |> MLIR.verify!()
   end
 
@@ -54,15 +57,15 @@ defmodule Batata do
     module =
       source
       |> compile(ctx, opts)
-      |> Batata.Lower.to_llvm(ctx, c_interface: true)
+      |> Lower.to_llvm(ctx, c_interface: true)
       |> MLIR.verify!()
 
     jit = MLIR.ExecutionEngine.create!(module, execution_engine_opts(module))
 
     try do
-      return = Beaver.Native.I64.make(0)
+      return = I64.make(0)
       MLIR.ExecutionEngine.invoke!(jit, "main", [], return)
-      Beaver.Native.to_term(return)
+      Native.to_term(return)
     after
       MLIR.ExecutionEngine.destroy(jit)
       MLIR.Module.destroy(module)

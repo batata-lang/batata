@@ -16,11 +16,17 @@ defmodule Batata.Transform.PatternPlan do
   defmodule Plan do
     @moduledoc "Pattern lowering for one case expression."
     defstruct [:scrutinee, clauses: []]
+
+    @type t :: %__MODULE__{
+            scrutinee: Macro.t(),
+            clauses: [Batata.Transform.PatternPlan.ClausePlan.t()]
+          }
   end
 
   defmodule ClausePlan do
     @moduledoc "Lowered pattern and guard steps for one clause."
     defstruct [:pattern, :guard, :body, steps: [], vars: [], refinements: []]
+    @type t :: %__MODULE__{}
   end
 
   defmodule Step do
@@ -31,6 +37,7 @@ defmodule Batata.Transform.PatternPlan do
   defmodule GuardRefinement do
     @moduledoc "A supported guard predicate applied to a bound pattern path."
     defstruct [:var, :path, :predicate, :type]
+    @type t :: %__MODULE__{}
   end
 
   @type_predicates ~w(is_integer is_atom is_binary is_list is_tuple is_map)a
@@ -38,13 +45,13 @@ defmodule Batata.Transform.PatternPlan do
   @type step :: %Step{op: atom(), path: list(), value: term()}
 
   @doc "Lowers case clause AST into a plan."
-  @spec lower_case(Macro.t(), [Macro.t()]) :: %Plan{}
+  @spec lower_case(Macro.t(), [Macro.t()]) :: Plan.t()
   def lower_case(scrutinee_ast, clauses) do
     %Plan{scrutinee: scrutinee_ast, clauses: Enum.map(clauses, &lower_clause/1)}
   end
 
   @doc "Lowers one case clause into a clause plan."
-  @spec lower_clause(Macro.t()) :: %ClausePlan{}
+  @spec lower_clause(Macro.t()) :: ClausePlan.t()
   def lower_clause({:->, _, [args, body]}) when is_list(args) do
     {pattern, guard} =
       case args do
@@ -79,7 +86,7 @@ defmodule Batata.Transform.PatternPlan do
   end
 
   @doc "Extracts supported guard refinements for the bound pattern variables."
-  @spec guard_refinements(Macro.t(), [atom()]) :: [%GuardRefinement{}]
+  @spec guard_refinements(Macro.t(), [atom()]) :: [GuardRefinement.t()]
   def guard_refinements(guard, vars) do
     guard
     |> Macro.prewalk([], fn

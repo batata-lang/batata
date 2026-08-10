@@ -8,11 +8,12 @@ defmodule Batata.Transform.ExpandCase do
   """
 
   alias Beaver.MLIR
+  alias Beaver.MLIR.Dialect.Ex.ExpandCase
 
   @behaviour Batata.Transform.Pass
 
   @impl Batata.Transform.Pass
   def run!(%MLIR.Module{} = module) do
-    Beaver.MLIR.Dialect.Ex.ExpandCase.run!(module)
+    ExpandCase.run!(module)
   end
 end

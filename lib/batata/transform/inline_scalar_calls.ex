@@ -26,12 +26,13 @@ defmodule Batata.Transform.InlineScalarCalls do
 
   @impl Batata.Transform.Pass
   def run!(%MLIR.Module{} = module) do
-    Enum.reduce_while(1..@max_passes, :unchanged, fn _, _ ->
-      case inline_once(module) do
-        :changed -> {:cont, :changed}
-        :unchanged -> {:halt, :unchanged}
-      end
-    end)
+    _status =
+      Enum.reduce_while(1..@max_passes, :unchanged, fn _, _ ->
+        case inline_once(module) do
+          :changed -> {:cont, :changed}
+          :unchanged -> {:halt, :unchanged}
+        end
+      end)
 
     module
   end
@@ -39,22 +40,28 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp inline_once(module) do
     callees = callees(module)
 
-    if apply = module |> ops_of("ex.apply") |> Enum.find(&(retype_apply_action(&1) == :ok)) do
-      retype_apply!(apply)
-      :changed
-    else
-      case module |> ops_of("ex.call") |> Enum.find(&(action(&1, callees) != :skip)) do
-        nil ->
-          :unchanged
+    case module |> ops_of("ex.apply") |> Enum.find(&(retype_apply_action(&1) == :ok)) do
+      nil ->
+        inline_call_once(module, callees)
 
-        call ->
-          case action(call, callees) do
-            {:inline, callee} -> inline!(call, callee)
-            {:retype, _callee} -> retype!(call)
-          end
+      apply ->
+        retype_apply!(apply)
+        :changed
+    end
+  end
 
-          :changed
-      end
+  defp inline_call_once(module, callees) do
+    case module |> ops_of("ex.call") |> Enum.find(&(action(&1, callees) != :skip)) do
+      nil ->
+        :unchanged
+
+      call ->
+        case action(call, callees) do
+          {:inline, callee} -> inline!(call, callee)
+          {:retype, _callee} -> retype!(call)
+        end
+
+        :changed
     end
   end
 

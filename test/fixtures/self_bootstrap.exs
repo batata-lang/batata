@@ -9,6 +9,7 @@ defmodule BatataDiffCore do
   equality guards, and scalar arithmetic end to end.
   """
 
+  # credo:disable-for-next-line Credo.Check.Readability.ParenthesesOnZeroArityDefs
   def main() do
     classify(1, 1) + classify(1, 2) * 10 + classify(0, 2) * 100 + classify(1, 0) * 1000
   end
