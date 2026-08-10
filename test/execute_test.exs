@@ -1419,6 +1419,37 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "runs spawned actors on the native worker pool", %{ctx: ctx} do
+    assert 15 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   spawn(fn -> Enum.reduce([6, 7, 8, 9], 0, fn x, a -> x + a end) end)
+                   Enum.reduce([1, 2, 3, 4, 5], 0, fn x, a -> x + a end)
+                 end
+               end
+               """,
+               ctx,
+               workers: 2,
+               reduction_budget: 2
+             )
+  end
+
+  test "rejects invalid worker counts", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/workers must be an integer between 1 and 64/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main(), do: 1
+        end
+        """,
+        ctx,
+        workers: 0
+      )
+    end
+  end
+
   test "round-robins multiple spawned processes between preempted slices", %{ctx: ctx} do
     # Each spawned process gets its own slice while the entry is suspended;
     # both messages are delivered FIFO and observed by the entry on resume.

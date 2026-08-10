@@ -29,7 +29,8 @@ defmodule Batata do
       |> Batata.Lift.module_to_ir(
         ctx: ctx,
         reduction_budget: opts[:reduction_budget],
-        reduction_batching: opts[:reduction_batching]
+        reduction_batching: opts[:reduction_batching],
+        workers: Keyword.get(opts, :workers, 1)
       )
       |> Beaver.Deferred.create(ctx)
 
@@ -66,6 +67,9 @@ defmodule Batata do
   @doc """
   Parses Elixir source, lowers it to LLVM and executes `main` through the
   MLIR JIT, returning its value.
+
+  Set `workers: n` to run independent actors on a fixed pool of `n` OS
+  workers. The default is `1`, preserving the deterministic serial scheduler.
 
   The JIT engine and module are destroyed before returning.
   """

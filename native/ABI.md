@@ -36,9 +36,9 @@ and reuses its arena allocation.
 
 This boundary does not yet make the actors inside one execution parallel: its
 generated scheduler still dispatches them on one worker in round-robin order.
-The runtime now provides atomic actor claim/release and locked cross-worker
-mailbox delivery; the remaining step is a worker pool that invokes actor
-entries through a stable trampoline.
+The runtime provides atomic actor claim/release, locked cross-worker mailbox
+delivery, and a fixed worker pool that invokes actor entries through a stable
+trampoline. The single-worker generated driver remains the default fallback.
 
 Heap layouts (all fields are `i64` words):
 
@@ -85,6 +85,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.schedule_next` | `() -> i64` | round-robin to the next runnable process and return its pid |
 | `ex.term.process_claim_next` | `(worker_id: i64) -> i64` | atomically claim one runnable actor for a non-zero worker id; nil when none is available |
 | `ex.term.process_release` | `() -> i64` | release the current claimed actor after a yielded slice |
+| `ex.term.worker_run` | `(worker_count: i64, dispatcher: fn(i64) -> i64) -> i64` | run claimed actors on a fixed OS-worker pool and return process 1's result |
 | `ex.term.current_entry` | `() -> i64` | closure word of the current process's entry; 0 for the compiled entry process |
 | `ex.term.process_done` | `(result: i64) -> i64` | mark the current process done and store its result |
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
