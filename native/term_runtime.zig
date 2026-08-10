@@ -35,20 +35,29 @@ const nil_word: i64 = 1;
 //   list:   cons cells [head: i64] [tail: i64]
 //   fun:    [fn_idx: i64] [env_len: i64] [env: i64 ... env_len]
 
-// A fixed bump arena. M2 scope: term construction and predicates for small
-// literal programs; GC arrives with a later milestone.
-var heap: [32 * 1024 * 1024]u8 align(8) = undefined;
-var bump: usize = 0;
+// Each OS thread owns its execution heap and runtime globals. This is the
+// isolation boundary required before multiple Batata executions can safely
+// occupy different BEAM scheduler threads. Actor-level worker sharing comes
+// later; no state below may silently fall back to process-global storage.
+const heap_word_cap = 4 * 1024 * 1024;
+threadlocal var heap: ?[]i64 = null;
+threadlocal var bump: usize = 0;
 
-fn alloc_bytes(len: usize) ?[*]u8 {
-    const start = std.mem.alignForward(usize, bump, @alignOf(i64));
-    if (start + len > heap.len) return null;
-    bump = start + len;
-    return heap[start..][0..len].ptr;
+fn current_heap() []i64 {
+    if (heap) |words| return words;
+
+    const words = std.heap.page_allocator.alloc(i64, heap_word_cap) catch
+        @panic("failed to allocate Batata runtime heap");
+    heap = words;
+    return words;
 }
 
 fn alloc_words(count: usize) ?[*]i64 {
-    return @ptrCast(@alignCast(alloc_bytes(count * @sizeOf(i64))));
+    const words = current_heap();
+    if (bump + count > words.len) return null;
+    const start = bump;
+    bump += count;
+    return words[start..][0..count].ptr;
 }
 
 fn word_tag(word: i64) usize {
@@ -214,10 +223,10 @@ const Process = struct {
 // `current` is the executing process; spawn allocates a new entry and returns
 // its pid; schedule_next round-robins runnable processes for the driver.
 const process_cap: usize = 8;
-var processes: [process_cap]Process = undefined;
-var process_count: usize = 1;
-var current_process: usize = 0;
-var processes_initialized = false;
+threadlocal var processes: [process_cap]Process = undefined;
+threadlocal var process_count: usize = 1;
+threadlocal var current_process: usize = 0;
+threadlocal var processes_initialized = false;
 
 fn init_processes() void {
     processes[0] = .{
@@ -250,6 +259,12 @@ fn pid_of(index: usize) i64 {
 /// driver calls this at program start so each run observes a clean actor
 /// table (processes/mailboxes do not leak across `Batata.execute` calls).
 pub export fn ex_term_process_table_reset() i64 {
+    // Starting an execution also resets all thread-owned transient state. The
+    // arena allocation itself is retained and reused by this scheduler thread.
+    bump = 0;
+    yield_count = 0;
+    jmp_depth = 0;
+    throw_value = 0;
     init_processes();
     processes_initialized = true;
     return 1;
@@ -259,21 +274,21 @@ pub export fn ex_term_process_table_reset() i64 {
 // charges slices of the reduction budget; each slice boundary is a yield
 // point. The epoch is checked across slices (a message arrival or scheduler
 // round bumps it, invalidating the continuation).
-var yield_count: i64 = 0;
+threadlocal var yield_count: i64 = 0;
 
 // Logical-clock counter for `erlang.unique_integer/0,1`: every call hands out
 // a fresh value, so positive results are strictly increasing and negative
 // results strictly decreasing (the single-threaded runtime makes them
 // naturally monotonic across processes as well).
-var unique_integer_counter: i64 = 0;
+threadlocal var unique_integer_counter: i64 = 0;
 
 // A stack of setjmp buffers for non-local exits (`throw`). The setjmp call
 // itself happens in the compiled code (so its frame stays live); the runtime
 // only tracks the buffers and performs the longjmp. The scalar slice has no
 // stack-owned resources to clean up, so a plain longjmp is safe.
-var jmp_stack: [16]*c.jmp_buf = undefined;
-var jmp_depth: usize = 0;
-var throw_value: i64 = 0;
+threadlocal var jmp_stack: [16]*c.jmp_buf = undefined;
+threadlocal var jmp_depth: usize = 0;
+threadlocal var throw_value: i64 = 0;
 
 /// Size of the C `jmp_buf` so the compiled code can allocate it on its own
 /// stack.
@@ -1059,7 +1074,7 @@ pub export fn ex_term_enumerable_reduce_fun(
 // code calls them through `ex.term.call_callback`. Unregistered ids return
 // the error sentinel -1.
 const beam_callback_cap = 16;
-var callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 = [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap;
+threadlocal var callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 = [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap;
 
 /// Registers a native callback entry (fn_id, function pointer). Returns 0 on
 /// success, -1 when the id is out of range.
@@ -2071,6 +2086,46 @@ test "term ABI mailbox and integer untag" {
     const pid4 = ex_term_spawn(fun);
     try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
     try std.testing.expectEqual(pid4, ex_term_schedule_next());
+}
+
+const RuntimeIsolationProbe = struct {
+    ready: std.atomic.Value(u32) = .init(0),
+    thread_ids: [2]std.Thread.Id = undefined,
+    unique_values: [2]i64 = undefined,
+    runnable_counts: [2]i64 = undefined,
+    yield_counts: [2]i64 = undefined,
+
+    fn run(self: *@This(), slot: usize, increments: usize, spawned: usize) void {
+        _ = ex_term_process_table_reset();
+        self.thread_ids[slot] = std.Thread.getCurrentId();
+
+        for (0..increments) |_| _ = ex_term_unique_integer(0);
+        for (0..spawned) |_| _ = ex_term_spawn(nil_word);
+        for (0..spawned) |_| _ = ex_term_yield_mark();
+
+        _ = self.ready.fetchAdd(1, .acq_rel);
+        while (self.ready.load(.acquire) != self.thread_ids.len) std.Thread.yield() catch {};
+
+        self.unique_values[slot] = ex_term_unique_integer(0);
+        self.runnable_counts[slot] = ex_term_processes_runnable();
+        self.yield_counts[slot] = ex_term_yield_count();
+    }
+};
+
+test "runtime state is isolated across concurrent OS threads" {
+    var probe = RuntimeIsolationProbe{};
+    const first = try std.Thread.spawn(.{}, RuntimeIsolationProbe.run, .{ &probe, 0, 2, 1 });
+    const second = try std.Thread.spawn(.{}, RuntimeIsolationProbe.run, .{ &probe, 1, 5, 3 });
+    first.join();
+    second.join();
+
+    try std.testing.expect(probe.thread_ids[0] != probe.thread_ids[1]);
+    try std.testing.expectEqual(@as(i64, 3), probe.unique_values[0]);
+    try std.testing.expectEqual(@as(i64, 6), probe.unique_values[1]);
+    try std.testing.expectEqual(@as(i64, 2), probe.runnable_counts[0]);
+    try std.testing.expectEqual(@as(i64, 4), probe.runnable_counts[1]);
+    try std.testing.expectEqual(@as(i64, 1), probe.yield_counts[0]);
+    try std.testing.expectEqual(@as(i64, 3), probe.yield_counts[1]);
 }
 
 test "term ABI throw unwinds to the innermost try" {
