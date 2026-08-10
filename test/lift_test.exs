@@ -3,16 +3,28 @@ defmodule Batata.LiftTest do
 
   alias Batata.{Frontend, Lift}
 
+  @result_accessor_ops Enum.flat_map(
+                         [
+                           "ex.result_destroy",
+                           "ex.result_root_kind",
+                           "ex.result_root_word",
+                           "ex.result_term_kind",
+                           "ex.result_term_length",
+                           "ex.result_term_get"
+                         ],
+                         &["ex.func", &1, "ex.return"]
+                       )
+
   @execution_driver_ops [
-    "ex.func",
-    "ex.call",
-    "ex.unbox",
-    "ex.runtime_create",
-    "ex.runtime_enter",
-    "ex.runtime_leave",
-    "ex.runtime_destroy",
-    "ex.return"
-  ]
+                          "ex.func",
+                          "ex.call",
+                          "ex.unbox",
+                          "ex.runtime_create",
+                          "ex.runtime_enter",
+                          "ex.runtime_leave",
+                          "ex.result_create",
+                          "ex.return"
+                        ] ++ @result_accessor_ops
 
   defp lift!(source, ctx) do
     source
@@ -353,7 +365,7 @@ defmodule Batata.LiftTest do
       )
 
     names = op_names(module)
-    assert Enum.count(names, &(&1 == "ex.func")) == 3
+    assert Enum.count(names, &(&1 == "ex.func")) == 9
     assert Enum.count(names, &(&1 == "ex.case")) == 1
     assert Enum.count(names, &(&1 == "ex.clause")) == 3
   end
@@ -474,7 +486,7 @@ defmodule Batata.LiftTest do
 
     names = op_names(module)
     # The execution driver, __batata_entry, extracted __fn_* and closure dispatch.
-    assert Enum.count(names, &(&1 == "ex.func")) == 4
+    assert Enum.count(names, &(&1 == "ex.func")) == 10
     assert "ex.call" in names
 
     rendered = MLIR.to_string(module, generic: true)

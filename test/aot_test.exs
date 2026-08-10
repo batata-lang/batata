@@ -39,6 +39,32 @@ defmodule Batata.AOTTest do
   end
 
   @tag :tmp_dir
+  test "prints a composite result before releasing its runtime", %{ctx: ctx, tmp_dir: tmp_dir} do
+    output =
+      Batata.build(
+        """
+        defmodule Composite do
+          def main(), do: {1, [2, 3], <<4, 5>>}
+        end
+        """,
+        tmp_dir,
+        ctx
+      )
+
+    binary = Path.join(tmp_dir, "run_composite")
+
+    {_, 0} =
+      System.cmd(
+        "zig",
+        ["cc", output.driver, output.archive, output.runtime_lib, "-lc", "-o", binary],
+        stderr_to_stdout: true
+      )
+
+    {stdout, 0} = System.cmd(binary, [])
+    assert stdout == ~s|{1, [2, 3], "\x04\x05"}\n|
+  end
+
+  @tag :tmp_dir
   test "runs a multi-worker AOT program in its own runtime session", %{
     ctx: ctx,
     tmp_dir: tmp_dir

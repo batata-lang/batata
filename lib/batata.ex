@@ -15,6 +15,11 @@ defmodule Batata do
   alias Beaver.Native
   alias Beaver.Native.I64
 
+  defmodule ResultError do
+    @moduledoc "Raised when a native result handle cannot be materialized safely."
+    defexception [:message]
+  end
+
   @doc """
   Parses and lowers Elixir source into a verified `builtin.module` of `ex`
   operations.
@@ -88,13 +93,115 @@ defmodule Batata do
     jit = MLIR.ExecutionEngine.create!(module, execution_engine_opts(module))
 
     try do
-      return = I64.make(0)
-      MLIR.ExecutionEngine.invoke!(jit, "main", [], return, dirty: :cpu_bound)
-      Native.to_term(return)
+      handle = invoke_i64(jit, "main", [], dirty: :cpu_bound)
+
+      if handle == 0 do
+        raise ResultError, "native result registry is full"
+      end
+
+      try do
+        materialize_result(jit, handle, source)
+      after
+        invoke_i64(jit, "__batata_result_destroy", [handle])
+      end
     after
       MLIR.ExecutionEngine.destroy(jit)
       MLIR.Module.destroy(module)
     end
+  end
+
+  defp materialize_result(jit, handle, source) do
+    kind = invoke_i64(jit, "__batata_result_root_kind", [handle])
+    word = invoke_i64(jit, "__batata_result_root_word", [handle])
+
+    cond do
+      kind < 0 -> raise ResultError, "native result handle is stale"
+      kind == 0 -> word
+      true -> materialize_word(jit, handle, word, kind, literal_atom_table(source))
+    end
+  end
+
+  defp materialize_word(_jit, _handle, word, 0, _atoms), do: div(word, 8)
+  defp materialize_word(_jit, _handle, 1, 1, _atoms), do: nil
+
+  defp materialize_word(_jit, _handle, word, 1, atoms) do
+    Map.get_lazy(atoms, word, fn ->
+      raise ResultError, "unknown native atom word #{word}"
+    end)
+  end
+
+  defp materialize_word(jit, handle, word, 2, atoms) do
+    length = result_length(jit, handle, word)
+
+    0..(length - 1)//1
+    |> Enum.map(&materialize_child(jit, handle, word, &1, atoms))
+    |> List.to_tuple()
+  end
+
+  defp materialize_word(jit, handle, word, 3, atoms) do
+    length = result_length(jit, handle, word)
+    Enum.map(0..(length - 1)//1, &materialize_child(jit, handle, word, &1, atoms))
+  end
+
+  defp materialize_word(jit, handle, word, 4, atoms) do
+    length = result_length(jit, handle, word)
+
+    0..(length - 1)//1
+    |> Enum.map(fn index ->
+      key = materialize_child(jit, handle, word, index * 2, atoms)
+      value = materialize_child(jit, handle, word, index * 2 + 1, atoms)
+      {key, value}
+    end)
+    |> Map.new()
+  end
+
+  defp materialize_word(jit, handle, word, 5, _atoms) do
+    length = result_length(jit, handle, word)
+
+    0..(length - 1)//1
+    |> Enum.map(&invoke_i64(jit, "__batata_result_term_get", [handle, word, &1]))
+    |> :erlang.list_to_binary()
+  end
+
+  defp materialize_word(_jit, _handle, _word, 6, _atoms) do
+    raise ResultError, "native closures cannot cross the host result boundary"
+  end
+
+  defp materialize_word(_jit, _handle, _word, kind, _atoms) do
+    raise ResultError, "invalid native term kind #{kind}"
+  end
+
+  defp materialize_child(jit, handle, parent, index, atoms) do
+    word = invoke_i64(jit, "__batata_result_term_get", [handle, parent, index])
+    kind = invoke_i64(jit, "__batata_result_term_kind", [handle, word])
+    materialize_word(jit, handle, word, kind, atoms)
+  end
+
+  defp result_length(jit, handle, word) do
+    case invoke_i64(jit, "__batata_result_term_length", [handle, word]) do
+      length when length >= 0 -> length
+      _ -> raise ResultError, "native term does not have a readable length"
+    end
+  end
+
+  defp literal_atom_table(source) do
+    source
+    |> Code.string_to_quoted!()
+    |> Macro.prewalk(%{}, fn
+      atom, acc when is_atom(atom) -> {atom, Map.put(acc, atom_word(atom), atom)}
+      node, acc -> {node, acc}
+    end)
+    |> elem(1)
+  end
+
+  defp atom_word(nil), do: 1
+  defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
+
+  defp invoke_i64(jit, name, arguments, opts \\ []) do
+    native_arguments = Enum.map(arguments, &I64.make/1)
+    result = I64.make(0)
+    MLIR.ExecutionEngine.invoke!(jit, name, native_arguments, result, opts)
+    Native.to_term(result)
   end
 
   # Term ops lower to `ex.term.*` calls; when they are present the JIT must be
@@ -213,10 +320,63 @@ defmodule Batata do
     #include <stdio.h>
 
     extern int64_t batata_main(void);
+    extern int64_t __batata_result_destroy(int64_t);
+    extern int64_t __batata_result_root_kind(int64_t);
+    extern int64_t __batata_result_root_word(int64_t);
+    extern int64_t __batata_result_term_kind(int64_t, int64_t);
+    extern int64_t __batata_result_term_length(int64_t, int64_t);
+    extern int64_t __batata_result_term_get(int64_t, int64_t, int64_t);
+
+    static int print_term(int64_t handle, int64_t word, int64_t kind) {
+      int64_t length;
+      if (kind == 0) return printf("%lld", (long long)(word / 8)) < 0 ? -1 : 0;
+      if (kind == 1) {
+        if (word == 1) return printf("nil") < 0 ? -1 : 0;
+        return printf("#Atom<%lld>", (long long)word) < 0 ? -1 : 0;
+      }
+      if (kind == 6) return -1;
+      length = __batata_result_term_length(handle, word);
+      if (length < 0) return -1;
+      if (kind == 5) {
+        if (putchar('"') == EOF) return -1;
+        for (int64_t i = 0; i < length; i++) {
+          int byte = (int)__batata_result_term_get(handle, word, i);
+          if (byte == '"' || byte == '\\\\') putchar('\\\\');
+          if (putchar(byte) == EOF) return -1;
+        }
+        return putchar('"') == EOF ? -1 : 0;
+      }
+      if (kind == 2) putchar('{');
+      else if (kind == 3) putchar('[');
+      else if (kind == 4) fputs("%{", stdout);
+      for (int64_t i = 0; i < length; i++) {
+        if (i > 0) fputs(", ", stdout);
+        if (kind == 4) {
+          int64_t key = __batata_result_term_get(handle, word, i * 2);
+          int64_t value = __batata_result_term_get(handle, word, i * 2 + 1);
+          if (print_term(handle, key, __batata_result_term_kind(handle, key)) < 0) return -1;
+          fputs(" => ", stdout);
+          if (print_term(handle, value, __batata_result_term_kind(handle, value)) < 0) return -1;
+        } else {
+          int64_t child = __batata_result_term_get(handle, word, i);
+          if (print_term(handle, child, __batata_result_term_kind(handle, child)) < 0) return -1;
+        }
+      }
+      return putchar(kind == 2 || kind == 4 ? '}' : ']') == EOF ? -1 : 0;
+    }
 
     int main(void) {
-      printf("%lld\\n", (long long)batata_main());
-      return 0;
+      int status = 0;
+      int64_t handle = batata_main();
+      if (handle == 0) return 2;
+      int64_t kind = __batata_result_root_kind(handle);
+      int64_t word = __batata_result_root_word(handle);
+      if (kind < 0) status = 3;
+      else if (kind == 0) status = printf("%lld", (long long)word) < 0 ? 4 : 0;
+      else status = print_term(handle, word, kind) < 0 ? 4 : 0;
+      if (__batata_result_destroy(handle) < 0 && status == 0) status = 5;
+      if (status == 0) putchar('\\n');
+      return status;
     }
     """
   end

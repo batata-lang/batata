@@ -32,6 +32,18 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "materializes a composite result before releasing its runtime", %{ctx: ctx} do
+    assert {1, [2, 3], %{7 => 42}, <<4, 5>>} ==
+             Batata.execute(
+               """
+               defmodule Composite do
+                 def main(), do: {1, [2, 3], %{7 => 42}, <<4, 5>>}
+               end
+               """,
+               ctx
+             )
+  end
+
   test "executes a local call", %{ctx: ctx} do
     assert 3 ==
              Batata.execute(

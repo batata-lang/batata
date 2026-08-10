@@ -350,6 +350,58 @@ const Runtime = struct {
     }
 };
 
+// Host result handles keep an execution runtime alive while a JIT or AOT host
+// copies the returned term out of the arena. The generation makes a handle
+// deterministic to reject after its slot has been recycled; callers never
+// dereference an address supplied by the host.
+const result_slot_cap: usize = 4096;
+
+const ResultSlot = struct {
+    runtime: ?*Runtime = null,
+    word: i64 = 0,
+    generation: u32 = 1,
+};
+
+var result_lock: RuntimeMutex = .{};
+var result_slots: [result_slot_cap]ResultSlot = [_]ResultSlot{.{}} ** result_slot_cap;
+var result_cursor: usize = 0;
+
+fn result_handle(index: usize, generation: u32) i64 {
+    const bits = (@as(u64, generation) << 32) | @as(u64, @intCast(index + 1));
+    return @bitCast(bits);
+}
+
+fn result_slot_locked(handle: i64) ?*ResultSlot {
+    const bits: u64 = @bitCast(handle);
+    const encoded_index: u32 = @truncate(bits);
+    if (encoded_index == 0) return null;
+    const index = @as(usize, encoded_index - 1);
+    if (index >= result_slot_cap) return null;
+    const generation: u32 = @truncate(bits >> 32);
+    const slot = &result_slots[index];
+    if (slot.runtime == null or slot.generation != generation) return null;
+    return slot;
+}
+
+fn runtime_owns_word(instance: *Runtime, word: i64) bool {
+    const tag = word_tag(word);
+    if (tag < tag_tuple or tag > tag_fun) return false;
+    const words = instance.heap orelse return false;
+    const address = @as(usize, @bitCast(word)) & ~tag_mask;
+    const start = @intFromPtr(words.ptr);
+    const end = start + words.len * @sizeOf(i64);
+    return address >= start and address < end;
+}
+
+fn result_term_kind_locked(slot: *ResultSlot, word: i64) i64 {
+    const tag = word_tag(word);
+    if (tag == tag_int or tag == tag_atom) return @intCast(tag);
+    if (slot.runtime) |instance| {
+        if (runtime_owns_word(instance, word)) return @intCast(tag);
+    }
+    return -1;
+}
+
 threadlocal var active_runtime: ?*Runtime = null;
 threadlocal var owned_runtime: ?*Runtime = null;
 threadlocal var current_process: usize = 0;
@@ -450,6 +502,123 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
     return 0;
+}
+
+/// Pins a completed execution result and transfers ownership of its runtime
+/// to the returned opaque handle. Zero means the bounded registry is full.
+pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
+    if (runtime_handle == 0) return 0;
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(runtime_handle)));
+    result_lock.lock();
+    defer result_lock.unlock();
+
+    var offset: usize = 0;
+    while (offset < result_slot_cap) : (offset += 1) {
+        const index = (result_cursor + offset) % result_slot_cap;
+        const slot = &result_slots[index];
+        if (slot.runtime == null) {
+            slot.runtime = instance;
+            slot.word = word;
+            result_cursor = (index + 1) % result_slot_cap;
+            return result_handle(index, slot.generation);
+        }
+    }
+    if (active_runtime == instance) active_runtime = null;
+    if (owned_runtime == instance) owned_runtime = null;
+    instance.deinit();
+    return 0;
+}
+
+/// Releases a result and the execution runtime it owns.
+pub export fn ex_term_result_destroy(handle: i64) i64 {
+    result_lock.lock();
+    const slot = result_slot_locked(handle) orelse {
+        result_lock.unlock();
+        return -1;
+    };
+    const instance = slot.runtime.?;
+    slot.runtime = null;
+    slot.word = 0;
+    slot.generation +%= 1;
+    if (slot.generation == 0) slot.generation = 1;
+    result_lock.unlock();
+
+    if (active_runtime == instance) {
+        active_runtime = null;
+        current_process_ptr = null;
+    }
+    if (owned_runtime == instance) owned_runtime = null;
+    instance.deinit();
+    return 0;
+}
+
+/// Classifies the root. Untagged scalar returns remain scalar even when their
+/// low bits happen to resemble a heap tag.
+pub export fn ex_term_result_root_kind(handle: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    return if (runtime_owns_word(slot.runtime.?, slot.word))
+        @intCast(word_tag(slot.word))
+    else
+        0;
+}
+
+pub export fn ex_term_result_root_word(handle: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    return slot.word;
+}
+
+pub export fn ex_term_result_term_kind(handle: i64, word: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    return result_term_kind_locked(slot, word);
+}
+
+pub export fn ex_term_result_term_length(handle: i64, word: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    const kind = result_term_kind_locked(slot, word);
+    return switch (kind) {
+        tag_tuple => @intCast(tuple_len(word)),
+        tag_list => @intCast(list_len(word)),
+        tag_map => @intCast(map_len(word)),
+        tag_binary => @intCast(binary_len(word)),
+        tag_fun => fun_words(word)[1],
+        else => -1,
+    };
+}
+
+pub export fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    if (index_word < 0) return -1;
+    const index: usize = @intCast(index_word);
+    const kind = result_term_kind_locked(slot, word);
+    return switch (kind) {
+        tag_tuple => if (index < tuple_len(word)) tuple_elems(word)[index] else -1,
+        tag_map => if (index < map_len(word) * 2) map_entries(word)[index] else -1,
+        tag_binary => if (index < binary_len(word)) binary_bytes(word)[index] else -1,
+        tag_fun => if (index < @as(usize, @intCast(fun_words(word)[1])) + 1)
+            fun_words(word)[index * 0 + index]
+        else
+            -1,
+        tag_list => blk: {
+            var current = word;
+            var cursor: usize = 0;
+            while (word_tag(current) == tag_list and cursor < index) : (cursor += 1) {
+                current = list_cell(current)[1];
+            }
+            if (word_tag(current) != tag_list) break :blk -1;
+            break :blk list_cell(current)[0];
+        },
+        else => -1,
+    };
 }
 
 fn init_processes() void {
@@ -2422,6 +2591,13 @@ comptime {
     @export(&ex_term_runtime_enter, .{ .name = "ex.term.runtime_enter" });
     @export(&ex_term_runtime_leave, .{ .name = "ex.term.runtime_leave" });
     @export(&ex_term_runtime_destroy, .{ .name = "ex.term.runtime_destroy" });
+    @export(&ex_term_result_create, .{ .name = "ex.term.result_create" });
+    @export(&ex_term_result_destroy, .{ .name = "ex.term.result_destroy" });
+    @export(&ex_term_result_root_kind, .{ .name = "ex.term.result_root_kind" });
+    @export(&ex_term_result_root_word, .{ .name = "ex.term.result_root_word" });
+    @export(&ex_term_result_term_kind, .{ .name = "ex.term.result_term_kind" });
+    @export(&ex_term_result_term_length, .{ .name = "ex.term.result_term_length" });
+    @export(&ex_term_result_term_get, .{ .name = "ex.term.result_term_get" });
     @export(&ex_term_self, .{ .name = "ex.term.self" });
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
@@ -3052,6 +3228,34 @@ test "explicit runtime handles preserve isolated execution state" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(first));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(second));
+}
+
+test "host result handles retain terms and reject stale generations" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    const tuple = tuple3(8, 16, 24);
+    const handle = ex_term_result_create(runtime_handle, tuple);
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, tag_tuple), ex_term_result_root_kind(handle));
+    try std.testing.expectEqual(tuple, ex_term_result_root_word(handle));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_result_term_length(handle, tuple));
+    try std.testing.expectEqual(@as(i64, 16), ex_term_result_term_get(handle, tuple, 1));
+    try std.testing.expectEqual(@as(i64, tag_int), ex_term_result_term_kind(handle, 16));
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_root_kind(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_destroy(handle));
+}
+
+test "host result roots preserve untagged scalar compatibility" {
+    const runtime_handle = ex_term_runtime_create();
+    const handle = ex_term_result_create(runtime_handle, 3);
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_root_kind(handle));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_result_root_word(handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
 }
 
 const ActorClaimProbe = struct {
