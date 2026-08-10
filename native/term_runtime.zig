@@ -38,7 +38,11 @@ const nil_word: i64 = 1;
 // Runtime instances own execution state. The compatibility path lazily binds
 // one instance per OS thread; explicit handles let future actor workers enter
 // the same execution without returning to process-global mutable storage.
-const heap_word_cap = 4 * 1024 * 1024;
+const arena_chunk_words = 64 * 1024;
+// The initial segmented-arena policy deliberately permits growth beyond the
+// former 32 MiB heap without making long-running bump allocation unbounded.
+const arena_chunk_cap = 128;
+const arena_owner_unassigned = std.math.maxInt(u32);
 
 fn word_tag(word: i64) usize {
     return @as(usize, @bitCast(word)) & tag_mask;
@@ -310,6 +314,12 @@ const default_process_cap: usize = 256;
 const max_process_cap: usize = 4096;
 const beam_callback_cap = 16;
 
+const ArenaChunk = struct {
+    words: ?[]i64 = null,
+    bump: usize = 0,
+    owner: u32 = arena_owner_unassigned,
+};
+
 const Runtime = struct {
     heap_lock: RuntimeMutex = .{},
     scheduler_lock: RuntimeMutex = .{},
@@ -319,8 +329,9 @@ const Runtime = struct {
     active_actors: std.atomic.Value(u32) = .init(0),
     max_active_actors: std.atomic.Value(u32) = .init(0),
     migrations: std.atomic.Value(u64) = .init(0),
-    heap: ?[]i64 = null,
-    bump: usize = 0,
+    arena_chunks: [arena_chunk_cap]ArenaChunk = [_]ArenaChunk{.{}} ** arena_chunk_cap,
+    arena_chunk_count: usize = 0,
+    arena_epoch: u32 = 1,
     processes: []*Process = &.{},
     process_cap: usize = default_process_cap,
     process_count: usize = 0,
@@ -340,7 +351,9 @@ const Runtime = struct {
         [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap,
 
     fn deinit(self: *Runtime) void {
-        if (self.heap) |words| std.heap.page_allocator.free(words);
+        for (self.arena_chunks[0..self.arena_chunk_count]) |chunk| {
+            if (chunk.words) |words| std.heap.page_allocator.free(words);
+        }
         for (self.processes[0..self.process_count]) |proc| {
             std.heap.page_allocator.destroy(proc);
         }
@@ -386,11 +399,14 @@ fn result_slot_locked(handle: i64) ?*ResultSlot {
 fn runtime_owns_word(instance: *Runtime, word: i64) bool {
     const tag = word_tag(word);
     if (tag < tag_tuple or tag > tag_fun) return false;
-    const words = instance.heap orelse return false;
     const address = @as(usize, @bitCast(word)) & ~tag_mask;
-    const start = @intFromPtr(words.ptr);
-    const end = start + words.len * @sizeOf(i64);
-    return address >= start and address < end;
+    for (instance.arena_chunks[0..instance.arena_chunk_count]) |chunk| {
+        const words = chunk.words orelse continue;
+        const start = @intFromPtr(words.ptr);
+        const end = start + chunk.bump * @sizeOf(i64);
+        if (address >= start and address < end) return true;
+    }
+    return false;
 }
 
 fn result_term_kind_locked(slot: *ResultSlot, word: i64) i64 {
@@ -409,6 +425,10 @@ threadlocal var current_process: usize = 0;
 // through the pointer table on every ABI call would still race with growth of
 // that table even though the Process itself no longer moves.
 threadlocal var current_process_ptr: ?*Process = null;
+threadlocal var arena_worker_id: u32 = 0;
+threadlocal var arena_cached_runtime: ?*Runtime = null;
+threadlocal var arena_cached_epoch: u32 = 0;
+threadlocal var arena_cached_chunk: usize = arena_chunk_cap;
 
 fn create_runtime() *Runtime {
     const instance = std.heap.page_allocator.create(Runtime) catch
@@ -428,24 +448,66 @@ fn runtime() *Runtime {
     return active_runtime.?;
 }
 
-fn current_heap(instance: *Runtime) []i64 {
-    if (instance.heap) |words| return words;
-
-    const words = std.heap.page_allocator.alloc(i64, heap_word_cap) catch
-        @panic("failed to allocate Batata runtime heap");
-    instance.heap = words;
-    return words;
+fn reset_arena(instance: *Runtime) void {
+    instance.heap_lock.lock();
+    defer instance.heap_lock.unlock();
+    for (instance.arena_chunks[0..instance.arena_chunk_count]) |*chunk| {
+        chunk.bump = 0;
+        chunk.owner = arena_owner_unassigned;
+    }
+    instance.arena_epoch +%= 1;
+    if (instance.arena_epoch == 0) instance.arena_epoch = 1;
 }
 
 fn alloc_words(count: usize) ?[*]i64 {
     const instance = runtime();
+
+    if (arena_cached_runtime == instance and
+        arena_cached_epoch == instance.arena_epoch and
+        arena_cached_chunk < instance.arena_chunk_count)
+    {
+        const chunk = &instance.arena_chunks[arena_cached_chunk];
+        if (chunk.owner == arena_worker_id) {
+            const words = chunk.words.?;
+            if (chunk.bump + count <= words.len) {
+                const start = chunk.bump;
+                chunk.bump += count;
+                return words[start..][0..count].ptr;
+            }
+        }
+    }
+
     instance.heap_lock.lock();
     defer instance.heap_lock.unlock();
-    const words = current_heap(instance);
-    if (instance.bump + count > words.len) return null;
-    const start = instance.bump;
-    instance.bump += count;
-    return words[start..][0..count].ptr;
+
+    var index: usize = 0;
+    while (index < instance.arena_chunk_count) : (index += 1) {
+        const chunk = &instance.arena_chunks[index];
+        const words = chunk.words.?;
+        if (chunk.owner == arena_owner_unassigned and count <= words.len) {
+            chunk.owner = arena_worker_id;
+            chunk.bump = count;
+            arena_cached_runtime = instance;
+            arena_cached_epoch = instance.arena_epoch;
+            arena_cached_chunk = index;
+            return words[0..count].ptr;
+        }
+    }
+
+    if (instance.arena_chunk_count >= arena_chunk_cap) return null;
+    const word_count = @max(count, arena_chunk_words);
+    const words = std.heap.page_allocator.alloc(i64, word_count) catch return null;
+    index = instance.arena_chunk_count;
+    instance.arena_chunk_count += 1;
+    instance.arena_chunks[index] = .{
+        .words = words,
+        .bump = count,
+        .owner = arena_worker_id,
+    };
+    arena_cached_runtime = instance;
+    arena_cached_epoch = instance.arena_epoch;
+    arena_cached_chunk = index;
+    return words[0..count].ptr;
 }
 
 fn tuple3(a: i64, b: i64, d: i64) i64 {
@@ -644,7 +706,7 @@ fn init_processes() void {
     // Each program run starts with a fresh bump arena: the scheduler driver
     // calls `process_table_reset` at the top, so terms allocated by a
     // previous run must not accumulate toward the fixed heap limit.
-    instance.bump = 0;
+    reset_arena(instance);
 }
 
 fn current_proc() *Process {
@@ -710,8 +772,7 @@ pub export fn ex_term_process_table_reset(cap: i64) i64 {
         instance.process_cap = new_cap;
     }
     // Starting an execution also resets all thread-owned transient state. The
-    // arena allocation itself is retained and reused by this scheduler thread.
-    instance.bump = 0;
+    // segmented arena allocations themselves are retained for reuse.
     instance.yield_count = 0;
     jmp_depth = 0;
     throw_value = 0;
@@ -1147,6 +1208,7 @@ const Worker = struct {
 
     fn run(self: @This()) void {
         active_runtime = self.instance;
+        arena_worker_id = self.id;
         current_process = 0;
         current_process_ptr = null;
 
@@ -1179,6 +1241,7 @@ const Worker = struct {
         }
 
         active_runtime = null;
+        arena_worker_id = 0;
         current_process = 0;
         current_process_ptr = null;
     }
@@ -3256,6 +3319,41 @@ test "host result roots preserve untagged scalar compatibility" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_root_kind(handle));
     try std.testing.expectEqual(@as(i64, 3), ex_term_result_root_word(handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
+}
+
+test "segmented arena grows beyond the former fixed heap without moving terms" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    const first = alloc_words(2).?;
+    first[0] = 101;
+    first[1] = 202;
+
+    for (0..65) |_| {
+        const segment = alloc_words(arena_chunk_words).?;
+        segment[0] = 303;
+    }
+
+    try std.testing.expectEqual(@as(i64, 101), first[0]);
+    try std.testing.expectEqual(@as(i64, 202), first[1]);
+    try std.testing.expect(runtime().arena_chunk_count > 65);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
+}
+
+test "workers reserve independent bump segments" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    arena_worker_id = 7;
+    const first = alloc_words(1).?;
+    arena_worker_id = 8;
+    const second = alloc_words(1).?;
+
+    try std.testing.expect(@intFromPtr(first) != @intFromPtr(second));
+    try std.testing.expectEqual(@as(u32, 7), runtime().arena_chunks[0].owner);
+    try std.testing.expectEqual(@as(u32, 8), runtime().arena_chunks[1].owner);
+    arena_worker_id = 0;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
 }
 
 const ActorClaimProbe = struct {
