@@ -271,3 +271,12 @@ Run the native concurrency suite under ThreadSanitizer with:
 ```sh
 zig test native/term_runtime.zig -lc -fsanitize-thread
 ```
+
+Measure process-slot recycling under a long-running, short-lived-actor
+workload (one JSON object with spawn count, per-cap reuse success, peak
+concurrent actors, and the no-recycling failure baseline):
+
+```sh
+zig run -O ReleaseFast --dep runtime \
+  -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc
+```
