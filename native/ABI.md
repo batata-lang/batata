@@ -25,11 +25,14 @@ Heap objects are 8-byte aligned, so the low 3 bits of a container pointer are
 always zero and the tag can be OR-ed in. `nil` is the atom with id 0
 (`word == 1`); it doubles as the empty list, matching BEAM.
 
-The heap, process table, callback registry, scheduler counters, and exception
-stack are isolated per OS thread. Independent Batata executions may therefore
-run concurrently on different BEAM scheduler threads without sharing mutable
-runtime state. `ex.term.process_table_reset` starts a fresh execution on the
-current thread and reuses that thread's arena allocation.
+The heap, process table, callback registry, and scheduler counters belong to
+an explicit `Runtime`; the exception stack remains worker-local. The current
+compatibility entry lazily creates one runtime per OS thread, while the handle
+API provides the lifecycle and binding boundary needed by a worker pool.
+Independent Batata executions may therefore run concurrently on different
+BEAM scheduler threads without sharing mutable runtime state.
+`ex.term.process_table_reset` starts a fresh execution in the bound runtime
+and reuses its arena allocation.
 
 This boundary does not yet make the actors inside one execution parallel: its
 generated scheduler still dispatches them on one worker in round-robin order.
@@ -52,6 +55,10 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 
 | symbol | signature | semantics |
 | --- | --- | --- |
+| `ex.term.runtime_create` | `() -> i64` | allocate an isolated runtime and return its opaque handle |
+| `ex.term.runtime_enter` | `(handle: i64) -> i64` | bind a runtime to the calling worker; 0 on success |
+| `ex.term.runtime_leave` | `() -> i64` | unbind the explicit runtime from the calling worker |
+| `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy a runtime after all workers have left it |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
 | `ex.term.self` | `() -> i64` | pid of the current actor (atom word with id 1) |
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
@@ -151,8 +158,8 @@ Predicates return `1` or `0` as an `i64`.
 - `ex.term.binary_from_list` reads each segment's integer payload as a byte.
 - `ex.term.try_push` overflows at 16 nested try regions; deeper nesting aborts.
 - An uncaught `ex.term.throw` panics.
-- Each OS thread lazily owns a fixed 32 MiB bump arena; it is reset and reused
-  between executions on that thread. GC is a later milestone.
+- Each runtime lazily owns a fixed 32 MiB bump arena; it is reset and reused
+  between executions. GC is a later milestone.
 - The mailbox is a fixed 64-slot FIFO for a single actor; blocking receives
   and `after` timeouts arrive with the scheduler.
 

@@ -127,10 +127,12 @@ bridge — see [tsai/beaver#30](https://localhost:3000/tsai/beaver/issues/30)):
 The actor model (tsai/beaver#35) starts with the Zig process and reduction
 clock:
 
-- mutable native execution state is isolated per OS thread, so independent
-  `Batata.execute` invocations may occupy different BEAM scheduler threads
-  safely. Actors within one invocation are still dispatched by one
-  round-robin worker; the parallel worker scheduler is tracked in
+- mutable native execution state lives in an explicit `Runtime`; the current
+  compatibility entry lazily binds one instance per OS thread, while opaque
+  runtime handles provide lifecycle and worker enter/leave boundaries.
+  Independent `Batata.execute` invocations may occupy different BEAM
+  scheduler threads safely. Actors within one invocation are still dispatched
+  by one round-robin worker; the parallel worker scheduler is tracked in
   [tsai/beaver#42](http://localhost:3000/tsai/beaver/issues/42);
 - a single `Process` holds pid, FIFO mailbox, and `Clock{budget, used, epoch}`
   (the mailbox moved from globals into the process);
