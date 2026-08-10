@@ -1198,7 +1198,7 @@ pub export fn ex_term_process_done(result: i64) i64 {
     defer instance.scheduler_lock.unlock();
     const proc = current_proc();
     proc.state_lock.lock();
-    if (!proc.cont.active and proc.status != .waiting) {
+    if (!proc.cont.active and proc.status == .runnable) {
         proc.status = .done;
         proc.result = result;
         const link_count = proc.link_count;
@@ -3293,6 +3293,18 @@ test "linked failures cascade while normal exits only notify trappers" {
     try std.testing.expectEqual(normal_child, ex_term_tuple_get(exit_message, 1));
     try std.testing.expectEqual(normal_tag, ex_term_tuple_get(exit_message, 2));
     try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(trapping_parent));
+}
+
+test "a completed dispatcher cannot overwrite an earlier explicit exit" {
+    const tag: i64 = (131 << @intCast(tag_shift)) | tag_atom;
+    const reason: i64 = (132 << @intCast(tag_shift)) | tag_atom;
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const pid = ex_term_self();
+    try std.testing.expectEqual(reason, ex_term_exit(pid, reason, tag, tag));
+    _ = ex_term_process_done(0);
+    try std.testing.expectEqual(reason, ex_term_process_exit_reason(pid));
+    try std.testing.expectEqual(nil_word, ex_term_process_result(pid));
 }
 
 const ConcurrentGrowthProbe = struct {
