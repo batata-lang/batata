@@ -1604,11 +1604,8 @@ defmodule Batata.Lift do
           ctx,
           cond_i1,
           budget,
-          b_arg,
-          b_acc,
-          b_cursor,
+          {b_arg, b_acc, b_cursor, b_countdown},
           false,
-          b_countdown,
           batch_size
         )
 
@@ -1682,11 +1679,8 @@ defmodule Batata.Lift do
          ctx,
          cond_i1,
          budget,
-         arg,
-         acc,
-         cursor,
+         {arg, acc, cursor, countdown},
          receive?,
-         countdown,
          batch_size
        ) do
     i64 = integer_type(ctx)
@@ -1941,11 +1935,8 @@ defmodule Batata.Lift do
           ctx,
           cond_i1,
           budget,
-          b_list,
-          b_acc,
-          b_cursor,
+          {b_list, b_acc, b_cursor, b_countdown},
           false,
-          b_countdown,
           batch_size
         )
 
@@ -2196,11 +2187,8 @@ defmodule Batata.Lift do
           ctx,
           cond_i1,
           budget,
-          b_list,
-          b_acc,
-          b_cursor,
+          {b_list, b_acc, b_cursor, b_countdown},
           false,
-          b_countdown,
           batch_size
         )
 
@@ -2989,11 +2977,8 @@ defmodule Batata.Lift do
         ctx,
         cond_i1,
         budget,
-        b_found,
-        b_result,
-        b_cursor,
+        {b_found, b_result, b_cursor, List.first(b_rest) || lit(0, ctx, before_block)},
         true,
-        List.first(b_rest) || lit(0, ctx, before_block),
         env[:__batch_size__]
       )
 
@@ -3288,11 +3273,8 @@ defmodule Batata.Lift do
         ctx,
         not_found_i1,
         budget,
-        b_found,
-        b_result,
-        b_cursor,
+        {b_found, b_result, b_cursor, List.first(b_rest) || lit(0, ctx, before_block)},
         true,
-        List.first(b_rest) || lit(0, ctx, before_block),
         env[:__batch_size__]
       )
 
