@@ -251,13 +251,10 @@ const Process = struct {
     receive_start: i64 = 0,
 };
 
-// Process table (#35 slice 4/5): a fixed-capacity set of actors, each with
-// its own FIFO mailbox, reduction clock, entry, status and continuation.
-// `current` is the executing process; spawn allocates a new entry and returns
-// its pid; schedule_next round-robins runnable processes for the driver.
-// The capacity is configurable per execution (#42) via
-// `ex.term.process_table_reset(cap)`, bounded to keep the fixed-resource
-// runtime model; spawn returns nil when the table is full regardless of cap.
+// The process table stores separately allocated Process objects. Growing the
+// table moves only pointers: a worker may therefore keep using its actor while
+// another worker spawns enough actors to resize the table. In particular,
+// atomics and locked mutexes are never memcpy'd or freed during growth.
 const default_process_cap: usize = 256;
 const max_process_cap: usize = 4096;
 const beam_callback_cap = 16;
@@ -273,9 +270,9 @@ const Runtime = struct {
     migrations: std.atomic.Value(u64) = .init(0),
     heap: ?[]i64 = null,
     bump: usize = 0,
-    processes: []Process = &.{},
+    processes: []*Process = &.{},
     process_cap: usize = default_process_cap,
-    process_count: usize = 1,
+    process_count: usize = 0,
     // Free-list of completed process slots (#50 stage 1): `process_done`
     // pushes the slot index, `spawn` pops it first and resets the slot, so a
     // long-running runtime reuses slots instead of growing `process_count`
@@ -292,6 +289,9 @@ const Runtime = struct {
 
     fn deinit(self: *Runtime) void {
         if (self.heap) |words| std.heap.page_allocator.free(words);
+        for (self.processes[0..self.process_count]) |proc| {
+            std.heap.page_allocator.destroy(proc);
+        }
         if (self.processes.len > 0) std.heap.page_allocator.free(self.processes);
         if (self.free_slots.len > 0) std.heap.page_allocator.free(self.free_slots);
         std.heap.page_allocator.destroy(self);
@@ -301,12 +301,16 @@ const Runtime = struct {
 threadlocal var active_runtime: ?*Runtime = null;
 threadlocal var owned_runtime: ?*Runtime = null;
 threadlocal var current_process: usize = 0;
+// Workers retain the stable Process allocation they claimed. Looking it up
+// through the pointer table on every ABI call would still race with growth of
+// that table even though the Process itself no longer moves.
+threadlocal var current_process_ptr: ?*Process = null;
 
 fn create_runtime() *Runtime {
     const instance = std.heap.page_allocator.create(Runtime) catch
         @panic("failed to allocate Batata runtime");
     instance.* = .{};
-    instance.processes = std.heap.page_allocator.alloc(Process, instance.process_cap) catch
+    instance.processes = std.heap.page_allocator.alloc(*Process, instance.process_cap) catch
         @panic("failed to allocate Batata process table");
     instance.free_slots = std.heap.page_allocator.alloc(usize, instance.process_cap) catch
         @panic("failed to allocate Batata process free list");
@@ -350,6 +354,7 @@ pub export fn ex_term_runtime_enter(handle: i64) i64 {
     if (handle == 0) return -1;
     active_runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
     current_process = 0;
+    current_process_ptr = null;
     return 0;
 }
 
@@ -358,6 +363,7 @@ pub export fn ex_term_runtime_enter(handle: i64) i64 {
 pub export fn ex_term_runtime_leave() i64 {
     active_runtime = null;
     current_process = 0;
+    current_process_ptr = null;
     return 0;
 }
 
@@ -365,7 +371,10 @@ pub export fn ex_term_runtime_leave() i64 {
 pub export fn ex_term_runtime_destroy(handle: i64) i64 {
     if (handle == 0) return -1;
     const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
-    if (active_runtime == instance) active_runtime = null;
+    if (active_runtime == instance) {
+        active_runtime = null;
+        current_process_ptr = null;
+    }
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
     return 0;
@@ -373,15 +382,22 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
 
 fn init_processes() void {
     const instance = runtime();
-    instance.processes[0] = .{
+    for (instance.processes[0..instance.process_count]) |proc| {
+        std.heap.page_allocator.destroy(proc);
+    }
+    const initial = std.heap.page_allocator.create(Process) catch
+        @panic("failed to allocate initial Batata process");
+    initial.* = .{
         .pid = pid_of(0, 1),
         .generation = 1,
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
     };
+    instance.processes[0] = initial;
     instance.process_count = 1;
     instance.free_count = 0;
     instance.claim_cursor = 0;
     current_process = 0;
+    current_process_ptr = initial;
     instance.unique_integer_counter = 0;
     // Each program run starts with a fresh bump arena: the scheduler driver
     // calls `process_table_reset` at the top, so terms allocated by a
@@ -390,12 +406,15 @@ fn init_processes() void {
 }
 
 fn current_proc() *Process {
+    if (current_process_ptr) |proc| return proc;
     const instance = runtime();
     if (!instance.processes_initialized) {
         init_processes();
         instance.processes_initialized = true;
     }
-    return &instance.processes[current_process];
+    const proc = instance.processes[current_process];
+    current_process_ptr = proc;
+    return proc;
 }
 
 // pid layout: payload = (generation << index_bits) | (index + 1), tagged as an
@@ -417,11 +436,12 @@ fn pid_index(pid: i64) usize {
 
 /// Resolves a pid to its process, validating the generation: a stale pid
 /// whose slot has been recycled carries an old serial and resolves to null.
-/// The caller must hold the scheduler lock (the process table may reallocate).
+/// The caller must hold the scheduler lock so process_count and slot reuse are
+/// observed consistently. Process addresses remain stable across table growth.
 fn resolve_pid(instance: *Runtime, pid: i64) ?*Process {
     const index = pid_index(pid);
     if (index >= instance.process_count) return null;
-    const proc = &instance.processes[index];
+    const proc = instance.processes[index];
     return if (proc.pid == pid) proc else null;
 }
 
@@ -435,9 +455,13 @@ pub export fn ex_term_process_table_reset(cap: i64) i64 {
     if (cap < 1) return nil_word;
     const new_cap: usize = @intCast(cap);
     if (instance.processes.len != new_cap) {
+        for (instance.processes[0..instance.process_count]) |proc| {
+            std.heap.page_allocator.destroy(proc);
+        }
+        instance.process_count = 0;
         if (instance.processes.len > 0) std.heap.page_allocator.free(instance.processes);
         if (instance.free_slots.len > 0) std.heap.page_allocator.free(instance.free_slots);
-        instance.processes = std.heap.page_allocator.alloc(Process, new_cap) catch
+        instance.processes = std.heap.page_allocator.alloc(*Process, new_cap) catch
             @panic("failed to allocate Batata process table");
         instance.free_slots = std.heap.page_allocator.alloc(usize, new_cap) catch
             @panic("failed to allocate Batata process free list");
@@ -649,16 +673,26 @@ pub export fn ex_term_spawn(fun: i64) i64 {
 
     const generation: u32 = if (reused) instance.processes[index].generation +% 1 else 1;
 
+    const proc =
+        if (reused)
+            instance.processes[index]
+        else blk: {
+            const fresh = std.heap.page_allocator.create(Process) catch
+                @panic("failed to allocate Batata process");
+            instance.processes[index] = fresh;
+            break :blk fresh;
+        };
+
     // Reset the recycled slot completely: mailbox, continuation, clock,
     // status, result and entry are all fresh, so no message or continuation
     // residue from the previous occupant leaks into the new process.
-    instance.processes[index] = .{
+    proc.* = .{
         .pid = pid_of(index, generation),
         .generation = generation,
         .clock = .{ .budget = 0, .used = 0, .epoch = 0 },
         .entry = fun,
     };
-    return instance.processes[index].pid;
+    return proc.pid;
 }
 
 /// Grows the process table (and its free list) to cover `needed` slots. The
@@ -667,7 +701,7 @@ fn grow_process_table(instance: *Runtime, needed: usize) void {
     if (needed <= instance.processes.len) return;
     const new_cap = @max(instance.processes.len * 2, needed);
 
-    const new_processes = std.heap.page_allocator.alloc(Process, new_cap) catch
+    const new_processes = std.heap.page_allocator.alloc(*Process, new_cap) catch
         @panic("failed to grow Batata process table");
     @memcpy(new_processes[0..instance.process_count], instance.processes[0..instance.process_count]);
     std.heap.page_allocator.free(instance.processes);
@@ -781,6 +815,7 @@ pub export fn ex_term_schedule_next() i64 {
         const index = (current_process + i) % instance.process_count;
         if (instance.processes[index].status == .runnable) {
             current_process = index;
+            current_process_ptr = instance.processes[index];
             return instance.processes[index].pid;
         }
     }
@@ -798,7 +833,7 @@ pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
 
     for (0..instance.process_count) |offset| {
         const index = (instance.claim_cursor + offset) % instance.process_count;
-        const proc = &instance.processes[index];
+        const proc = instance.processes[index];
         if (proc.status != .runnable) continue;
         if (proc.owner.cmpxchgStrong(0, owner, .acq_rel, .acquire) == null) {
             const previous_worker = proc.last_worker.swap(owner, .acq_rel);
@@ -806,6 +841,7 @@ pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
                 _ = instance.migrations.fetchAdd(1, .acq_rel);
             }
             current_process = index;
+            current_process_ptr = proc;
             instance.claim_cursor = (index + 1) % instance.process_count;
             return proc.pid;
         }
@@ -861,6 +897,7 @@ const Worker = struct {
     fn run(self: @This()) void {
         active_runtime = self.instance;
         current_process = 0;
+        current_process_ptr = null;
 
         while (true) {
             const pid = ex_term_process_claim_next(self.id);
@@ -880,6 +917,7 @@ const Worker = struct {
 
         active_runtime = null;
         current_process = 0;
+        current_process_ptr = null;
     }
 };
 
@@ -2760,6 +2798,57 @@ test "worker pool overlaps independent actors on distinct OS threads" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_count());
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_max_active());
     try std.testing.expect(ex_term_process_thread_id(pid_of(0, 1)) != ex_term_process_thread_id(second_pid));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+const ConcurrentGrowthProbe = struct {
+    ready: std.atomic.Value(u32) = .init(0),
+    reads: std.atomic.Value(u32) = .init(0),
+    grown: std.atomic.Value(bool) = .init(false),
+};
+
+var concurrent_growth_probe: *ConcurrentGrowthProbe = undefined;
+
+fn concurrent_growth_dispatch(pid: i64) callconv(.c) i64 {
+    const slot = pid_index(pid);
+
+    if (slot == 0) {
+        _ = concurrent_growth_probe.ready.fetchAdd(1, .acq_rel);
+        while (concurrent_growth_probe.ready.load(.acquire) != 2) std.Thread.yield() catch {};
+        while (concurrent_growth_probe.reads.load(.acquire) == 0) std.Thread.yield() catch {};
+
+        // The initial capacity is two. Every fresh spawn after the first two
+        // actors forces the pointer table to grow while actor 1 is reading
+        // through its stable Process allocation on the other worker.
+        for (0..128) |_| _ = ex_term_spawn(nil_word);
+        concurrent_growth_probe.grown.store(true, .release);
+    } else if (slot == 1) {
+        _ = concurrent_growth_probe.ready.fetchAdd(1, .acq_rel);
+        while (!concurrent_growth_probe.grown.load(.acquire)) {
+            _ = ex_term_mailbox_len();
+            _ = concurrent_growth_probe.reads.fetchAdd(1, .acq_rel);
+        }
+    }
+
+    return pid;
+}
+
+test "process addresses stay stable while another worker grows the table" {
+    const handle = ex_term_runtime_create();
+    _ = ex_term_runtime_enter(handle);
+    _ = ex_term_process_table_reset(2);
+    const second_pid = ex_term_spawn(nil_word);
+    const instance = runtime();
+    const before = resolve_pid(instance, second_pid).?;
+
+    var probe = ConcurrentGrowthProbe{};
+    concurrent_growth_probe = &probe;
+    try std.testing.expectEqual(pid_of(0, 1), ex_term_worker_run(2, &concurrent_growth_dispatch));
+
+    const after = resolve_pid(instance, second_pid).?;
+    try std.testing.expect(before == after);
+    try std.testing.expect(instance.processes.len >= 128);
+    try std.testing.expect(probe.reads.load(.acquire) > 0);
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
