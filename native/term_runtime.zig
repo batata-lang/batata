@@ -130,6 +130,18 @@ fn fun_words(fun: i64) [*]i64 {
 // or a scheduler round bumps it, invalidating stale resume tokens.
 const mailbox_cap: usize = 64;
 
+const RuntimeMutex = struct {
+    state: std.atomic.Mutex = .unlocked,
+
+    fn lock(self: *RuntimeMutex) void {
+        while (!self.state.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    fn unlock(self: *RuntimeMutex) void {
+        self.state.unlock();
+    }
+};
+
 const Clock = struct {
     budget: i64,
     used: i64,
@@ -137,11 +149,14 @@ const Clock = struct {
 };
 
 const Mailbox = struct {
+    lock: RuntimeMutex = .{},
     queue: [mailbox_cap]i64 = undefined,
     head: usize = 0,
     len: usize = 0,
 
     fn push(self: *Mailbox, msg: i64) bool {
+        self.lock.lock();
+        defer self.lock.unlock();
         if (self.len >= mailbox_cap) return false;
         const index = (self.head + self.len) % mailbox_cap;
         self.queue[index] = msg;
@@ -150,6 +165,8 @@ const Mailbox = struct {
     }
 
     fn pop(self: *Mailbox) ?i64 {
+        self.lock.lock();
+        defer self.lock.unlock();
         if (self.len == 0) return null;
         const msg = self.queue[self.head];
         self.head = (self.head + 1) % mailbox_cap;
@@ -158,8 +175,37 @@ const Mailbox = struct {
     }
 
     fn clear(self: *Mailbox) void {
+        self.lock.lock();
+        defer self.lock.unlock();
         self.head = 0;
         self.len = 0;
+    }
+
+    fn count(self: *Mailbox) usize {
+        self.lock.lock();
+        defer self.lock.unlock();
+        return self.len;
+    }
+
+    fn peek(self: *Mailbox, cursor: usize) ?i64 {
+        self.lock.lock();
+        defer self.lock.unlock();
+        if (cursor >= self.len) return null;
+        return self.queue[(self.head + cursor) % mailbox_cap];
+    }
+
+    fn remove(self: *Mailbox, cursor: usize) bool {
+        self.lock.lock();
+        defer self.lock.unlock();
+        if (cursor >= self.len) return false;
+        var i = cursor;
+        while (i + 1 < self.len) : (i += 1) {
+            const to = (self.head + i) % mailbox_cap;
+            const from = (self.head + i + 1) % mailbox_cap;
+            self.queue[to] = self.queue[from];
+        }
+        self.len -= 1;
+        return true;
     }
 };
 
@@ -184,6 +230,8 @@ const Continuation = struct {
 };
 
 const Process = struct {
+    state_lock: RuntimeMutex = .{},
+    owner: std.atomic.Value(u32) = .init(0),
     pid: i64,
     mailbox: Mailbox = .{},
     clock: Clock,
@@ -206,6 +254,10 @@ const process_cap: usize = 8;
 const beam_callback_cap = 16;
 
 const Runtime = struct {
+    heap_lock: RuntimeMutex = .{},
+    scheduler_lock: RuntimeMutex = .{},
+    counter_lock: RuntimeMutex = .{},
+    callback_lock: RuntimeMutex = .{},
     heap: ?[]i64 = null,
     bump: usize = 0,
     processes: [process_cap]Process = undefined,
@@ -240,8 +292,7 @@ fn runtime() *Runtime {
     return active_runtime.?;
 }
 
-fn current_heap() []i64 {
-    const instance = runtime();
+fn current_heap(instance: *Runtime) []i64 {
     if (instance.heap) |words| return words;
 
     const words = std.heap.page_allocator.alloc(i64, heap_word_cap) catch
@@ -252,7 +303,9 @@ fn current_heap() []i64 {
 
 fn alloc_words(count: usize) ?[*]i64 {
     const instance = runtime();
-    const words = current_heap();
+    instance.heap_lock.lock();
+    defer instance.heap_lock.unlock();
+    const words = current_heap(instance);
     if (instance.bump + count > words.len) return null;
     const start = instance.bump;
     instance.bump += count;
@@ -411,6 +464,8 @@ pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     // the scan restarts and observes the new message (epoch invalidation
     // wiring, #35 slice 6). Loop continuations are unaffected.
     const target = &instance.processes[pid_id - 1];
+    target.state_lock.lock();
+    defer target.state_lock.unlock();
     if (target.cont.active and target.cont.receive) {
         target.clock.epoch += 1;
     }
@@ -430,12 +485,18 @@ pub export fn ex_term_nil() i64 {
 /// The current process's `receive ... after` timeout start; 0 when the wait
 /// loop has not started timing yet.
 pub export fn ex_term_receive_start() i64 {
-    return current_proc().receive_start;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return proc.receive_start;
 }
 
 /// Sets the current process's `receive ... after` timeout start.
 pub export fn ex_term_receive_start_set(value: i64) i64 {
-    current_proc().receive_start = value;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    proc.receive_start = value;
     return value;
 }
 
@@ -459,37 +520,31 @@ pub export fn ex_term_native_time() i64 {
 /// `negative` selects the decreasing negative series.
 pub export fn ex_term_unique_integer(negative: i64) i64 {
     const instance = runtime();
+    instance.counter_lock.lock();
+    defer instance.counter_lock.unlock();
     instance.unique_integer_counter += 1;
     return if (negative == 0) instance.unique_integer_counter else -instance.unique_integer_counter;
 }
 
 /// Number of messages in the current process's mailbox.
 pub export fn ex_term_mailbox_len() i64 {
-    return @intCast(current_proc().mailbox.len);
+    return @intCast(current_proc().mailbox.count());
 }
 
 /// The message at `cursor` (0-based from the mailbox head) without removing
 /// it; nil when out of range.
 pub export fn ex_term_mailbox_peek(cursor: i64) i64 {
     const proc = current_proc();
-    if (cursor < 0 or cursor >= @as(i64, @intCast(proc.mailbox.len))) return nil_word;
-    const index = (proc.mailbox.head + @as(usize, @intCast(cursor))) % mailbox_cap;
-    return proc.mailbox.queue[index];
+    if (cursor < 0) return nil_word;
+    return proc.mailbox.peek(@intCast(cursor)) orelse nil_word;
 }
 
 /// Removes the message at `cursor`, shifting later messages forward; returns
 /// 1, or nil when out of range.
 pub export fn ex_term_mailbox_remove(cursor: i64) i64 {
     const proc = current_proc();
-    if (cursor < 0 or cursor >= @as(i64, @intCast(proc.mailbox.len))) return nil_word;
-    var i: usize = @intCast(cursor);
-    while (i + 1 < proc.mailbox.len) : (i += 1) {
-        const to = (proc.mailbox.head + i) % mailbox_cap;
-        const from = (proc.mailbox.head + i + 1) % mailbox_cap;
-        proc.mailbox.queue[to] = proc.mailbox.queue[from];
-    }
-    proc.mailbox.len -= 1;
-    return 1;
+    if (cursor < 0) return nil_word;
+    return if (proc.mailbox.remove(@intCast(cursor))) 1 else nil_word;
 }
 
 /// Resets the mailbox. The compiled entry function calls this at the start of
@@ -506,6 +561,8 @@ pub export fn ex_term_mailbox_clear() i64 {
 /// table is full.
 pub export fn ex_term_spawn(fun: i64) i64 {
     const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
     if (instance.process_count >= process_cap) return nil_word;
     const index = instance.process_count;
     instance.processes[index] = .{
@@ -521,6 +578,8 @@ pub export fn ex_term_spawn(fun: i64) i64 {
 /// at the current epoch. Returns 1.
 pub export fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     proc.cont = .{
         .active = true,
         .epoch = proc.clock.epoch,
@@ -536,6 +595,8 @@ pub export fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
 /// cursor-loop continuation, message arrival invalidates it.
 pub export fn ex_term_receive_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     proc.cont = .{
         .active = true,
         .epoch = proc.clock.epoch,
@@ -552,6 +613,8 @@ pub export fn ex_term_receive_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
 /// pending.
 pub export fn ex_term_cont_pending() i64 {
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     return if (proc.cont.active and proc.cont.epoch == proc.clock.epoch) 1 else 0;
 }
 
@@ -560,12 +623,18 @@ pub export fn ex_term_cont_pending() i64 {
 /// continuation was invalidated by a message arrival — must keep the messages
 /// that arrived while the process was suspended.
 pub export fn ex_term_cont_active() i64 {
-    return if (current_proc().cont.active) 1 else 0;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return if (proc.cont.active) 1 else 0;
 }
 
 /// Clears the current process's saved continuation.
 pub export fn ex_term_cont_clear() i64 {
-    current_proc().cont.active = false;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    proc.cont.active = false;
     return 0;
 }
 
@@ -573,16 +642,22 @@ pub export fn ex_term_cont_clear() i64 {
 /// nil when none is pending.
 pub export fn ex_term_cont_load_arg() i64 {
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     return if (proc.cont.active) proc.cont.arg else nil_word;
 }
 
 pub export fn ex_term_cont_load_acc() i64 {
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     return if (proc.cont.active) proc.cont.acc else nil_word;
 }
 
 pub export fn ex_term_cont_load_cursor() i64 {
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     return if (proc.cont.active) proc.cont.cursor else nil_word;
 }
 
@@ -591,6 +666,8 @@ pub export fn ex_term_cont_load_cursor() i64 {
 /// runnable one.
 pub export fn ex_term_schedule_next() i64 {
     const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
     if (instance.process_count <= 1) return instance.processes[0].pid;
     var i: usize = 1;
     while (i <= instance.process_count) : (i += 1) {
@@ -603,24 +680,63 @@ pub export fn ex_term_schedule_next() i64 {
     return instance.processes[current_process].pid;
 }
 
+/// Atomically claims one runnable actor for a non-zero worker id. The actor
+/// remains runnable while owned, but no second worker can claim it.
+pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
+    if (worker_id <= 0 or worker_id > std.math.maxInt(u32)) return nil_word;
+    const owner: u32 = @intCast(worker_id);
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+
+    for (0..instance.process_count) |index| {
+        const proc = &instance.processes[index];
+        if (proc.status != .runnable) continue;
+        if (proc.owner.cmpxchgStrong(0, owner, .acq_rel, .acquire) == null) {
+            current_process = index;
+            return proc.pid;
+        }
+    }
+    return nil_word;
+}
+
+/// Releases the actor claimed by this worker after a yielded slice.
+pub export fn ex_term_process_release() i64 {
+    const proc = current_proc();
+    const pid = proc.pid;
+    proc.owner.store(0, .release);
+    return pid;
+}
+
 /// Closure word of the current process's entry; 0 for the initial process
 /// (the compiled `__batata_entry`).
 pub export fn ex_term_current_entry() i64 {
-    return current_proc().entry;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return proc.entry;
 }
 
 /// Marks the current process done and stores its result.
 pub export fn ex_term_process_done(result: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
     const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     proc.status = .done;
     proc.result = result;
     proc.cont.active = false;
+    proc.owner.store(0, .release);
     return result;
 }
 
 /// Number of runnable processes (the scheduler driver loops while > 0).
 pub export fn ex_term_processes_runnable() i64 {
     const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
     var count: i64 = 0;
     for (0..instance.process_count) |i| {
         if (instance.processes[i].status == .runnable) count += 1;
@@ -632,54 +748,78 @@ pub export fn ex_term_processes_runnable() i64 {
 /// runnable.
 pub export fn ex_term_process_result(pid: i64) i64 {
     const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
     if (word_tag(pid) != tag_atom) return nil_word;
     const pid_id: usize = @intCast(word_payload(pid));
     if (pid_id == 0 or pid_id > @as(usize, @intCast(instance.process_count))) return nil_word;
-    const proc = instance.processes[pid_id - 1];
+    const proc = &instance.processes[pid_id - 1];
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
     return if (proc.status == .done) proc.result else nil_word;
 }
 
 /// Sets the reduction budget and resets the used counter (epoch untouched).
 pub export fn ex_term_clock_init(budget: i64) i64 {
-    current_proc().clock.budget = budget;
-    current_proc().clock.used = 0;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    proc.clock.budget = budget;
+    proc.clock.used = 0;
     return budget;
 }
 
 /// Charges `cost` reductions; returns 1 when the budget is exhausted (the
 /// caller should yield), else 0. Negative cost is clamped to zero.
 pub export fn ex_term_clock_tick(cost: i64) i64 {
-    if (cost > 0) current_proc().clock.used += cost;
-    return if (current_proc().clock.used >= current_proc().clock.budget and current_proc().clock.budget > 0) 1 else 0;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    if (cost > 0) proc.clock.used += cost;
+    return if (proc.clock.used >= proc.clock.budget and proc.clock.budget > 0) 1 else 0;
 }
 
 /// Remaining reduction budget (clamped to >= 0); -1 when no budget is set.
 pub export fn ex_term_clock_budget_left() i64 {
-    if (current_proc().clock.budget <= 0) return -1;
-    const left = current_proc().clock.budget - current_proc().clock.used;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    if (proc.clock.budget <= 0) return -1;
+    const left = proc.clock.budget - proc.clock.used;
     return if (left < 0) 0 else left;
 }
 
 /// Current continuation-generation counter.
 pub export fn ex_term_clock_epoch() i64 {
-    return current_proc().clock.epoch;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return proc.clock.epoch;
 }
 
 /// Bumps the epoch (message arrival / scheduler round); returns the new value.
 pub export fn ex_term_clock_bump_epoch() i64 {
-    current_proc().clock.epoch += 1;
-    const result = current_proc().clock.epoch;
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    proc.clock.epoch += 1;
+    const result = proc.clock.epoch;
     return result;
 }
 
 /// Number of preemptive yields so far (slice boundaries in the loop driver).
 pub export fn ex_term_yield_count() i64 {
-    return runtime().yield_count;
+    const instance = runtime();
+    instance.counter_lock.lock();
+    defer instance.counter_lock.unlock();
+    return instance.yield_count;
 }
 
 /// Records one yield at a slice boundary and bumps the yield counter.
 pub export fn ex_term_yield_mark() i64 {
     const instance = runtime();
+    instance.counter_lock.lock();
+    defer instance.counter_lock.unlock();
     instance.yield_count += 1;
     return instance.yield_count;
 }
@@ -1148,7 +1288,10 @@ pub export fn ex_term_register_callback(
     callback: ?*const fn (i64) callconv(.c) i64,
 ) i64 {
     if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
-    runtime().callbacks[@intCast(fn_id)] = callback;
+    const instance = runtime();
+    instance.callback_lock.lock();
+    defer instance.callback_lock.unlock();
+    instance.callbacks[@intCast(fn_id)] = callback;
     return 0;
 }
 
@@ -1156,7 +1299,13 @@ pub export fn ex_term_register_callback(
 /// the id is out of range or not registered.
 pub export fn ex_term_call_callback(fn_id: i64, arg: i64) i64 {
     if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
-    const callback = runtime().callbacks[@intCast(fn_id)] orelse return -1;
+    const instance = runtime();
+    instance.callback_lock.lock();
+    const callback = instance.callbacks[@intCast(fn_id)] orelse {
+        instance.callback_lock.unlock();
+        return -1;
+    };
+    instance.callback_lock.unlock();
     return callback(arg);
 }
 
@@ -1656,6 +1805,8 @@ comptime {
     @export(&ex_term_cont_load_acc, .{ .name = "ex.term.cont_load_acc" });
     @export(&ex_term_cont_load_cursor, .{ .name = "ex.term.cont_load_cursor" });
     @export(&ex_term_schedule_next, .{ .name = "ex.term.schedule_next" });
+    @export(&ex_term_process_claim_next, .{ .name = "ex.term.process_claim_next" });
+    @export(&ex_term_process_release, .{ .name = "ex.term.process_release" });
     @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
     @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
     @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
@@ -2218,6 +2369,85 @@ test "explicit runtime handles preserve isolated execution state" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(first));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(second));
+}
+
+const ActorClaimProbe = struct {
+    handle: i64,
+    ready: std.atomic.Value(u32) = .init(0),
+    claimed: std.atomic.Value(u32) = .init(0),
+    pids: [2]i64 = undefined,
+
+    fn run(self: *@This(), slot: usize) void {
+        _ = ex_term_runtime_enter(self.handle);
+        _ = self.ready.fetchAdd(1, .acq_rel);
+        while (self.ready.load(.acquire) != self.pids.len) std.Thread.yield() catch {};
+
+        self.pids[slot] = ex_term_process_claim_next(@intCast(slot + 1));
+        _ = self.claimed.fetchAdd(1, .acq_rel);
+        while (self.claimed.load(.acquire) != self.pids.len) std.Thread.yield() catch {};
+
+        _ = ex_term_process_release();
+        _ = ex_term_runtime_leave();
+    }
+};
+
+test "workers claim distinct actors from one runtime" {
+    const handle = ex_term_runtime_create();
+    _ = ex_term_runtime_enter(handle);
+    _ = ex_term_process_table_reset();
+    _ = ex_term_spawn(nil_word);
+    _ = ex_term_runtime_leave();
+
+    var probe = ActorClaimProbe{ .handle = handle };
+    const first = try std.Thread.spawn(.{}, ActorClaimProbe.run, .{ &probe, 0 });
+    const second = try std.Thread.spawn(.{}, ActorClaimProbe.run, .{ &probe, 1 });
+    first.join();
+    second.join();
+
+    try std.testing.expect(probe.pids[0] != nil_word);
+    try std.testing.expect(probe.pids[1] != nil_word);
+    try std.testing.expect(probe.pids[0] != probe.pids[1]);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+const MailboxSendProbe = struct {
+    handle: i64,
+    pid: i64,
+
+    fn run(self: @This(), slot: usize) void {
+        _ = ex_term_runtime_enter(self.handle);
+        for (0..16) |i| {
+            const value: i64 = @intCast(slot * 16 + i);
+            _ = ex_term_send(self.pid, value << @intCast(tag_shift));
+        }
+        _ = ex_term_runtime_leave();
+    }
+};
+
+test "mailbox accepts concurrent cross-worker sends without loss" {
+    const handle = ex_term_runtime_create();
+    _ = ex_term_runtime_enter(handle);
+    _ = ex_term_process_table_reset();
+    const pid = ex_term_self();
+    _ = ex_term_runtime_leave();
+
+    const probe = MailboxSendProbe{ .handle = handle, .pid = pid };
+    var threads: [4]std.Thread = undefined;
+    for (&threads, 0..) |*thread, slot| {
+        thread.* = try std.Thread.spawn(.{}, MailboxSendProbe.run, .{ probe, slot });
+    }
+    for (threads) |thread| thread.join();
+
+    _ = ex_term_runtime_enter(handle);
+    try std.testing.expectEqual(@as(i64, 64), ex_term_mailbox_len());
+    var seen = [_]bool{false} ** 64;
+    for (0..64) |_| {
+        const value = word_payload(ex_term_receive());
+        try std.testing.expect(value >= 0 and value < seen.len);
+        try std.testing.expect(!seen[@intCast(value)]);
+        seen[@intCast(value)] = true;
+    }
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
 test "term ABI throw unwinds to the innermost try" {
