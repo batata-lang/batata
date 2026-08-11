@@ -79,7 +79,7 @@ defmodule Batata.Lift do
     if driver_needed?(definitions, budget, workers) do
       lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
     else
-      lift_execution_driver(entry_name, ctx, body)
+      lift_execution_driver(entry_name, ctx, body, process_cap)
     end
 
     lift_result_accessors(ctx, body)
@@ -1450,12 +1450,21 @@ defmodule Batata.Lift do
   # Even scalar programs run behind a host entry that owns an explicit native
   # runtime. This keeps JIT and AOT executions isolated without relying on the
   # compatibility runtime associated with an OS thread.
-  defp lift_execution_driver(entry_name, ctx, ip) do
+  defp lift_execution_driver(entry_name, ctx, ip, process_cap) do
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
     runtime = enter_runtime(ctx, block)
+
+    create_op(
+      "ex.process_table_reset",
+      [lit(process_cap, ctx, block)],
+      [integer_type(ctx)],
+      ctx,
+      block
+    )
+
     result = call_entry(ctx, block) |> unbox(ctx, block)
     handle = retain_result(runtime, result, ctx, block)
     create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
