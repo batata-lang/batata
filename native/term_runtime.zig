@@ -31,7 +31,7 @@ const nil_word: i64 = 1;
 // Heap layouts (all 8-byte aligned words):
 //   tuple:  [len: i64] [elem: i64 ... len]
 //   map:    [len: i64] [entry: i64 ... 2*len]   (flat key/value pairs)
-//   binary: [len: i64] [byte: i64 ... len]
+//   binary: [len: i64] [packed byte: u8 ... len] [alignment padding]
 //   list:   cons cells [head: i64] [tail: i64]
 //   fun:    [fn_idx: i64] [env_len: i64] [env: i64 ... env_len]
 
@@ -110,8 +110,15 @@ fn binary_len(binary: i64) usize {
     return @intCast(header[0]);
 }
 
-fn binary_bytes(binary: i64) [*]i64 {
+fn binary_bytes(binary: i64) [*]u8 {
     return @ptrFromInt((@as(usize, @bitCast(binary)) & ~tag_mask) + @sizeOf(i64));
+}
+
+fn alloc_binary(len: usize) ?[*]i64 {
+    const payload_words = (len + @sizeOf(i64) - 1) / @sizeOf(i64);
+    const words = alloc_words(payload_words + 1) orelse return null;
+    words[0] = @intCast(len);
+    return words;
 }
 
 fn map_len(map: i64) usize {
@@ -2229,7 +2236,7 @@ fn path_binary_to_slice(binary: i64, out: []u8) ?[]const u8 {
     return out[0..len];
 }
 
-fn read_file_words(path_word: i64) ?[*]i64 {
+fn read_file_binary(path_word: i64) ?i64 {
     var path_buf: [4096]u8 = undefined;
     const path = path_binary_to_slice(path_word, &path_buf) orelse return null;
     if (path.len >= 4096) return null;
@@ -2242,56 +2249,59 @@ fn read_file_words(path_word: i64) ?[*]i64 {
     if (size < 0 or size > 32 * 1024 * 1024) return null;
     if (c.fseek(file, 0, c.SEEK_SET) != 0) return null;
     const file_len: usize = @intCast(size);
-    const words = alloc_words(file_len + 1) orelse return null;
-    words[0] = @intCast(file_len);
+    const words = alloc_binary(file_len) orelse return null;
+    const binary = word_from_ptr(words, tag_binary);
+    const bytes = binary_bytes(binary);
     for (0..file_len) |i| {
         const ch = c.fgetc(file);
         if (ch == c.EOF) return null;
-        words[i + 1] = ch;
+        bytes[i] = @intCast(ch);
     }
-    return words;
+    return binary;
 }
 
 /// Reads a file into a binary term; nil for missing files, non-binary paths,
 /// or oversized content.
 pub export fn ex_term_file_read(path_word: i64) i64 {
-    const words = read_file_words(path_word) orelse return nil_word;
-    return word_from_ptr(words, tag_binary);
+    return read_file_binary(path_word) orelse nil_word;
 }
 
 /// Reads a file and splits it into a list of line binaries (without trailing
 /// newlines); nil on read failure.
 pub export fn ex_term_file_read_lines(path_word: i64) i64 {
-    const words = read_file_words(path_word) orelse return nil_word;
-    const len: usize = @intCast(words[0]);
+    const file_binary = read_file_binary(path_word) orelse return nil_word;
+    const len = binary_len(file_binary);
+    const file_bytes = binary_bytes(file_binary);
     var result = nil_word;
     var line_start: usize = len;
     var i: usize = len;
     while (i > 0) {
         i -= 1;
-        if (words[i + 1] == '\n') {
+        if (file_bytes[i] == '\n') {
             // 行是 [i+1, line_start)
             const line_len = line_start - (i + 1);
-            const line = alloc_words(line_len + 1) orelse return nil_word;
-            line[0] = @intCast(line_len);
+            const line = alloc_binary(line_len) orelse return nil_word;
+            const line_word = word_from_ptr(line, tag_binary);
+            const line_bytes = binary_bytes(line_word);
             var j: usize = 0;
             while (j < line_len) : (j += 1) {
-                line[j + 1] = words[i + 1 + j];
+                line_bytes[j] = file_bytes[i + 1 + j];
             }
-            result = ex_term_list_cons(word_from_ptr(line, tag_binary), result);
+            result = ex_term_list_cons(line_word, result);
             line_start = i;
         }
     }
     // 剩余行 [0, line_start)（无换行结尾或首行）
     if (line_start > 0) {
         const line_len = line_start;
-        const line = alloc_words(line_len + 1) orelse return nil_word;
-        line[0] = @intCast(line_len);
+        const line = alloc_binary(line_len) orelse return nil_word;
+        const line_word = word_from_ptr(line, tag_binary);
+        const line_bytes = binary_bytes(line_word);
         var j: usize = 0;
         while (j < line_len) : (j += 1) {
-            line[j + 1] = words[j];
+            line_bytes[j] = file_bytes[j];
         }
-        result = ex_term_list_cons(word_from_ptr(line, tag_binary), result);
+        result = ex_term_list_cons(line_word, result);
     }
     return result;
 }
@@ -2405,14 +2415,15 @@ pub export fn ex_term_binary_slice(binary: i64, start: i64) i64 {
     const len = binary_len(binary);
     if (start < 0 or start > @as(i64, @intCast(len))) return nil_word;
     const rest_len = len - @as(usize, @intCast(start));
-    const slice = alloc_words(rest_len + 1) orelse return nil_word;
-    slice[0] = @intCast(rest_len);
+    const slice = alloc_binary(rest_len) orelse return nil_word;
+    const slice_word = word_from_ptr(slice, tag_binary);
+    const slice_bytes = binary_bytes(slice_word);
     const bytes = binary_bytes(binary);
     var i: usize = 0;
     while (i < rest_len) : (i += 1) {
-        slice[i + 1] = bytes[@as(usize, @intCast(start)) + i];
+        slice_bytes[i] = bytes[@as(usize, @intCast(start)) + i];
     }
-    return word_from_ptr(slice, tag_binary);
+    return slice_word;
 }
 
 const Utf8Decoded = struct { cp: i64, width: i64 };
@@ -2498,21 +2509,21 @@ pub export fn ex_term_binary_encode16(binary: i64) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const len = binary_len(binary);
     const out_len = len * 2;
-    const words = alloc_words(out_len + 1) orelse return nil_word;
-    words[0] = @intCast(out_len);
+    const words = alloc_binary(out_len) orelse return nil_word;
+    const result = word_from_ptr(words, tag_binary);
+    const out = binary_bytes(result);
     const bytes = binary_bytes(binary);
     const hex = "0123456789ABCDEF";
     var i: usize = 0;
     while (i < len) : (i += 1) {
         const b: u8 = @intCast(bytes[i] & 0xFF);
-        words[i * 2 + 1] = @intCast(hex[b >> 4]);
-        words[i * 2 + 2] = @intCast(hex[b & 0x0F]);
+        out[i * 2] = hex[b >> 4];
+        out[i * 2 + 1] = hex[b & 0x0F];
     }
-    return word_from_ptr(words, tag_binary);
+    return result;
 }
 
-fn hex_value(byte: i64) i8 {
-    const b: u8 = @intCast(byte & 0xFF);
+fn hex_value(b: u8) i8 {
     if (b >= '0' and b <= '9') return @intCast(b - '0');
     if (b >= 'A' and b <= 'F') return @intCast(b - 'A' + 10);
     return -1;
@@ -2525,17 +2536,18 @@ pub export fn ex_term_binary_decode16(binary: i64) i64 {
     const len = binary_len(binary);
     if (len % 2 != 0) return nil_word;
     const out_len = len / 2;
-    const words = alloc_words(out_len + 1) orelse return nil_word;
-    words[0] = @intCast(out_len);
+    const words = alloc_binary(out_len) orelse return nil_word;
+    const result = word_from_ptr(words, tag_binary);
+    const out = binary_bytes(result);
     const bytes = binary_bytes(binary);
     var i: usize = 0;
     while (i < len) : (i += 2) {
         const hi = hex_value(bytes[i]);
         const lo = hex_value(bytes[i + 1]);
         if (hi < 0 or lo < 0) return nil_word;
-        words[i / 2 + 1] = @as(i64, hi) << 4 | lo;
+        out[i / 2] = @intCast(@as(i64, hi) << 4 | lo);
     }
-    return word_from_ptr(words, tag_binary);
+    return result;
 }
 
 /// Renders a tagged integer term as a decimal binary; nil for non-integers.
@@ -2559,13 +2571,14 @@ pub export fn ex_term_int_to_string(word: i64) i64 {
         digits[i] = '-';
         i += 1;
     }
-    const words = alloc_words(i + 1) orelse return nil_word;
-    words[0] = @intCast(i);
+    const words = alloc_binary(i) orelse return nil_word;
+    const result = word_from_ptr(words, tag_binary);
+    const out = binary_bytes(result);
     var j: usize = 0;
     while (j < i) : (j += 1) {
-        words[j + 1] = digits[i - 1 - j];
+        out[j] = digits[i - 1 - j];
     }
-    return word_from_ptr(words, tag_binary);
+    return result;
 }
 
 /// Parses a decimal binary (optionally signed) into a scalar i64; 0 for
@@ -2606,20 +2619,21 @@ pub export fn ex_term_map_from_list(list: i64) i64 {
 /// Converts a list of integer byte words into a binary word.
 pub export fn ex_term_binary_from_list(list: i64) i64 {
     const len = list_len(list);
-    const binary = alloc_words(len + 1) orelse return nil_word;
-    binary[0] = @intCast(len);
+    const binary = alloc_binary(len) orelse return nil_word;
+    const result = word_from_ptr(binary, tag_binary);
+    const bytes = binary_bytes(result);
 
     var current = list;
     var i: usize = 0;
     while (word_tag(current) == tag_list) {
         const cell: *[2]i64 = @ptrFromInt(@as(usize, @bitCast(current)) & ~tag_mask);
         const byte = if (is_int(cell[0])) word_payload(cell[0]) & 0xFF else 0;
-        binary[i + 1] = byte;
+        bytes[i] = @intCast(byte);
         i += 1;
         current = cell[1];
     }
 
-    return word_from_ptr(binary, tag_binary);
+    return result;
 }
 
 pub export fn ex_term_is_integer(word: i64) i64 {
@@ -3352,6 +3366,21 @@ test "workers reserve independent bump segments" {
     try std.testing.expectEqual(@as(u32, 7), runtime().arena_chunks[0].owner);
     try std.testing.expectEqual(@as(u32, 8), runtime().arena_chunks[1].owner);
     arena_worker_id = 0;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
+}
+
+test "binary payload storage is byte packed" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    const words = alloc_binary(1024).?;
+    try std.testing.expectEqual(@as(usize, 129), runtime().arena_chunks[0].bump);
+    const binary = word_from_ptr(words, tag_binary);
+    const bytes = binary_bytes(binary);
+    bytes[0] = 17;
+    bytes[1023] = 23;
+    try std.testing.expectEqual(@as(u8, 17), binary_bytes(binary)[0]);
+    try std.testing.expectEqual(@as(u8, 23), binary_bytes(binary)[1023]);
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
 }
