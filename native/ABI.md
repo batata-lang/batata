@@ -35,6 +35,28 @@ BEAM scheduler threads without sharing mutable runtime state.
 `ex.term.process_table_reset` starts a fresh execution in the bound runtime
 and reuses its arena allocation.
 
+## Runtime lifecycle
+
+An explicit runtime has a short-lock lifecycle gate and moves through
+`idle`, `executing`, `exporting`, and `destroying`. `runtime_enter` is the
+only public operation that creates an execution owner. A successful
+`idle -> executing` transition increments a non-zero `u64` execution epoch;
+same-handle re-entry is a no-op, and another thread cannot enter the same
+execution. Epoch overflow rejects a new execution instead of wrapping.
+
+The owner counts as participant 1 and may run dispatcher work directly as
+worker 1. Additional OS workers join internally with a thread-local token
+bound to the runtime generation and execution epoch, and must leave on every
+controlled exit path. Owner bindings and worker tokens are mutually
+exclusive. The owner cannot leave until every joined worker has left.
+
+The generated single- and multi-worker drivers call
+`ex.term.process_table_reset` exactly once at execution start. For an
+explicit runtime this is an owner-only transition from uninitialized to
+initialized; a repeated reset returns `-1`. `result_create` is likewise an
+owner-only operation after initialization and worker quiescence. Lifecycle
+failures do not implicitly destroy the runtime or clear the owner binding.
+
 This boundary does not yet make the actors inside one execution parallel: its
 generated scheduler still dispatches them on one worker in round-robin order.
 The runtime provides atomic actor claim/release, locked cross-worker mailbox
@@ -80,14 +102,14 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | symbol | signature | semantics |
 | --- | --- | --- |
 | `ex.term.runtime_create` | `() -> i64` | allocate an isolated runtime and return a generation-checked opaque handle; 0 when the bounded registry is full |
-| `ex.term.runtime_enter` | `(handle: i64) -> i64` | bind a runtime to the calling worker; 0 on success |
-| `ex.term.runtime_leave` | `() -> i64` | unbind the explicit runtime from the calling worker |
-| `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy a runtime after all workers have left it; -1 for stale/foreign handles and -2 while a worker/result is outstanding |
+| `ex.term.runtime_enter` | `(handle: i64) -> i64` | become the sole owner of an idle runtime; same-handle owner re-entry is a no-op; -1 stale, -2 busy/foreign binding/epoch exhausted |
+| `ex.term.runtime_leave` | `() -> i64` | return an owned execution to idle; -1 when unbound/not owner, -2 while joined workers remain |
+| `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy an idle runtime with no result/term leases; -1 stale/foreign, -2 busy |
 | `ex.term.runtime_arena_bytes` | `(handle: i64) -> i64` | arena capacity currently reserved in bytes |
 | `ex.term.runtime_arena_chunks` | `(handle: i64) -> i64` | number of stable arena segments |
 | `ex.term.runtime_arena_high_water` | `(handle: i64) -> i64` | high-water allocation in bytes for the current execution |
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
-| `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | retain the sole completed result for a runtime and transfer ownership to a generation-checked host handle; 0 when the bounded registry is full, -1 for a stale runtime, -2 for OOM and -3 for duplicate ownership |
+| `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | owner-only retention of the sole initialized, quiescent execution result; 0 registry full, -1 unbound/not ready/foreign, -2 OOM, -3 duplicate ownership; failures preserve the runtime |
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle and -2 until every worker leaves |
 | `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for stale/runtime-local values |
 | `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
@@ -117,7 +139,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.receive_start_set` | `(value: i64) -> i64` | set the current process's `receive ... after` timeout start |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
 | `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns a runtime-local pid with a BEAM-style generation serial, or nil on allocation failure. Completed slots are recycled with a bumped generation and the table grows beyond its initial capacity |
-| `ex.term.process_table_reset` | `(cap: i64) -> i64` | reset the process table to a single fresh initial process with the given initial allocation (>= 1); returns 1, or nil when the capacity is out of range; the table grows beyond it on spawn; the scheduler driver calls this at program start |
+| `ex.term.process_table_reset` | `(cap: i64) -> i64` | owner-only one-shot initialization of an explicit execution; returns 1, nil when capacity is outside 1..4096, or -1 for worker/repeated/busy reset; compatibility runtimes retain legacy repeatable reset |
 | `ex.term.cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save the current process's cursor-loop continuation at the current epoch |
 | `ex.term.cont_pending` | `() -> i64` | 1 when a continuation is saved at the current epoch (a stale epoch reads 0, so the entry restarts) |
 | `ex.term.cont_active` | `() -> i64` | 1 when any continuation is saved (valid or stale); the entry's mailbox reset is gated on this so a resume keeps messages that arrived while suspended |
