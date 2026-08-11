@@ -29,6 +29,7 @@ defmodule Batata.LiftTest do
                           "ex.unbox",
                           "ex.runtime_create",
                           "ex.runtime_enter",
+                          "ex.lit",
                           "ex.process_table_reset",
                           "ex.runtime_leave",
                           "ex.result_create",
