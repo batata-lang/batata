@@ -56,16 +56,16 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 
 | symbol | signature | semantics |
 | --- | --- | --- |
-| `ex.term.runtime_create` | `() -> i64` | allocate an isolated runtime and return its opaque handle |
+| `ex.term.runtime_create` | `() -> i64` | allocate an isolated runtime and return a generation-checked opaque handle; 0 when the bounded registry is full |
 | `ex.term.runtime_enter` | `(handle: i64) -> i64` | bind a runtime to the calling worker; 0 on success |
 | `ex.term.runtime_leave` | `() -> i64` | unbind the explicit runtime from the calling worker |
-| `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy a runtime after all workers have left it |
+| `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy a runtime after all workers have left it; -1 for stale/foreign handles and -2 while a worker/result is outstanding |
 | `ex.term.runtime_arena_bytes` | `(handle: i64) -> i64` | arena capacity currently reserved in bytes |
 | `ex.term.runtime_arena_chunks` | `(handle: i64) -> i64` | number of stable arena segments |
 | `ex.term.runtime_arena_high_water` | `(handle: i64) -> i64` | high-water allocation in bytes for the current execution |
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
-| `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | retain a completed result and transfer ownership of its runtime to a generation-checked host handle; 0 when the bounded registry is full |
-| `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle |
+| `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | retain the sole completed result for a runtime and transfer ownership to a generation-checked host handle; 0 when the bounded registry is full, -1 for a stale runtime, -2 for OOM and -3 for duplicate ownership |
+| `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle and -2 until every worker leaves |
 | `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for a stale handle |
 | `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
 | `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
