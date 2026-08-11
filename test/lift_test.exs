@@ -10,7 +10,15 @@ defmodule Batata.LiftTest do
                            "ex.result_root_word",
                            "ex.result_term_kind",
                            "ex.result_term_length",
-                           "ex.result_term_get"
+                           "ex.result_term_get",
+                           "ex.term_export",
+                           "ex.term_import",
+                           "ex.exported_clone",
+                           "ex.exported_destroy",
+                           "ex.exported_length",
+                           "ex.exported_get",
+                           "ex.term_handle_export",
+                           "ex.term_handle_destroy"
                          ],
                          &["ex.func", &1, "ex.return"]
                        )
@@ -365,7 +373,7 @@ defmodule Batata.LiftTest do
       )
 
     names = op_names(module)
-    assert Enum.count(names, &(&1 == "ex.func")) == 9
+    assert Enum.count(names, &(&1 == "ex.func")) == 17
     assert Enum.count(names, &(&1 == "ex.case")) == 1
     assert Enum.count(names, &(&1 == "ex.clause")) == 3
   end
@@ -486,7 +494,7 @@ defmodule Batata.LiftTest do
 
     names = op_names(module)
     # The execution driver, __batata_entry, extracted __fn_* and closure dispatch.
-    assert Enum.count(names, &(&1 == "ex.func")) == 10
+    assert Enum.count(names, &(&1 == "ex.func")) == 18
     assert "ex.call" in names
 
     rendered = MLIR.to_string(module, generic: true)

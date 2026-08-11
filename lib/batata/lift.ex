@@ -1693,7 +1693,15 @@ defmodule Batata.Lift do
     {"__batata_result_root_word", "ex.result_root_word", 1},
     {"__batata_result_term_kind", "ex.result_term_kind", 2},
     {"__batata_result_term_length", "ex.result_term_length", 2},
-    {"__batata_result_term_get", "ex.result_term_get", 3}
+    {"__batata_result_term_get", "ex.result_term_get", 3},
+    {"__batata_term_export", "ex.term_export", 2},
+    {"__batata_term_import", "ex.term_import", 2},
+    {"__batata_exported_clone", "ex.exported_clone", 1},
+    {"__batata_exported_destroy", "ex.exported_destroy", 1},
+    {"__batata_exported_length", "ex.exported_length", 1},
+    {"__batata_exported_get", "ex.exported_get", 2},
+    {"__batata_term_handle_export", "ex.term_handle_export", 1},
+    {"__batata_term_handle_destroy", "ex.term_handle_destroy", 1}
   ]
 
   # Stable C/JIT entry points keep host materialization independent of the
