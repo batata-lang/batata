@@ -60,6 +60,10 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.runtime_enter` | `(handle: i64) -> i64` | bind a runtime to the calling worker; 0 on success |
 | `ex.term.runtime_leave` | `() -> i64` | unbind the explicit runtime from the calling worker |
 | `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy a runtime after all workers have left it |
+| `ex.term.runtime_arena_bytes` | `(handle: i64) -> i64` | arena capacity currently reserved in bytes |
+| `ex.term.runtime_arena_chunks` | `(handle: i64) -> i64` | number of stable arena segments |
+| `ex.term.runtime_arena_high_water` | `(handle: i64) -> i64` | high-water allocation in bytes for the current execution |
+| `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
 | `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | retain a completed result and transfer ownership of its runtime to a generation-checked host handle; 0 when the bounded registry is full |
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle |
 | `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for a stale handle |
@@ -192,6 +196,10 @@ Predicates return `1` or `0` as an `i64`.
   executions; constructors return their documented nil/failure value only
   when allocation or the 128-segment (64 MiB at the default size) table is
   exhausted.
+- Arena capacity has a 64 MiB hard limit. If an allocation has failed and the
+  execution would otherwise return the ambiguous nil word, result creation
+  returns the distinct `-2` OOM status. A later valid non-nil result remains
+  observable for code paths that explicitly recover from a failed operation.
 - Binary payloads are byte-packed after their `i64` length header, reducing
   payload storage from eight bytes per byte to one while keeping the tagged
   root pointer 8-byte aligned.

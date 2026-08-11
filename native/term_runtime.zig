@@ -42,6 +42,7 @@ const arena_chunk_words = 64 * 1024;
 // The initial segmented-arena policy deliberately permits growth beyond the
 // former 32 MiB heap without making long-running bump allocation unbounded.
 const arena_chunk_cap = 128;
+const arena_hard_limit_words = arena_chunk_cap * arena_chunk_words;
 const arena_owner_unassigned = std.math.maxInt(u32);
 
 fn word_tag(word: i64) usize {
@@ -336,8 +337,13 @@ const Runtime = struct {
     active_actors: std.atomic.Value(u32) = .init(0),
     max_active_actors: std.atomic.Value(u32) = .init(0),
     migrations: std.atomic.Value(u64) = .init(0),
+    entered_workers: std.atomic.Value(u32) = .init(0),
+    outstanding_results: std.atomic.Value(u32) = .init(0),
+    allocation_failed: std.atomic.Value(bool) = .init(false),
     arena_chunks: [arena_chunk_cap]ArenaChunk = [_]ArenaChunk{.{}} ** arena_chunk_cap,
     arena_chunk_count: usize = 0,
+    arena_capacity_words: usize = 0,
+    arena_used_words: std.atomic.Value(usize) = .init(0),
     arena_epoch: u32 = 1,
     processes: []*Process = &.{},
     process_cap: usize = default_process_cap,
@@ -464,6 +470,8 @@ fn reset_arena(instance: *Runtime) void {
     }
     instance.arena_epoch +%= 1;
     if (instance.arena_epoch == 0) instance.arena_epoch = 1;
+    instance.arena_used_words.store(0, .release);
+    instance.allocation_failed.store(false, .release);
 }
 
 fn alloc_words(count: usize) ?[*]i64 {
@@ -479,6 +487,7 @@ fn alloc_words(count: usize) ?[*]i64 {
             if (chunk.bump + count <= words.len) {
                 const start = chunk.bump;
                 chunk.bump += count;
+                _ = instance.arena_used_words.fetchAdd(count, .acq_rel);
                 return words[start..][0..count].ptr;
             }
         }
@@ -494,6 +503,7 @@ fn alloc_words(count: usize) ?[*]i64 {
         if (chunk.owner == arena_owner_unassigned and count <= words.len) {
             chunk.owner = arena_worker_id;
             chunk.bump = count;
+            _ = instance.arena_used_words.fetchAdd(count, .acq_rel);
             arena_cached_runtime = instance;
             arena_cached_epoch = instance.arena_epoch;
             arena_cached_chunk = index;
@@ -501,11 +511,23 @@ fn alloc_words(count: usize) ?[*]i64 {
         }
     }
 
-    if (instance.arena_chunk_count >= arena_chunk_cap) return null;
+    if (instance.arena_chunk_count >= arena_chunk_cap) {
+        instance.allocation_failed.store(true, .release);
+        return null;
+    }
     const word_count = @max(count, arena_chunk_words);
-    const words = std.heap.page_allocator.alloc(i64, word_count) catch return null;
+    if (instance.arena_capacity_words + word_count > arena_hard_limit_words) {
+        instance.allocation_failed.store(true, .release);
+        return null;
+    }
+    const words = std.heap.page_allocator.alloc(i64, word_count) catch {
+        instance.allocation_failed.store(true, .release);
+        return null;
+    };
     index = instance.arena_chunk_count;
     instance.arena_chunk_count += 1;
+    instance.arena_capacity_words += word_count;
+    _ = instance.arena_used_words.fetchAdd(count, .acq_rel);
     instance.arena_chunks[index] = .{
         .words = words,
         .bump = count,
@@ -545,7 +567,12 @@ pub export fn ex_term_runtime_create() i64 {
 /// Binds an execution instance to the calling worker thread.
 pub export fn ex_term_runtime_enter(handle: i64) i64 {
     if (handle == 0) return -1;
-    active_runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    if (active_runtime != instance) {
+        if (active_runtime) |previous| _ = previous.entered_workers.fetchSub(1, .acq_rel);
+        _ = instance.entered_workers.fetchAdd(1, .acq_rel);
+    }
+    active_runtime = instance;
     current_process = 0;
     current_process_ptr = null;
     return 0;
@@ -554,6 +581,7 @@ pub export fn ex_term_runtime_enter(handle: i64) i64 {
 /// Leaves the explicit instance and restores the thread-owned compatibility
 /// runtime on the next ABI call.
 pub export fn ex_term_runtime_leave() i64 {
+    if (active_runtime) |instance| _ = instance.entered_workers.fetchSub(1, .acq_rel);
     active_runtime = null;
     current_process = 0;
     current_process_ptr = null;
@@ -564,6 +592,13 @@ pub export fn ex_term_runtime_leave() i64 {
 pub export fn ex_term_runtime_destroy(handle: i64) i64 {
     if (handle == 0) return -1;
     const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    if (instance.outstanding_results.load(.acquire) != 0) return -2;
+    const entered = instance.entered_workers.load(.acquire);
+    if (active_runtime == instance) {
+        if (entered > 1) return -2;
+        active_runtime = null;
+        _ = instance.entered_workers.fetchSub(1, .acq_rel);
+    } else if (entered != 0) return -2;
     if (active_runtime == instance) {
         active_runtime = null;
         current_process_ptr = null;
@@ -573,11 +608,41 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
     return 0;
 }
 
+pub export fn ex_term_runtime_arena_bytes(handle: i64) i64 {
+    if (handle == 0) return -1;
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    return @intCast(instance.arena_capacity_words * @sizeOf(i64));
+}
+
+pub export fn ex_term_runtime_arena_chunks(handle: i64) i64 {
+    if (handle == 0) return -1;
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    return @intCast(instance.arena_chunk_count);
+}
+
+pub export fn ex_term_runtime_arena_high_water(handle: i64) i64 {
+    if (handle == 0) return -1;
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    return @intCast(instance.arena_used_words.load(.acquire) * @sizeOf(i64));
+}
+
+pub export fn ex_term_runtime_oom(handle: i64) i64 {
+    if (handle == 0) return -1;
+    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    return if (instance.allocation_failed.load(.acquire)) 1 else 0;
+}
+
 /// Pins a completed execution result and transfers ownership of its runtime
 /// to the returned opaque handle. Zero means the bounded registry is full.
 pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
     if (runtime_handle == 0) return 0;
     const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(runtime_handle)));
+    if (word == nil_word and instance.allocation_failed.load(.acquire)) {
+        if (active_runtime == instance) active_runtime = null;
+        _ = instance.entered_workers.fetchSub(1, .acq_rel);
+        instance.deinit();
+        return -2;
+    }
     result_lock.lock();
     defer result_lock.unlock();
 
@@ -588,6 +653,7 @@ pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
         if (slot.runtime == null) {
             slot.runtime = instance;
             slot.word = word;
+            _ = instance.outstanding_results.fetchAdd(1, .acq_rel);
             result_cursor = (index + 1) % result_slot_cap;
             return result_handle(index, slot.generation);
         }
@@ -611,6 +677,8 @@ pub export fn ex_term_result_destroy(handle: i64) i64 {
     slot.generation +%= 1;
     if (slot.generation == 0) slot.generation = 1;
     result_lock.unlock();
+
+    _ = instance.outstanding_results.fetchSub(1, .acq_rel);
 
     if (active_runtime == instance) {
         active_runtime = null;
@@ -1215,6 +1283,7 @@ const Worker = struct {
 
     fn run(self: @This()) void {
         active_runtime = self.instance;
+        if (self.id > 1) _ = self.instance.entered_workers.fetchAdd(1, .acq_rel);
         arena_worker_id = self.id;
         current_process = 0;
         current_process_ptr = null;
@@ -1248,6 +1317,7 @@ const Worker = struct {
         }
 
         active_runtime = null;
+        if (self.id > 1) _ = self.instance.entered_workers.fetchSub(1, .acq_rel);
         arena_worker_id = 0;
         current_process = 0;
         current_process_ptr = null;
@@ -2668,6 +2738,10 @@ comptime {
     @export(&ex_term_runtime_enter, .{ .name = "ex.term.runtime_enter" });
     @export(&ex_term_runtime_leave, .{ .name = "ex.term.runtime_leave" });
     @export(&ex_term_runtime_destroy, .{ .name = "ex.term.runtime_destroy" });
+    @export(&ex_term_runtime_arena_bytes, .{ .name = "ex.term.runtime_arena_bytes" });
+    @export(&ex_term_runtime_arena_chunks, .{ .name = "ex.term.runtime_arena_chunks" });
+    @export(&ex_term_runtime_arena_high_water, .{ .name = "ex.term.runtime_arena_high_water" });
+    @export(&ex_term_runtime_oom, .{ .name = "ex.term.runtime_oom" });
     @export(&ex_term_result_create, .{ .name = "ex.term.result_create" });
     @export(&ex_term_result_destroy, .{ .name = "ex.term.result_destroy" });
     @export(&ex_term_result_root_kind, .{ .name = "ex.term.result_root_kind" });
@@ -3383,6 +3457,24 @@ test "binary payload storage is byte packed" {
     try std.testing.expectEqual(@as(u8, 23), binary_bytes(binary)[1023]);
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
+}
+
+test "arena OOM is distinct from nil and exposes usage metrics" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expect(alloc_words(arena_hard_limit_words + 1) == null);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_runtime_oom(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_chunks(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_bytes(runtime_handle));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_result_create(runtime_handle, nil_word));
+}
+
+test "runtime destroy rejects an outstanding result handle" {
+    const runtime_handle = ex_term_runtime_create();
+    const handle = ex_term_result_create(runtime_handle, 7);
+    try std.testing.expect(handle > 0);
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
 }
 
 const ActorClaimProbe = struct {

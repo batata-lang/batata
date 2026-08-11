@@ -95,6 +95,10 @@ defmodule Batata do
     try do
       handle = invoke_i64(jit, "main", [], dirty: :cpu_bound)
 
+      if handle == -2 do
+        raise ResultError, "native arena allocation failed"
+      end
+
       if handle == 0 do
         raise ResultError, "native result registry is full"
       end
@@ -368,6 +372,7 @@ defmodule Batata do
     int main(void) {
       int status = 0;
       int64_t handle = batata_main();
+      if (handle == -2) return 6;
       if (handle == 0) return 2;
       int64_t kind = __batata_result_root_kind(handle);
       int64_t word = __batata_result_root_word(handle);
