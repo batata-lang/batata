@@ -95,6 +95,26 @@ the arena object. The target runtime cannot be destroyed while such a lease
 exists. Persistent regions, refcounted large binaries, and sub-binaries are
 separate follow-up work.
 
+Result and term handles are arena pins. Any outstanding pin rejects a new
+execution/reset. A result is the final runtime owner: `result_destroy` returns
+`-2` without changing either handle when term pins remain, and succeeds after
+those term handles are destroyed. Releasing the last term pin never destroys
+the runtime implicitly.
+
+Export uses an exclusive per-runtime lease. Handle generation/ownership
+revalidation, root snapshot, and `idle -> exporting` commit atomically under
+the runtime gate; encoding happens after the registry locks are released.
+Runtime/result destruction is busy until encoding releases the lease. A term
+handle may be destroyed after the export commit because the lease itself
+keeps the arena alive. Successfully exported bytes are independently owned by
+the exported registry and survive destruction of every source object.
+
+Import first retains an immutable exported encoding without holding its
+registry lock across validation or allocation. It then validates the owner
+execution is quiescent and publishes the graph and term pin under the runtime
+gate. Import before process initialization is a supported storage-only path;
+its pin blocks reset until the term handle is destroyed.
+
 ## Intrinsics
 
 All functions use the C ABI and return/accept `i64` tagged words unless noted.
@@ -110,20 +130,20 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.runtime_arena_high_water` | `(handle: i64) -> i64` | high-water allocation in bytes for the current execution |
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
 | `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | owner-only retention of the sole initialized, quiescent execution result; 0 registry full, -1 unbound/not ready/foreign, -2 OOM, -3 duplicate ownership; failures preserve the runtime |
-| `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle and -2 until every worker leaves |
+| `ex.term.result_destroy` | `(handle: i64) -> i64` | atomically release a live result pin and its runtime; -1 stale, -2 during execution/export or while another term pin remains; busy is side-effect free |
 | `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for stale/runtime-local values |
 | `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
 | `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
 | `ex.term.result_term_length` | `(handle: i64, word: i64) -> i64` | container length under a live result, or -1 when invalid |
 | `ex.term.result_term_get` | `(handle: i64, word: i64, index: i64) -> i64` | indexed tuple/list/map/binary access while the result is live; -1 when invalid |
-| `ex.term.export` | `(result: i64, word: i64) -> i64` | deep-copy a quiescent result-owned supported term into a generation-checked portable exported handle; 0 registry full, -1 stale/foreign, -2 OOM, -3 unsupported, -4 malformed/limit, -5 workers still entered |
-| `ex.term.import` | `(target_runtime: i64, exported: i64) -> i64` | transactionally import into the explicitly entered target runtime and return a generation-bound term handle; -1 stale, -2 OOM, -4 malformed/limit, -5 target not entered |
+| `ex.term.export` | `(result: i64, word: i64) -> i64` | deep-copy a result-owned graph under an exclusive export lease into independent host storage; 0 registry full, -1 stale/foreign, -2 OOM, -3 unsupported, -4 malformed/limit, -5 runtime not idle |
+| `ex.term.import` | `(target_runtime: i64, exported: i64) -> i64` | owner-only import with no joined workers; immutable input is retained before allocation and graph/term pin publication is atomic; -1 stale, -2 OOM, -4 malformed/limit, -5 target not owned/quiescent |
 | `ex.term.exported_clone` | `(exported: i64) -> i64` | retain an exported handle; -1 stale, -4 reference limit |
 | `ex.term.exported_destroy` | `(exported: i64) -> i64` | release an exported handle and invalidate its generation after the last reference |
 | `ex.term.exported_length` | `(exported: i64) -> i64` | portable encoding size, or -1 for stale handles |
 | `ex.term.exported_get` | `(exported: i64, index: i64) -> i64` | read one portable encoding byte, or -1 for stale/out-of-range access |
-| `ex.term.handle_export` | `(term_handle: i64) -> i64` | export a quiescent imported target-session term without exposing its arena word; -5 while workers are entered |
-| `ex.term.handle_destroy` | `(term_handle: i64) -> i64` | release a target-session term lease; -1 for stale handles |
+| `ex.term.handle_export` | `(term_handle: i64) -> i64` | export an idle imported term under an exclusive runtime lease without exposing its arena word; -5 when runtime is not idle |
+| `ex.term.handle_destroy` | `(term_handle: i64) -> i64` | atomically release a target-session arena pin; allowed during a committed export because the export lease protects the arena; -1 stale |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
 | `ex.term.self` | `() -> i64` | runtime-local pid of the current actor |
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
