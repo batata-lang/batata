@@ -60,6 +60,13 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.runtime_enter` | `(handle: i64) -> i64` | bind a runtime to the calling worker; 0 on success |
 | `ex.term.runtime_leave` | `() -> i64` | unbind the explicit runtime from the calling worker |
 | `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy a runtime after all workers have left it |
+| `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | retain a completed result and transfer ownership of its runtime to a generation-checked host handle; 0 when the bounded registry is full |
+| `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle |
+| `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for a stale handle |
+| `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
+| `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
+| `ex.term.result_term_length` | `(handle: i64, word: i64) -> i64` | container length under a live result, or -1 when invalid |
+| `ex.term.result_term_get` | `(handle: i64, word: i64, index: i64) -> i64` | indexed tuple/list/map/binary access while the result is live; -1 when invalid |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
 | `ex.term.self` | `() -> i64` | pid of the current actor (atom word with id 1) |
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |

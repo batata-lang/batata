@@ -41,7 +41,15 @@ defmodule Batata.Lower do
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertControlFlowToLLVMPass/0)
 
     if request_c_wrappers? do
-      request_c_wrappers_for_entry(module, "main")
+      request_c_wrappers_for_entries(module, [
+        "main",
+        "__batata_result_destroy",
+        "__batata_result_root_kind",
+        "__batata_result_root_word",
+        "__batata_result_term_kind",
+        "__batata_result_term_length",
+        "__batata_result_term_get"
+      ])
     end
 
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertFuncToLLVMPass/0)
@@ -53,21 +61,18 @@ defmodule Batata.Lower do
   # the entry function. The Zig term runtime declarations must not get
   # wrappers: the generated `_mlir_ciface_*` symbols have no body and would
   # fail JIT materialization.
-  defp request_c_wrappers_for_entry(module, sym_name) do
-    entry =
-      module
-      |> MLIR.Module.body()
-      |> Walker.operations()
-      |> Enum.to_list()
-      |> Enum.find(fn op ->
-        MLIR.Operation.name(op) == "func.func" and symbol_name(op) == sym_name
-      end)
-
-    if entry do
+  defp request_c_wrappers_for_entries(module, sym_names) do
+    module
+    |> MLIR.Module.body()
+    |> Walker.operations()
+    |> Enum.filter(fn op ->
+      MLIR.Operation.name(op) == "func.func" and symbol_name(op) in sym_names
+    end)
+    |> Enum.each(fn entry ->
       MLIR.Operation.get_and_update(entry, "llvm.emit_c_interface", fn _ ->
         {nil, MLIR.Attribute.unit()}
       end)
-    end
+    end)
 
     module
   end

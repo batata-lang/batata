@@ -81,6 +81,8 @@ defmodule Batata.Lift do
     else
       lift_execution_driver(entry_name, ctx, body)
     end
+
+    lift_result_accessors(ctx, body)
   end
 
   defp lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
@@ -1455,8 +1457,8 @@ defmodule Batata.Lift do
 
     runtime = enter_runtime(ctx, block)
     result = call_entry(ctx, block) |> unbox(ctx, block)
-    leave_runtime(runtime, ctx, block)
-    create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+    handle = retain_result(runtime, result, ctx, block)
+    create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -1476,11 +1478,11 @@ defmodule Batata.Lift do
     runtime
   end
 
-  defp leave_runtime(runtime, ctx, block) do
+  defp retain_result(runtime, result, ctx, block) do
     i64 = integer_type(ctx)
+    handle = create_op("ex.result_create", [runtime, result], [i64], ctx, block)
     create_op("ex.runtime_leave", [], [i64], ctx, block)
-    create_op("ex.runtime_destroy", [runtime], [i64], ctx, block)
-    :ok
+    handle
   end
 
   defp lift_parallel_driver(entry_name, ctx, ip, workers, process_cap) do
@@ -1510,8 +1512,8 @@ defmodule Batata.Lift do
         block
       )
 
-    leave_runtime(runtime, ctx, block)
-    create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+    handle = retain_result(runtime, result, ctx, block)
+    create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -1671,8 +1673,8 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     final = while_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
-    leave_runtime(runtime, ctx, block)
-    create_op("ex.return", [final, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+    handle = retain_result(runtime, final, ctx, block)
+    create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -1683,6 +1685,40 @@ defmodule Batata.Lift do
       filler: fn -> [region] end
     }
     |> MLIR.Operation.create()
+  end
+
+  @result_accessors [
+    {"__batata_result_destroy", "ex.result_destroy", 1},
+    {"__batata_result_root_kind", "ex.result_root_kind", 1},
+    {"__batata_result_root_word", "ex.result_root_word", 1},
+    {"__batata_result_term_kind", "ex.result_term_kind", 2},
+    {"__batata_result_term_length", "ex.result_term_length", 2},
+    {"__batata_result_term_get", "ex.result_term_get", 3}
+  ]
+
+  # Stable C/JIT entry points keep host materialization independent of the
+  # runtime library's platform-specific symbol loading rules.
+  defp lift_result_accessors(ctx, ip) do
+    Enum.each(@result_accessors, fn {name, op_name, arity} ->
+      i64 = integer_type(ctx)
+      region = MLIR.CAPI.mlirRegionCreate()
+      locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), arity)
+      block = MLIR.Block.create(List.duplicate(i64, arity), locs)
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+      args = block |> Walker.arguments() |> Enum.to_list()
+      result = create_op(op_name, args, [i64], ctx, block)
+      create_op("ex.return", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
+
+      %Beaver.SSA{
+        op: "ex.func",
+        ip: ip,
+        ctx: ctx,
+        arguments: [sym_name: MLIR.Attribute.string(name)],
+        results: [],
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+    end)
   end
 
   # Calls the compiled entry (`__batata_entry`) with no arguments.
