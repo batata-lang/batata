@@ -20,6 +20,7 @@ remaining 61 bits hold the payload.
 | `map` | `0b100` | heap pointer to a map header |
 | `binary` | `0b101` | heap pointer to a binary header |
 | `fun` | `0b110` | heap pointer to a closure header |
+| `runtime-local` | `0b111` | marked immediate PID/reference; never portable across runtime/session boundaries |
 
 Heap objects are 8-byte aligned, so the low 3 bits of a container pointer are
 always zero and the tag can be OR-ed in. `nil` is the atom with id 0
@@ -66,13 +67,13 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
 | `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | retain the sole completed result for a runtime and transfer ownership to a generation-checked host handle; 0 when the bounded registry is full, -1 for a stale runtime, -2 for OOM and -3 for duplicate ownership |
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | release a live result and its runtime; -1 for a stale handle and -2 until every worker leaves |
-| `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for a stale handle |
+| `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for stale/runtime-local values |
 | `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
 | `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
 | `ex.term.result_term_length` | `(handle: i64, word: i64) -> i64` | container length under a live result, or -1 when invalid |
 | `ex.term.result_term_get` | `(handle: i64, word: i64, index: i64) -> i64` | indexed tuple/list/map/binary access while the result is live; -1 when invalid |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
-| `ex.term.self` | `() -> i64` | pid of the current actor (atom word with id 1) |
+| `ex.term.self` | `() -> i64` | runtime-local pid of the current actor |
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
 | `ex.term.receive` | `() -> i64` | dequeue the oldest message; nil when empty |
 | `ex.term.mailbox_len` | `() -> i64` | number of messages in the current process's mailbox |
@@ -85,7 +86,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.receive_start` | `() -> i64` | the current process's `receive ... after` timeout start (0 = not started) |
 | `ex.term.receive_start_set` | `(value: i64) -> i64` | set the current process's `receive ... after` timeout start |
 | `ex.term.mailbox_clear` | `() -> i64` | reset the mailbox; the compiled entry calls this at startup |
-| `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns its pid (atom word with a BEAM-style generation serial, #50 stage 2), or nil on allocation failure. Completed process slots are recycled first with a bumped generation (stage 1), so stale pids are rejected; otherwise the table grows dynamically (stage 2), so spawn never fails on capacity |
+| `ex.term.spawn` | `(fun: i64) -> i64` | create a new process with its own mailbox/clock and the given closure entry; returns a runtime-local pid with a BEAM-style generation serial, or nil on allocation failure. Completed slots are recycled with a bumped generation and the table grows beyond its initial capacity |
 | `ex.term.process_table_reset` | `(cap: i64) -> i64` | reset the process table to a single fresh initial process with the given initial allocation (>= 1); returns 1, or nil when the capacity is out of range; the table grows beyond it on spawn; the scheduler driver calls this at program start |
 | `ex.term.cont_save` | `(arg: i64, acc: i64, cursor: i64) -> i64` | save the current process's cursor-loop continuation at the current epoch |
 | `ex.term.cont_pending` | `() -> i64` | 1 when a continuation is saved at the current epoch (a stale epoch reads 0, so the entry restarts) |
@@ -109,7 +110,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.link` | `(pid: i64, exit_tag: i64, normal_tag: i64) -> i64` | create a symmetric process link; nil on stale pid or relation-capacity exhaustion |
 | `ex.term.unlink` | `(pid: i64) -> i64` | remove both sides of a process link; returns 1 when the pid is live |
 | `ex.term.exit` | `(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64) -> i64` | send an exit signal without linking; trapping targets receive `{EXIT, from, reason}` |
-| `ex.term.monitor` | `(pid: i64, down_tag: i64, process_tag: i64, normal_tag: i64) -> i64` | monitor a live process and return a fresh tagged-integer reference |
+| `ex.term.monitor` | `(pid: i64, down_tag: i64, process_tag: i64, normal_tag: i64) -> i64` | monitor a live process and return a fresh runtime-local reference |
 | `ex.term.demonitor` | `(reference: i64) -> i64` | remove a monitor owned by the current process; returns 1 when found |
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
 | `ex.term.process_result` | `(pid: i64) -> i64` | result of a completed process; nil when unknown or still runnable |

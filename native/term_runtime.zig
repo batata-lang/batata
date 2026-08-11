@@ -21,9 +21,15 @@ const tag_list: usize = 3;
 const tag_map: usize = 4;
 const tag_binary: usize = 5;
 const tag_fun: usize = 6;
+const tag_runtime_local: usize = 7;
 
 const tag_mask: usize = 7;
 const tag_shift: u6 = 3;
+const runtime_local_marker: u64 = @as(u64, 1) << 60;
+const runtime_local_kind_shift: u6 = 59;
+const runtime_local_data_mask: u64 = (@as(u64, 1) << runtime_local_kind_shift) - 1;
+const runtime_local_pid: u64 = 0;
+const runtime_local_ref: u64 = 1;
 
 /// Nil is the atom term with id 0: tag_atom | (0 << 3).
 const nil_word: i64 = 1;
@@ -64,6 +70,30 @@ fn is_int(word: i64) bool {
 
 fn is_atom(word: i64) bool {
     return word_tag(word) == tag_atom;
+}
+
+fn runtime_local_word(kind: u64, data: u64) i64 {
+    const payload = runtime_local_marker | (kind << runtime_local_kind_shift) | data;
+    return @bitCast((payload << tag_shift) | tag_runtime_local);
+}
+
+fn runtime_local_kind(word: i64) ?u64 {
+    if (word_tag(word) != tag_runtime_local) return null;
+    const payload = @as(u64, @bitCast(word)) >> tag_shift;
+    if (payload & runtime_local_marker == 0) return null;
+    return (payload >> runtime_local_kind_shift) & 1;
+}
+
+fn runtime_local_data(word: i64) u64 {
+    return (@as(u64, @bitCast(word)) >> tag_shift) & runtime_local_data_mask;
+}
+
+fn is_pid(word: i64) bool {
+    return runtime_local_kind(word) == runtime_local_pid;
+}
+
+fn is_runtime_ref(word: i64) bool {
+    return runtime_local_kind(word) == runtime_local_ref;
 }
 
 fn is_list_word(word: i64) bool {
@@ -803,10 +833,9 @@ pub export fn ex_term_result_root_kind(handle: i64) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
-    return if (runtime_owns_word(slot.runtime.?, slot.word))
-        @intCast(word_tag(slot.word))
-    else
-        0;
+    if (runtime_owns_word(slot.runtime.?, slot.word)) return @intCast(word_tag(slot.word));
+    if (runtime_local_kind(slot.word) != null) return -1;
+    return 0;
 }
 
 pub export fn ex_term_result_root_word(handle: i64) i64 {
@@ -904,21 +933,22 @@ fn current_proc() *Process {
     return proc;
 }
 
-// pid layout: payload = (generation << index_bits) | (index + 1), tagged as an
-// atom. index_bits = 24 supports ~16M concurrent slots; the generation is the
-// BEAM serial that makes recycled-slot pids unique over time.
+// Runtime-local immediates use tag 7 plus a high marker and subtype bit, so a
+// host boundary can reject PIDs/references without confusing them with atoms
+// or integers. PID data is (generation << index_bits) | (index + 1).
 const index_bits: u6 = 24;
 const index_mask: i64 = (1 << @intCast(index_bits)) - 1;
 
 fn pid_of(index: usize, generation: u32) i64 {
-    const payload = (@as(i64, @intCast(generation)) << @intCast(index_bits)) |
-        @as(i64, @intCast(index + 1));
-    return (payload << @intCast(tag_shift)) | @as(i64, @intCast(tag_atom));
+    const data = (@as(u64, generation) << @intCast(index_bits)) |
+        @as(u64, @intCast(index + 1));
+    return runtime_local_word(runtime_local_pid, data);
 }
 
 fn pid_index(pid: i64) usize {
-    const id = (word_payload(pid) & index_mask) - 1;
-    return if (id < 0) 0 else @intCast(id);
+    if (!is_pid(pid)) return 0;
+    const encoded = runtime_local_data(pid) & @as(u64, @intCast(index_mask));
+    return if (encoded == 0) 0 else @intCast(encoded - 1);
 }
 
 /// Resolves a pid to its process, validating the generation: a stale pid
@@ -1037,7 +1067,7 @@ pub export fn ex_term_self() i64 {
 /// plain FIFO receive must observe the message on resume.
 pub export fn ex_term_send(pid: i64, msg: i64) i64 {
     const sender = current_proc().pid;
-    if (word_tag(pid) != tag_atom) return nil_word;
+    if (!is_pid(pid)) return nil_word;
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -1140,7 +1170,7 @@ pub export fn ex_term_mailbox_clear() i64 {
 }
 
 /// Spawns a new process with its own mailbox, clock and entry closure;
-/// returns its pid (atom word with generation + slot serial, #50 stage 2).
+/// returns its runtime-local pid word with generation + slot serial (#50 stage 2).
 /// A completed process's slot is recycled first (stage 1) with a bumped
 /// generation; otherwise the table grows dynamically, so spawn only fails on
 /// allocation failure. `process_count` grows only to the concurrency peak.
@@ -1491,7 +1521,7 @@ pub export fn ex_term_worker_migrations() i64 {
 
 pub export fn ex_term_process_thread_id(pid: i64) i64 {
     const instance = runtime();
-    if (word_tag(pid) != tag_atom) return 0;
+    if (!is_pid(pid)) return 0;
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
     const proc = resolve_pid(instance, pid) orelse return 0;
@@ -1729,7 +1759,7 @@ pub export fn ex_term_exit(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64
     return reason;
 }
 
-/// Monitors a live process and returns a fresh tagged-integer reference.
+/// Monitors a live process and returns a fresh runtime-local reference.
 pub export fn ex_term_monitor(
     pid: i64,
     down_tag: i64,
@@ -1745,7 +1775,7 @@ pub export fn ex_term_monitor(
     if (target.status == .done or target.status == .exited or target.monitor_count >= relation_cap)
         return nil_word;
     instance.monitor_ref_counter += 1;
-    const reference = instance.monitor_ref_counter << @intCast(tag_shift);
+    const reference = runtime_local_word(runtime_local_ref, @intCast(instance.monitor_ref_counter));
     target.monitors[target.monitor_count] = .{
         .watcher = current_proc().pid,
         .reference = reference,
@@ -1797,7 +1827,7 @@ pub export fn ex_term_process_result(pid: i64) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
-    if (word_tag(pid) != tag_atom) return nil_word;
+    if (!is_pid(pid)) return nil_word;
     const proc = resolve_pid(instance, pid) orelse return nil_word;
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -1810,7 +1840,7 @@ pub export fn ex_term_process_exit_reason(pid: i64) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
-    if (word_tag(pid) != tag_atom) return nil_word;
+    if (!is_pid(pid)) return nil_word;
     const proc = resolve_pid(instance, pid) orelse return nil_word;
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -3280,7 +3310,8 @@ test "term ABI mailbox and integer untag" {
 
     // self() is the pid of the single actor
     const pid = ex_term_self();
-    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(pid));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_is_atom(pid));
+    try std.testing.expect(is_pid(pid));
 
     // send enqueues in FIFO order and returns the message
     try std.testing.expectEqual(one, ex_term_send(pid, one));
@@ -3326,7 +3357,8 @@ test "term ABI mailbox and integer untag" {
     // routes by pid
     const fun = ex_term_make_fun(1, 0, 0, 0, 0, 0);
     const pid2 = ex_term_spawn(fun);
-    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(pid2));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_is_atom(pid2));
+    try std.testing.expect(is_pid(pid2));
     try std.testing.expectEqual(one, ex_term_send(pid2, one));
     // current process (pid 1) mailbox is unaffected by sends to pid2
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_receive()));
@@ -3516,6 +3548,20 @@ test "host result roots preserve untagged scalar compatibility" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_root_kind(handle));
     try std.testing.expectEqual(@as(i64, 3), ex_term_result_root_word(handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
+}
+
+test "host results reject runtime-local pid and reference roots" {
+    const runtime_handle = ex_term_runtime_create();
+    const pid_result = ex_term_result_create(runtime_handle, pid_of(0, 1));
+    try std.testing.expect(pid_result > 0);
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_root_kind(pid_result));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(pid_result));
+
+    const ref_runtime = ex_term_runtime_create();
+    const ref_result = ex_term_result_create(ref_runtime, runtime_local_word(runtime_local_ref, 1));
+    try std.testing.expect(ref_result > 0);
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_root_kind(ref_result));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(ref_result));
 }
 
 test "segmented arena grows beyond the former fixed heap without moving terms" {
@@ -3785,7 +3831,7 @@ test "links and monitors deliver ordered EXIT and DOWN signals" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_process_trap_exit(1));
     try std.testing.expectEqual(child, ex_term_link(child, exit_tag, normal_tag));
     const reference = ex_term_monitor(child, down_tag, process_tag, normal_tag);
-    try std.testing.expect(is_int(reference));
+    try std.testing.expect(is_runtime_ref(reference));
 
     try std.testing.expectEqual(child, ex_term_schedule_next());
     try std.testing.expectEqual(reason, ex_term_process_exit(reason));
@@ -4000,7 +4046,8 @@ test "completed process slots are recycled by spawn (#50 stage 1)" {
     // No free slots remain (r3 stays runnable) and the table is at its
     // initial capacity: spawn grows the table dynamically (#50 stage 2).
     const grown = ex_term_spawn(fun);
-    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(grown));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_is_atom(grown));
+    try std.testing.expect(is_pid(grown));
     try std.testing.expectEqual(@as(i64, 4), ex_term_processes_runnable());
 }
 
