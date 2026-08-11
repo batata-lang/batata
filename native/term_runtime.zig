@@ -358,7 +358,21 @@ const ArenaChunk = struct {
     owner: u32 = arena_owner_unassigned,
 };
 
+const LifecyclePhase = enum(u8) {
+    idle,
+    executing,
+    exporting,
+    destroying,
+};
+
 const Runtime = struct {
+    lifecycle_lock: RuntimeMutex = .{},
+    lifecycle_phase: LifecyclePhase = .idle,
+    execution_handle: i64 = 0,
+    execution_owner: usize = 0,
+    execution_participants: u32 = 0,
+    execution_initialized: bool = false,
+    execution_epoch: u64 = 0,
     heap_lock: RuntimeMutex = .{},
     scheduler_lock: RuntimeMutex = .{},
     counter_lock: RuntimeMutex = .{},
@@ -557,6 +571,9 @@ fn result_term_kind_locked(slot: *ResultSlot, word: i64) i64 {
 
 threadlocal var active_runtime: ?*Runtime = null;
 threadlocal var active_runtime_handle: i64 = 0;
+threadlocal var worker_runtime: ?*Runtime = null;
+threadlocal var worker_runtime_handle: i64 = 0;
+threadlocal var worker_execution_epoch: u64 = 0;
 threadlocal var owned_runtime: ?*Runtime = null;
 threadlocal var current_process: usize = 0;
 // Workers retain the stable Process allocation they claimed. Looking it up
@@ -567,6 +584,65 @@ threadlocal var arena_worker_id: u32 = 0;
 threadlocal var arena_cached_runtime: ?*Runtime = null;
 threadlocal var arena_cached_epoch: u32 = 0;
 threadlocal var arena_cached_chunk: usize = arena_chunk_cap;
+
+fn current_thread_id() usize {
+    return @intCast(std.Thread.getCurrentId());
+}
+
+fn is_execution_owner_locked(instance: *Runtime, handle: i64) bool {
+    return instance.lifecycle_phase == .executing and
+        instance.execution_handle == handle and
+        instance.execution_owner == current_thread_id() and
+        active_runtime == instance and
+        active_runtime_handle == handle;
+}
+
+fn clear_runtime_thread_state(instance: *Runtime) void {
+    if (arena_cached_runtime == instance) {
+        arena_cached_runtime = null;
+        arena_cached_epoch = 0;
+        arena_cached_chunk = arena_chunk_cap;
+    }
+    active_runtime = null;
+    active_runtime_handle = 0;
+    current_process = 0;
+    current_process_ptr = null;
+}
+
+fn worker_join(instance: *Runtime, handle: i64, epoch: u64) bool {
+    if (active_runtime_handle != 0 or worker_runtime != null) return false;
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (instance.lifecycle_phase != .executing or
+        instance.execution_handle != handle or
+        instance.execution_epoch != epoch or
+        instance.execution_participants == std.math.maxInt(u32)) return false;
+    instance.execution_participants += 1;
+    instance.entered_workers.store(instance.execution_participants, .release);
+    worker_runtime = instance;
+    worker_runtime_handle = handle;
+    worker_execution_epoch = epoch;
+    active_runtime = instance;
+    return true;
+}
+
+fn worker_leave() bool {
+    const instance = worker_runtime orelse return false;
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (instance.lifecycle_phase != .executing or
+        instance.execution_handle != worker_runtime_handle or
+        instance.execution_epoch != worker_execution_epoch or
+        instance.execution_participants <= 1) return false;
+    instance.execution_participants -= 1;
+    instance.entered_workers.store(instance.execution_participants, .release);
+    worker_runtime = null;
+    worker_runtime_handle = 0;
+    worker_execution_epoch = 0;
+    clear_runtime_thread_state(instance);
+    arena_worker_id = 0;
+    return true;
+}
 
 fn create_runtime() *Runtime {
     const instance = std.heap.page_allocator.create(Runtime) catch
@@ -705,16 +781,25 @@ pub export fn ex_term_runtime_create() i64 {
 
 /// Binds an execution instance to the calling worker thread.
 pub export fn ex_term_runtime_enter(handle: i64) i64 {
+    if (active_runtime_handle == handle and active_runtime != null) return 0;
+    if (active_runtime_handle != 0 or worker_runtime != null) return -2;
     runtime_lock.lock();
     defer runtime_lock.unlock();
     const slot = runtime_slot_locked(handle) orelse return -1;
     const instance = slot.runtime.?;
-    if (active_runtime != instance) {
-        if (active_runtime_handle != 0) {
-            if (active_runtime) |previous| _ = previous.entered_workers.fetchSub(1, .acq_rel);
-        }
-        _ = instance.entered_workers.fetchAdd(1, .acq_rel);
-    }
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (instance.lifecycle_phase != .idle or
+        instance.outstanding_results.load(.acquire) != 0 or
+        instance.outstanding_terms.load(.acquire) != 0) return -2;
+    if (instance.execution_epoch == std.math.maxInt(u64)) return -2;
+    instance.execution_epoch += 1;
+    instance.lifecycle_phase = .executing;
+    instance.execution_handle = handle;
+    instance.execution_owner = current_thread_id();
+    instance.execution_participants = 1;
+    instance.execution_initialized = false;
+    instance.entered_workers.store(1, .release);
     active_runtime = instance;
     active_runtime_handle = handle;
     current_process = 0;
@@ -725,21 +810,19 @@ pub export fn ex_term_runtime_enter(handle: i64) i64 {
 /// Leaves the explicit instance and restores the thread-owned compatibility
 /// runtime on the next ABI call.
 pub export fn ex_term_runtime_leave() i64 {
-    runtime_lock.lock();
-    defer runtime_lock.unlock();
     if (active_runtime_handle == 0) return -1;
-    if (active_runtime) |instance| {
-        _ = instance.entered_workers.fetchSub(1, .acq_rel);
-        if (arena_cached_runtime == instance) {
-            arena_cached_runtime = null;
-            arena_cached_epoch = 0;
-            arena_cached_chunk = arena_chunk_cap;
-        }
-    }
-    active_runtime = null;
-    active_runtime_handle = 0;
-    current_process = 0;
-    current_process_ptr = null;
+    const instance = active_runtime orelse return -1;
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (!is_execution_owner_locked(instance, active_runtime_handle)) return -1;
+    if (instance.execution_participants != 1) return -2;
+    instance.lifecycle_phase = .idle;
+    instance.execution_handle = 0;
+    instance.execution_owner = 0;
+    instance.execution_participants = 0;
+    instance.execution_initialized = false;
+    instance.entered_workers.store(0, .release);
+    clear_runtime_thread_state(instance);
     return 0;
 }
 
@@ -751,17 +834,22 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
         return -1;
     };
     const instance = slot.runtime.?;
+    instance.lifecycle_lock.lock();
     if (instance.outstanding_results.load(.acquire) != 0 or
         instance.outstanding_terms.load(.acquire) != 0)
     {
+        instance.lifecycle_lock.unlock();
         runtime_lock.unlock();
         return -2;
     }
-    if (instance.entered_workers.load(.acquire) != 0) {
+    if (instance.lifecycle_phase != .idle) {
+        instance.lifecycle_lock.unlock();
         runtime_lock.unlock();
         return -2;
     }
+    instance.lifecycle_phase = .destroying;
     _ = invalidate_runtime_slot_locked(handle);
+    instance.lifecycle_lock.unlock();
     runtime_lock.unlock();
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
@@ -803,25 +891,17 @@ pub export fn ex_term_runtime_oom(handle: i64) i64 {
 /// Pins a completed execution result and transfers ownership of its runtime
 /// to the returned opaque handle. Zero means the bounded registry is full.
 pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
-    runtime_lock.lock();
-    const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
-        runtime_lock.unlock();
-        return -1;
-    };
-    const instance = runtime_slot.runtime.?;
+    if (active_runtime_handle != runtime_handle) return -1;
+    const instance = active_runtime orelse return -1;
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (!is_execution_owner_locked(instance, runtime_handle) or
+        instance.execution_participants != 1 or
+        !instance.execution_initialized) return -1;
     if (instance.outstanding_results.load(.acquire) != 0) {
-        runtime_lock.unlock();
         return -3;
     }
     if (word == nil_word and instance.allocation_failed.load(.acquire)) {
-        if (active_runtime == instance and active_runtime_handle == runtime_handle) {
-            active_runtime = null;
-            active_runtime_handle = 0;
-            _ = instance.entered_workers.fetchSub(1, .acq_rel);
-        }
-        _ = invalidate_runtime_slot_locked(runtime_handle);
-        runtime_lock.unlock();
-        instance.deinit();
         return -2;
     }
     result_lock.lock();
@@ -837,20 +917,10 @@ pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
             _ = instance.outstanding_results.fetchAdd(1, .acq_rel);
             result_cursor = (index + 1) % result_slot_cap;
             result_lock.unlock();
-            runtime_lock.unlock();
             return result_handle(index, slot.generation);
         }
     }
     result_lock.unlock();
-    if (active_runtime == instance and active_runtime_handle == runtime_handle) {
-        active_runtime = null;
-        active_runtime_handle = 0;
-        _ = instance.entered_workers.fetchSub(1, .acq_rel);
-    }
-    if (owned_runtime == instance) owned_runtime = null;
-    _ = invalidate_runtime_slot_locked(runtime_handle);
-    runtime_lock.unlock();
-    instance.deinit();
     return 0;
 }
 
@@ -1358,8 +1428,7 @@ pub export fn ex_term_handle_destroy(handle: i64) i64 {
     return 0;
 }
 
-fn init_processes() void {
-    const instance = runtime();
+fn init_processes(instance: *Runtime) void {
     for (instance.processes[0..instance.process_count]) |proc| {
         std.heap.page_allocator.destroy(proc);
     }
@@ -1388,7 +1457,7 @@ fn current_proc() *Process {
     if (current_process_ptr) |proc| return proc;
     const instance = runtime();
     if (!instance.processes_initialized) {
-        init_processes();
+        init_processes(instance);
         instance.processes_initialized = true;
     }
     const proc = instance.processes[current_process];
@@ -1432,7 +1501,25 @@ fn resolve_pid(instance: *Runtime, pid: i64) ?*Process {
 /// is out of range.
 pub export fn ex_term_process_table_reset(cap: i64) i64 {
     const instance = runtime();
-    if (cap < 1) return nil_word;
+    if (cap < 1 or cap > max_process_cap) return nil_word;
+    if (worker_runtime != null) return -1;
+    const explicit = active_runtime_handle != 0;
+    if (explicit) {
+        instance.lifecycle_lock.lock();
+        defer instance.lifecycle_lock.unlock();
+        if (!is_execution_owner_locked(instance, active_runtime_handle) or
+            instance.execution_participants != 1 or
+            instance.execution_initialized or
+            instance.outstanding_results.load(.acquire) != 0 or
+            instance.outstanding_terms.load(.acquire) != 0) return -1;
+        const result = process_table_reset(instance, cap);
+        instance.execution_initialized = true;
+        return result;
+    }
+    return process_table_reset(instance, cap);
+}
+
+fn process_table_reset(instance: *Runtime, cap: i64) i64 {
     const new_cap: usize = @intCast(cap);
     if (instance.processes.len != new_cap) {
         for (instance.processes[0..instance.process_count]) |proc| {
@@ -1452,7 +1539,7 @@ pub export fn ex_term_process_table_reset(cap: i64) i64 {
     instance.yield_count = 0;
     jmp_depth = 0;
     throw_value = 0;
-    init_processes();
+    init_processes(instance);
     instance.processes_initialized = true;
     return 1;
 }
@@ -1879,12 +1966,24 @@ fn processes_unfinished() usize {
 
 const Worker = struct {
     instance: *Runtime,
+    runtime_handle: i64,
+    execution_epoch: u64,
     id: u32,
     dispatcher: *const fn (i64) callconv(.c) i64,
 
     fn run(self: @This()) void {
-        active_runtime = self.instance;
-        if (self.id > 1) _ = self.instance.entered_workers.fetchAdd(1, .acq_rel);
+        const background = self.id > 1;
+        if (background and !worker_join(self.instance, self.runtime_handle, self.execution_epoch)) return;
+        if (!background) active_runtime = self.instance;
+        defer {
+            if (background) {
+                _ = worker_leave();
+            } else {
+                arena_worker_id = 0;
+                current_process = 0;
+                current_process_ptr = null;
+            }
+        }
         arena_worker_id = self.id;
         current_process = 0;
         current_process_ptr = null;
@@ -1916,12 +2015,6 @@ const Worker = struct {
             if (processes_unfinished() == 0) break;
             std.Thread.yield() catch {};
         }
-
-        active_runtime = null;
-        if (self.id > 1) _ = self.instance.entered_workers.fetchSub(1, .acq_rel);
-        arena_worker_id = 0;
-        current_process = 0;
-        current_process_ptr = null;
     }
 };
 
@@ -1941,6 +2034,15 @@ pub export fn ex_term_worker_run(
 ) i64 {
     if (worker_count <= 0 or worker_count > 64 or dispatcher == null) return -1;
     const instance = runtime();
+    if (active_runtime_handle == 0) return -1;
+    instance.lifecycle_lock.lock();
+    if (!is_execution_owner_locked(instance, active_runtime_handle) or !instance.execution_initialized) {
+        instance.lifecycle_lock.unlock();
+        return -1;
+    }
+    const runtime_handle = active_runtime_handle;
+    const execution_epoch = instance.execution_epoch;
+    instance.lifecycle_lock.unlock();
     instance.configured_workers.store(@intCast(worker_count), .release);
     instance.active_actors.store(0, .release);
     instance.max_active_actors.store(0, .release);
@@ -1955,6 +2057,8 @@ pub export fn ex_term_worker_run(
         thread.* = std.Thread.spawn(.{}, Worker.run, .{
             Worker{
                 .instance = instance,
+                .runtime_handle = runtime_handle,
+                .execution_epoch = execution_epoch,
                 .id = @intCast(index + 2),
                 .dispatcher = dispatcher.?,
             },
@@ -1962,11 +2066,16 @@ pub export fn ex_term_worker_run(
         started += 1;
     }
 
-    Worker.run(.{ .instance = instance, .id = 1, .dispatcher = dispatcher.? });
+    Worker.run(.{
+        .instance = instance,
+        .runtime_handle = runtime_handle,
+        .execution_epoch = execution_epoch,
+        .id = 1,
+        .dispatcher = dispatcher.?,
+    });
     for (threads[0..started]) |thread| thread.join();
     if (started != background_count) return -1;
 
-    active_runtime = instance;
     return ex_term_process_result(pid_of(0, 1));
 }
 
@@ -3993,9 +4102,75 @@ test "explicit runtime handles preserve isolated execution state" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(second));
 }
 
+const CompetingEnterProbe = struct {
+    handle: i64,
+    result: std.atomic.Value(i64) = .init(99),
+
+    fn run(self: *@This()) void {
+        self.result.store(ex_term_runtime_enter(self.handle), .release);
+    }
+};
+
+const WorkerLeaseProbe = struct {
+    instance: *Runtime,
+    handle: i64,
+    epoch: u64,
+    ready: std.atomic.Value(bool) = .init(false),
+    release: std.atomic.Value(bool) = .init(false),
+    left: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *@This()) void {
+        if (!worker_join(self.instance, self.handle, self.epoch)) return;
+        self.ready.store(true, .release);
+        while (!self.release.load(.acquire)) std.Thread.yield() catch {};
+        self.left.store(worker_leave(), .release);
+    }
+};
+
+test "runtime lifecycle admits one owner and tracks joined workers" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    const instance = active_runtime.?;
+    const first_epoch = instance.execution_epoch;
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    try std.testing.expectEqual(first_epoch, instance.execution_epoch);
+    try std.testing.expectEqual(@as(u32, 1), instance.execution_participants);
+    try std.testing.expect(!worker_join(instance, handle, first_epoch));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_create(handle, 7));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_process_table_reset(default_process_cap));
+
+    var competing = CompetingEnterProbe{ .handle = handle };
+    const competitor = try std.Thread.spawn(.{}, CompetingEnterProbe.run, .{&competing});
+    competitor.join();
+    try std.testing.expectEqual(@as(i64, -2), competing.result.load(.acquire));
+
+    var worker = WorkerLeaseProbe{
+        .instance = instance,
+        .handle = handle,
+        .epoch = first_epoch,
+    };
+    const thread = try std.Thread.spawn(.{}, WorkerLeaseProbe.run, .{&worker});
+    while (!worker.ready.load(.acquire)) std.Thread.yield() catch {};
+    try std.testing.expectEqual(@as(u32, 2), instance.execution_participants);
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_leave());
+    worker.release.store(true, .release);
+    thread.join();
+    try std.testing.expect(worker.left.load(.acquire));
+    try std.testing.expectEqual(@as(u32, 1), instance.execution_participants);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    try std.testing.expectEqual(first_epoch + 1, instance.execution_epoch);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
 test "host result handles retain terms and reject stale generations" {
     const runtime_handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const tuple = tuple3(8, 16, 24);
     const handle = ex_term_result_create(runtime_handle, tuple);
     try std.testing.expect(handle != 0);
@@ -4014,8 +4189,11 @@ test "host result handles retain terms and reject stale generations" {
 
 test "host result roots preserve untagged scalar compatibility" {
     const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const handle = ex_term_result_create(runtime_handle, 3);
     try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_root_kind(handle));
     try std.testing.expectEqual(@as(i64, 3), ex_term_result_root_word(handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
@@ -4023,14 +4201,20 @@ test "host result roots preserve untagged scalar compatibility" {
 
 test "host results reject runtime-local pid and reference roots" {
     const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const pid_result = ex_term_result_create(runtime_handle, pid_of(0, 1));
     try std.testing.expect(pid_result > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, -1), ex_term_result_root_kind(pid_result));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(pid_result));
 
     const ref_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(ref_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const ref_result = ex_term_result_create(ref_runtime, runtime_local_word(runtime_local_ref, 1));
     try std.testing.expect(ref_result > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, -1), ex_term_result_root_kind(ref_result));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(ref_result));
 }
@@ -4088,17 +4272,23 @@ test "binary payload storage is byte packed" {
 test "arena OOM is distinct from nil and exposes usage metrics" {
     const runtime_handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     try std.testing.expect(alloc_words(arena_hard_limit_words + 1) == null);
     try std.testing.expectEqual(@as(i64, 1), ex_term_runtime_oom(runtime_handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_chunks(runtime_handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_bytes(runtime_handle));
     try std.testing.expectEqual(@as(i64, -2), ex_term_result_create(runtime_handle, nil_word));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
 }
 
 test "runtime destroy rejects an outstanding result handle" {
     const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const handle = ex_term_result_create(runtime_handle, 7);
     try std.testing.expect(handle > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(runtime_handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
 }
@@ -4118,6 +4308,7 @@ test "explicit runtime handles reject stale generations and entered destroy" {
 test "a result runtime has one owner and waits for every worker to leave" {
     const runtime_handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const handle = ex_term_result_create(runtime_handle, 7);
     try std.testing.expect(handle > 0);
     try std.testing.expectEqual(@as(i64, -3), ex_term_result_create(runtime_handle, 8));
@@ -4130,6 +4321,7 @@ test "a result runtime has one owner and waits for every worker to leave" {
 test "portable export survives source destroy and imports into an explicit target" {
     const source_runtime = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
 
     const binary_words = alloc_binary(3).?;
     const binary = word_from_ptr(binary_words, tag_binary);
@@ -4181,6 +4373,7 @@ test "portable export survives source destroy and imports into an explicit targe
 test "portable handles reject stale generations and unsupported closures" {
     const runtime_handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const closure_words = alloc_words(2).?;
     closure_words[0] = 7;
     closure_words[1] = 0;
@@ -4191,7 +4384,10 @@ test "portable handles reject stale generations and unsupported closures" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
 
     const scalar_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(scalar_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const scalar_result = ex_term_result_create(scalar_runtime, 3);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     const exported = ex_term_export(scalar_result, 3);
     try std.testing.expect(exported > 0);
     try std.testing.expectEqual(exported, ex_term_exported_clone(exported));
@@ -4205,12 +4401,16 @@ test "portable handles reject stale generations and unsupported closures" {
 
 test "portable export deterministically rejects runtime-local values" {
     const pid_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(pid_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const pid_result = ex_term_result_create(pid_runtime, pid_of(0, 1));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, -3), ex_term_export(pid_result, ex_term_result_root_word(pid_result)));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(pid_result));
 
     const nested_runtime = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(nested_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const nested = tuple3(8, runtime_local_word(runtime_local_ref, 1), 16);
     const nested_result = ex_term_result_create(nested_runtime, nested);
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
@@ -4220,7 +4420,10 @@ test "portable export deterministically rejects runtime-local values" {
 
 test "portable import rejects a target runtime that is not explicitly entered" {
     const source_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const result = ex_term_result_create(source_runtime, 8);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     const exported = ex_term_export(result, 8);
     try std.testing.expect(exported > 0);
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
@@ -4233,7 +4436,10 @@ test "portable import rejects a target runtime that is not explicitly entered" {
 
 test "portable boundary rejects malformed encodings and foreign arena words" {
     const source_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const result = ex_term_result_create(source_runtime, 8);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     const exported = ex_term_export(result, 8);
     try std.testing.expect(exported > 0);
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
@@ -4255,6 +4461,7 @@ test "portable boundary rejects malformed encodings and foreign arena words" {
 
     const owner_runtime = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(owner_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
     const owner_words = alloc_words(2).?;
     owner_words[0] = 1;
     owner_words[1] = foreign_tuple;
@@ -4267,13 +4474,16 @@ test "portable boundary rejects malformed encodings and foreign arena words" {
 }
 
 const ActorClaimProbe = struct {
+    instance: *Runtime,
     handle: i64,
+    epoch: u64,
     ready: std.atomic.Value(u32) = .init(0),
     claimed: std.atomic.Value(u32) = .init(0),
     pids: [2]i64 = undefined,
 
     fn run(self: *@This(), slot: usize) void {
-        _ = ex_term_runtime_enter(self.handle);
+        if (!worker_join(self.instance, self.handle, self.epoch)) return;
+        defer _ = worker_leave();
         _ = self.ready.fetchAdd(1, .acq_rel);
         while (self.ready.load(.acquire) != self.pids.len) std.Thread.yield() catch {};
 
@@ -4282,7 +4492,6 @@ const ActorClaimProbe = struct {
         while (self.claimed.load(.acquire) != self.pids.len) std.Thread.yield() catch {};
 
         _ = ex_term_process_release();
-        _ = ex_term_runtime_leave();
     }
 };
 
@@ -4291,9 +4500,13 @@ test "workers claim distinct actors from one runtime" {
     _ = ex_term_runtime_enter(handle);
     _ = ex_term_process_table_reset(default_process_cap);
     _ = ex_term_spawn(nil_word);
-    _ = ex_term_runtime_leave();
 
-    var probe = ActorClaimProbe{ .handle = handle };
+    const instance = active_runtime.?;
+    var probe = ActorClaimProbe{
+        .instance = instance,
+        .handle = handle,
+        .epoch = instance.execution_epoch,
+    };
     const first = try std.Thread.spawn(.{}, ActorClaimProbe.run, .{ &probe, 0 });
     const second = try std.Thread.spawn(.{}, ActorClaimProbe.run, .{ &probe, 1 });
     first.join();
@@ -4302,20 +4515,23 @@ test "workers claim distinct actors from one runtime" {
     try std.testing.expect(probe.pids[0] != nil_word);
     try std.testing.expect(probe.pids[1] != nil_word);
     try std.testing.expect(probe.pids[0] != probe.pids[1]);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
 const MailboxSendProbe = struct {
+    instance: *Runtime,
     handle: i64,
+    epoch: u64,
     pid: i64,
 
     fn run(self: @This(), slot: usize) void {
-        _ = ex_term_runtime_enter(self.handle);
+        if (!worker_join(self.instance, self.handle, self.epoch)) return;
+        defer _ = worker_leave();
         for (0..16) |i| {
             const value: i64 = @intCast(slot * 16 + i);
             _ = ex_term_send(self.pid, value << @intCast(tag_shift));
         }
-        _ = ex_term_runtime_leave();
     }
 };
 
@@ -4324,16 +4540,20 @@ test "mailbox accepts concurrent cross-worker sends without loss" {
     _ = ex_term_runtime_enter(handle);
     _ = ex_term_process_table_reset(default_process_cap);
     const pid = ex_term_self();
-    _ = ex_term_runtime_leave();
 
-    const probe = MailboxSendProbe{ .handle = handle, .pid = pid };
+    const instance = active_runtime.?;
+    const probe = MailboxSendProbe{
+        .instance = instance,
+        .handle = handle,
+        .epoch = instance.execution_epoch,
+        .pid = pid,
+    };
     var threads: [4]std.Thread = undefined;
     for (&threads, 0..) |*thread, slot| {
         thread.* = try std.Thread.spawn(.{}, MailboxSendProbe.run, .{ probe, slot });
     }
     for (threads) |thread| thread.join();
 
-    _ = ex_term_runtime_enter(handle);
     try std.testing.expectEqual(@as(i64, 64), ex_term_mailbox_len());
     var seen = [_]bool{false} ** 64;
     for (0..64) |_| {
