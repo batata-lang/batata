@@ -369,6 +369,7 @@ const Runtime = struct {
     migrations: std.atomic.Value(u64) = .init(0),
     entered_workers: std.atomic.Value(u32) = .init(0),
     outstanding_results: std.atomic.Value(u32) = .init(0),
+    outstanding_terms: std.atomic.Value(u32) = .init(0),
     allocation_failed: std.atomic.Value(bool) = .init(false),
     arena_chunks: [arena_chunk_cap]ArenaChunk = [_]ArenaChunk{.{}} ** arena_chunk_cap,
     arena_chunk_count: usize = 0,
@@ -467,6 +468,49 @@ var result_lock: RuntimeMutex = .{};
 var result_slots: [result_slot_cap]ResultSlot = [_]ResultSlot{.{}} ** result_slot_cap;
 var result_cursor: usize = 0;
 
+const exported_slot_cap: usize = 4096;
+const exported_max_bytes: usize = 16 * 1024 * 1024;
+const exported_max_depth: usize = 256;
+const exported_magic = [_]u8{ 'B', 'T', 'A', 1 };
+
+const ExportedSlot = struct {
+    bytes: ?[]u8 = null,
+    refs: u32 = 0,
+    generation: u32 = 1,
+};
+
+var exported_lock: RuntimeMutex = .{};
+var exported_slots: [exported_slot_cap]ExportedSlot = [_]ExportedSlot{.{}} ** exported_slot_cap;
+var exported_cursor: usize = 0;
+
+fn exported_slot_locked(handle: i64) ?*ExportedSlot {
+    const decoded = handle_index_generation(handle, exported_slot_cap) orelse return null;
+    const slot = &exported_slots[decoded.index];
+    if (slot.bytes == null or slot.generation != decoded.generation) return null;
+    return slot;
+}
+
+const term_slot_cap: usize = 4096;
+
+const TermSlot = struct {
+    runtime: ?*Runtime = null,
+    runtime_handle: i64 = 0,
+    word: i64 = 0,
+    root_scalar: bool = false,
+    generation: u32 = 1,
+};
+
+var term_lock: RuntimeMutex = .{};
+var term_slots: [term_slot_cap]TermSlot = [_]TermSlot{.{}} ** term_slot_cap;
+var term_cursor: usize = 0;
+
+fn term_slot_locked(handle: i64) ?*TermSlot {
+    const decoded = handle_index_generation(handle, term_slot_cap) orelse return null;
+    const slot = &term_slots[decoded.index];
+    if (slot.runtime == null or slot.generation != decoded.generation) return null;
+    return slot;
+}
+
 fn result_handle(index: usize, generation: u32) i64 {
     return opaque_handle(index, generation);
 }
@@ -487,6 +531,17 @@ fn runtime_owns_word(instance: *Runtime, word: i64) bool {
         const start = @intFromPtr(words.ptr);
         const end = start + chunk.bump * @sizeOf(i64);
         if (address >= start and address < end) return true;
+    }
+    return false;
+}
+
+fn runtime_owns_bytes(instance: *Runtime, address: usize, byte_count: usize) bool {
+    const requested_end = std.math.add(usize, address, byte_count) catch return false;
+    for (instance.arena_chunks[0..instance.arena_chunk_count]) |chunk| {
+        const words = chunk.words orelse continue;
+        const start = @intFromPtr(words.ptr);
+        const end = start + chunk.bump * @sizeOf(i64);
+        if (address >= start and requested_end <= end) return true;
     }
     return false;
 }
@@ -696,7 +751,9 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
         return -1;
     };
     const instance = slot.runtime.?;
-    if (instance.outstanding_results.load(.acquire) != 0) {
+    if (instance.outstanding_results.load(.acquire) != 0 or
+        instance.outstanding_terms.load(.acquire) != 0)
+    {
         runtime_lock.unlock();
         return -2;
     }
@@ -893,6 +950,412 @@ pub export fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) i
         },
         else => -1,
     };
+}
+
+const CodecError = error{ Unsupported, Invalid, Limit };
+const codec_scalar: u8 = 0;
+const codec_int: u8 = 1;
+const codec_atom: u8 = 2;
+const codec_tuple: u8 = 3;
+const codec_cons: u8 = 4;
+const codec_map: u8 = 5;
+const codec_binary: u8 = 6;
+
+fn checkedAdd(a: usize, b: usize) CodecError!usize {
+    const value = std.math.add(usize, a, b) catch return error.Limit;
+    if (value > exported_max_bytes) return error.Limit;
+    return value;
+}
+
+fn checkedMul(a: usize, b: usize) CodecError!usize {
+    return std.math.mul(usize, a, b) catch return error.Limit;
+}
+
+fn containerLength(instance: *Runtime, word: i64, element_words: usize) CodecError!usize {
+    const address = @as(usize, @bitCast(word)) & ~tag_mask;
+    if (!runtime_owns_bytes(instance, address, @sizeOf(i64))) return error.Invalid;
+    const header: *const i64 = @ptrFromInt(address);
+    if (header.* < 0) return error.Invalid;
+    const len: usize = @intCast(header.*);
+    const payload_words = try checkedMul(len, element_words);
+    const total_words = try checkedAdd(payload_words, 1);
+    const total_bytes = try checkedMul(total_words, @sizeOf(i64));
+    if (!runtime_owns_bytes(instance, address, total_bytes)) return error.Invalid;
+    return len;
+}
+
+fn encodedTermSize(instance: *Runtime, word: i64, root_scalar: bool, depth: usize) CodecError!usize {
+    if (depth > exported_max_depth) return error.Limit;
+    if (root_scalar) return 1 + @sizeOf(i64);
+    return switch (word_tag(word)) {
+        tag_int, tag_atom => 1 + @sizeOf(i64),
+        tag_tuple => blk: {
+            const len = try containerLength(instance, word, 1);
+            var size: usize = 1 + @sizeOf(u32);
+            for (tuple_elems(word)[0..len]) |child| {
+                size = try checkedAdd(size, try encodedTermSize(instance, child, false, depth + 1));
+            }
+            break :blk size;
+        },
+        tag_list => blk: {
+            const address = @as(usize, @bitCast(word)) & ~tag_mask;
+            if (!runtime_owns_bytes(instance, address, 2 * @sizeOf(i64))) return error.Invalid;
+            const cell = list_cell(word);
+            var size: usize = 1;
+            size = try checkedAdd(size, try encodedTermSize(instance, cell[0], false, depth + 1));
+            size = try checkedAdd(size, try encodedTermSize(instance, cell[1], false, depth + 1));
+            break :blk size;
+        },
+        tag_map => blk: {
+            const len = try containerLength(instance, word, 2);
+            var size: usize = 1 + @sizeOf(u32);
+            for (map_entries(word)[0 .. len * 2]) |child| {
+                size = try checkedAdd(size, try encodedTermSize(instance, child, false, depth + 1));
+            }
+            break :blk size;
+        },
+        tag_binary => blk: {
+            const address = @as(usize, @bitCast(word)) & ~tag_mask;
+            if (!runtime_owns_bytes(instance, address, @sizeOf(i64))) return error.Invalid;
+            const raw_len = @as(*const i64, @ptrFromInt(address)).*;
+            if (raw_len < 0) return error.Invalid;
+            const len: usize = @intCast(raw_len);
+            const payload_words = (try checkedAdd(len, @sizeOf(i64) - 1)) / @sizeOf(i64);
+            const total_bytes = try checkedMul(try checkedAdd(payload_words, 1), @sizeOf(i64));
+            if (!runtime_owns_bytes(instance, address, total_bytes)) return error.Invalid;
+            break :blk try checkedAdd(1 + @sizeOf(u32), len);
+        },
+        tag_fun, tag_runtime_local => error.Unsupported,
+        else => error.Invalid,
+    };
+}
+
+fn writeU32(bytes: []u8, cursor: *usize, value: u32) void {
+    for (0..4) |offset| bytes[cursor.* + offset] = @truncate(value >> @intCast(offset * 8));
+    cursor.* += 4;
+}
+
+fn writeI64(bytes: []u8, cursor: *usize, value: i64) void {
+    const bits: u64 = @bitCast(value);
+    for (0..8) |offset| bytes[cursor.* + offset] = @truncate(bits >> @intCast(offset * 8));
+    cursor.* += 8;
+}
+
+fn encodeTerm(instance: *Runtime, word: i64, root_scalar: bool, bytes: []u8, cursor: *usize) void {
+    if (root_scalar) {
+        bytes[cursor.*] = codec_scalar;
+        cursor.* += 1;
+        writeI64(bytes, cursor, word);
+        return;
+    }
+    const tag = word_tag(word);
+    bytes[cursor.*] = switch (tag) {
+        tag_int => codec_int,
+        tag_atom => codec_atom,
+        tag_tuple => codec_tuple,
+        tag_list => codec_cons,
+        tag_map => codec_map,
+        tag_binary => codec_binary,
+        else => unreachable,
+    };
+    cursor.* += 1;
+    switch (tag) {
+        tag_int, tag_atom => writeI64(bytes, cursor, word),
+        tag_tuple => {
+            const len = tuple_len(word);
+            writeU32(bytes, cursor, @intCast(len));
+            for (tuple_elems(word)[0..len]) |child| encodeTerm(instance, child, false, bytes, cursor);
+        },
+        tag_list => {
+            const cell = list_cell(word);
+            encodeTerm(instance, cell[0], false, bytes, cursor);
+            encodeTerm(instance, cell[1], false, bytes, cursor);
+        },
+        tag_map => {
+            const len = map_len(word);
+            writeU32(bytes, cursor, @intCast(len));
+            for (map_entries(word)[0 .. len * 2]) |child| encodeTerm(instance, child, false, bytes, cursor);
+        },
+        tag_binary => {
+            const len = binary_len(word);
+            writeU32(bytes, cursor, @intCast(len));
+            @memcpy(bytes[cursor.* .. cursor.* + len], binary_bytes(word)[0..len]);
+            cursor.* += len;
+        },
+        else => unreachable,
+    }
+}
+
+fn registerExported(instance: *Runtime, word: i64, root_scalar: bool) i64 {
+    const term_size = encodedTermSize(instance, word, root_scalar, 0) catch |err| return switch (err) {
+        error.Unsupported => -3,
+        error.Invalid => -1,
+        error.Limit => -4,
+    };
+    const byte_count = checkedAdd(exported_magic.len, term_size) catch return -4;
+    const bytes = std.heap.page_allocator.alloc(u8, byte_count) catch return -2;
+    @memcpy(bytes[0..exported_magic.len], &exported_magic);
+    var cursor: usize = exported_magic.len;
+    encodeTerm(instance, word, root_scalar, bytes, &cursor);
+
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    var offset: usize = 0;
+    while (offset < exported_slot_cap) : (offset += 1) {
+        const index = (exported_cursor + offset) % exported_slot_cap;
+        const slot = &exported_slots[index];
+        if (slot.bytes == null) {
+            slot.bytes = bytes;
+            slot.refs = 1;
+            exported_cursor = (index + 1) % exported_slot_cap;
+            return opaque_handle(index, slot.generation);
+        }
+    }
+    std.heap.page_allocator.free(bytes);
+    return 0;
+}
+
+/// Copies a result-owned portable term into generation-checked host storage.
+pub export fn ex_term_export(handle: i64, word: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    if (slot.runtime.?.entered_workers.load(.acquire) != 0) return -5;
+    if (runtime_local_kind(word) != null) return -3;
+    const root_scalar = word == slot.word and !runtime_owns_word(slot.runtime.?, word);
+    if (!root_scalar and result_term_kind_locked(slot, word) < 0) return -1;
+    return registerExported(slot.runtime.?, word, root_scalar);
+}
+
+pub export fn ex_term_exported_clone(handle: i64) i64 {
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const slot = exported_slot_locked(handle) orelse return -1;
+    if (slot.refs == std.math.maxInt(u32)) return -4;
+    slot.refs += 1;
+    return handle;
+}
+
+pub export fn ex_term_exported_destroy(handle: i64) i64 {
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const slot = exported_slot_locked(handle) orelse return -1;
+    slot.refs -= 1;
+    if (slot.refs == 0) {
+        std.heap.page_allocator.free(slot.bytes.?);
+        slot.bytes = null;
+        slot.generation +%= 1;
+        if (slot.generation == 0) slot.generation = 1;
+    }
+    return 0;
+}
+
+pub export fn ex_term_exported_length(handle: i64) i64 {
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const slot = exported_slot_locked(handle) orelse return -1;
+    return @intCast(slot.bytes.?.len);
+}
+
+pub export fn ex_term_exported_get(handle: i64, index_word: i64) i64 {
+    if (index_word < 0) return -1;
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const slot = exported_slot_locked(handle) orelse return -1;
+    const index: usize = @intCast(index_word);
+    if (index >= slot.bytes.?.len) return -1;
+    return slot.bytes.?[index];
+}
+
+const Decoder = struct {
+    bytes: []const u8,
+    cursor: usize = exported_magic.len,
+
+    fn readByte(self: *@This()) CodecError!u8 {
+        if (self.cursor >= self.bytes.len) return error.Invalid;
+        defer self.cursor += 1;
+        return self.bytes[self.cursor];
+    }
+
+    fn readU32(self: *@This()) CodecError!u32 {
+        if (self.bytes.len - self.cursor < 4) return error.Invalid;
+        var value: u32 = 0;
+        for (0..4) |offset| value |= @as(u32, self.bytes[self.cursor + offset]) << @intCast(offset * 8);
+        self.cursor += 4;
+        return value;
+    }
+
+    fn readI64(self: *@This()) CodecError!i64 {
+        if (self.bytes.len - self.cursor < 8) return error.Invalid;
+        var value: u64 = 0;
+        for (0..8) |offset| value |= @as(u64, self.bytes[self.cursor + offset]) << @intCast(offset * 8);
+        self.cursor += 8;
+        return @bitCast(value);
+    }
+
+    fn skip(self: *@This(), count: usize) CodecError!void {
+        if (count > self.bytes.len - self.cursor) return error.Invalid;
+        self.cursor += count;
+    }
+};
+
+fn decodedWords(decoder: *Decoder, depth: usize, root: bool) CodecError!usize {
+    if (depth > exported_max_depth) return error.Limit;
+    const kind = try decoder.readByte();
+    return switch (kind) {
+        codec_scalar => if (root) blk: {
+            _ = try decoder.readI64();
+            break :blk 0;
+        } else error.Invalid,
+        codec_int => blk: {
+            const word = try decoder.readI64();
+            if (word_tag(word) != tag_int) return error.Invalid;
+            break :blk 0;
+        },
+        codec_atom => blk: {
+            const word = try decoder.readI64();
+            if (word_tag(word) != tag_atom) return error.Invalid;
+            break :blk 0;
+        },
+        codec_tuple => blk: {
+            const len = try decoder.readU32();
+            var words: usize = try checkedAdd(@as(usize, len), 1);
+            for (0..len) |_| words = try checkedAdd(words, try decodedWords(decoder, depth + 1, false));
+            break :blk words;
+        },
+        codec_cons => try checkedAdd(2, try checkedAdd(try decodedWords(decoder, depth + 1, false), try decodedWords(decoder, depth + 1, false))),
+        codec_map => blk: {
+            const len = try decoder.readU32();
+            var words: usize = try checkedAdd(try checkedMul(@as(usize, len), 2), 1);
+            for (0..len * 2) |_| words = try checkedAdd(words, try decodedWords(decoder, depth + 1, false));
+            break :blk words;
+        },
+        codec_binary => blk: {
+            const len = try decoder.readU32();
+            try decoder.skip(len);
+            break :blk try checkedAdd(1, (try checkedAdd(len, @sizeOf(i64) - 1)) / @sizeOf(i64));
+        },
+        else => error.Invalid,
+    };
+}
+
+fn decodeTerm(decoder: *Decoder, storage: [*]i64, next: *usize, root: bool, root_scalar: *bool) CodecError!i64 {
+    const kind = try decoder.readByte();
+    return switch (kind) {
+        codec_scalar => if (root) blk: {
+            root_scalar.* = true;
+            break :blk try decoder.readI64();
+        } else error.Invalid,
+        codec_int => try decoder.readI64(),
+        codec_atom => try decoder.readI64(),
+        codec_tuple => blk: {
+            const len = try decoder.readU32();
+            const start = next.*;
+            next.* += @as(usize, len) + 1;
+            storage[start] = len;
+            for (0..len) |index| storage[start + 1 + index] = try decodeTerm(decoder, storage, next, false, root_scalar);
+            break :blk word_from_ptr(storage + start, tag_tuple);
+        },
+        codec_cons => blk: {
+            const start = next.*;
+            next.* += 2;
+            storage[start] = try decodeTerm(decoder, storage, next, false, root_scalar);
+            storage[start + 1] = try decodeTerm(decoder, storage, next, false, root_scalar);
+            break :blk word_from_ptr(storage + start, tag_list);
+        },
+        codec_map => blk: {
+            const len = try decoder.readU32();
+            const start = next.*;
+            next.* += @as(usize, len) * 2 + 1;
+            storage[start] = len;
+            for (0..len * 2) |index| storage[start + 1 + index] = try decodeTerm(decoder, storage, next, false, root_scalar);
+            break :blk word_from_ptr(storage + start, tag_map);
+        },
+        codec_binary => blk: {
+            const len = try decoder.readU32();
+            const payload_words = (@as(usize, len) + @sizeOf(i64) - 1) / @sizeOf(i64);
+            const start = next.*;
+            next.* += payload_words + 1;
+            storage[start] = len;
+            const destination: [*]u8 = @ptrFromInt(@intFromPtr(storage + start) + @sizeOf(i64));
+            @memcpy(destination[0..len], decoder.bytes[decoder.cursor .. decoder.cursor + len]);
+            decoder.cursor += len;
+            break :blk word_from_ptr(storage + start, tag_binary);
+        },
+        else => error.Invalid,
+    };
+}
+
+/// Imports an exported value into an explicitly entered target runtime.
+pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const runtime_slot = runtime_slot_locked(runtime_handle) orelse return -1;
+    const instance = runtime_slot.runtime.?;
+    if (active_runtime != instance or active_runtime_handle != runtime_handle) return -5;
+
+    term_lock.lock();
+    defer term_lock.unlock();
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const exported = exported_slot_locked(exported_handle) orelse return -1;
+    const bytes = exported.bytes.?;
+    if (bytes.len < exported_magic.len or !std.mem.eql(u8, bytes[0..exported_magic.len], &exported_magic)) return -4;
+    var term_index: ?usize = null;
+    var offset: usize = 0;
+    while (offset < term_slot_cap) : (offset += 1) {
+        const index = (term_cursor + offset) % term_slot_cap;
+        if (term_slots[index].runtime == null) {
+            term_index = index;
+            break;
+        }
+    }
+    const index = term_index orelse return 0;
+
+    var sizing = Decoder{ .bytes = bytes };
+    const words = decodedWords(&sizing, 0, true) catch |err| return switch (err) {
+        error.Unsupported => -3,
+        error.Invalid => -4,
+        error.Limit => -4,
+    };
+    if (sizing.cursor != bytes.len) return -4;
+    const storage = if (words == 0) null else alloc_words(words) orelse return -2;
+    var decoder = Decoder{ .bytes = bytes };
+    var next: usize = 0;
+    var root_scalar = false;
+    const word = decodeTerm(&decoder, if (storage) |ptr| ptr else undefined, &next, true, &root_scalar) catch return -4;
+    if (decoder.cursor != bytes.len or next != words) return -4;
+
+    const slot = &term_slots[index];
+    slot.runtime = instance;
+    slot.runtime_handle = runtime_handle;
+    slot.word = word;
+    slot.root_scalar = root_scalar;
+    _ = instance.outstanding_terms.fetchAdd(1, .acq_rel);
+    term_cursor = (index + 1) % term_slot_cap;
+    return opaque_handle(index, slot.generation);
+}
+
+pub export fn ex_term_handle_export(handle: i64) i64 {
+    term_lock.lock();
+    defer term_lock.unlock();
+    const slot = term_slot_locked(handle) orelse return -1;
+    if (slot.runtime.?.entered_workers.load(.acquire) != 0) return -5;
+    return registerExported(slot.runtime.?, slot.word, slot.root_scalar);
+}
+
+pub export fn ex_term_handle_destroy(handle: i64) i64 {
+    term_lock.lock();
+    defer term_lock.unlock();
+    const slot = term_slot_locked(handle) orelse return -1;
+    _ = slot.runtime.?.outstanding_terms.fetchSub(1, .acq_rel);
+    slot.runtime = null;
+    slot.runtime_handle = 0;
+    slot.word = 0;
+    slot.root_scalar = false;
+    slot.generation +%= 1;
+    if (slot.generation == 0) slot.generation = 1;
+    return 0;
 }
 
 fn init_processes() void {
@@ -2887,6 +3350,14 @@ comptime {
     @export(&ex_term_result_term_kind, .{ .name = "ex.term.result_term_kind" });
     @export(&ex_term_result_term_length, .{ .name = "ex.term.result_term_length" });
     @export(&ex_term_result_term_get, .{ .name = "ex.term.result_term_get" });
+    @export(&ex_term_export, .{ .name = "ex.term.export" });
+    @export(&ex_term_import, .{ .name = "ex.term.import" });
+    @export(&ex_term_exported_clone, .{ .name = "ex.term.exported_clone" });
+    @export(&ex_term_exported_destroy, .{ .name = "ex.term.exported_destroy" });
+    @export(&ex_term_exported_length, .{ .name = "ex.term.exported_length" });
+    @export(&ex_term_exported_get, .{ .name = "ex.term.exported_get" });
+    @export(&ex_term_handle_export, .{ .name = "ex.term.handle_export" });
+    @export(&ex_term_handle_destroy, .{ .name = "ex.term.handle_destroy" });
     @export(&ex_term_self, .{ .name = "ex.term.self" });
     @export(&ex_term_send, .{ .name = "ex.term.send" });
     @export(&ex_term_receive, .{ .name = "ex.term.receive" });
@@ -3654,6 +4125,145 @@ test "a result runtime has one owner and waits for every worker to leave" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
     try std.testing.expectEqual(@as(i64, -1), ex_term_runtime_enter(runtime_handle));
+}
+
+test "portable export survives source destroy and imports into an explicit target" {
+    const source_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+
+    const binary_words = alloc_binary(3).?;
+    const binary = word_from_ptr(binary_words, tag_binary);
+    @memcpy(binary_bytes(binary)[0..3], "abc");
+    const cons_words = alloc_words(2).?;
+    cons_words[0] = 16;
+    cons_words[1] = 25; // atom id 3
+    const improper = word_from_ptr(cons_words, tag_list);
+    const map_words = alloc_words(3).?;
+    map_words[0] = 1;
+    map_words[1] = 33; // atom id 4
+    map_words[2] = binary;
+    const map = word_from_ptr(map_words, tag_map);
+    const root = tuple3(improper, map, nil_word);
+
+    const result = ex_term_result_create(source_runtime, root);
+    try std.testing.expectEqual(@as(i64, -5), ex_term_export(result, root));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const exported = ex_term_export(result, root);
+    try std.testing.expect(exported > 0);
+    try std.testing.expect(ex_term_exported_length(exported) > exported_magic.len);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
+
+    const target_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
+    const imported = ex_term_import(target_runtime, exported);
+    try std.testing.expect(imported > 0);
+    try std.testing.expectEqual(@as(i64, -5), ex_term_handle_export(imported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const round_trip = ex_term_handle_export(imported);
+    try std.testing.expect(round_trip > 0);
+    const length = ex_term_exported_length(exported);
+    try std.testing.expectEqual(length, ex_term_exported_length(round_trip));
+    for (0..@intCast(length)) |index| {
+        try std.testing.expectEqual(
+            ex_term_exported_get(exported, @intCast(index)),
+            ex_term_exported_get(round_trip, @intCast(index)),
+        );
+    }
+
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(target_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(imported));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_handle_destroy(imported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(round_trip));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+test "portable handles reject stale generations and unsupported closures" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    const closure_words = alloc_words(2).?;
+    closure_words[0] = 7;
+    closure_words[1] = 0;
+    const closure = word_from_ptr(closure_words, tag_fun);
+    const result = ex_term_result_create(runtime_handle, closure);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, -3), ex_term_export(result, closure));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
+
+    const scalar_runtime = ex_term_runtime_create();
+    const scalar_result = ex_term_result_create(scalar_runtime, 3);
+    const exported = ex_term_export(scalar_result, 3);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(exported, ex_term_exported_clone(exported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(scalar_result));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+    try std.testing.expect(ex_term_exported_length(exported) > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_exported_length(exported));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_exported_destroy(exported));
+}
+
+test "portable export deterministically rejects runtime-local values" {
+    const pid_runtime = ex_term_runtime_create();
+    const pid_result = ex_term_result_create(pid_runtime, pid_of(0, 1));
+    try std.testing.expectEqual(@as(i64, -3), ex_term_export(pid_result, ex_term_result_root_word(pid_result)));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(pid_result));
+
+    const nested_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(nested_runtime));
+    const nested = tuple3(8, runtime_local_word(runtime_local_ref, 1), 16);
+    const nested_result = ex_term_result_create(nested_runtime, nested);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, -3), ex_term_export(nested_result, nested));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(nested_result));
+}
+
+test "portable import rejects a target runtime that is not explicitly entered" {
+    const source_runtime = ex_term_runtime_create();
+    const result = ex_term_result_create(source_runtime, 8);
+    const exported = ex_term_export(result, 8);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
+
+    const target_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, -5), ex_term_import(target_runtime, exported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+test "portable boundary rejects malformed encodings and foreign arena words" {
+    const source_runtime = ex_term_runtime_create();
+    const result = ex_term_result_create(source_runtime, 8);
+    const exported = ex_term_export(result, 8);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
+
+    exported_lock.lock();
+    exported_slot_locked(exported).?.bytes.?[0] = 'X';
+    exported_lock.unlock();
+    const target_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
+    try std.testing.expectEqual(@as(i64, -4), ex_term_import(target_runtime, exported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+
+    const foreign_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(foreign_runtime));
+    const foreign_tuple = tuple3(8, 16, 24);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    const owner_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(owner_runtime));
+    const owner_words = alloc_words(2).?;
+    owner_words[0] = 1;
+    owner_words[1] = foreign_tuple;
+    const owner_tuple = word_from_ptr(owner_words, tag_tuple);
+    const owner_result = ex_term_result_create(owner_runtime, owner_tuple);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, -1), ex_term_export(owner_result, owner_tuple));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(owner_result));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(foreign_runtime));
 }
 
 const ActorClaimProbe = struct {

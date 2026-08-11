@@ -48,7 +48,15 @@ defmodule Batata.Lower do
         "__batata_result_root_word",
         "__batata_result_term_kind",
         "__batata_result_term_length",
-        "__batata_result_term_get"
+        "__batata_result_term_get",
+        "__batata_term_export",
+        "__batata_term_import",
+        "__batata_exported_clone",
+        "__batata_exported_destroy",
+        "__batata_exported_length",
+        "__batata_exported_get",
+        "__batata_term_handle_export",
+        "__batata_term_handle_destroy"
       ])
     end
 

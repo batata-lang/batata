@@ -51,6 +51,28 @@ list:   cons cells [head] [tail]
 fun:    [fn_idx] [env_len] [env × env_len]
 ```
 
+## Portable exported values
+
+`ex.term.export` copies a quiescent result-owned graph into an immutable,
+versioned `BTA\x01` encoding capped at 16 MiB and 256 levels of nesting. The
+encoding contains no arena addresses. `ex.term.import` validates the complete
+encoding and computes its exact arena requirement before reserving one block,
+so malformed input and allocation failure cannot expose a partial graph.
+
+The first version supports scalar roots, tagged integers/atoms, tuples,
+proper or improper lists, maps, and packed inline binaries. Closures are
+rejected. Atom payloads are portable only between sessions using the same
+compiled artifact/atom identity scheme; this is not a distributed wire
+format. Runtime-local PID/reference/resource representations are outside this
+ABI and must not be introduced into the supported tag set without an explicit
+codec kind and import policy.
+
+An imported value is represented to the host only by a term handle bound to
+the target runtime generation. Destroying the handle releases its lease, not
+the arena object. The target runtime cannot be destroyed while such a lease
+exists. Persistent regions, refcounted large binaries, and sub-binaries are
+separate follow-up work.
+
 ## Intrinsics
 
 All functions use the C ABI and return/accept `i64` tagged words unless noted.
@@ -72,6 +94,14 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
 | `ex.term.result_term_length` | `(handle: i64, word: i64) -> i64` | container length under a live result, or -1 when invalid |
 | `ex.term.result_term_get` | `(handle: i64, word: i64, index: i64) -> i64` | indexed tuple/list/map/binary access while the result is live; -1 when invalid |
+| `ex.term.export` | `(result: i64, word: i64) -> i64` | deep-copy a quiescent result-owned supported term into a generation-checked portable exported handle; 0 registry full, -1 stale/foreign, -2 OOM, -3 unsupported, -4 malformed/limit, -5 workers still entered |
+| `ex.term.import` | `(target_runtime: i64, exported: i64) -> i64` | transactionally import into the explicitly entered target runtime and return a generation-bound term handle; -1 stale, -2 OOM, -4 malformed/limit, -5 target not entered |
+| `ex.term.exported_clone` | `(exported: i64) -> i64` | retain an exported handle; -1 stale, -4 reference limit |
+| `ex.term.exported_destroy` | `(exported: i64) -> i64` | release an exported handle and invalidate its generation after the last reference |
+| `ex.term.exported_length` | `(exported: i64) -> i64` | portable encoding size, or -1 for stale handles |
+| `ex.term.exported_get` | `(exported: i64, index: i64) -> i64` | read one portable encoding byte, or -1 for stale/out-of-range access |
+| `ex.term.handle_export` | `(term_handle: i64) -> i64` | export a quiescent imported target-session term without exposing its arena word; -5 while workers are entered |
+| `ex.term.handle_destroy` | `(term_handle: i64) -> i64` | release a target-session term lease; -1 for stale handles |
 | `ex.term.list_cons` | `(head: i64, tail: i64) -> i64` | cons a word onto a list |
 | `ex.term.self` | `() -> i64` | runtime-local pid of the current actor |
 | `ex.term.send` | `(pid: i64, msg: i64) -> i64` | enqueue a message; returns the message, nil when the mailbox is full |
