@@ -504,6 +504,32 @@ fn exported_slot_locked(handle: i64) ?*ExportedSlot {
     return slot;
 }
 
+fn retain_exported_bytes(handle: i64) error{ Invalid, Limit }![]const u8 {
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const slot = exported_slot_locked(handle) orelse return error.Invalid;
+    if (slot.refs == std.math.maxInt(u32)) return error.Limit;
+    slot.refs += 1;
+    return slot.bytes.?;
+}
+
+fn release_exported_locked(slot: *ExportedSlot) void {
+    slot.refs -= 1;
+    if (slot.refs == 0) {
+        std.heap.page_allocator.free(slot.bytes.?);
+        slot.bytes = null;
+        slot.generation +%= 1;
+        if (slot.generation == 0) slot.generation = 1;
+    }
+}
+
+fn release_exported_retain(handle: i64) void {
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    const slot = exported_slot_locked(handle) orelse return;
+    release_exported_locked(slot);
+}
+
 const term_slot_cap: usize = 4096;
 
 const TermSlot = struct {
@@ -926,20 +952,47 @@ pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
 
 /// Releases a result and the execution runtime it owns.
 pub export fn ex_term_result_destroy(handle: i64) i64 {
-    runtime_lock.lock();
     result_lock.lock();
-    const slot = result_slot_locked(handle) orelse {
+    const initial = result_slot_locked(handle) orelse {
         result_lock.unlock();
+        return -1;
+    };
+    const instance = initial.runtime.?;
+    const runtime_handle = initial.runtime_handle;
+    result_lock.unlock();
+
+    runtime_lock.lock();
+    const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
         runtime_lock.unlock();
         return -1;
     };
-    const instance = slot.runtime.?;
-    if (instance.entered_workers.load(.acquire) != 0) {
+    if (runtime_slot.runtime.? != instance) {
+        runtime_lock.unlock();
+        return -1;
+    }
+    instance.lifecycle_lock.lock();
+    result_lock.lock();
+    const slot = result_slot_locked(handle) orelse {
         result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return -1;
+    };
+    if (slot.runtime.? != instance or slot.runtime_handle != runtime_handle) {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return -1;
+    }
+    if (instance.lifecycle_phase != .idle or
+        instance.outstanding_terms.load(.acquire) != 0)
+    {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
         runtime_lock.unlock();
         return -2;
     }
-    const runtime_handle = slot.runtime_handle;
+    instance.lifecycle_phase = .destroying;
     slot.runtime = null;
     slot.runtime_handle = 0;
     slot.word = 0;
@@ -948,6 +1001,7 @@ pub export fn ex_term_result_destroy(handle: i64) i64 {
     _ = instance.outstanding_results.fetchSub(1, .acq_rel);
     _ = invalidate_runtime_slot_locked(runtime_handle);
     result_lock.unlock();
+    instance.lifecycle_lock.unlock();
     runtime_lock.unlock();
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
@@ -1185,16 +1239,135 @@ fn registerExported(instance: *Runtime, word: i64, root_scalar: bool) i64 {
     return 0;
 }
 
+const ExportLease = struct {
+    runtime: *Runtime,
+    word: i64,
+    root_scalar: bool,
+};
+
+fn finish_export(instance: *Runtime) void {
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    std.debug.assert(instance.lifecycle_phase == .exporting);
+    instance.lifecycle_phase = .idle;
+}
+
+fn begin_result_export(handle: i64, word: i64) error{ Invalid, Unsupported, Busy }!ExportLease {
+    result_lock.lock();
+    const initial = result_slot_locked(handle) orelse {
+        result_lock.unlock();
+        return error.Invalid;
+    };
+    const instance = initial.runtime.?;
+    const runtime_handle = initial.runtime_handle;
+    result_lock.unlock();
+
+    runtime_lock.lock();
+    const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
+        runtime_lock.unlock();
+        return error.Invalid;
+    };
+    if (runtime_slot.runtime.? != instance) {
+        runtime_lock.unlock();
+        return error.Invalid;
+    }
+    instance.lifecycle_lock.lock();
+    result_lock.lock();
+    const slot = result_slot_locked(handle) orelse {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Invalid;
+    };
+    if (slot.runtime.? != instance or slot.runtime_handle != runtime_handle) {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Invalid;
+    }
+    if (instance.lifecycle_phase != .idle) {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Busy;
+    }
+    if (runtime_local_kind(word) != null) {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Unsupported;
+    }
+    const root_scalar = word == slot.word and !runtime_owns_word(instance, word);
+    if (!root_scalar and result_term_kind_locked(slot, word) < 0) {
+        result_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Invalid;
+    }
+    instance.lifecycle_phase = .exporting;
+    result_lock.unlock();
+    instance.lifecycle_lock.unlock();
+    runtime_lock.unlock();
+    return .{ .runtime = instance, .word = word, .root_scalar = root_scalar };
+}
+
+fn begin_term_export(handle: i64) error{ Invalid, Busy }!ExportLease {
+    term_lock.lock();
+    const initial = term_slot_locked(handle) orelse {
+        term_lock.unlock();
+        return error.Invalid;
+    };
+    const instance = initial.runtime.?;
+    const runtime_handle = initial.runtime_handle;
+    term_lock.unlock();
+
+    runtime_lock.lock();
+    const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
+        runtime_lock.unlock();
+        return error.Invalid;
+    };
+    if (runtime_slot.runtime.? != instance) {
+        runtime_lock.unlock();
+        return error.Invalid;
+    }
+    instance.lifecycle_lock.lock();
+    term_lock.lock();
+    const slot = term_slot_locked(handle) orelse {
+        term_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Invalid;
+    };
+    if (slot.runtime.? != instance or slot.runtime_handle != runtime_handle) {
+        term_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Invalid;
+    }
+    if (instance.lifecycle_phase != .idle) {
+        term_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return error.Busy;
+    }
+    const word = slot.word;
+    const root_scalar = slot.root_scalar;
+    instance.lifecycle_phase = .exporting;
+    term_lock.unlock();
+    instance.lifecycle_lock.unlock();
+    runtime_lock.unlock();
+    return .{ .runtime = instance, .word = word, .root_scalar = root_scalar };
+}
+
 /// Copies a result-owned portable term into generation-checked host storage.
 pub export fn ex_term_export(handle: i64, word: i64) i64 {
-    result_lock.lock();
-    defer result_lock.unlock();
-    const slot = result_slot_locked(handle) orelse return -1;
-    if (slot.runtime.?.entered_workers.load(.acquire) != 0) return -5;
-    if (runtime_local_kind(word) != null) return -3;
-    const root_scalar = word == slot.word and !runtime_owns_word(slot.runtime.?, word);
-    if (!root_scalar and result_term_kind_locked(slot, word) < 0) return -1;
-    return registerExported(slot.runtime.?, word, root_scalar);
+    const lease = begin_result_export(handle, word) catch |err| return switch (err) {
+        error.Invalid => -1,
+        error.Unsupported => -3,
+        error.Busy => -5,
+    };
+    defer finish_export(lease.runtime);
+    return registerExported(lease.runtime, lease.word, lease.root_scalar);
 }
 
 pub export fn ex_term_exported_clone(handle: i64) i64 {
@@ -1210,13 +1383,7 @@ pub export fn ex_term_exported_destroy(handle: i64) i64 {
     exported_lock.lock();
     defer exported_lock.unlock();
     const slot = exported_slot_locked(handle) orelse return -1;
-    slot.refs -= 1;
-    if (slot.refs == 0) {
-        std.heap.page_allocator.free(slot.bytes.?);
-        slot.bytes = null;
-        slot.generation +%= 1;
-        if (slot.generation == 0) slot.generation = 1;
-    }
+    release_exported_locked(slot);
     return 0;
 }
 
@@ -1358,19 +1525,36 @@ fn decodeTerm(decoder: *Decoder, storage: [*]i64, next: *usize, root: bool, root
 
 /// Imports an exported value into an explicitly entered target runtime.
 pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
-    runtime_lock.lock();
-    defer runtime_lock.unlock();
-    const runtime_slot = runtime_slot_locked(runtime_handle) orelse return -1;
-    const instance = runtime_slot.runtime.?;
-    if (active_runtime != instance or active_runtime_handle != runtime_handle) return -5;
+    const bytes = retain_exported_bytes(exported_handle) catch |err| return switch (err) {
+        error.Invalid => -1,
+        error.Limit => -4,
+    };
+    defer release_exported_retain(exported_handle);
+    if (bytes.len < exported_magic.len or !std.mem.eql(u8, bytes[0..exported_magic.len], &exported_magic)) return -4;
+    var sizing = Decoder{ .bytes = bytes };
+    const words = decodedWords(&sizing, 0, true) catch |err| return switch (err) {
+        error.Unsupported => -3,
+        error.Invalid => -4,
+        error.Limit => -4,
+    };
+    if (sizing.cursor != bytes.len) return -4;
+
+    if (active_runtime_handle != runtime_handle) return -5;
+    const instance = active_runtime orelse return -5;
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (!is_execution_owner_locked(instance, runtime_handle) or
+        instance.execution_participants != 1) return -5;
+
+    const storage = if (words == 0) null else alloc_words(words) orelse return -2;
+    var decoder = Decoder{ .bytes = bytes };
+    var next: usize = 0;
+    var root_scalar = false;
+    const word = decodeTerm(&decoder, if (storage) |ptr| ptr else undefined, &next, true, &root_scalar) catch return -4;
+    if (decoder.cursor != bytes.len or next != words) return -4;
 
     term_lock.lock();
     defer term_lock.unlock();
-    exported_lock.lock();
-    defer exported_lock.unlock();
-    const exported = exported_slot_locked(exported_handle) orelse return -1;
-    const bytes = exported.bytes.?;
-    if (bytes.len < exported_magic.len or !std.mem.eql(u8, bytes[0..exported_magic.len], &exported_magic)) return -4;
     var term_index: ?usize = null;
     var offset: usize = 0;
     while (offset < term_slot_cap) : (offset += 1) {
@@ -1381,20 +1565,6 @@ pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
         }
     }
     const index = term_index orelse return 0;
-
-    var sizing = Decoder{ .bytes = bytes };
-    const words = decodedWords(&sizing, 0, true) catch |err| return switch (err) {
-        error.Unsupported => -3,
-        error.Invalid => -4,
-        error.Limit => -4,
-    };
-    if (sizing.cursor != bytes.len) return -4;
-    const storage = if (words == 0) null else alloc_words(words) orelse return -2;
-    var decoder = Decoder{ .bytes = bytes };
-    var next: usize = 0;
-    var root_scalar = false;
-    const word = decodeTerm(&decoder, if (storage) |ptr| ptr else undefined, &next, true, &root_scalar) catch return -4;
-    if (decoder.cursor != bytes.len or next != words) return -4;
 
     const slot = &term_slots[index];
     slot.runtime = instance;
@@ -1407,24 +1577,59 @@ pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
 }
 
 pub export fn ex_term_handle_export(handle: i64) i64 {
-    term_lock.lock();
-    defer term_lock.unlock();
-    const slot = term_slot_locked(handle) orelse return -1;
-    if (slot.runtime.?.entered_workers.load(.acquire) != 0) return -5;
-    return registerExported(slot.runtime.?, slot.word, slot.root_scalar);
+    const lease = begin_term_export(handle) catch |err| return switch (err) {
+        error.Invalid => -1,
+        error.Busy => -5,
+    };
+    defer finish_export(lease.runtime);
+    return registerExported(lease.runtime, lease.word, lease.root_scalar);
 }
 
 pub export fn ex_term_handle_destroy(handle: i64) i64 {
     term_lock.lock();
-    defer term_lock.unlock();
-    const slot = term_slot_locked(handle) orelse return -1;
-    _ = slot.runtime.?.outstanding_terms.fetchSub(1, .acq_rel);
+    const initial = term_slot_locked(handle) orelse {
+        term_lock.unlock();
+        return -1;
+    };
+    const instance = initial.runtime.?;
+    const runtime_handle = initial.runtime_handle;
+    term_lock.unlock();
+
+    runtime_lock.lock();
+    const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
+        runtime_lock.unlock();
+        return -1;
+    };
+    if (runtime_slot.runtime.? != instance) {
+        runtime_lock.unlock();
+        return -1;
+    }
+    instance.lifecycle_lock.lock();
+    term_lock.lock();
+    const slot = term_slot_locked(handle) orelse {
+        term_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return -1;
+    };
+    if (slot.runtime.? != instance or slot.runtime_handle != runtime_handle or
+        instance.lifecycle_phase == .destroying)
+    {
+        term_lock.unlock();
+        instance.lifecycle_lock.unlock();
+        runtime_lock.unlock();
+        return -1;
+    }
+    _ = instance.outstanding_terms.fetchSub(1, .acq_rel);
     slot.runtime = null;
     slot.runtime_handle = 0;
     slot.word = 0;
     slot.root_scalar = false;
     slot.generation +%= 1;
     if (slot.generation == 0) slot.generation = 1;
+    term_lock.unlock();
+    instance.lifecycle_lock.unlock();
+    runtime_lock.unlock();
     return 0;
 }
 
@@ -4367,6 +4572,74 @@ test "portable export survives source destroy and imports into an explicit targe
     try std.testing.expectEqual(@as(i64, -1), ex_term_handle_destroy(imported));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
     try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(round_trip));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+test "term and result pins preserve one runtime until ordered destruction" {
+    const source_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    const source_result = ex_term_result_create(source_runtime, 8);
+    try std.testing.expect(source_result > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const exported = ex_term_export(source_result, 8);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(source_result));
+
+    const target_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    const imported = ex_term_import(target_runtime, exported);
+    try std.testing.expect(imported > 0);
+    term_lock.lock();
+    const imported_word = term_slot_locked(imported).?.word;
+    term_lock.unlock();
+    const target_result = ex_term_result_create(target_runtime, imported_word);
+    try std.testing.expect(target_result > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    const result_lease = try begin_result_export(target_result, imported_word);
+    try std.testing.expectEqual(@as(i64, -2), ex_term_result_destroy(target_result));
+    finish_export(result_lease.runtime);
+    try std.testing.expectEqual(@as(i64, -2), ex_term_result_destroy(target_result));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(imported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(target_result));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+test "term pins block reset until released and export leases protect snapshots" {
+    const source_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    const source_result = ex_term_result_create(source_runtime, 8);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const exported = ex_term_export(source_result, 8);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(source_result));
+
+    const target_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
+    const imported = ex_term_import(target_runtime, exported);
+    try std.testing.expect(imported > 0);
+    try std.testing.expectEqual(@as(i64, -1), ex_term_process_table_reset(default_process_cap));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_create(target_runtime, 8));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(imported));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
+
+    const storage_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(storage_runtime));
+    const storage_term = ex_term_import(storage_runtime, exported);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const lease = try begin_term_export(storage_term);
+    try std.testing.expectEqual(LifecyclePhase.exporting, lease.runtime.lifecycle_phase);
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(storage_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(storage_term));
+    const copy = registerExported(lease.runtime, lease.word, lease.root_scalar);
+    try std.testing.expect(copy > 0);
+    finish_export(lease.runtime);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(storage_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(copy));
     try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
 }
 
