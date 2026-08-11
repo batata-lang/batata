@@ -376,6 +376,50 @@ const Runtime = struct {
     }
 };
 
+// Explicit runtimes are addressed through generation-checked slots.  The C
+// ABI never treats a host-provided integer as a pointer, so a stale handle is
+// rejected before any runtime memory is touched.
+const runtime_slot_cap: usize = 4096;
+
+const RuntimeSlot = struct {
+    runtime: ?*Runtime = null,
+    generation: u32 = 1,
+};
+
+var runtime_lock: RuntimeMutex = .{};
+var runtime_slots: [runtime_slot_cap]RuntimeSlot = [_]RuntimeSlot{.{}} ** runtime_slot_cap;
+var runtime_cursor: usize = 0;
+
+fn opaque_handle(index: usize, generation: u32) i64 {
+    const bits = (@as(u64, generation) << 32) | @as(u64, @intCast(index + 1));
+    return @bitCast(bits);
+}
+
+fn handle_index_generation(handle: i64, cap: usize) ?struct { index: usize, generation: u32 } {
+    const bits: u64 = @bitCast(handle);
+    const encoded_index: u32 = @truncate(bits);
+    if (encoded_index == 0) return null;
+    const index = @as(usize, encoded_index - 1);
+    if (index >= cap) return null;
+    return .{ .index = index, .generation = @truncate(bits >> 32) };
+}
+
+fn runtime_slot_locked(handle: i64) ?*RuntimeSlot {
+    const decoded = handle_index_generation(handle, runtime_slot_cap) orelse return null;
+    const slot = &runtime_slots[decoded.index];
+    if (slot.runtime == null or slot.generation != decoded.generation) return null;
+    return slot;
+}
+
+fn invalidate_runtime_slot_locked(handle: i64) ?*Runtime {
+    const slot = runtime_slot_locked(handle) orelse return null;
+    const instance = slot.runtime.?;
+    slot.runtime = null;
+    slot.generation +%= 1;
+    if (slot.generation == 0) slot.generation = 1;
+    return instance;
+}
+
 // Host result handles keep an execution runtime alive while a JIT or AOT host
 // copies the returned term out of the arena. The generation makes a handle
 // deterministic to reject after its slot has been recycled; callers never
@@ -384,6 +428,7 @@ const result_slot_cap: usize = 4096;
 
 const ResultSlot = struct {
     runtime: ?*Runtime = null,
+    runtime_handle: i64 = 0,
     word: i64 = 0,
     generation: u32 = 1,
 };
@@ -393,19 +438,13 @@ var result_slots: [result_slot_cap]ResultSlot = [_]ResultSlot{.{}} ** result_slo
 var result_cursor: usize = 0;
 
 fn result_handle(index: usize, generation: u32) i64 {
-    const bits = (@as(u64, generation) << 32) | @as(u64, @intCast(index + 1));
-    return @bitCast(bits);
+    return opaque_handle(index, generation);
 }
 
 fn result_slot_locked(handle: i64) ?*ResultSlot {
-    const bits: u64 = @bitCast(handle);
-    const encoded_index: u32 = @truncate(bits);
-    if (encoded_index == 0) return null;
-    const index = @as(usize, encoded_index - 1);
-    if (index >= result_slot_cap) return null;
-    const generation: u32 = @truncate(bits >> 32);
-    const slot = &result_slots[index];
-    if (slot.runtime == null or slot.generation != generation) return null;
+    const decoded = handle_index_generation(handle, result_slot_cap) orelse return null;
+    const slot = &result_slots[decoded.index];
+    if (slot.runtime == null or slot.generation != decoded.generation) return null;
     return slot;
 }
 
@@ -432,6 +471,7 @@ fn result_term_kind_locked(slot: *ResultSlot, word: i64) i64 {
 }
 
 threadlocal var active_runtime: ?*Runtime = null;
+threadlocal var active_runtime_handle: i64 = 0;
 threadlocal var owned_runtime: ?*Runtime = null;
 threadlocal var current_process: usize = 0;
 // Workers retain the stable Process allocation they claimed. Looking it up
@@ -561,18 +601,37 @@ fn tuple5(a: i64, b: i64, d: i64, e: i64, f: i64) i64 {
 
 /// Allocates an isolated execution instance and returns its opaque handle.
 pub export fn ex_term_runtime_create() i64 {
-    return @bitCast(@intFromPtr(create_runtime()));
+    const instance = create_runtime();
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    var offset: usize = 0;
+    while (offset < runtime_slot_cap) : (offset += 1) {
+        const index = (runtime_cursor + offset) % runtime_slot_cap;
+        const slot = &runtime_slots[index];
+        if (slot.runtime == null) {
+            slot.runtime = instance;
+            runtime_cursor = (index + 1) % runtime_slot_cap;
+            return opaque_handle(index, slot.generation);
+        }
+    }
+    instance.deinit();
+    return 0;
 }
 
 /// Binds an execution instance to the calling worker thread.
 pub export fn ex_term_runtime_enter(handle: i64) i64 {
-    if (handle == 0) return -1;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
     if (active_runtime != instance) {
-        if (active_runtime) |previous| _ = previous.entered_workers.fetchSub(1, .acq_rel);
+        if (active_runtime_handle != 0) {
+            if (active_runtime) |previous| _ = previous.entered_workers.fetchSub(1, .acq_rel);
+        }
         _ = instance.entered_workers.fetchAdd(1, .acq_rel);
     }
     active_runtime = instance;
+    active_runtime_handle = handle;
     current_process = 0;
     current_process_ptr = null;
     return 0;
@@ -581,8 +640,19 @@ pub export fn ex_term_runtime_enter(handle: i64) i64 {
 /// Leaves the explicit instance and restores the thread-owned compatibility
 /// runtime on the next ABI call.
 pub export fn ex_term_runtime_leave() i64 {
-    if (active_runtime) |instance| _ = instance.entered_workers.fetchSub(1, .acq_rel);
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    if (active_runtime_handle == 0) return -1;
+    if (active_runtime) |instance| {
+        _ = instance.entered_workers.fetchSub(1, .acq_rel);
+        if (arena_cached_runtime == instance) {
+            arena_cached_runtime = null;
+            arena_cached_epoch = 0;
+            arena_cached_chunk = arena_chunk_cap;
+        }
+    }
     active_runtime = null;
+    active_runtime_handle = 0;
     current_process = 0;
     current_process_ptr = null;
     return 0;
@@ -590,61 +660,84 @@ pub export fn ex_term_runtime_leave() i64 {
 
 /// Releases an execution instance. All workers must leave it before destroy.
 pub export fn ex_term_runtime_destroy(handle: i64) i64 {
-    if (handle == 0) return -1;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
-    if (instance.outstanding_results.load(.acquire) != 0) return -2;
-    const entered = instance.entered_workers.load(.acquire);
-    if (active_runtime == instance) {
-        if (entered > 1) return -2;
-        active_runtime = null;
-        _ = instance.entered_workers.fetchSub(1, .acq_rel);
-    } else if (entered != 0) return -2;
-    if (active_runtime == instance) {
-        active_runtime = null;
-        current_process_ptr = null;
+    runtime_lock.lock();
+    const slot = runtime_slot_locked(handle) orelse {
+        runtime_lock.unlock();
+        return -1;
+    };
+    const instance = slot.runtime.?;
+    if (instance.outstanding_results.load(.acquire) != 0) {
+        runtime_lock.unlock();
+        return -2;
     }
+    if (instance.entered_workers.load(.acquire) != 0) {
+        runtime_lock.unlock();
+        return -2;
+    }
+    _ = invalidate_runtime_slot_locked(handle);
+    runtime_lock.unlock();
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
     return 0;
 }
 
 pub export fn ex_term_runtime_arena_bytes(handle: i64) i64 {
-    if (handle == 0) return -1;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
     return @intCast(instance.arena_capacity_words * @sizeOf(i64));
 }
 
 pub export fn ex_term_runtime_arena_chunks(handle: i64) i64 {
-    if (handle == 0) return -1;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
     return @intCast(instance.arena_chunk_count);
 }
 
 pub export fn ex_term_runtime_arena_high_water(handle: i64) i64 {
-    if (handle == 0) return -1;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
     return @intCast(instance.arena_used_words.load(.acquire) * @sizeOf(i64));
 }
 
 pub export fn ex_term_runtime_oom(handle: i64) i64 {
-    if (handle == 0) return -1;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(handle)));
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
     return if (instance.allocation_failed.load(.acquire)) 1 else 0;
 }
 
 /// Pins a completed execution result and transfers ownership of its runtime
 /// to the returned opaque handle. Zero means the bounded registry is full.
 pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
-    if (runtime_handle == 0) return 0;
-    const instance: *Runtime = @ptrFromInt(@as(usize, @bitCast(runtime_handle)));
+    runtime_lock.lock();
+    const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
+        runtime_lock.unlock();
+        return -1;
+    };
+    const instance = runtime_slot.runtime.?;
+    if (instance.outstanding_results.load(.acquire) != 0) {
+        runtime_lock.unlock();
+        return -3;
+    }
     if (word == nil_word and instance.allocation_failed.load(.acquire)) {
-        if (active_runtime == instance) active_runtime = null;
-        _ = instance.entered_workers.fetchSub(1, .acq_rel);
+        if (active_runtime == instance and active_runtime_handle == runtime_handle) {
+            active_runtime = null;
+            active_runtime_handle = 0;
+            _ = instance.entered_workers.fetchSub(1, .acq_rel);
+        }
+        _ = invalidate_runtime_slot_locked(runtime_handle);
+        runtime_lock.unlock();
         instance.deinit();
         return -2;
     }
     result_lock.lock();
-    defer result_lock.unlock();
 
     var offset: usize = 0;
     while (offset < result_slot_cap) : (offset += 1) {
@@ -652,38 +745,53 @@ pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
         const slot = &result_slots[index];
         if (slot.runtime == null) {
             slot.runtime = instance;
+            slot.runtime_handle = runtime_handle;
             slot.word = word;
             _ = instance.outstanding_results.fetchAdd(1, .acq_rel);
             result_cursor = (index + 1) % result_slot_cap;
+            result_lock.unlock();
+            runtime_lock.unlock();
             return result_handle(index, slot.generation);
         }
     }
-    if (active_runtime == instance) active_runtime = null;
+    result_lock.unlock();
+    if (active_runtime == instance and active_runtime_handle == runtime_handle) {
+        active_runtime = null;
+        active_runtime_handle = 0;
+        _ = instance.entered_workers.fetchSub(1, .acq_rel);
+    }
     if (owned_runtime == instance) owned_runtime = null;
+    _ = invalidate_runtime_slot_locked(runtime_handle);
+    runtime_lock.unlock();
     instance.deinit();
     return 0;
 }
 
 /// Releases a result and the execution runtime it owns.
 pub export fn ex_term_result_destroy(handle: i64) i64 {
+    runtime_lock.lock();
     result_lock.lock();
     const slot = result_slot_locked(handle) orelse {
         result_lock.unlock();
+        runtime_lock.unlock();
         return -1;
     };
     const instance = slot.runtime.?;
+    if (instance.entered_workers.load(.acquire) != 0) {
+        result_lock.unlock();
+        runtime_lock.unlock();
+        return -2;
+    }
+    const runtime_handle = slot.runtime_handle;
     slot.runtime = null;
+    slot.runtime_handle = 0;
     slot.word = 0;
     slot.generation +%= 1;
     if (slot.generation == 0) slot.generation = 1;
-    result_lock.unlock();
-
     _ = instance.outstanding_results.fetchSub(1, .acq_rel);
-
-    if (active_runtime == instance) {
-        active_runtime = null;
-        current_process_ptr = null;
-    }
+    _ = invalidate_runtime_slot_locked(runtime_handle);
+    result_lock.unlock();
+    runtime_lock.unlock();
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
     return 0;
@@ -3377,6 +3485,7 @@ test "explicit runtime handles preserve isolated execution state" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(first));
     try std.testing.expectEqual(@as(i64, 2), ex_term_unique_integer(0));
     try std.testing.expectEqual(@as(i64, 2), ex_term_processes_runnable());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(first));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(second));
 }
@@ -3477,6 +3586,30 @@ test "runtime destroy rejects an outstanding result handle" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
 }
 
+test "explicit runtime handles reject stale generations and entered destroy" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_runtime_enter(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_runtime_destroy(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_runtime_arena_bytes(handle));
+}
+
+test "a result runtime has one owner and waits for every worker to leave" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    const handle = ex_term_result_create(runtime_handle, 7);
+    try std.testing.expect(handle > 0);
+    try std.testing.expectEqual(@as(i64, -3), ex_term_result_create(runtime_handle, 8));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_result_destroy(handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_runtime_enter(runtime_handle));
+}
+
 const ActorClaimProbe = struct {
     handle: i64,
     ready: std.atomic.Value(u32) = .init(0),
@@ -3553,6 +3686,7 @@ test "mailbox accepts concurrent cross-worker sends without loss" {
         try std.testing.expect(!seen[@intCast(value)]);
         seen[@intCast(value)] = true;
     }
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
@@ -3591,6 +3725,7 @@ test "worker pool overlaps independent actors on distinct OS threads" {
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_count());
     try std.testing.expectEqual(@as(i64, 2), ex_term_worker_max_active());
     try std.testing.expect(ex_term_process_thread_id(pid_of(0, 1)) != ex_term_process_thread_id(second_pid));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
@@ -3633,6 +3768,7 @@ test "uncaught throw exits only its actor and workers continue" {
     try std.testing.expect(replacement != failed_pid);
     try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(failed_pid));
     try std.testing.expectEqual(nil_word, ex_term_process_exit_reason(replacement));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
@@ -3801,6 +3937,7 @@ test "process addresses stay stable while another worker grows the table" {
     try std.testing.expect(before == after);
     try std.testing.expect(instance.processes.len >= 128);
     try std.testing.expect(probe.reads.load(.acquire) > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
