@@ -11,6 +11,10 @@ The probe has two deliberately separate surfaces:
 - `test/probe/jason/semantic_kernels_test.exs` executes minimized,
   Batata-owned kernels shaped like Jason's token, number, UTF-8, and escape
   scanners and compares their results with the BEAM implementation.
+- `test/probe/jason/decoder_subset_test.exs` executes a selected scalar JSON
+  decoder surface. Valid and invalid tokens exercise guarded byte/rest and
+  UTF-8 scanner paths against a BEAM oracle; a representative number token
+  also runs through the AOT gate.
 
 ## Pinned corpus
 
@@ -49,5 +53,10 @@ The implementation sequence tracked by Beaver Forgejo issue #63 is:
 3. a selected decoder subset with valid/invalid JSON corpus;
 4. encoder, iodata, and protocol dispatch.
 
-The full Jason effort remains secondary until Beaver Forgejo #60–#62 complete
-the lifecycle race harness, actor/runtime soak, and TSan/cross-runtime gates.
+The runtime switch gate is complete: Beaver Forgejo #60–#62 supplied the
+lifecycle race harness, replayable actor/runtime soak, and TSan/cross-runtime
+coverage. Those jobs remain mandatory regression gates while Jason drives
+semantic width. This decoder subset is deliberately below “unmodified Jason
+compiles”: macro expansion, module attributes, protocol dispatch, full JSON
+container construction, exceptions, and encoder/iodata remain explicit later
+milestones.
