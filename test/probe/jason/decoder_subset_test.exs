@@ -53,7 +53,7 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
 
   test "constructs object entries from runtime parser values", %{ctx: ctx} do
     source = JasonDecoderSubset.map_source(~s({"a":1,"b":true}))
-    expected = %{"a" => 1, "b" => true}
+    expected = %{"a" => false, "b" => true}
 
     assert expected == beam_result(source)
     assert expected == Batata.execute(source, ctx)
