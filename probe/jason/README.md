@@ -40,6 +40,18 @@ IR verification, lowering, execution, and a BEAM oracle before it counts as
 semantic support. Compiler crashes, verifier failures, and runtime mismatches
 must never be converted into expected frontend blockers.
 
+`capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
+counts, every `executable` row names an end-to-end gate; `shaped` rows name a
+scanner/IR probe; and every `blocked` row has one owning layer and a reason.
+JSONTestSuite is pinned separately under `probe/json_test_suite/source.json`
+because it supplies data, not Elixir implementation source.
+
+A second implementation fixture is admitted only after its minimized kernel
+inventory has no runtime-owned blockers and every accepted semantic surface
+has a BEAM oracle plus JIT gate. Full libraries whose first blockers are macro,
+attribute, behaviour or protocol expansion remain frontend work rather than
+runtime evidence.
+
 ## Stages and roadmap
 
 The report reserves stages from parse through runtime mismatch so later probes
