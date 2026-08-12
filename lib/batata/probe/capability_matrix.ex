@@ -5,7 +5,7 @@ defmodule Batata.Probe.CapabilityMatrix do
   @owners ~w(frontend lift lower runtime probe)
 
   def load!(path) do
-    matrix = path |> File.read!() |> Jason.decode!()
+    matrix = path |> File.read!() |> JSON.decode!()
     validate!(matrix)
   end
 

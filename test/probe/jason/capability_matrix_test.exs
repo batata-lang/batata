@@ -13,7 +13,7 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
   end
 
   test "pins JSONTestSuite as data corpus rather than implementation fixture" do
-    source = "probe/json_test_suite/source.json" |> File.read!() |> Jason.decode!()
+    source = "probe/json_test_suite/source.json" |> File.read!() |> JSON.decode!()
 
     assert source["commit"] =~ ~r/^[0-9a-f]{40}$/
     assert source["role"] =~ "input/output corpus"
