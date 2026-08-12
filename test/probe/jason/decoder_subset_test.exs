@@ -43,6 +43,14 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     end
   end
 
+  test "threads dynamic value/rest tuples through a recursive array parser", %{ctx: ctx} do
+    source = JasonDecoderSubset.cursor_source("[1,[2,3],true,null]")
+    expected = [1, [2, 3], true, nil]
+
+    assert expected == beam_result(source)
+    assert expected == Batata.execute(source, ctx)
+  end
+
   defp beam_result(source) do
     [{module, _binary}] = Code.compile_string(source)
 

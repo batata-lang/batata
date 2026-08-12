@@ -7,11 +7,11 @@ defmodule Batata.Probe.Jason.DecoderSubsetAOTTest do
   alias Batata.Test.JasonDecoderSubset
 
   @tag :tmp_dir
-  test "runs the representative guarded integer scanner through AOT", %{
+  test "runs the recursive value/rest cursor parser through AOT", %{
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Batata.build(JasonDecoderSubset.source("12345"), tmp_dir, ctx)
+    output = Batata.build(JasonDecoderSubset.cursor_source("[1,[2,3],null]"), tmp_dir, ctx)
     binary = Path.join(tmp_dir, "run_jason_decoder_subset")
 
     {_, 0} =
@@ -22,6 +22,6 @@ defmodule Batata.Probe.Jason.DecoderSubsetAOTTest do
       )
 
     {stdout, 0} = System.cmd(binary, [])
-    assert stdout == "12345\n"
+    assert stdout == "[1, [2, 3], nil]\n"
   end
 end

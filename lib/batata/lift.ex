@@ -2709,6 +2709,37 @@ defmodule Batata.Lift do
     {create_term_op("ex.list", [], ctx, block), env}
   end
 
+  defp lift_expr([{:|, _, [head, tail]}], ctx, block, env) do
+    {head, env} = lift_expr(head, ctx, block, env)
+    {tail, env} = lift_expr(tail, ctx, block, env)
+
+    value =
+      create_op(
+        "ex.list_cons",
+        [
+          create_op(
+            "ex.to_word",
+            [lift_value(head, ctx, block, env)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          ),
+          create_op(
+            "ex.to_word",
+            [lift_value(tail, ctx, block, env)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+        ],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      )
+
+    {value, env}
+  end
+
   defp lift_expr(elements, ctx, block, env) when is_list(elements) do
     {values, env} = lift_operands_boxed(elements, ctx, block, env)
     {create_term_op("ex.list", values, ctx, block), env}
@@ -2793,6 +2824,14 @@ defmodule Batata.Lift do
   defp lift_expr({:=, _, [{var, _, nil}, rhs]}, ctx, block, env) when is_atom(var) do
     {value, env} = lift_expr(rhs, ctx, block, env)
     {value, Map.put(env, var, value)}
+  end
+
+  defp lift_expr({:=, _, [pattern, rhs]}, ctx, block, env) do
+    {value, env} = lift_expr(rhs, ctx, block, env)
+    value = box_if_scalar(lift_value(value, ctx, block, env), ctx, block)
+    {_match_cond, binds} = build_match(pattern, value, ctx, block, false)
+
+    {value, Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)}
   end
 
   # Anonymous-function marker produced by `extract_all_fns/1`: the literal
