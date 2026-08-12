@@ -3877,24 +3877,24 @@ pub export fn ex_term_map_put(map: i64, key: i64, value: i64) i64 {
     if (word_tag(map) != tag_map) return nil_word;
     const len = map_len(map);
     const entries = map_entries(map);
-    var replace_index: ?usize = null;
-    for (0..len) |i| {
-        if (term_eq(entries[i * 2], key)) {
-            replace_index = i;
-            break;
-        }
+    var pairs = nil_word;
+    var found = false;
+    var i = len;
+    while (i > 0) {
+        i -= 1;
+        const existing_key = entries[i * 2];
+        const existing_value = if (term_eq(existing_key, key)) blk: {
+            found = true;
+            break :blk value;
+        } else entries[i * 2 + 1];
+        pairs = ex_term_list_cons(existing_value, pairs);
+        pairs = ex_term_list_cons(existing_key, pairs);
     }
-    const next_len = if (replace_index == null) len + 1 else len;
-    const next = alloc_words(1 + next_len * 2) orelse return nil_word;
-    next[0] = @intCast(next_len);
-    @memcpy(next[1 .. 1 + len * 2], entries[0 .. len * 2]);
-    if (replace_index) |i| {
-        next[1 + i * 2 + 1] = value;
-    } else {
-        next[1 + len * 2] = key;
-        next[1 + len * 2 + 1] = value;
+    if (!found) {
+        pairs = ex_term_list_cons(value, pairs);
+        pairs = ex_term_list_cons(key, pairs);
     }
-    return word_from_ptr(next, tag_map);
+    return ex_term_map_from_list(pairs);
 }
 
 /// Converts a list of integer byte words into a binary word.
