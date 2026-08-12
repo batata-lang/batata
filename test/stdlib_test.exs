@@ -29,6 +29,32 @@ defmodule Batata.StdlibTest do
     test "returns nil outside the declared surface" do
       assert Stdlib.class({Foo, :bar, 1}) == nil
       assert Stdlib.class({Kernel, :apply, 2}) == nil
+      assert Stdlib.metadata({Foo, :bar, 1}) == nil
+    end
+
+    test "classifies effects and resumable safe points" do
+      assert Stdlib.metadata({Kernel, :byte_size, 1}) == %{
+               purity: :pure,
+               allocation: :none,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({Enum, :reduce, 3}) == %{
+               purity: :pure,
+               allocation: :none,
+               preemption: :resumable,
+               reductions: :per_element
+             }
+
+      assert Stdlib.metadata({File, :read!, 1}) == %{
+               purity: :impure,
+               allocation: :may_allocate,
+               preemption: :blocking,
+               reductions: :external
+             }
+
+      assert Enum.all?(Stdlib.classes(), fn {mfa, _class} -> Stdlib.metadata(mfa) != nil end)
     end
   end
 
