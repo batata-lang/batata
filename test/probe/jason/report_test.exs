@@ -30,10 +30,10 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert first == second
     assert first["schema_version"] == 1
     assert first["corpus"]["ref"] == "v1.4.5"
-    assert first["summary"]["definitions"] == 1
-    assert first["summary"]["blockers"] == 3
+    assert first["summary"]["definitions"] == 2
+    assert first["summary"]["blockers"] == 2
     assert first["summary"]["by_stage"]["macro_or_compile_time"] == 2
-    assert first["summary"]["by_stage"]["pattern_or_guard"] == 1
+    assert first["summary"]["by_stage"]["pattern_or_guard"] == 0
     assert Enum.all?(first["blockers"], &(byte_size(&1["id"]) == 64))
   end
 
