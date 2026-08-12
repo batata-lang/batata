@@ -120,4 +120,61 @@ defmodule Batata.Test.JasonDecoderSubset do
     end
     """
   end
+
+  def float_source(input) do
+    """
+    defmodule JasonFloatDecoderSubset do
+      def number(<<45, rest::binary>>), do: integer(rest)
+      def number(binary), do: integer(binary)
+
+      def integer(<<48, rest::binary>>), do: after_integer(rest)
+      def integer(<<digit::8, rest::binary>>) when digit in ?1..?9,
+        do: integer_digits(rest)
+      def integer(_), do: false
+
+      def integer_digits(<<digit::8, rest::binary>>) when digit in ?0..?9,
+        do: integer_digits(rest)
+      def integer_digits(rest), do: after_integer(rest)
+
+      def after_integer(<<46, rest::binary>>), do: fraction(rest)
+      def after_integer(<<marker::8, rest::binary>>) when marker in [?e, ?E],
+        do: exponent(rest)
+      def after_integer(_), do: false
+
+      def fraction(<<digit::8, rest::binary>>) when digit in ?0..?9,
+        do: fraction_digits(rest)
+      def fraction(_), do: false
+
+      def fraction_digits(<<digit::8, rest::binary>>) when digit in ?0..?9,
+        do: fraction_digits(rest)
+      def fraction_digits(<<marker::8, rest::binary>>) when marker in [?e, ?E],
+        do: exponent(rest)
+      def fraction_digits(<<>>), do: true
+      def fraction_digits(_), do: false
+
+      def exponent(<<sign::8, rest::binary>>) when sign in [?+, ?-],
+        do: exponent_digit(rest)
+      def exponent(rest), do: exponent_digit(rest)
+
+      def exponent_digit(<<digit::8, rest::binary>>) when digit in ?0..?9,
+        do: exponent_digits(rest)
+      def exponent_digit(_), do: false
+
+      def exponent_digits(<<digit::8, rest::binary>>) when digit in ?0..?9,
+        do: exponent_digits(rest)
+      def exponent_digits(<<>>), do: true
+      def exponent_digits(_), do: false
+
+      def main(), do: String.to_float(#{inspect(input)})
+    end
+    """
+  end
+
+  def float_syntax_source(input) do
+    float_source(input)
+    |> String.replace(
+      "def main(), do: String.to_float(#{inspect(input)})",
+      "def main(), do: number(#{inspect(input)})"
+    )
+  end
 end

@@ -67,6 +67,34 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     assert expected == Batata.execute(source, ctx)
   end
 
+  @float_cases [
+    {"fraction", "12.5", 12.5},
+    {"positive exponent", "12.5e+2", 1250.0},
+    {"negative exponent", "1.5E-2", 0.015},
+    {"negative zero", "-0.0", -0.0}
+  ]
+
+  for {name, input, expected} <- @float_cases do
+    test "decodes finite float: #{name}", %{ctx: ctx} do
+      source = JasonDecoderSubset.float_source(unquote(input))
+      expected = unquote(expected)
+
+      assert <<expected::float-64-native>> == <<beam_result(source)::float-64-native>>
+      assert <<expected::float-64-native>> == <<Batata.execute(source, ctx)::float-64-native>>
+    end
+  end
+
+  @invalid_float_tokens ["NaN", "Infinity", "1e", "1.", "01.5", "1.2.3"]
+
+  for input <- @invalid_float_tokens do
+    test "rejects invalid float syntax #{input}", %{ctx: ctx} do
+      source = JasonDecoderSubset.float_syntax_source(unquote(input))
+
+      refute beam_result(source)
+      refute Batata.execute(source, ctx)
+    end
+  end
+
   defp beam_result(source) do
     [{module, _binary}] = Code.compile_string(source)
 
