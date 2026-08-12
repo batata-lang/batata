@@ -51,4 +51,42 @@ defmodule Batata.Test.JasonDecoderSubset do
     end
     """
   end
+
+  def cursor_source(input) do
+    """
+    defmodule JasonCursorDecoderSubset do
+      def parse_value(<<116, 114, 117, 101, rest::binary>>), do: {true, rest}
+      def parse_value(<<102, 97, 108, 115, 101, rest::binary>>), do: {false, rest}
+      def parse_value(<<110, 117, 108, 108, rest::binary>>), do: {nil, rest}
+      def parse_value(<<91, rest::binary>>), do: parse_array(rest)
+      def parse_value(<<byte::8, rest::binary>>) when byte in ?0..?9,
+        do: {byte - ?0, rest}
+      def parse_value(rest), do: {{:error, :invalid_json}, rest}
+
+      def parse_array(<<93, rest::binary>>), do: {[], rest}
+      def parse_array(binary) do
+        {value, rest} = parse_value(binary)
+        parse_array_tail(rest, value)
+      end
+
+      def parse_array_tail(<<93, rest::binary>>, value), do: {[value | []], rest}
+      def parse_array_tail(<<44, rest::binary>>, value) do
+        {tail, rest} = parse_array(rest)
+        {[value | tail], rest}
+      end
+      def parse_array_tail(rest, value), do: {{:error, value}, rest}
+
+      def decode(binary) do
+        {value, rest} = parse_value(binary)
+
+        case rest do
+          <<>> -> value
+          _ -> {:error, :invalid_json}
+        end
+      end
+
+      def main(), do: decode(#{inspect(input)})
+    end
+    """
+  end
 end
