@@ -1,7 +1,9 @@
 defmodule Batata.RuntimeSoakTest do
   # MLIR compilation is CPU-heavy and process-global LLVM resources are not a
   # useful thing to oversubscribe with the rest of the async suite. The test
-  # itself still creates two genuinely concurrent, isolated JIT sessions.
+  # itself still submits two concurrent sessions. Their engine lifetimes are
+  # serialized because MLIR resolves same-named C wrappers process-globally;
+  # each session still runs four native actor workers in parallel.
   use ExUnit.Case, async: false
 
   alias Beaver.MLIR
@@ -29,7 +31,7 @@ defmodule Batata.RuntimeSoakTest do
   end
   """
 
-  test "concurrent JIT sessions keep actor results runtime-local" do
+  test "concurrent JIT submissions keep actor results runtime-local" do
     results =
       1..2
       |> Task.async_stream(
@@ -53,5 +55,32 @@ defmodule Batata.RuntimeSoakTest do
       |> Enum.map(fn {:ok, value} -> value end)
 
     assert results == [45, 45]
+  end
+
+  test "concurrent composite results stay bound to their creating engine" do
+    source = """
+    defmodule CompositeSession do
+      def main(), do: {1, [2, 3], %{7 => 42}, <<4, 5>>}
+    end
+    """
+
+    results =
+      1..8
+      |> Task.async_stream(
+        fn _ ->
+          ctx = MLIR.Context.create()
+
+          try do
+            Batata.execute(source, ctx)
+          after
+            MLIR.Context.destroy(ctx)
+          end
+        end,
+        max_concurrency: 4,
+        timeout: 180_000
+      )
+      |> Enum.map(fn {:ok, value} -> value end)
+
+    assert results == List.duplicate({1, [2, 3], %{7 => 42}, <<4, 5>>}, 8)
   end
 end
