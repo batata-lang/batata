@@ -17,19 +17,23 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     {"integer token", "12345", 5},
     {"negative integer token", "-42", 3},
     {"fraction and exponent token", "12.5e+2", 7},
-    {"true literal", "true", 10},
-    {"false literal", "false", 11},
-    {"null literal", "null", 12},
+    {"true literal", "true", true},
+    {"false literal", "false", false},
+    {"null literal", "null", nil},
     {"quoted ASCII string", ~s("abc"), 3},
     {"quoted UTF-8 string", ~s("é中"), 2},
     {"empty array", "[]", 20},
-    {"empty object", "{}", 21},
+    {"empty object", "{}", %{}},
+    {"shallow array", "[true,null]", [true, nil]},
+    {"shallow object", ~s({"ok":true}), %{"ok" => true}},
     {"rejects unterminated string", ~s("abc), 99},
     {"rejects trailing content", "true!", 99},
     {"rejects unknown token", "wat", 99}
   ]
 
   for {name, input, expected} <- @cases do
+    expected = Macro.escape(expected)
+
     test name, %{ctx: ctx} do
       source = JasonDecoderSubset.source(unquote(input))
       assert unquote(expected) == beam_result(source)

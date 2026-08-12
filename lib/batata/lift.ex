@@ -989,7 +989,7 @@ defmodule Batata.Lift do
       create_op("ex.clock_init", [lit(budget, ctx, block)], [integer_type(ctx)], ctx, block)
     end
 
-    {return_value, env} = lift_block(List.wrap(body_ast), ctx, block, env)
+    {return_value, env} = lift_block(block_ast(body_ast), ctx, block, env)
     insert_return(return_value, ctx, block, env)
 
     %Beaver.SSA{
@@ -1002,6 +1002,9 @@ defmodule Batata.Lift do
     }
     |> MLIR.Operation.create()
   end
+
+  defp block_ast(nil), do: [nil]
+  defp block_ast(ast), do: List.wrap(ast)
 
   defp uses_mailbox?(ast) do
     ast
@@ -4842,7 +4845,10 @@ defmodule Batata.Lift do
         {var, value}, acc -> Map.put(acc, var, value)
       end)
 
-    {value, clause_env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    # A clause body is one AST expression even when that expression is [] or
+    # a non-empty list literal. List.wrap/1 erases [] and expands list literals
+    # into multiple block expressions, so keep the AST in a singleton block.
+    {value, clause_env} = lift_block([clause.body], ctx, block, clause_env)
     value = lift_value(value, ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
