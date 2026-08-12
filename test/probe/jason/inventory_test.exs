@@ -10,6 +10,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
       @moduledoc false
       import Bitwise
       def guarded(value) when is_integer(value), do: value
+      def unsupported(value) when value > 0, do: value
       def plain(value), do: value
 
       defmodule Inner do
@@ -27,7 +28,11 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert Enum.map(file.modules, & &1.module) == ["Outer", "Outer.Inner"]
 
     [outer, inner] = file.modules
-    assert outer.definitions == [%{kind: :def, name: :plain, arity: 1, clauses: 1}]
+
+    assert outer.definitions == [
+             %{kind: :def, name: :guarded, arity: 1, clauses: 1},
+             %{kind: :def, name: :plain, arity: 1, clauses: 1}
+           ]
 
     assert Enum.map(outer.unsupported, & &1.reason) == [
              :module_attribute,
