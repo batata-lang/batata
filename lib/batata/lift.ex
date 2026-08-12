@@ -2644,6 +2644,27 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_expr(float, ctx, block, env) when is_float(float) do
+    <<bits::signed-64-native>> = <<float::float-64-native>>
+
+    {
+      create_op(
+        "ex.float_lit",
+        [lit(bits, ctx, block)],
+        [ex_type("dyn", ctx)],
+        ctx,
+        block
+      ),
+      env
+    }
+  end
+
+  defp lift_expr({:-, _, [float]}, ctx, block, env) when is_float(float),
+    do: lift_expr(-float, ctx, block, env)
+
+  defp lift_expr({:+, _, [float]}, ctx, block, env) when is_float(float),
+    do: lift_expr(float, ctx, block, env)
+
   # An atom literal in value position lifts to its tagged word: a
   # deterministic hash payload (above the runtime's nil (0) and process pid
   # (1..8) ids), so equality (`==`, message matching) is sound per
@@ -2756,7 +2777,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({name, _, [arg]}, ctx, block, env)
-       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer] do
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float] do
     {value, env} = lift_expr(arg, ctx, block, env)
     {create_op("ex.#{name}", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block), env}
   end
@@ -4237,6 +4258,9 @@ defmodule Batata.Lift do
   defp native_term_call(String, :to_integer, [value], ctx, block),
     do: create_op("ex.string_to_int", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(String, :to_float, [value], ctx, block),
+    do: create_op("ex.string_to_float", [value], [ex_type("dyn", ctx)], ctx, block)
+
   defp native_term_call(Base, :encode16, [value], ctx, block),
     do: create_op("ex.binary_encode16", [value], [ex_type("dyn", ctx)], ctx, block)
 
@@ -4289,6 +4313,10 @@ defmodule Batata.Lift do
   defp native_term_call(module, :is_integer, [value], ctx, block)
        when module in [Kernel, :erlang],
        do: create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(module, :is_float, [value], ctx, block)
+       when module in [Kernel, :erlang],
+       do: create_op("ex.is_float", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(module, :is_list, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.is_list", [value], [MLIR.Type.i64()], ctx, block)
@@ -4990,7 +5018,15 @@ defmodule Batata.Lift do
   end
 
   defp supported_term_guard?({predicate, _, [var_ast]})
-       when predicate in [:is_integer, :is_atom, :is_binary, :is_list, :is_tuple, :is_map] do
+       when predicate in [
+              :is_integer,
+              :is_float,
+              :is_atom,
+              :is_binary,
+              :is_list,
+              :is_tuple,
+              :is_map
+            ] do
     match?({name, _, nil} when is_atom(name), var_ast)
   end
 
