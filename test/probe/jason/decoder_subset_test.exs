@@ -14,14 +14,14 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
   alias Batata.Test.JasonDecoderSubset
 
   @cases [
-    {"integer token", "12345", 5},
-    {"negative integer token", "-42", 3},
+    {"integer token", "12345", 12_345},
+    {"negative integer token", "-42", -42},
     {"fraction and exponent token", "12.5e+2", 7},
     {"true literal", "true", true},
     {"false literal", "false", false},
     {"null literal", "null", nil},
-    {"quoted ASCII string", ~s("abc"), 3},
-    {"quoted UTF-8 string", ~s("é中"), 2},
+    {"quoted ASCII string", ~s("abc"), "abc"},
+    {"quoted UTF-8 string", ~s("é中"), "é中"},
     {"empty array", "[]", 20},
     {"empty object", "{}", %{}},
     {"shallow array", "[true,null]", [true, nil]},

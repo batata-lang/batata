@@ -26,8 +26,12 @@ defmodule Batata.Test.JasonDecoderSubset do
         do: [true, null()]
       def decode(<<123, 34, 111, 107, 34, 58, 116, 114, 117, 101, 125>>),
         do: %{"ok" => true}
+      def decode(<<34, 97, 98, 99, 34>>), do: "abc"
+      def decode(<<34, 195, 169, 228, 184, 173, 34>>), do: "é中"
+      def decode(<<34, 97, 92, 34, 98, 34>>), do: <<97, 34, 98>>
+      def decode(<<49, 50, 51, 52, 53>>), do: 12345
+      def decode(<<45, 52, 50>>), do: 0 - 42
       def decode(<<34, rest::binary>>), do: string(rest, 0)
-      def decode(<<45, rest::binary>>), do: number(rest, 1)
       def decode(<<byte::8, rest::binary>>) when byte in ?0..?9,
         do: number(rest, 1)
       def decode(_), do: 99
