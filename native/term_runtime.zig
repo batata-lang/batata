@@ -5,6 +5,7 @@
 //! conversion plan emits calls to exactly these symbols.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @cImport({
     @cInclude("setjmp.h");
     @cInclude("stdio.h");
@@ -420,6 +421,99 @@ const Runtime = struct {
         std.heap.page_allocator.destroy(self);
     }
 };
+
+// Deterministic lifecycle interleavings are controlled by one test-only gate.
+// `builtin.is_test` is a compile-time constant, so calls and storage disappear
+// entirely from shared/static Release builds.
+const LifecycleTestPoint = enum(u8) {
+    none,
+    runtime_leave_committed,
+    result_export_committed,
+    term_export_committed,
+    result_destroy_snapshotted,
+    term_destroy_snapshotted,
+    import_validated,
+};
+
+const LifecycleSnapshot = struct {
+    phase: LifecyclePhase,
+    execution_handle: i64,
+    owner: usize,
+    participants: u32,
+    initialized: bool,
+    execution_epoch: u64,
+    results: u32,
+    terms: u32,
+
+    fn capture(instance: *Runtime) LifecycleSnapshot {
+        return .{
+            .phase = instance.lifecycle_phase,
+            .execution_handle = instance.execution_handle,
+            .owner = instance.execution_owner,
+            .participants = instance.execution_participants,
+            .initialized = instance.execution_initialized,
+            .execution_epoch = instance.execution_epoch,
+            .results = instance.outstanding_results.load(.acquire),
+            .terms = instance.outstanding_terms.load(.acquire),
+        };
+    }
+};
+
+const LifecycleTestGate = struct {
+    point: std.atomic.Value(LifecycleTestPoint) = .init(.none),
+    arrived: std.atomic.Value(bool) = .init(false),
+    released: std.atomic.Value(bool) = .init(false),
+    snapshot: LifecycleSnapshot = undefined,
+    case_name: []const u8 = "unarmed",
+    seed: u64 = 0,
+
+    fn arm(self: *LifecycleTestGate, point: LifecycleTestPoint, case_name: []const u8, seed: u64) void {
+        std.debug.assert(self.point.load(.acquire) == .none);
+        self.case_name = case_name;
+        self.seed = seed;
+        self.snapshot = undefined;
+        self.released.store(false, .release);
+        self.arrived.store(false, .release);
+        self.point.store(point, .release);
+    }
+
+    fn reach(self: *LifecycleTestGate, point: LifecycleTestPoint, instance: *Runtime) void {
+        if (self.point.load(.acquire) != point) return;
+        self.snapshot = LifecycleSnapshot.capture(instance);
+        self.arrived.store(true, .release);
+        while (!self.released.load(.acquire)) std.Thread.yield() catch {};
+    }
+
+    fn waitArrived(self: *LifecycleTestGate) bool {
+        for (0..10_000_000) |_| {
+            if (self.arrived.load(.acquire)) return true;
+            std.Thread.yield() catch {};
+        }
+        std.debug.print(
+            "lifecycle race timeout: case={s} seed={d} point={s}\n",
+            .{ self.case_name, self.seed, @tagName(self.point.load(.acquire)) },
+        );
+        return false;
+    }
+
+    fn release(self: *LifecycleTestGate) void {
+        self.released.store(true, .release);
+    }
+
+    fn disarm(self: *LifecycleTestGate) void {
+        self.release();
+        self.point.store(.none, .release);
+        self.arrived.store(false, .release);
+    }
+};
+
+const LifecycleTestState = struct {
+    var gate: LifecycleTestGate = .{};
+};
+
+inline fn lifecycleTestReach(point: LifecycleTestPoint, instance: *Runtime) void {
+    if (comptime builtin.is_test) LifecycleTestState.gate.reach(point, instance);
+}
 
 // Explicit runtimes are addressed through generation-checked slots.  The C
 // ABI never treats a host-provided integer as a pointer, so a stale handle is
@@ -848,6 +942,7 @@ pub export fn ex_term_runtime_leave() i64 {
     instance.execution_participants = 0;
     instance.execution_initialized = false;
     instance.entered_workers.store(0, .release);
+    lifecycleTestReach(.runtime_leave_committed, instance);
     clear_runtime_thread_state(instance);
     return 0;
 }
@@ -960,6 +1055,7 @@ pub export fn ex_term_result_destroy(handle: i64) i64 {
     const instance = initial.runtime.?;
     const runtime_handle = initial.runtime_handle;
     result_lock.unlock();
+    lifecycleTestReach(.result_destroy_snapshotted, instance);
 
     runtime_lock.lock();
     const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
@@ -1305,6 +1401,7 @@ fn begin_result_export(handle: i64, word: i64) error{ Invalid, Unsupported, Busy
         return error.Invalid;
     }
     instance.lifecycle_phase = .exporting;
+    lifecycleTestReach(.result_export_committed, instance);
     result_lock.unlock();
     instance.lifecycle_lock.unlock();
     runtime_lock.unlock();
@@ -1353,6 +1450,7 @@ fn begin_term_export(handle: i64) error{ Invalid, Busy }!ExportLease {
     const word = slot.word;
     const root_scalar = slot.root_scalar;
     instance.lifecycle_phase = .exporting;
+    lifecycleTestReach(.term_export_committed, instance);
     term_lock.unlock();
     instance.lifecycle_lock.unlock();
     runtime_lock.unlock();
@@ -1545,6 +1643,7 @@ pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
     defer instance.lifecycle_lock.unlock();
     if (!is_execution_owner_locked(instance, runtime_handle) or
         instance.execution_participants != 1) return -5;
+    lifecycleTestReach(.import_validated, instance);
 
     const storage = if (words == 0) null else alloc_words(words) orelse return -2;
     var decoder = Decoder{ .bytes = bytes };
@@ -1594,6 +1693,7 @@ pub export fn ex_term_handle_destroy(handle: i64) i64 {
     const instance = initial.runtime.?;
     const runtime_handle = initial.runtime_handle;
     term_lock.unlock();
+    lifecycleTestReach(.term_destroy_snapshotted, instance);
 
     runtime_lock.lock();
     const runtime_slot = runtime_slot_locked(runtime_handle) orelse {
@@ -4331,6 +4431,49 @@ const WorkerLeaseProbe = struct {
         self.left.store(worker_leave(), .release);
     }
 };
+
+const OwnerLeaveGateProbe = struct {
+    handle: std.atomic.Value(i64) = .init(0),
+    leave_result: std.atomic.Value(i64) = .init(99),
+
+    fn run(self: *@This()) void {
+        const handle = ex_term_runtime_create();
+        self.handle.store(handle, .release);
+        if (ex_term_runtime_enter(handle) != 0) return;
+        self.leave_result.store(ex_term_runtime_leave(), .release);
+    }
+};
+
+test "lifecycle race gate captures a deterministic linearization snapshot" {
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.runtime_leave_committed, "harness-leave-commit", 0x60_01);
+    defer gate.disarm();
+
+    var probe = OwnerLeaveGateProbe{};
+    const thread = try std.Thread.spawn(.{}, OwnerLeaveGateProbe.run, .{&probe});
+    var joined = false;
+    defer {
+        gate.release();
+        if (!joined) thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try std.testing.expectEqual(LifecyclePhase.idle, gate.snapshot.phase);
+    try std.testing.expectEqual(@as(i64, 0), gate.snapshot.execution_handle);
+    try std.testing.expectEqual(@as(usize, 0), gate.snapshot.owner);
+    try std.testing.expectEqual(@as(u32, 0), gate.snapshot.participants);
+    try std.testing.expect(!gate.snapshot.initialized);
+    try std.testing.expectEqual(@as(u32, 0), gate.snapshot.results);
+    try std.testing.expectEqual(@as(u32, 0), gate.snapshot.terms);
+
+    const handle = probe.handle.load(.acquire);
+    try std.testing.expect(handle != 0);
+    gate.release();
+    thread.join();
+    joined = true;
+    try std.testing.expectEqual(@as(i64, 0), probe.leave_result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
 
 test "runtime lifecycle admits one owner and tracks joined workers" {
     const handle = ex_term_runtime_create();
