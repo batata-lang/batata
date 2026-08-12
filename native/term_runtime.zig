@@ -612,6 +612,72 @@ inline fn lifecycleTestReach(point: LifecycleTestPoint, instance: *Runtime) void
     if (comptime builtin.is_test) LifecycleTestState.gate.reach(point, instance);
 }
 
+// A separate test-only barrier pauses a graph operation after global registry
+// locks have been released. Tests can then require an unrelated runtime to
+// finish a complete lifecycle before the paused operation is allowed to
+// continue, proving progress without relying on wall-clock timing.
+const CrossRuntimeTestPoint = enum(u8) {
+    none,
+    export_traversal,
+    import_decode,
+};
+
+const CrossRuntimeTestGate = struct {
+    point: std.atomic.Value(CrossRuntimeTestPoint) = .init(.none),
+    arrived: std.atomic.Value(bool) = .init(false),
+    released: std.atomic.Value(bool) = .init(false),
+    target: ?*Runtime = null,
+    case_name: []const u8 = "unarmed",
+    seed: u64 = 0,
+
+    fn arm(self: *@This(), point: CrossRuntimeTestPoint, target: *Runtime, case_name: []const u8, seed: u64) void {
+        std.debug.assert(self.point.load(.acquire) == .none);
+        self.target = target;
+        self.case_name = case_name;
+        self.seed = seed;
+        self.released.store(false, .release);
+        self.arrived.store(false, .release);
+        self.point.store(point, .release);
+    }
+
+    fn reach(self: *@This(), point: CrossRuntimeTestPoint, target: *Runtime) void {
+        if (self.point.load(.acquire) != point or self.target != target) return;
+        self.arrived.store(true, .release);
+        while (!self.released.load(.acquire)) std.Thread.yield() catch {};
+    }
+
+    fn waitArrived(self: *@This()) bool {
+        for (0..10_000_000) |_| {
+            if (self.arrived.load(.acquire)) return true;
+            std.Thread.yield() catch {};
+        }
+        std.debug.print(
+            "cross-runtime timeout: case={s} seed={d} point={s}\n",
+            .{ self.case_name, self.seed, @tagName(self.point.load(.acquire)) },
+        );
+        return false;
+    }
+
+    fn release(self: *@This()) void {
+        self.released.store(true, .release);
+    }
+
+    fn disarm(self: *@This()) void {
+        self.release();
+        self.point.store(.none, .release);
+        self.arrived.store(false, .release);
+        self.target = null;
+    }
+};
+
+const CrossRuntimeTestState = struct {
+    var gate: CrossRuntimeTestGate = .{};
+};
+
+inline fn crossRuntimeTestReach(point: CrossRuntimeTestPoint, instance: *Runtime) void {
+    if (comptime builtin.is_test) CrossRuntimeTestState.gate.reach(point, instance);
+}
+
 // Explicit runtimes are addressed through generation-checked slots.  The C
 // ABI never treats a host-provided integer as a pointer, so a stale handle is
 // rejected before any runtime memory is touched.
@@ -1410,6 +1476,7 @@ fn encodeTerm(instance: *Runtime, word: i64, root_scalar: bool, bytes: []u8, cur
 }
 
 fn registerExported(instance: *Runtime, word: i64, root_scalar: bool) i64 {
+    crossRuntimeTestReach(.export_traversal, instance);
     const term_size = encodedTermSize(instance, word, root_scalar, 0) catch |err| return switch (err) {
         error.Unsupported => -3,
         error.Invalid => -1,
@@ -1747,6 +1814,7 @@ pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
     if (!is_execution_owner_locked(instance, runtime_handle) or
         instance.execution_participants != 1) return -5;
     lifecycleTestReach(.import_validated, instance);
+    crossRuntimeTestReach(.import_decode, instance);
 
     const storage = if (words == 0) null else alloc_words(words) orelse return -2;
     var decoder = Decoder{ .bytes = bytes };
@@ -4936,6 +5004,193 @@ test "exported clone inspection and destroy serialize without stale reads" {
     try std.testing.expectEqual(@as(i64, 'B'), probes[3].result);
     for (0..4) |_| try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
     try std.testing.expectEqual(@as(i64, -1), ex_term_exported_length(exported));
+}
+
+fn createWideResultFixture() ScalarResultFixture {
+    const runtime_handle = ex_term_runtime_create();
+    std.debug.assert(runtime_handle > 0);
+    std.debug.assert(ex_term_runtime_enter(runtime_handle) == 0);
+    std.debug.assert(ex_term_process_table_reset(default_process_cap) == 1);
+    const element_count = 4096;
+    const words = alloc_words(element_count + 1).?;
+    words[0] = element_count;
+    for (words[1 .. element_count + 1], 0..) |*element, index| {
+        element.* = @as(i64, @intCast(index)) << 3;
+    }
+    const word = word_from_ptr(words, tag_tuple);
+    const result = ex_term_result_create(runtime_handle, word);
+    std.debug.assert(result > 0);
+    std.debug.assert(ex_term_runtime_leave() == 0);
+    return .{ .runtime = runtime_handle, .result = result, .word = word };
+}
+
+fn runtimeForResult(handle: i64) *Runtime {
+    result_lock.lock();
+    defer result_lock.unlock();
+    return result_slot_locked(handle).?.runtime.?;
+}
+
+fn runtimeForTerm(handle: i64) *Runtime {
+    term_lock.lock();
+    defer term_lock.unlock();
+    return term_slot_locked(handle).?.runtime.?;
+}
+
+fn runtimeForHandle(handle: i64) *Runtime {
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    return runtime_slot_locked(handle).?.runtime.?;
+}
+
+const IndependentRuntimeProbe = struct {
+    done: std.atomic.Value(bool) = .init(false),
+    succeeded: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *@This()) void {
+        var ok = true;
+        const handle = ex_term_runtime_create();
+        ok = ok and handle > 0;
+        ok = ok and ex_term_runtime_enter(handle) == 0;
+        ok = ok and ex_term_process_table_reset(2) == 1;
+        const result = ex_term_result_create(handle, 80);
+        ok = ok and result > 0;
+        ok = ok and ex_term_runtime_leave() == 0;
+        const exported = ex_term_export(result, 80);
+        ok = ok and exported > 0;
+        ok = ok and ex_term_exported_length(exported) > exported_magic.len;
+        ok = ok and ex_term_exported_destroy(exported) == 0;
+        ok = ok and ex_term_result_destroy(result) == 0;
+        self.succeeded.store(ok, .release);
+        self.done.store(true, .release);
+    }
+};
+
+fn expectIndependentRuntimeProgress(case_name: []const u8, seed: u64) !void {
+    var probe = IndependentRuntimeProbe{};
+    const thread = try std.Thread.spawn(.{}, IndependentRuntimeProbe.run, .{&probe});
+    var joined = false;
+    defer if (!joined) thread.join();
+    try std.testing.expect(waitLifecycleFlag(&probe.done, case_name, seed));
+    thread.join();
+    joined = true;
+    try std.testing.expect(probe.succeeded.load(.acquire));
+}
+
+test "independent runtime progresses while result graph export is paused" {
+    const fixture = createWideResultFixture();
+    const gate = &CrossRuntimeTestState.gate;
+    gate.arm(.export_traversal, runtimeForResult(fixture.result), "result-export-progress", 0x62_01);
+    defer gate.disarm();
+
+    var export_probe = LifecycleCallProbe{
+        .call = .result_export,
+        .first = fixture.result,
+        .second = fixture.word,
+    };
+    const export_thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&export_probe});
+    var export_joined = false;
+    defer {
+        gate.release();
+        if (!export_joined) export_thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try expectIndependentRuntimeProgress("result-export-progress", 0x62_01);
+    try std.testing.expect(!export_probe.done.load(.acquire));
+
+    gate.release();
+    export_thread.join();
+    export_joined = true;
+    const exported = export_probe.result.load(.acquire);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(fixture.result));
+}
+
+test "independent runtime progresses while term handle export is paused" {
+    const source = createWideResultFixture();
+    const exported = ex_term_export(source.result, source.word);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(source.result));
+    const target = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target));
+    const term = ex_term_import(target, exported);
+    try std.testing.expect(term > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    const gate = &CrossRuntimeTestState.gate;
+    gate.arm(.export_traversal, runtimeForTerm(term), "term-export-progress", 0x62_02);
+    defer gate.disarm();
+    var export_probe = LifecycleCallProbe{ .call = .term_export, .first = term };
+    const export_thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&export_probe});
+    var export_joined = false;
+    defer {
+        gate.release();
+        if (!export_joined) export_thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try expectIndependentRuntimeProgress("term-export-progress", 0x62_02);
+    try std.testing.expect(!export_probe.done.load(.acquire));
+
+    gate.release();
+    export_thread.join();
+    export_joined = true;
+    const copy = export_probe.result.load(.acquire);
+    try std.testing.expect(copy > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(term));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(copy));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+const CrossRuntimeImportProbe = struct {
+    runtime_handle: i64,
+    exported: i64,
+    term: std.atomic.Value(i64) = .init(0),
+    leave_result: std.atomic.Value(i64) = .init(99),
+    done: std.atomic.Value(bool) = .init(false),
+
+    fn run(self: *@This()) void {
+        if (ex_term_runtime_enter(self.runtime_handle) == 0) {
+            self.term.store(ex_term_import(self.runtime_handle, self.exported), .release);
+            self.leave_result.store(ex_term_runtime_leave(), .release);
+        }
+        self.done.store(true, .release);
+    }
+};
+
+test "independent runtime progresses while graph import owns another runtime gate" {
+    const source = createWideResultFixture();
+    const exported = ex_term_export(source.result, source.word);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(source.result));
+    const target = ex_term_runtime_create();
+
+    const gate = &CrossRuntimeTestState.gate;
+    gate.arm(.import_decode, runtimeForHandle(target), "import-progress", 0x62_03);
+    defer gate.disarm();
+    var import_probe = CrossRuntimeImportProbe{ .runtime_handle = target, .exported = exported };
+    const import_thread = try std.Thread.spawn(.{}, CrossRuntimeImportProbe.run, .{&import_probe});
+    var import_joined = false;
+    defer {
+        gate.release();
+        if (!import_joined) import_thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try expectIndependentRuntimeProgress("import-progress", 0x62_03);
+    try std.testing.expect(!import_probe.done.load(.acquire));
+
+    gate.release();
+    import_thread.join();
+    import_joined = true;
+    const term = import_probe.term.load(.acquire);
+    try std.testing.expect(term > 0);
+    try std.testing.expectEqual(@as(i64, 0), import_probe.leave_result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(term));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
 }
 
 test "runtime lifecycle admits one owner and tracks joined workers" {
