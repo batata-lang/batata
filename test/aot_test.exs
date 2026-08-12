@@ -106,4 +106,51 @@ defmodule Batata.AOTTest do
     {stdout, 0} = System.cmd(binary, [])
     assert stdout == "7\n"
   end
+
+  @tag :tmp_dir
+  test "runs a fan-in AOT workload with a small growing process table", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output =
+      Batata.build(
+        """
+        defmodule FanIn do
+          def main() do
+            me = self()
+            spawn(fn -> send(me, 10) end)
+            spawn(fn -> send(me, 20) end)
+            sum = Enum.reduce([1, 2, 3, 4, 5], 0, fn x, acc -> x + acc end)
+
+            first = receive do
+              10 -> 10
+            end
+
+            second = receive do
+              20 -> 20
+            end
+
+            sum + first + second
+          end
+        end
+        """,
+        tmp_dir,
+        ctx,
+        workers: 4,
+        process_cap: 2,
+        reduction_budget: 2
+      )
+
+    binary = Path.join(tmp_dir, "run_fan_in")
+
+    {_, 0} =
+      System.cmd(
+        "zig",
+        ["cc", output.driver, output.archive, output.runtime_lib, "-lc", "-o", binary],
+        stderr_to_stdout: true
+      )
+
+    {stdout, 0} = System.cmd(binary, [])
+    assert stdout == "45\n"
+  end
 end
