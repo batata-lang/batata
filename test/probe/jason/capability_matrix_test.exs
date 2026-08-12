@@ -8,6 +8,9 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     capabilities = Map.new(matrix["capabilities"], &{&1["id"], &1})
 
     assert capabilities["container.recursive"]["status"] == "executable"
+    assert capabilities["parser.cursor_value"]["owner"] == "lift"
+    assert capabilities["container.dynamic_map"]["owner"] == "lower"
+    assert capabilities["string.dynamic_binary"]["status"] == "blocked"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"
     assert capabilities["fixture.second"]["status"] == "blocked"
   end
