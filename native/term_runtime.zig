@@ -933,15 +933,21 @@ pub export fn ex_term_runtime_leave() i64 {
     if (active_runtime_handle == 0) return -1;
     const instance = active_runtime orelse return -1;
     instance.lifecycle_lock.lock();
-    defer instance.lifecycle_lock.unlock();
-    if (!is_execution_owner_locked(instance, active_runtime_handle)) return -1;
-    if (instance.execution_participants != 1) return -2;
+    if (!is_execution_owner_locked(instance, active_runtime_handle)) {
+        instance.lifecycle_lock.unlock();
+        return -1;
+    }
+    if (instance.execution_participants != 1) {
+        instance.lifecycle_lock.unlock();
+        return -2;
+    }
     instance.lifecycle_phase = .idle;
     instance.execution_handle = 0;
     instance.execution_owner = 0;
     instance.execution_participants = 0;
     instance.execution_initialized = false;
     instance.entered_workers.store(0, .release);
+    instance.lifecycle_lock.unlock();
     lifecycleTestReach(.runtime_leave_committed, instance);
     clear_runtime_thread_state(instance);
     return 0;
@@ -1401,10 +1407,10 @@ fn begin_result_export(handle: i64, word: i64) error{ Invalid, Unsupported, Busy
         return error.Invalid;
     }
     instance.lifecycle_phase = .exporting;
-    lifecycleTestReach(.result_export_committed, instance);
     result_lock.unlock();
     instance.lifecycle_lock.unlock();
     runtime_lock.unlock();
+    lifecycleTestReach(.result_export_committed, instance);
     return .{ .runtime = instance, .word = word, .root_scalar = root_scalar };
 }
 
@@ -1450,10 +1456,10 @@ fn begin_term_export(handle: i64) error{ Invalid, Busy }!ExportLease {
     const word = slot.word;
     const root_scalar = slot.root_scalar;
     instance.lifecycle_phase = .exporting;
-    lifecycleTestReach(.term_export_committed, instance);
     term_lock.unlock();
     instance.lifecycle_lock.unlock();
     runtime_lock.unlock();
+    lifecycleTestReach(.term_export_committed, instance);
     return .{ .runtime = instance, .word = word, .root_scalar = root_scalar };
 }
 
@@ -4473,6 +4479,366 @@ test "lifecycle race gate captures a deterministic linearization snapshot" {
     joined = true;
     try std.testing.expectEqual(@as(i64, 0), probe.leave_result.load(.acquire));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+const ScalarResultFixture = struct {
+    runtime: i64,
+    result: i64,
+    word: i64,
+};
+
+fn createScalarResultFixture() ScalarResultFixture {
+    const runtime_handle = ex_term_runtime_create();
+    std.debug.assert(runtime_handle > 0);
+    std.debug.assert(ex_term_runtime_enter(runtime_handle) == 0);
+    std.debug.assert(ex_term_process_table_reset(default_process_cap) == 1);
+    const word: i64 = 56;
+    const result = ex_term_result_create(runtime_handle, word);
+    std.debug.assert(result > 0);
+    std.debug.assert(ex_term_runtime_leave() == 0);
+    return .{ .runtime = runtime_handle, .result = result, .word = word };
+}
+
+const PortableTermFixture = struct {
+    runtime: i64,
+    term: i64,
+    exported: i64,
+};
+
+fn createPortableTermFixture() PortableTermFixture {
+    const source = createScalarResultFixture();
+    const exported = ex_term_export(source.result, source.word);
+    std.debug.assert(exported > 0);
+    std.debug.assert(ex_term_result_destroy(source.result) == 0);
+
+    const runtime_handle = ex_term_runtime_create();
+    std.debug.assert(ex_term_runtime_enter(runtime_handle) == 0);
+    const term = ex_term_import(runtime_handle, exported);
+    std.debug.assert(term > 0);
+    std.debug.assert(ex_term_runtime_leave() == 0);
+    return .{ .runtime = runtime_handle, .term = term, .exported = exported };
+}
+
+const LifecycleCall = enum {
+    result_export,
+    term_export,
+    result_destroy,
+    term_destroy,
+    runtime_destroy,
+};
+
+const LifecycleCallProbe = struct {
+    call: LifecycleCall,
+    first: i64,
+    second: i64 = 0,
+    started: std.atomic.Value(bool) = .init(false),
+    done: std.atomic.Value(bool) = .init(false),
+    result: std.atomic.Value(i64) = .init(99),
+
+    fn run(self: *@This()) void {
+        self.started.store(true, .release);
+        const result = switch (self.call) {
+            .result_export => ex_term_export(self.first, self.second),
+            .term_export => ex_term_handle_export(self.first),
+            .result_destroy => ex_term_result_destroy(self.first),
+            .term_destroy => ex_term_handle_destroy(self.first),
+            .runtime_destroy => ex_term_runtime_destroy(self.first),
+        };
+        self.result.store(result, .release);
+        self.done.store(true, .release);
+    }
+};
+
+fn waitLifecycleFlag(flag: *std.atomic.Value(bool), case_name: []const u8, seed: u64) bool {
+    for (0..10_000_000) |_| {
+        if (flag.load(.acquire)) return true;
+        std.Thread.yield() catch {};
+    }
+    std.debug.print("lifecycle race timeout: case={s} seed={d} phase=worker-start\n", .{ case_name, seed });
+    return false;
+}
+
+test "result export lease excludes enter and destroy until the copy completes" {
+    const fixture = createScalarResultFixture();
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.result_export_committed, "result-export-exclusive", 0x60_02);
+    defer gate.disarm();
+
+    var export_probe = LifecycleCallProbe{
+        .call = .result_export,
+        .first = fixture.result,
+        .second = fixture.word,
+    };
+    const thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&export_probe});
+    var joined = false;
+    defer {
+        gate.release();
+        if (!joined) thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try std.testing.expectEqual(LifecyclePhase.exporting, gate.snapshot.phase);
+    try std.testing.expectEqual(@as(u32, 1), gate.snapshot.results);
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_enter(fixture.runtime));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(fixture.runtime));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_result_destroy(fixture.result));
+
+    gate.release();
+    thread.join();
+    joined = true;
+    const exported = export_probe.result.load(.acquire);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(fixture.result));
+}
+
+test "term export lease survives handle destroy and excludes runtime destroy" {
+    const fixture = createPortableTermFixture();
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.term_export_committed, "term-export-handle-destroy", 0x60_03);
+    defer gate.disarm();
+
+    var export_probe = LifecycleCallProbe{ .call = .term_export, .first = fixture.term };
+    const thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&export_probe});
+    var joined = false;
+    defer {
+        gate.release();
+        if (!joined) thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try std.testing.expectEqual(LifecyclePhase.exporting, gate.snapshot.phase);
+    try std.testing.expectEqual(@as(u32, 1), gate.snapshot.terms);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(fixture.term));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(fixture.runtime));
+
+    gate.release();
+    thread.join();
+    joined = true;
+    const copy = export_probe.result.load(.acquire);
+    try std.testing.expect(copy > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(fixture.runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(copy));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(fixture.exported));
+}
+
+const OwnerResultLeaveProbe = struct {
+    runtime: std.atomic.Value(i64) = .init(0),
+    result: std.atomic.Value(i64) = .init(0),
+    leave_result: std.atomic.Value(i64) = .init(99),
+
+    fn run(self: *@This()) void {
+        const runtime_handle = ex_term_runtime_create();
+        if (runtime_handle <= 0 or ex_term_runtime_enter(runtime_handle) != 0) return;
+        if (ex_term_process_table_reset(default_process_cap) != 1) return;
+        const result = ex_term_result_create(runtime_handle, 64);
+        self.runtime.store(runtime_handle, .release);
+        self.result.store(result, .release);
+        self.leave_result.store(ex_term_runtime_leave(), .release);
+    }
+};
+
+test "leave to idle linearizes before result export begins" {
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.runtime_leave_committed, "leave-before-export", 0x60_04);
+    defer gate.disarm();
+
+    var owner = OwnerResultLeaveProbe{};
+    const thread = try std.Thread.spawn(.{}, OwnerResultLeaveProbe.run, .{&owner});
+    var joined = false;
+    defer {
+        gate.release();
+        if (!joined) thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try std.testing.expectEqual(LifecyclePhase.idle, gate.snapshot.phase);
+    try std.testing.expectEqual(@as(u32, 1), gate.snapshot.results);
+    const result = owner.result.load(.acquire);
+    const exported = ex_term_export(result, 64);
+    try std.testing.expect(exported > 0);
+
+    gate.release();
+    thread.join();
+    joined = true;
+    try std.testing.expectEqual(@as(i64, 0), owner.leave_result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
+}
+
+test "result destroy revalidates after a concurrent export" {
+    const fixture = createScalarResultFixture();
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.result_destroy_snapshotted, "result-destroy-revalidate", 0x60_05);
+    defer gate.disarm();
+
+    var destroy_probe = LifecycleCallProbe{ .call = .result_destroy, .first = fixture.result };
+    const thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&destroy_probe});
+    var joined = false;
+    defer {
+        gate.release();
+        if (!joined) thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    const exported = ex_term_export(fixture.result, fixture.word);
+    try std.testing.expect(exported > 0);
+    gate.release();
+    thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(i64, 0), destroy_probe.result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_destroy(fixture.result));
+    try std.testing.expect(ex_term_exported_length(exported) > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+test "term destroy revalidates after a concurrent export" {
+    const fixture = createPortableTermFixture();
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.term_destroy_snapshotted, "term-destroy-revalidate", 0x60_06);
+    defer gate.disarm();
+
+    var destroy_probe = LifecycleCallProbe{ .call = .term_destroy, .first = fixture.term };
+    const thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&destroy_probe});
+    var joined = false;
+    defer {
+        gate.release();
+        if (!joined) thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    const copy = ex_term_handle_export(fixture.term);
+    try std.testing.expect(copy > 0);
+    gate.release();
+    thread.join();
+    joined = true;
+
+    try std.testing.expectEqual(@as(i64, 0), destroy_probe.result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_handle_destroy(fixture.term));
+    try std.testing.expect(ex_term_exported_length(copy) > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(fixture.runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(copy));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(fixture.exported));
+}
+
+const ImportLeaveProbe = struct {
+    runtime: i64,
+    exported: i64,
+    term: std.atomic.Value(i64) = .init(0),
+    leave_result: std.atomic.Value(i64) = .init(99),
+
+    fn run(self: *@This()) void {
+        if (ex_term_runtime_enter(self.runtime) != 0) return;
+        const term = ex_term_import(self.runtime, self.exported);
+        self.term.store(term, .release);
+        self.leave_result.store(ex_term_runtime_leave(), .release);
+    }
+};
+
+test "import publishes its term pin before leave and destroy can proceed" {
+    const source = createScalarResultFixture();
+    const exported = ex_term_export(source.result, source.word);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(source.result));
+    const target_runtime = ex_term_runtime_create();
+
+    const gate = &LifecycleTestState.gate;
+    gate.arm(.import_validated, "import-pin-before-destroy", 0x60_07);
+    defer gate.disarm();
+
+    var import_probe = ImportLeaveProbe{ .runtime = target_runtime, .exported = exported };
+    const import_thread = try std.Thread.spawn(.{}, ImportLeaveProbe.run, .{&import_probe});
+    var import_joined = false;
+    defer {
+        gate.release();
+        if (!import_joined) import_thread.join();
+    }
+
+    try std.testing.expect(gate.waitArrived());
+    try std.testing.expectEqual(LifecyclePhase.executing, gate.snapshot.phase);
+    try std.testing.expectEqual(@as(u32, 1), gate.snapshot.participants);
+
+    var destroy_probe = LifecycleCallProbe{ .call = .runtime_destroy, .first = target_runtime };
+    const destroy_thread = try std.Thread.spawn(.{}, LifecycleCallProbe.run, .{&destroy_probe});
+    var destroy_joined = false;
+    defer if (!destroy_joined) destroy_thread.join();
+    try std.testing.expect(waitLifecycleFlag(&destroy_probe.started, "import-pin-before-destroy", 0x60_07));
+
+    gate.release();
+    import_thread.join();
+    import_joined = true;
+    destroy_thread.join();
+    destroy_joined = true;
+
+    const term = import_probe.term.load(.acquire);
+    try std.testing.expect(term > 0);
+    try std.testing.expectEqual(@as(i64, 0), import_probe.leave_result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, -2), destroy_probe.result.load(.acquire));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_enter(target_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(term));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+const ExportedStartGate = struct {
+    ready: std.atomic.Value(u32) = .init(0),
+    released: std.atomic.Value(bool) = .init(false),
+};
+
+const ExportedCall = enum { clone, destroy, length, first_byte };
+
+const ExportedCallProbe = struct {
+    gate: *ExportedStartGate,
+    call: ExportedCall,
+    handle: i64,
+    result: i64 = -99,
+
+    fn run(self: *@This()) void {
+        _ = self.gate.ready.fetchAdd(1, .acq_rel);
+        while (!self.gate.released.load(.acquire)) std.Thread.yield() catch {};
+        self.result = switch (self.call) {
+            .clone => ex_term_exported_clone(self.handle),
+            .destroy => ex_term_exported_destroy(self.handle),
+            .length => ex_term_exported_length(self.handle),
+            .first_byte => ex_term_exported_get(self.handle, 0),
+        };
+    }
+};
+
+test "exported clone inspection and destroy serialize without stale reads" {
+    const source = createScalarResultFixture();
+    const exported = ex_term_export(source.result, source.word);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(source.result));
+    try std.testing.expectEqual(exported, ex_term_exported_clone(exported));
+    try std.testing.expectEqual(exported, ex_term_exported_clone(exported));
+    try std.testing.expectEqual(exported, ex_term_exported_clone(exported));
+
+    var start = ExportedStartGate{};
+    var probes = [_]ExportedCallProbe{
+        .{ .gate = &start, .call = .clone, .handle = exported },
+        .{ .gate = &start, .call = .destroy, .handle = exported },
+        .{ .gate = &start, .call = .length, .handle = exported },
+        .{ .gate = &start, .call = .first_byte, .handle = exported },
+    };
+    var threads: [probes.len]std.Thread = undefined;
+    for (&threads, 0..) |*thread, index| {
+        thread.* = try std.Thread.spawn(.{}, ExportedCallProbe.run, .{&probes[index]});
+    }
+    while (start.ready.load(.acquire) != probes.len) std.Thread.yield() catch {};
+    start.released.store(true, .release);
+    for (threads) |thread| thread.join();
+
+    try std.testing.expectEqual(exported, probes[0].result);
+    try std.testing.expectEqual(@as(i64, 0), probes[1].result);
+    try std.testing.expect(probes[2].result > exported_magic.len);
+    try std.testing.expectEqual(@as(i64, 'B'), probes[3].result);
+    for (0..4) |_| try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_exported_length(exported));
 }
 
 test "runtime lifecycle admits one owner and tracks joined workers" {
