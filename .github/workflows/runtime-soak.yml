@@ -1,0 +1,48 @@
+name: Runtime Soak
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: Workload scale multiplier
+        required: true
+        default: "4"
+      seeds:
+        description: Comma-separated replay seeds
+        required: true
+        default: "0x6101,0x6102,0x6103,0x6104,0x6105,0x6106,0x6107,0x6108"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run replayable runtime soak matrix
+        run: |
+          bash scripts/runtime-soak.sh \
+            runtime-soak-report \
+            "${{ inputs.scale || '4' }}" \
+            "${{ inputs.seeds || '0x6101,0x6102,0x6103,0x6104,0x6105,0x6106,0x6107,0x6108' }}"
+
+      - name: Upload runtime soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-soak-report-${{ github.run_id }}
+          path: runtime-soak-report
+          if-no-files-found: error

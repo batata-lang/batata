@@ -46,6 +46,33 @@ const CaseContext = struct {
     process_cap: i64,
     scale: usize,
 
+    fn progress(self: CaseContext, handle: i64, phase: []const u8) void {
+        const snapshot = runtime.runtimeSoakSnapshot(handle) orelse return;
+        std.debug.print(
+            "soak progress: workload={s} seed={d} workers={d} process_cap={d} scale={d} step={s} " ++
+                "processes={d}/{d} runnable={d} waiting={d} owned={d} mailbox={d} " ++
+                "participants={d} arena_chunks={d} arena_high_water={d} oom={}\n",
+            .{
+                self.name,
+                self.seed,
+                self.workers,
+                self.process_cap,
+                self.scale,
+                phase,
+                snapshot.process_count,
+                snapshot.process_capacity,
+                snapshot.runnable,
+                snapshot.waiting,
+                snapshot.owned,
+                snapshot.mailbox_messages,
+                snapshot.execution_participants,
+                snapshot.arena_chunks,
+                snapshot.arena_high_water,
+                snapshot.oom,
+            },
+        );
+    }
+
     fn report(self: CaseContext, handle: i64) void {
         const snapshot = runtime.runtimeSoakSnapshot(handle) orelse {
             std.debug.print(
@@ -189,6 +216,7 @@ fn runFanIn(config: SoakConfig, workers: i64) !void {
         .synchronize = workers > 1,
     };
     fan_in_state = &state;
+    context.progress(soak.handle, "worker-run");
     _ = runtime.ex_term_worker_run(workers, &fanInDispatch);
 
     try std.testing.expect(!state.timed_out.load(.acquire));
@@ -276,6 +304,7 @@ fn runRing(config: SoakConfig, workers: i64) !void {
     }
     ring_state = &state;
     try std.testing.expectEqual(tagged(state.token), runtime.ex_term_send(state.pids[0], tagged(state.token)));
+    context.progress(soak.handle, "worker-run");
     _ = runtime.ex_term_worker_run(workers, &ringDispatch);
 
     try std.testing.expect(!state.timed_out.load(.acquire));
@@ -507,6 +536,7 @@ fn runCompositeTerms(config: SoakConfig, workers: i64) !void {
         .allocations_per_actor = allocations_per_actor,
     };
     composite_term_state = &state;
+    context.progress(soak.handle, "worker-run");
     _ = runtime.ex_term_worker_run(workers, &compositeTermDispatch);
     try std.testing.expectEqual(@as(u32, 0), state.failures.load(.acquire));
     try std.testing.expectEqual(@as(i64, actor_count), runtime.ex_term_mailbox_len());
@@ -566,6 +596,64 @@ fn runControlledOom(config: SoakConfig) !void {
     try soak.finish();
 }
 
+fn runPortableActorBoundary(config: SoakConfig) !void {
+    const source = try SoakRuntime.init(2);
+    const source_context = CaseContext{
+        .name = "actor-export-import",
+        .seed = config.seed,
+        .workers = 1,
+        .process_cap = 2,
+        .scale = config.scale,
+    };
+    errdefer source_context.report(source.handle);
+
+    const parent = runtime.ex_term_self();
+    const sender = runtime.ex_term_spawn(1);
+    try std.testing.expectEqual(sender, runtime.ex_term_schedule_next());
+    const composite = runtime.ex_term_list_cons(tagged(41), runtime.ex_term_list_cons(tagged(42), nil_word));
+    try std.testing.expectEqual(composite, runtime.ex_term_send(parent, composite));
+    _ = runtime.ex_term_process_done(0);
+    try std.testing.expectEqual(parent, runtime.ex_term_schedule_next());
+    const retained = runtime.ex_term_receive();
+    try std.testing.expectEqual(tagged(41), runtime.ex_term_list_head(retained));
+    _ = runtime.ex_term_process_done(0);
+
+    const result = runtime.ex_term_result_create(source.handle, retained);
+    try std.testing.expect(result > 0);
+    const pinned = runtime.runtimeSoakSnapshot(source.handle).?;
+    try std.testing.expectEqual(@as(u32, 1), pinned.outstanding_results);
+    try std.testing.expectEqual(@as(u32, 0), pinned.outstanding_terms);
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_runtime_leave());
+
+    const exported = runtime.ex_term_export(result, retained);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_result_destroy(result));
+    try std.testing.expect(runtime.runtimeSoakSnapshot(source.handle) == null);
+
+    const target = try SoakRuntime.init(1);
+    const target_context = CaseContext{
+        .name = "actor-export-import-target",
+        .seed = config.seed,
+        .workers = 1,
+        .process_cap = 1,
+        .scale = config.scale,
+    };
+    errdefer target_context.report(target.handle);
+    const term = runtime.ex_term_import(target.handle, exported);
+    try std.testing.expect(term > 0);
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_runtime_leave());
+    const target_pinned = runtime.runtimeSoakSnapshot(target.handle).?;
+    try std.testing.expectEqual(@as(u32, 0), target_pinned.outstanding_results);
+    try std.testing.expectEqual(@as(u32, 1), target_pinned.outstanding_terms);
+
+    const copy = runtime.ex_term_handle_export(term);
+    try std.testing.expect(copy > 0);
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_handle_destroy(term));
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_runtime_destroy(target.handle));
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_exported_destroy(copy));
+    try std.testing.expectEqual(@as(i64, 0), runtime.ex_term_exported_destroy(exported));
+}
+
 test "soak fan-in preserves counts uniqueness and per-sender ordering" {
     const config = SoakConfig.load();
     for ([_]i64{ 1, 2, 4, 8, 64 }) |workers| try runFanIn(config, workers);
@@ -596,4 +684,8 @@ test "soak composite terms survive sender exit and multi-segment arena growth" {
 
 test "soak controlled OOM leaves lifecycle ownership and pins consistent" {
     try runControlledOom(SoakConfig.load());
+}
+
+test "soak actor result export and import release every runtime pin" {
+    try runPortableActorBoundary(SoakConfig.load());
 }

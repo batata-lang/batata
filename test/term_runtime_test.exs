@@ -35,27 +35,4 @@ defmodule Batata.TermRuntimeTest do
     assert status == 0
     refute output =~ "FAIL"
   end
-
-  test "fixed actor soak matrix passes", %{} do
-    zig = System.find_executable("zig") || raise "zig not found on PATH"
-    native = Batata.TermRuntime.native_dir()
-
-    {output, status} =
-      System.cmd(
-        zig,
-        [
-          "test",
-          "--dep",
-          "runtime",
-          "-Mroot=#{Path.join(native, "runtime_soak_test.zig")}",
-          "-Mruntime=#{Path.join(native, "term_runtime.zig")}",
-          "-lc"
-        ],
-        stderr_to_stdout: true,
-        env: [{"BATATA_SOAK_SEED", "0x6101"}, {"BATATA_SOAK_SCALE", "1"}]
-      )
-
-    assert status == 0, output
-    refute output =~ "soak failure"
-  end
 end
