@@ -788,6 +788,25 @@ defmodule Batata.ExecuteTest do
   end
 
   @tag :multi_clause
+  test "executes Jason-shaped range and set guards on binary segments", %{ctx: ctx} do
+    assert 123 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def classify(<<byte::8, _rest::binary>>) when byte in ?0..?9, do: byte
+                 def classify(<<byte::8, _rest::binary>>) when byte in ~c"eE", do: byte + 1
+                 def classify(_), do: 0
+
+                 def main() do
+                   classify(<<53>>) + classify(<<69>>)
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  @tag :multi_clause
   test "executes multi-clause function dispatch", %{ctx: ctx} do
     assert 30 ==
              Batata.execute(
