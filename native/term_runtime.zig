@@ -422,6 +422,103 @@ const Runtime = struct {
     }
 };
 
+/// Test-only runtime census used by the actor soak runner. The function that
+/// produces this value is compile-time disabled in non-test builds, keeping
+/// the stress oracle out of the production ABI and Release artifacts.
+pub const RuntimeSoakSnapshot = struct {
+    lifecycle_phase: u8,
+    execution_owner: usize,
+    execution_participants: u32,
+    execution_initialized: bool,
+    execution_epoch: u64,
+    outstanding_results: u32,
+    outstanding_terms: u32,
+    process_count: usize,
+    process_capacity: usize,
+    free_count: usize,
+    runnable: usize,
+    waiting: usize,
+    done: usize,
+    exited: usize,
+    owned: usize,
+    mailbox_messages: usize,
+    configured_workers: u32,
+    max_active_actors: u32,
+    migrations: u64,
+    arena_chunks: usize,
+    arena_bytes: usize,
+    arena_high_water: usize,
+    oom: bool,
+};
+
+pub fn runtimeSoakSnapshot(handle: i64) ?RuntimeSoakSnapshot {
+    if (comptime !builtin.is_test) return null;
+
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return null;
+    const instance = slot.runtime.?;
+
+    instance.lifecycle_lock.lock();
+    var snapshot = RuntimeSoakSnapshot{
+        .lifecycle_phase = @intFromEnum(instance.lifecycle_phase),
+        .execution_owner = instance.execution_owner,
+        .execution_participants = instance.execution_participants,
+        .execution_initialized = instance.execution_initialized,
+        .execution_epoch = instance.execution_epoch,
+        .outstanding_results = instance.outstanding_results.load(.acquire),
+        .outstanding_terms = instance.outstanding_terms.load(.acquire),
+        .process_count = 0,
+        .process_capacity = 0,
+        .free_count = 0,
+        .runnable = 0,
+        .waiting = 0,
+        .done = 0,
+        .exited = 0,
+        .owned = 0,
+        .mailbox_messages = 0,
+        .configured_workers = instance.configured_workers.load(.acquire),
+        .max_active_actors = instance.max_active_actors.load(.acquire),
+        .migrations = instance.migrations.load(.acquire),
+        .arena_chunks = 0,
+        .arena_bytes = 0,
+        .arena_high_water = 0,
+        .oom = instance.allocation_failed.load(.acquire),
+    };
+    instance.lifecycle_lock.unlock();
+
+    instance.scheduler_lock.lock();
+    snapshot.process_count = instance.process_count;
+    snapshot.process_capacity = instance.processes.len;
+    snapshot.free_count = instance.free_count;
+    for (instance.processes[0..instance.process_count]) |proc| {
+        proc.state_lock.lock();
+        switch (proc.status) {
+            .runnable => snapshot.runnable += 1,
+            .waiting => snapshot.waiting += 1,
+            .done => snapshot.done += 1,
+            .exited => snapshot.exited += 1,
+        }
+        proc.state_lock.unlock();
+        if (proc.owner.load(.acquire) != 0) snapshot.owned += 1;
+        snapshot.mailbox_messages += proc.mailbox.count();
+    }
+    instance.scheduler_lock.unlock();
+
+    instance.heap_lock.lock();
+    snapshot.arena_chunks = instance.arena_chunk_count;
+    snapshot.arena_bytes = instance.arena_capacity_words * @sizeOf(i64);
+    snapshot.arena_high_water = instance.arena_used_words.load(.acquire) * @sizeOf(i64);
+    instance.heap_lock.unlock();
+    return snapshot;
+}
+
+pub fn runtimeSoakForceOom(handle: i64) bool {
+    if (comptime !builtin.is_test) return false;
+    if (active_runtime_handle != handle or active_runtime == null) return false;
+    return alloc_words(arena_hard_limit_words + 1) == null;
+}
+
 // Deterministic lifecycle interleavings are controlled by one test-only gate.
 // `builtin.is_test` is a compile-time constant, so calls and storage disappear
 // entirely from shared/static Release builds.
