@@ -123,13 +123,13 @@ defmodule Batata.Probe.Jason.Inventory do
     }
   end
 
-  # A guarded definition currently matches Frontend's broad `{name, _, args}`
-  # head and is normalized as a function named `when`. Keep the inventory
-  # faithful to the accepted snapshot while calling out that false acceptance
-  # as a blocker instead of reporting misleading compiler coverage.
+  # The compiler accepts guarded definitions into its expanded-module
+  # snapshot, but only a deliberately small guard subset lowers today. Keep
+  # raw Jason guards in the inventory until they pass the executable probe;
+  # accepting the container shape alone is not semantic coverage.
   defp accepted_definitions(snapshot) do
     snapshot.definitions
-    |> Enum.reject(&(&1.name == :when))
+    |> Enum.reject(fn definition -> Enum.any?(definition.clauses, & &1.guard_ast) end)
     |> Enum.map(&definition/1)
   end
 

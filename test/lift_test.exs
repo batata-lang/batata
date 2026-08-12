@@ -495,6 +495,50 @@ defmodule Batata.LiftTest do
     assert first_index(rendered, "ex.binary_slice") < first_index(rendered, ~s{"ex.case"})
   end
 
+  test "lifts integer range membership guards on binary segments", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def digit(<<byte::8, rest::binary>>) when byte in ?0..?9 do
+            byte
+          end
+
+          def digit(_), do: 0
+          def main(), do: digit(<<53>>)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.is_integer" in names
+    assert "ex.to_int" in names
+    assert Enum.count(names, &(&1 == "ex.cmp")) >= 2
+    assert "arith.andi" in names
+  end
+
+  test "lifts integer set membership guards on binary segments", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def exponent(<<byte::8, rest::binary>>) when byte in ~c"eE" do
+            byte
+          end
+
+          def exponent(_), do: 0
+          def main(), do: exponent(<<101>>)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "arith.ori" in names
+    assert "arith.andi" in names
+  end
+
   test "extracts anonymous function literals into synthetic ex.funcs", %{ctx: ctx} do
     module =
       lift!(

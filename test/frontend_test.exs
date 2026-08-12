@@ -45,4 +45,20 @@ defmodule Batata.FrontendTest do
 
     assert Enum.map(snapshot.unsupported, & &1.reason) == [:require]
   end
+
+  test "preserves guards on expanded function definitions" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule Scanner do
+        def digit(<<byte, rest::binary>>) when byte in ?0..?9, do: rest
+      end
+      """)
+
+    assert [
+             %Frontend.Definition{
+               name: :digit,
+               clauses: [%Frontend.Clause{guard_ast: {:in, _, _}}]
+             }
+           ] = snapshot.definitions
+  end
 end

@@ -923,7 +923,12 @@ defmodule Batata.Lift do
       raise Error, "multiple clauses are unsupported in the scalar slice: #{name}/#{arity}"
     end
 
-    [%Frontend.Clause{patterns: patterns, body_ast: body_ast}] = clauses
+    [%Frontend.Clause{patterns: patterns, guard_ast: guard_ast, body_ast: body_ast}] = clauses
+
+    if guard_ast do
+      raise Error,
+            "a guarded function requires a following fallback clause: #{name}/#{arity}"
+    end
 
     region = MLIR.CAPI.mlirRegionCreate()
     arg_types = List.duplicate(integer_type(ctx), length(patterns))
@@ -1065,12 +1070,21 @@ defmodule Batata.Lift do
     [arg] = block |> Walker.arguments() |> Enum.to_list()
 
     clause_asts =
-      Enum.map(clauses, fn %Frontend.Clause{patterns: [pattern], body_ast: body_ast} ->
-        {:->, [], [[pattern], body_ast]}
+      Enum.map(clauses, fn %Frontend.Clause{
+                             patterns: [pattern],
+                             guard_ast: guard_ast,
+                             body_ast: body_ast
+                           } ->
+        args = if guard_ast, do: [{:when, [], [pattern, guard_ast]}], else: [pattern]
+        {:->, [], [args, body_ast]}
       end)
 
     return_value =
-      lift_case(clause_asts, arg, %{}, ctx, block, relax_types: true, box_scrutinee: false)
+      lift_case(clause_asts, arg, %{}, ctx, block,
+        relax_types: true,
+        box_scrutinee: false,
+        untag_int_binds: true
+      )
 
     insert_return(return_value, ctx, block, %{})
 
@@ -1102,12 +1116,21 @@ defmodule Batata.Lift do
     tail_env = Map.new(Enum.zip(tail_names, tail_args))
 
     clause_asts =
-      Enum.map(clauses, fn %Frontend.Clause{patterns: [first | _], body_ast: body_ast} ->
-        {:->, [], [[first], body_ast]}
+      Enum.map(clauses, fn %Frontend.Clause{
+                             patterns: [first | _],
+                             guard_ast: guard_ast,
+                             body_ast: body_ast
+                           } ->
+        args = if guard_ast, do: [{:when, [], [first, guard_ast]}], else: [first]
+        {:->, [], [args, body_ast]}
       end)
 
     return_value =
-      lift_case(clause_asts, arg1, tail_env, ctx, block, relax_types: true, box_scrutinee: false)
+      lift_case(clause_asts, arg1, tail_env, ctx, block,
+        relax_types: true,
+        box_scrutinee: false,
+        untag_int_binds: true
+      )
 
     insert_return(return_value, ctx, block, tail_env)
 
@@ -1171,7 +1194,7 @@ defmodule Batata.Lift do
   end
 
   defp accumulator_scanner_clause(
-         %Frontend.Clause{patterns: [p1, acc_pat], body_ast: body_ast},
+         %Frontend.Clause{patterns: [p1, acc_pat], guard_ast: nil, body_ast: body_ast},
          name
        ) do
     case binary_segments(p1) do
@@ -1184,6 +1207,10 @@ defmodule Batata.Lift do
       :skip ->
         %{kind: :terminating, body: body_ast, acc: acc_pat}
     end
+  end
+
+  defp accumulator_scanner_clause(%Frontend.Clause{} = clause, _name) do
+    %{kind: :terminating, body: clause.body_ast, acc: List.last(clause.patterns)}
   end
 
   defp reduce_accumulator({name, _, [var_ast, acc_expr]}, name, rest, acc_pat)
@@ -1249,7 +1276,10 @@ defmodule Batata.Lift do
     end
   end
 
-  defp scanner_clause(%Frontend.Clause{patterns: [pattern], body_ast: body_ast}, name) do
+  defp scanner_clause(
+         %Frontend.Clause{patterns: [pattern], guard_ast: nil, body_ast: body_ast},
+         name
+       ) do
     case binary_segments(pattern) do
       {:ok, _width, nil} ->
         %{kind: :terminating, body: body_ast}
@@ -1263,6 +1293,10 @@ defmodule Batata.Lift do
       :skip ->
         %{kind: :terminating, body: body_ast}
     end
+  end
+
+  defp scanner_clause(%Frontend.Clause{body_ast: body_ast}, _name) do
+    %{kind: :terminating, body: body_ast}
   end
 
   defp binary_segments({:<<>>, _, segments}) do
@@ -4492,19 +4526,40 @@ defmodule Batata.Lift do
   end
 
   defp untag_clause_int_binds({%{guard: guard}, binds}, ctx, block) do
-    case integer_guard_var(guard) do
-      nil -> binds
-      var -> Enum.map(binds, &untag_int_bind(&1, var, ctx, block))
+    integer_vars = integer_guard_vars(guard)
+    Enum.map(binds, &untag_int_bind(&1, integer_vars, ctx, block))
+  end
+
+  defp untag_int_bind({var, value}, integer_vars, ctx, block) do
+    if MapSet.member?(integer_vars, var) do
+      {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
+    else
+      {var, value}
     end
   end
 
-  defp untag_int_bind({var, value}, var, ctx, block),
-    do: {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
-
-  defp untag_int_bind(bind, _var, _ctx, _block), do: bind
-
+  # Receive lowering currently narrows one exact `is_integer/1` guard. Keep
+  # that scalar helper separate from the richer term-clause guard inventory.
   defp integer_guard_var({:is_integer, _, [{var, _, nil}]}) when is_atom(var), do: var
   defp integer_guard_var(_guard), do: nil
+
+  defp integer_guard_vars(nil), do: MapSet.new()
+
+  defp integer_guard_vars(guard) do
+    {_guard, vars} =
+      Macro.prewalk(guard, MapSet.new(), fn
+        {:is_integer, _, [{var, _, _}]} = ast, vars when is_atom(var) ->
+          {ast, MapSet.put(vars, var)}
+
+        {:in, _, [{var, _, _}, values]} = ast, vars when is_atom(var) ->
+          if integer_members(values), do: {ast, MapSet.put(vars, var)}, else: {ast, vars}
+
+        ast, vars ->
+          {ast, vars}
+      end)
+
+    vars
+  end
 
   # The match condition and the bound values of one term pattern are computed
   # eagerly before `ex.case`: predicates and reads are pure and safe on the
@@ -4826,8 +4881,47 @@ defmodule Batata.Lift do
     end
 
     guard_env = Map.merge(env, Map.new(binds))
-    {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
+    lift_term_guard_expr(guard_ast, guard_env, ctx, block)
+  end
+
+  defp lift_term_guard_expr({:in, _, [{name, _, _}, members]}, env, ctx, block)
+       when is_atom(name) do
+    values = integer_members(members)
+    value = Map.fetch!(env, name)
+    word = box_if_scalar(value, ctx, block)
+    integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
+    scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
+
+    membership =
+      case values do
+        {:range, first, last} ->
+          lower_integer_range_membership(scalar, first, last, ctx, block)
+
+        {:set, integers} ->
+          integers
+          |> Enum.map(&cmp(scalar, &1, "eq", ctx, block))
+          |> combine_any(ctx, block)
+      end
+
+    combine([integer, membership], ctx, block)
+  end
+
+  defp lift_term_guard_expr({op, _, [left, right]}, env, ctx, block)
+       when op in [:and, :andalso, :or, :orelse] do
+    left = lift_term_guard_expr(left, env, ctx, block)
+    right = lift_term_guard_expr(right, env, ctx, block)
+    mlir_op = if op in [:and, :andalso], do: "arith.andi", else: "arith.ori"
+    create_op(mlir_op, [left, right], [MLIR.Type.i64()], ctx, block)
+  end
+
+  defp lift_term_guard_expr(guard_ast, env, ctx, block) do
+    {value, _env} = lift_expr(guard_ast, ctx, block, env)
     value
+  end
+
+  defp lower_integer_range_membership(value, first, last, ctx, block) do
+    {low, high} = if first <= last, do: {first, last}, else: {last, first}
+    combine([cmp(value, low, "sge", ctx, block), cmp(value, high, "sle", ctx, block)], ctx, block)
   end
 
   defp supported_term_guard?({predicate, _, [var_ast]})
@@ -4839,6 +4933,13 @@ defmodule Batata.Lift do
     guard_operand?(left) and guard_operand?(right)
   end
 
+  defp supported_term_guard?({:in, _, [{name, _, _}, members]}) when is_atom(name),
+    do: integer_members(members) != nil
+
+  defp supported_term_guard?({op, _, [left, right]})
+       when op in [:and, :andalso, :or, :orelse],
+       do: supported_term_guard?(left) and supported_term_guard?(right)
+
   defp supported_term_guard?(_guard_ast), do: false
 
   defp guard_operand?(value) when is_integer(value), do: true
@@ -4849,6 +4950,27 @@ defmodule Batata.Lift do
   defp guard_operand?(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3, do: true
 
   defp guard_operand?(_), do: false
+
+  defp integer_members({:.., _, [first, last]}) when is_integer(first) and is_integer(last),
+    do: {:range, first, last}
+
+  defp integer_members(values) when is_list(values) do
+    if Enum.all?(values, &is_integer/1), do: {:set, Enum.uniq(values)}
+  end
+
+  defp integer_members({:sigil_c, _, [{:<<>>, _, [value]}, []]}) when is_binary(value),
+    do: {:set, value |> String.to_charlist() |> Enum.uniq()}
+
+  defp integer_members(_), do: nil
+
+  defp combine_any([], ctx, block), do: lit(0, ctx, block)
+  defp combine_any([single], _ctx, _block), do: single
+
+  defp combine_any(many, ctx, block) do
+    Enum.reduce(many, fn cond, acc ->
+      create_op("arith.ori", [acc, cond], [MLIR.Type.i64()], ctx, block)
+    end)
+  end
 
   defp term_operand?(value) do
     value
