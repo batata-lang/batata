@@ -4,7 +4,7 @@
     {"id": "literal.boolean", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "literal.null", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "number.integer", "status": "executable", "gate": "decoder_subset_test"},
-    {"id": "number.float", "status": "blocked", "owner": "runtime", "reason": "ex.dyn has no float representation"},
+    {"id": "number.float", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "string.utf8", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "string.escape", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "container.recursive", "status": "executable", "gate": "decoder_subset_test"},
