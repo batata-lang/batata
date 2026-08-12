@@ -99,6 +99,17 @@ jobs:
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
+      - name: Run fixed runtime soak gate
+        run: bash scripts/runtime-soak.sh _build/runtime_soak 1 0x6101
+
+      - name: Upload runtime soak report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-soak-report
+          path: _build/runtime_soak
+          if-no-files-found: error
+
       - name: Checkout pinned Jason probe corpus
         uses: actions/checkout@v4
         with:

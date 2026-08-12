@@ -1,5 +1,8 @@
 defmodule Batata.RuntimeSoakTest do
-  use ExUnit.Case, async: true
+  # MLIR compilation is CPU-heavy and process-global LLVM resources are not a
+  # useful thing to oversubscribe with the rest of the async suite. The test
+  # itself still creates two genuinely concurrent, isolated JIT sessions.
+  use ExUnit.Case, async: false
 
   alias Beaver.MLIR
 
