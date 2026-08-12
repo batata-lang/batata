@@ -29,6 +29,7 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     {"recursive containers", ~s([{"ok":[true,null]}]), [%{"ok" => [true, nil]}]},
     {"rejects unterminated string", ~s("abc), 99},
     {"rejects trailing content", "true!", {:error, :invalid_json}},
+    {"rejects trailing integer content", "123x", 99},
     {"rejects unknown token", "wat", {:error, :invalid_json}}
   ]
 

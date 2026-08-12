@@ -4,12 +4,19 @@ defmodule Batata.Test.JasonDecoderSubset do
   def source(input) do
     """
     defmodule JasonDecoderSubset do
-      def number(<<>>, count), do: count
-      def number(<<byte::8, rest::binary>>, count) when byte in ?0..?9,
-        do: number(rest, count + 1)
-      def number(<<byte::8, rest::binary>>, count) when byte in ~c"eE+-." ,
-        do: number(rest, count + 1)
-      def number(_, count), do: count * 0 + 99
+      def digits(<<>>, value), do: value
+      def digits(<<byte::8, rest::binary>>, value) when byte in ?0..?9,
+        do: digits(rest, value * 10 + byte - ?0)
+      def digits(_, value), do: value * 0 + 99
+
+      def negative_digits(<<byte::8, rest::binary>>) when byte in ?0..?9,
+        do: negative(rest, 0 - (byte - ?0))
+      def negative_digits(_), do: {:error, :invalid_json}
+
+      def negative(<<>>, value), do: value
+      def negative(<<byte::8, rest::binary>>, value) when byte in ?0..?9,
+        do: negative(rest, value * 10 - (byte - ?0))
+      def negative(_, value), do: value * 0 + 99
 
       def string(<<34>>, count), do: count
       def string(<<_char::utf8, rest::binary>>, count), do: string(rest, count + 1)
@@ -32,11 +39,11 @@ defmodule Batata.Test.JasonDecoderSubset do
       def decode(<<34, 97, 98, 99, 34>>), do: "abc"
       def decode(<<34, 195, 169, 228, 184, 173, 34>>), do: "é中"
       def decode(<<34, 97, 92, 34, 98, 34>>), do: <<97, 34, 98>>
-      def decode(<<49, 50, 51, 52, 53>>), do: 12345
-      def decode(<<45, 52, 50>>), do: 0 - 42
+      def decode(<<49, 50, 46, 53, 101, 43, 50>>), do: 7
       def decode(<<34, rest::binary>>), do: string(rest, 0)
+      def decode(<<45, rest::binary>>), do: negative_digits(rest)
       def decode(<<byte::8, rest::binary>>) when byte in ?0..?9,
-        do: number(rest, 1)
+        do: digits(rest, byte - ?0)
       def decode(_), do: {:error, :invalid_json}
 
 
