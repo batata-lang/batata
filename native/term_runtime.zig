@@ -3872,6 +3872,31 @@ pub export fn ex_term_map_from_list(list: i64) i64 {
     return word_from_ptr(map, tag_map);
 }
 
+/// Returns a map with key associated to value, replacing an existing key.
+pub export fn ex_term_map_put(map: i64, key: i64, value: i64) i64 {
+    if (word_tag(map) != tag_map) return nil_word;
+    const len = map_len(map);
+    const entries = map_entries(map);
+    var replace_index: ?usize = null;
+    for (0..len) |i| {
+        if (term_eq(entries[i * 2], key)) {
+            replace_index = i;
+            break;
+        }
+    }
+    const next_len = if (replace_index == null) len + 1 else len;
+    const next = alloc_words(1 + next_len * 2) orelse return nil_word;
+    next[0] = @intCast(next_len);
+    @memcpy(next[1 .. 1 + len * 2], entries[0 .. len * 2]);
+    if (replace_index) |i| {
+        next[1 + i * 2 + 1] = value;
+    } else {
+        next[1 + len * 2] = key;
+        next[1 + len * 2 + 1] = value;
+    }
+    return word_from_ptr(next, tag_map);
+}
+
 /// Converts a list of integer byte words into a binary word.
 pub export fn ex_term_binary_from_list(list: i64) i64 {
     const len = list_len(list);
@@ -4043,6 +4068,7 @@ comptime {
     @export(&ex_term_int_to_string, .{ .name = "ex.term.int_to_string" });
     @export(&ex_term_string_to_int, .{ .name = "ex.term.string_to_int" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
+    @export(&ex_term_map_put, .{ .name = "ex.term.map_put" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
     @export(&ex_term_is_atom, .{ .name = "ex.term.is_atom" });

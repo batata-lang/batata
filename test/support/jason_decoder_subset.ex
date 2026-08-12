@@ -89,4 +89,44 @@ defmodule Batata.Test.JasonDecoderSubset do
     end
     """
   end
+
+  def map_source(input) do
+    """
+    defmodule JasonDynamicMapSubset do
+      def parse_value(<<116, 114, 117, 101, rest::binary>>), do: {true, rest}
+      def parse_value(<<byte::8, rest::binary>>) when byte in ?0..?9,
+        do: {byte - ?0, rest}
+      def parse_value(rest), do: {{:error, :invalid_json}, rest}
+
+      def parse_key(<<34, 97, 34, rest::binary>>), do: {"a", rest}
+      def parse_key(<<34, 98, 34, rest::binary>>), do: {"b", rest}
+      def parse_key(rest), do: {{:error, :invalid_json}, rest}
+
+      def parse_object(binary) do
+        <<123, rest::binary>> = binary
+        {key, rest} = parse_key(rest)
+        <<58, rest::binary>> = rest
+        {value, rest} = parse_value(rest)
+        map = Map.put(%{}, key, value)
+        parse_object_tail(rest, map)
+      end
+
+      def parse_object_tail(<<125, rest::binary>>, map), do: {map, rest}
+      def parse_object_tail(<<44, rest::binary>>, map) do
+        {key, rest} = parse_key(rest)
+        <<58, rest::binary>> = rest
+        {value, rest} = parse_value(rest)
+        parse_object_tail(rest, Map.put(map, key, value))
+      end
+      def parse_object_tail(rest, map), do: {map, rest}
+
+      def decode(binary) do
+        {value, <<>>} = parse_object(binary)
+        value
+      end
+
+      def main(), do: decode(#{inspect(input)})
+    end
+    """
+  end
 end

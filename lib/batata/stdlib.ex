@@ -88,7 +88,8 @@ defmodule Batata.Stdlib.Map do
   """
 
   @class_map %{
-    {Map, :size, 1} => :native_term
+    {Map, :size, 1} => :native_term,
+    {Map, :put, 3} => :native_term
   }
 
   @doc "Returns map-domain stdlib replacement declarations."
@@ -315,6 +316,7 @@ defmodule Batata.Stdlib do
                      {Binary, :part, 3},
                      {MapSet, :new, 1},
                      {MapSet, :put, 2},
+                     {Map, :put, 3},
                      {HashSet, :new, 1},
                      {Stream, :take, 2},
                      {Stream, :drop, 2},

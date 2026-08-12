@@ -4192,6 +4192,9 @@ defmodule Batata.Lift do
   defp native_term_call(Map, :size, [value], ctx, block),
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(Map, :put, [map, key, value], ctx, block),
+    do: create_op("ex.map_put", [map, key, value], [ex_type("dyn", ctx)], ctx, block)
+
   defp native_term_call(Tuple, :size, [value], ctx, block),
     do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)
 

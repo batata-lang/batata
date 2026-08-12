@@ -9,7 +9,7 @@
     {"id": "string.escape", "status": "shaped", "gate": "semantic_kernels_test"},
     {"id": "container.recursive", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "parser.cursor_value", "status": "executable", "gate": "decoder_subset_test"},
-    {"id": "container.dynamic_map", "status": "blocked", "owner": "lower", "reason": "runtime map construction needs an ex.map_put or equivalent dynamic key/value primitive"},
+    {"id": "container.dynamic_map", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "string.dynamic_binary", "status": "blocked", "owner": "lower", "reason": "escape decoding needs a runtime binary builder over decoded bytes or codepoints"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
