@@ -126,13 +126,19 @@ defmodule Batata do
   defp materialize_result(jit, handle, source) do
     kind = invoke_i64(jit, "__batata_result_root_kind", [handle])
     word = invoke_i64(jit, "__batata_result_root_word", [handle])
+    atoms = literal_atom_table(source)
 
     cond do
       kind < 0 -> raise ResultError, "native result handle is stale"
-      kind == 0 -> word
-      true -> materialize_word(jit, handle, word, kind, literal_atom_table(source))
+      kind == 0 -> materialize_scalar_root(word, atoms)
+      true -> materialize_word(jit, handle, word, kind, atoms)
     end
   end
+
+  # A root which is not heap-owned may be either a legacy unboxed integer or
+  # an immediate term word. Decode atoms known from the source (including nil)
+  # while preserving scalar compatibility for arithmetic entry points.
+  defp materialize_scalar_root(word, atoms), do: Map.get(atoms, word, word)
 
   defp materialize_word(_jit, _handle, word, 0, _atoms), do: div(word, 8)
   defp materialize_word(_jit, _handle, 1, 1, _atoms), do: nil
@@ -198,16 +204,24 @@ defmodule Batata do
   end
 
   defp literal_atom_table(source) do
-    source
-    |> Code.string_to_quoted!()
-    |> Macro.prewalk(%{}, fn
-      atom, acc when is_atom(atom) -> {atom, Map.put(acc, atom_word(atom), atom)}
-      node, acc -> {node, acc}
-    end)
-    |> elem(1)
+    atoms =
+      source
+      |> Code.string_to_quoted!()
+      |> Macro.prewalk(%{}, fn
+        atom, acc when is_atom(atom) and not is_nil(atom) ->
+          {atom, Map.put(acc, atom_word(atom), atom)}
+
+        node, acc ->
+          {node, acc}
+      end)
+      |> elem(1)
+
+    # `nil` also appears pervasively as quoted AST metadata/context. Only
+    # expose its immediate word when the source contains the literal token;
+    # otherwise an unboxed scalar result of 1 must remain the integer 1.
+    if Regex.match?(~r/\bnil\b/, source), do: Map.put(atoms, 1, nil), else: atoms
   end
 
-  defp atom_word(nil), do: 1
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
 
   defp invoke_i64(jit, name, arguments, opts \\ []) do
