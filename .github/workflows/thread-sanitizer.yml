@@ -1,0 +1,86 @@
+name: Thread Sanitizer
+
+on:
+  pull_request:
+    paths:
+      - native/term_runtime.zig
+      - native/ABI.md
+      - native/CONCURRENCY.md
+      - scripts/tsan.sh
+      - .github/workflows/thread-sanitizer.yml
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Repetitions per replay seed
+        required: true
+        default: "3"
+      seeds:
+        description: Comma-separated replay seeds
+        required: true
+        default: "0x6201,0x6202,0x6203,0x6204"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tsan-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-tsan:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Select replay matrix
+        id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_ITERATIONS: ${{ inputs.iterations }}
+          INPUT_SEEDS: ${{ inputs.seeds }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            iterations="$INPUT_ITERATIONS"
+            seeds="$INPUT_SEEDS"
+          elif [ "$EVENT_NAME" = "schedule" ]; then
+            iterations="3"
+            seeds="0x6201,0x6202,0x6203,0x6204"
+          else
+            iterations="1"
+            seeds="0x6201"
+          fi
+          echo "iterations=$iterations" >> "$GITHUB_OUTPUT"
+          echo "seeds=$seeds" >> "$GITHUB_OUTPUT"
+
+      - name: Run instrumented native race matrix
+        run: |
+          bash scripts/tsan.sh \
+            _build/tsan \
+            "${{ steps.matrix.outputs.iterations }}" \
+            "${{ steps.matrix.outputs.seeds }}"
+
+      - name: Publish sanitizer summary
+        if: always()
+        run: |
+          if [ -f _build/tsan/summary.txt ]; then
+            sed 's/^/- `/' _build/tsan/summary.txt | sed 's/$/`/' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Sanitizer runner did not produce a summary." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload sanitizer report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-report-${{ github.run_id }}
+          path: _build/tsan
+          if-no-files-found: error
