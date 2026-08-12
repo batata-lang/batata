@@ -39,7 +39,10 @@ defmodule Batata.AOTTest do
   end
 
   @tag :tmp_dir
-  test "prints a composite result before releasing its runtime", %{ctx: ctx, tmp_dir: tmp_dir} do
+  test "AOT lifecycle prints a composite result on repeated executions", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
     output =
       Batata.build(
         """
@@ -60,8 +63,10 @@ defmodule Batata.AOTTest do
         stderr_to_stdout: true
       )
 
-    {stdout, 0} = System.cmd(binary, [])
-    assert stdout == ~s|{1, [2, 3], "\x04\x05"}\n|
+    for _ <- 1..2 do
+      {stdout, 0} = System.cmd(binary, [])
+      assert stdout == ~s|{1, [2, 3], "\x04\x05"}\n|
+    end
   end
 
   @tag :tmp_dir

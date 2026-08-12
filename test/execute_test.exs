@@ -32,16 +32,16 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "materializes a composite result before releasing its runtime", %{ctx: ctx} do
-    assert {1, [2, 3], %{7 => 42}, <<4, 5>>} ==
-             Batata.execute(
-               """
-               defmodule Composite do
-                 def main(), do: {1, [2, 3], %{7 => 42}, <<4, 5>>}
-               end
-               """,
-               ctx
-             )
+  test "JIT lifecycle materializes a composite result on repeated executions", %{ctx: ctx} do
+    source = """
+    defmodule Composite do
+      def main(), do: {1, [2, 3], %{7 => 42}, <<4, 5>>}
+    end
+    """
+
+    expected = {1, [2, 3], %{7 => 42}, <<4, 5>>}
+    assert Batata.execute(source, ctx) == expected
+    assert Batata.execute(source, ctx) == expected
   end
 
   test "executes a local call", %{ctx: ctx} do
