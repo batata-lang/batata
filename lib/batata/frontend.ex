@@ -25,7 +25,7 @@ defmodule Batata.Frontend do
     @moduledoc "One function clause with patterns and a body AST."
     @enforce_keys [:patterns, :body_ast]
     @type t() :: %__MODULE__{}
-    defstruct [:patterns, :body_ast]
+    defstruct [:patterns, :guard_ast, :body_ast]
   end
 
   defmodule UnsupportedForm do
@@ -79,13 +79,24 @@ defmodule Batata.Frontend do
   end
 
   defp normalize_form({kind, _, [{name, _, args}, [do: body_ast]]})
-       when kind in [:def, :defp] and is_atom(name) do
+       when kind in [:def, :defp] and is_atom(name) and name != :when and is_list(args) do
     {:ok,
      %Definition{
        kind: kind,
        name: name,
        arity: length(args),
        clauses: [%Clause{patterns: args, body_ast: body_ast}]
+     }}
+  end
+
+  defp normalize_form({kind, _, [{:when, _, [{name, _, args}, guard_ast]}, [do: body_ast]]})
+       when kind in [:def, :defp] and is_atom(name) and is_list(args) do
+    {:ok,
+     %Definition{
+       kind: kind,
+       name: name,
+       arity: length(args),
+       clauses: [%Clause{patterns: args, guard_ast: guard_ast, body_ast: body_ast}]
      }}
   end
 
