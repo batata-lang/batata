@@ -19,7 +19,23 @@ defmodule Batata.NativeRegistryTest do
              %Plan{mfa: {Kernel, :length, 1}, class: :native_term}
 
     assert Batata.Stdlib.plan({Enum, :map, 2}) ==
-             %Plan{mfa: {Enum, :map, 2}, class: :beamer_callback}
+             %Plan{
+               mfa: {Enum, :map, 2},
+               class: :beamer_callback,
+               allocation: :may_allocate,
+               preemption: :resumable,
+               reductions: :per_element
+             }
+
+    assert Batata.Stdlib.plan({File, :read!, 1}) ==
+             %Plan{
+               mfa: {File, :read!, 1},
+               class: :native_term,
+               purity: :impure,
+               allocation: :may_allocate,
+               preemption: :blocking,
+               reductions: :external
+             }
 
     assert Batata.Stdlib.plan({Foo, :bar, 1}) == nil
   end

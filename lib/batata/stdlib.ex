@@ -257,7 +257,10 @@ defmodule Batata.Stdlib do
     - `:unsupported` — declared but no lowering exists yet; calls raise
       explicitly instead of being silently dropped.
 
-  Anything not declared raises explicitly at lift time.
+  Anything not declared raises explicitly at lift time. Each declaration also
+  receives effect and reduction metadata through `plan/1`; this is the gate
+  used to distinguish resumable loop safe points from blocking or constant
+  runtime calls.
   """
 
   @classes Elixir.Enum.reduce(
@@ -281,6 +284,70 @@ defmodule Batata.Stdlib do
              &Elixir.Map.merge(&2, &1)
            )
 
+  @impure_mfas MapSet.new([
+                 {Kernel, :self, 0},
+                 {Kernel, :send, 2},
+                 {Kernel, :spawn, 1},
+                 {:erlang, :self, 0},
+                 {:erlang, :send, 2},
+                 {:erlang, :exit, 2},
+                 {:erlang, :link, 1},
+                 {:erlang, :unlink, 1},
+                 {:erlang, :monitor, 2},
+                 {:erlang, :demonitor, 1},
+                 {:erlang, :process_flag, 2},
+                 {:erlang, :monotonic_time, 0},
+                 {:erlang, :monotonic_time, 1},
+                 {:erlang, :unique_integer, 0},
+                 {:erlang, :unique_integer, 1},
+                 {Process, :exit, 2},
+                 {Process, :link, 1},
+                 {Process, :unlink, 1},
+                 {Process, :monitor, 1},
+                 {Process, :demonitor, 1},
+                 {Process, :flag, 2},
+                 {File, :read!, 1},
+                 {File, :stream!, 1}
+               ])
+
+  @allocating_mfas MapSet.new([
+                     {Kernel, :spawn, 1},
+                     {Binary, :part, 3},
+                     {MapSet, :new, 1},
+                     {MapSet, :put, 2},
+                     {HashSet, :new, 1},
+                     {Stream, :take, 2},
+                     {Stream, :drop, 2},
+                     {File, :read!, 1},
+                     {File, :stream!, 1},
+                     {Base, :encode16, 1},
+                     {Base, :decode16, 1},
+                     {Integer, :to_string, 1},
+                     {Enum, :map, 2},
+                     {Enum, :to_list, 1}
+                   ])
+
+  @resumable_mfas MapSet.new([
+                    {Enum, :map, 2},
+                    {Enum, :reduce, 3}
+                  ])
+
+  @blocking_mfas MapSet.new([
+                   {File, :read!, 1},
+                   {File, :stream!, 1}
+                 ])
+
+  @per_element_mfas MapSet.new([
+                      {Enum, :count, 1},
+                      {Enum, :map, 2},
+                      {Enum, :reduce, 3},
+                      {Enum, :to_list, 1},
+                      {MapSet, :new, 1},
+                      {HashSet, :new, 1},
+                      {Stream, :take, 2},
+                      {Stream, :drop, 2}
+                    ])
+
   @doc """
   Returns the replacement class for `{module, function, arity}`, or `nil`
   when the call is outside the declared stdlib surface.
@@ -298,7 +365,36 @@ defmodule Batata.Stdlib do
   def plan({_, _, _} = mfa) do
     case class(mfa) do
       nil -> nil
-      class -> %Batata.Stdlib.Plan{mfa: mfa, class: class}
+      class -> struct!(Batata.Stdlib.Plan, Map.merge(%{mfa: mfa, class: class}, metadata(mfa)))
+    end
+  end
+
+  @doc "Effect and reduction metadata for a declared stdlib entry."
+  @spec metadata({module(), atom(), non_neg_integer()}) :: map() | nil
+  def metadata({_, _, _} = mfa) do
+    if Map.has_key?(@classes, mfa) do
+      %{
+        purity: if(MapSet.member?(@impure_mfas, mfa), do: :impure, else: :pure),
+        allocation: if(MapSet.member?(@allocating_mfas, mfa), do: :may_allocate, else: :none),
+        preemption: preemption(mfa),
+        reductions: reductions(mfa)
+      }
+    end
+  end
+
+  defp preemption(mfa) do
+    cond do
+      MapSet.member?(@blocking_mfas, mfa) -> :blocking
+      MapSet.member?(@resumable_mfas, mfa) -> :resumable
+      true -> :none
+    end
+  end
+
+  defp reductions(mfa) do
+    cond do
+      MapSet.member?(@blocking_mfas, mfa) -> :external
+      MapSet.member?(@per_element_mfas, mfa) -> :per_element
+      true -> :constant
     end
   end
 
