@@ -404,6 +404,168 @@ fn runSelectiveReceive(config: SoakConfig) !void {
     try soak.finish();
 }
 
+fn runRecycle(config: SoakConfig) !void {
+    const process_cap: i64 = 2;
+    var soak = try SoakRuntime.init(process_cap);
+    const context = CaseContext{
+        .name = "process-recycle",
+        .seed = config.seed,
+        .workers = 1,
+        .process_cap = process_cap,
+        .scale = config.scale,
+    };
+    errdefer context.report(soak.handle);
+
+    const receiver = runtime.ex_term_self();
+    const cycles = 128 * config.scale;
+    var stale_pid: i64 = nil_word;
+    for (0..cycles) |cycle| {
+        const pid = runtime.ex_term_spawn(1);
+        try std.testing.expect(pid != nil_word);
+        if (stale_pid != nil_word) {
+            try std.testing.expectEqual(nil_word, runtime.ex_term_send(stale_pid, tagged(@intCast(cycle))));
+        }
+        try std.testing.expectEqual(pid, runtime.ex_term_schedule_next());
+        const composite = runtime.ex_term_list_cons(
+            tagged(@intCast(cycle)),
+            runtime.ex_term_list_cons(tagged(@intCast(cycle + 1)), nil_word),
+        );
+        try std.testing.expectEqual(composite, runtime.ex_term_send(receiver, composite));
+        _ = runtime.ex_term_process_done(tagged(@intCast(cycle)));
+        try std.testing.expectEqual(receiver, runtime.ex_term_schedule_next());
+
+        const retained = runtime.ex_term_receive();
+        try std.testing.expectEqual(tagged(@intCast(cycle)), runtime.ex_term_list_head(retained));
+        try std.testing.expectEqual(
+            tagged(@intCast(cycle + 1)),
+            runtime.ex_term_list_head(runtime.ex_term_list_tail(retained)),
+        );
+        stale_pid = pid;
+    }
+    const replacement = runtime.ex_term_spawn(1);
+    try std.testing.expect(replacement != stale_pid);
+    try std.testing.expectEqual(nil_word, runtime.ex_term_send(stale_pid, tagged(1)));
+    try std.testing.expectEqual(replacement, runtime.ex_term_schedule_next());
+    _ = runtime.ex_term_process_done(0);
+    try std.testing.expectEqual(receiver, runtime.ex_term_schedule_next());
+    const snapshot = runtime.runtimeSoakSnapshot(soak.handle).?;
+    try std.testing.expectEqual(@as(usize, 2), snapshot.process_count);
+    try std.testing.expectEqual(@as(usize, 1), snapshot.free_count);
+    try std.testing.expect(snapshot.arena_high_water > 0);
+    _ = runtime.ex_term_process_done(0);
+    try soak.finish();
+}
+
+const CompositeTermState = struct {
+    receiver: i64,
+    allocations_per_actor: usize,
+    failures: std.atomic.Value(u32) = .init(0),
+};
+
+var composite_term_state: *CompositeTermState = undefined;
+
+fn compositeTermDispatch(_: i64) callconv(.c) i64 {
+    const actor = runtime.ex_term_current_entry();
+    if (actor == 0) return 0;
+    var list = nil_word;
+    for (0..composite_term_state.allocations_per_actor) |index| {
+        list = runtime.ex_term_list_cons(tagged(@intCast(index)), list);
+        if (list == nil_word) {
+            _ = composite_term_state.failures.fetchAdd(1, .acq_rel);
+            return -1;
+        }
+    }
+    const composite = runtime.ex_term_list_cons(tagged(actor), runtime.ex_term_list_cons(list, nil_word));
+    if (runtime.ex_term_send(composite_term_state.receiver, composite) == nil_word) {
+        _ = composite_term_state.failures.fetchAdd(1, .acq_rel);
+    }
+    return tagged(actor);
+}
+
+fn runCompositeTerms(config: SoakConfig, workers: i64) !void {
+    const process_cap: i64 = 2;
+    var soak = try SoakRuntime.init(process_cap);
+    const context = CaseContext{
+        .name = "composite-arena",
+        .seed = config.seed,
+        .workers = workers,
+        .process_cap = process_cap,
+        .scale = config.scale,
+    };
+    errdefer context.report(soak.handle);
+
+    const actor_count: usize = 16;
+    const allocations_per_actor = 5_000 * config.scale;
+    const receiver = runtime.ex_term_self();
+    var stale_pids: [actor_count]i64 = undefined;
+    for (&stale_pids, 0..) |*pid, index| {
+        pid.* = runtime.ex_term_spawn(@intCast(index + 1));
+        try std.testing.expect(pid.* != nil_word);
+    }
+    var state = CompositeTermState{
+        .receiver = receiver,
+        .allocations_per_actor = allocations_per_actor,
+    };
+    composite_term_state = &state;
+    _ = runtime.ex_term_worker_run(workers, &compositeTermDispatch);
+    try std.testing.expectEqual(@as(u32, 0), state.failures.load(.acquire));
+    try std.testing.expectEqual(@as(i64, actor_count), runtime.ex_term_mailbox_len());
+
+    var seen = [_]bool{false} ** actor_count;
+    for (0..actor_count) |_| {
+        const composite = runtime.ex_term_receive();
+        const actor: usize = @intCast(payload(runtime.ex_term_list_head(composite)) - 1);
+        try std.testing.expect(actor < actor_count);
+        try std.testing.expect(!seen[actor]);
+        seen[actor] = true;
+        const nested = runtime.ex_term_list_head(runtime.ex_term_list_tail(composite));
+        try std.testing.expectEqual(tagged(@intCast(allocations_per_actor - 1)), runtime.ex_term_list_head(nested));
+        try std.testing.expectEqual(@as(i64, @intCast(allocations_per_actor)), runtime.ex_term_list_length(nested));
+    }
+
+    var replacements: [actor_count]i64 = undefined;
+    for (&replacements, 0..) |*replacement, index| {
+        replacement.* = runtime.ex_term_spawn(@intCast(index + 1));
+        try std.testing.expect(replacement.* != nil_word);
+    }
+    for (stale_pids) |stale| try std.testing.expectEqual(nil_word, runtime.ex_term_send(stale, tagged(1)));
+    for (replacements) |_| {
+        const replacement = runtime.ex_term_schedule_next();
+        try std.testing.expect(findPid(&replacements, replacement) != null);
+        _ = runtime.ex_term_process_done(0);
+    }
+    const snapshot = runtime.runtimeSoakSnapshot(soak.handle).?;
+    try std.testing.expect(snapshot.arena_chunks > 1);
+    try std.testing.expect(snapshot.arena_high_water >= actor_count * allocations_per_actor * 2 * @sizeOf(i64));
+    try std.testing.expectEqual(actor_count, snapshot.free_count);
+    try std.testing.expectEqual(@as(usize, 0), snapshot.mailbox_messages);
+    try soak.finish();
+}
+
+fn runControlledOom(config: SoakConfig) !void {
+    const process_cap: i64 = 1;
+    var soak = try SoakRuntime.init(process_cap);
+    const context = CaseContext{
+        .name = "controlled-oom",
+        .seed = config.seed,
+        .workers = 1,
+        .process_cap = process_cap,
+        .scale = config.scale,
+    };
+    errdefer context.report(soak.handle);
+
+    try std.testing.expect(runtime.runtimeSoakForceOom(soak.handle));
+    const failed = runtime.runtimeSoakSnapshot(soak.handle).?;
+    try std.testing.expect(failed.oom);
+    try std.testing.expectEqual(@as(usize, 1), failed.runnable);
+    try std.testing.expectEqual(@as(usize, 0), failed.owned);
+    try std.testing.expectEqual(@as(u32, 1), failed.execution_participants);
+    try std.testing.expectEqual(@as(u32, 0), failed.outstanding_results);
+    try std.testing.expectEqual(@as(u32, 0), failed.outstanding_terms);
+    _ = runtime.ex_term_process_done(0);
+    try soak.finish();
+}
+
 test "soak fan-in preserves counts uniqueness and per-sender ordering" {
     const config = SoakConfig.load();
     for ([_]i64{ 1, 2, 4, 8, 64 }) |workers| try runFanIn(config, workers);
@@ -421,4 +583,17 @@ test "soak supervision orders EXIT before DOWN and isolates actor failures" {
 
 test "soak selective receive scans a full mailbox without loss" {
     try runSelectiveReceive(SoakConfig.load());
+}
+
+test "soak process slots reject stale pids across repeated reuse" {
+    try runRecycle(SoakConfig.load());
+}
+
+test "soak composite terms survive sender exit and multi-segment arena growth" {
+    const config = SoakConfig.load();
+    for ([_]i64{ 1, 8, 64 }) |workers| try runCompositeTerms(config, workers);
+}
+
+test "soak controlled OOM leaves lifecycle ownership and pins consistent" {
+    try runControlledOom(SoakConfig.load());
 }
