@@ -44,6 +44,10 @@ only public operation that creates an execution owner. A successful
 same-handle re-entry is a no-op, and another thread cannot enter the same
 execution. Epoch overflow rejects a new execution instead of wrapping.
 
+The normative multi-lock acquisition order, public ABI acquisition paths, and
+the sanitizer race matrix are documented in
+[`CONCURRENCY.md`](./CONCURRENCY.md).
+
 The owner counts as participant 1 and may run dispatcher work directly as
 worker 1. Additional OS workers join internally with a thread-local token
 bound to the runtime generation and execution epoch, and must leave on every
