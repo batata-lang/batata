@@ -4247,6 +4247,12 @@ defmodule Batata.Lift do
        when module in [Kernel, :erlang],
        do: create_op("ex.binary_from_list", [value], [ex_type("dyn", ctx)], ctx, block)
 
+  defp native_term_call(IO, :iodata_to_binary, [value], ctx, block),
+    do: create_op("ex.iodata_to_binary", [value], [ex_type("dyn", ctx)], ctx, block)
+
+  defp native_term_call(:erlang, :iolist_to_binary, [value], ctx, block),
+    do: create_op("ex.iodata_to_binary", [value], [ex_type("dyn", ctx)], ctx, block)
+
   defp native_term_call(Enum, :count, [value], ctx, block),
     do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
 

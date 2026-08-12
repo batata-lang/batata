@@ -203,6 +203,20 @@ defmodule Batata.Stdlib.String do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.IO do
+  @moduledoc """
+  IO-domain declarations.
+  """
+
+  @class_map %{
+    {IO, :iodata_to_binary, 1} => :native_term,
+    {:erlang, :iolist_to_binary, 1} => :native_term
+  }
+
+  @doc "Returns IO-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Base do
   @moduledoc """
   Base-domain declarations.
@@ -280,6 +294,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.HashSet.class_map(),
                Batata.Stdlib.Stream.class_map(),
                Batata.Stdlib.File.class_map(),
+               Batata.Stdlib.IO.class_map(),
                Batata.Stdlib.String.class_map(),
                Batata.Stdlib.Base.class_map(),
                Batata.Stdlib.Integer.class_map(),
@@ -323,6 +338,8 @@ defmodule Batata.Stdlib do
                      {MapSet, :put, 2},
                      {Map, :put, 3},
                      {Kernel, :list_to_binary, 1},
+                     {IO, :iodata_to_binary, 1},
+                     {:erlang, :iolist_to_binary, 1},
                      {HashSet, :new, 1},
                      {Stream, :take, 2},
                      {Stream, :drop, 2},
