@@ -46,6 +46,13 @@ scanner/IR probe; and every `blocked` row has one owning layer and a reason.
 JSONTestSuite is pinned separately under `probe/json_test_suite/source.json`
 because it supplies data, not Elixir implementation source.
 
+The matrix also records the first blockers exposed by replacing whole-input
+literal clauses with a cursor parser. A dynamic `{value, rest}` call result is
+owned by `lift`; incremental map and escaped-binary construction remain
+lowering/runtime primitive gaps. Keeping these rows separate prevents the
+existing compile-time `ex.map` and `ex.binary` constructors from being counted
+as runtime parser support.
+
 A second implementation fixture is admitted only after its minimized kernel
 inventory has no runtime-owned blockers and every accepted semantic surface
 has a BEAM oracle plus JIT gate. Full libraries whose first blockers are macro,
