@@ -4138,6 +4138,23 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_stdlib_call(Map, :put, args, ctx, block, env) do
+    {values, env} =
+      Enum.map_reduce(args, env, fn arg, env ->
+        {value, env} = lift_expr(arg, ctx, block, env)
+
+        {create_op(
+           "ex.to_word",
+           [lift_value(value, ctx, block, env)],
+           [ex_type("dyn", ctx)],
+           ctx,
+           block
+         ), env}
+      end)
+
+    {native_term_call(Map, :put, values, ctx, block), env}
+  end
+
   defp lift_stdlib_call(module, fun, args, ctx, block, env) do
     case Batata.Stdlib.class({module, fun, length(args)}) do
       :native_term ->
@@ -4191,6 +4208,9 @@ defmodule Batata.Lift do
 
   defp native_term_call(Map, :size, [value], ctx, block),
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
+
+  defp native_term_call(Map, :put, [map, key, value], ctx, block),
+    do: create_op("ex.map_put", [map, key, value], [ex_type("dyn", ctx)], ctx, block)
 
   defp native_term_call(Tuple, :size, [value], ctx, block),
     do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)

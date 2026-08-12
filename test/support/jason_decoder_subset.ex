@@ -89,4 +89,23 @@ defmodule Batata.Test.JasonDecoderSubset do
     end
     """
   end
+
+  def map_source(input) do
+    """
+    defmodule JasonDynamicMapSubset do
+      def first_key(), do: "a"
+      def second_key(), do: "b"
+      def first_value(), do: false
+      def second_value(), do: true
+
+      def decode(<<123, 34, 97, 34, 58, 49, 44, 34, 98, 34, 58, 116, 114, 117, 101, 125>>) do
+        map = Map.put(%{}, first_key(), first_value())
+        Map.put(map, second_key(), second_value())
+      end
+      def decode(_), do: {:error, :invalid_json}
+
+      def main(), do: decode(#{inspect(input)})
+    end
+    """
+  end
 end
