@@ -99,6 +99,33 @@ jobs:
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
+      - name: Checkout pinned Jason probe corpus
+        uses: actions/checkout@v4
+        with:
+          repository: michalmuskala/jason
+          ref: 4ede42858eb19f80ec9e863aab52df466eab8608
+          path: jason-probe-source
+
+      - name: Run Jason compile probe
+        run: |
+          mix batata.jason_probe \
+            --source jason-probe-source \
+            --output _build/jason_probe/report.json \
+            --baseline probe/jason/baseline.json \
+            --fail-on-regression
+        env:
+          BEAVER_PATH: ${{ github.workspace }}/beaver
+          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
+          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
+
+      - name: Upload Jason probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jason-probe-report
+          path: _build/jason_probe/report.json
+          if-no-files-found: error
+
       - name: Run process-reuse benchmark
         # The slot-recycling benchmark (#50 stage 1) must keep producing a
         # full-success result under the small table and a failing baseline

@@ -1,0 +1,53 @@
+# Jason compile probe
+
+Jason is an external semantic conformance corpus for Batata. It is not a JSON
+implementation or production dependency of Batata or Beaver.
+
+The probe has two deliberately separate surfaces:
+
+- `mix batata.jason_probe` inventories unmodified Jason source at the current
+  parse/frontend boundary. It collects every blocker instead of stopping at
+  the first unsupported form.
+- `test/probe/jason/semantic_kernels_test.exs` executes minimized,
+  Batata-owned kernels shaped like Jason's token, number, UTF-8, and escape
+  scanners and compares their results with the BEAM implementation.
+
+## Pinned corpus
+
+[`source.json`](source.json) pins Jason `v1.4.5` to an exact commit. CI checks
+out that commit explicitly; the probe does not rely on Jason being present as
+a transitive Kinda or development dependency.
+
+To reproduce the inventory locally:
+
+```sh
+git clone https://github.com/michalmuskala/jason.git /tmp/batata-jason
+git -C /tmp/batata-jason checkout 4ede42858eb19f80ec9e863aab52df466eab8608
+mix batata.jason_probe \
+  --source /tmp/batata-jason \
+  --output _build/jason_probe/report.json \
+  --baseline probe/jason/baseline.json \
+  --fail-on-regression
+```
+
+The checked-in baseline is a golden report, not a target number. A blocker
+disappearing is progress; a newly accepted form must still be tested through
+IR verification, lowering, execution, and a BEAM oracle before it counts as
+semantic support. Compiler crashes, verifier failures, and runtime mismatches
+must never be converted into expected frontend blockers.
+
+## Stages and roadmap
+
+The report reserves stages from parse through runtime mismatch so later probes
+can extend the same schema. The current unmodified-source pass primarily
+classifies macro/compile-time, frontend, guard/pattern, and protocol blockers.
+
+The implementation sequence tracked by Beaver Forgejo issue #63 is:
+
+1. source inventory and stable blocker report;
+2. decoder-shaped executable kernels;
+3. a selected decoder subset with valid/invalid JSON corpus;
+4. encoder, iodata, and protocol dispatch.
+
+The full Jason effort remains secondary until Beaver Forgejo #60–#62 complete
+the lifecycle race harness, actor/runtime soak, and TSan/cross-runtime gates.
