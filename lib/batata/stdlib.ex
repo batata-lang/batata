@@ -16,6 +16,7 @@ defmodule Batata.Stdlib.Kernel do
     {Kernel, :is_atom, 1} => :native_term,
     {Kernel, :is_binary, 1} => :native_term,
     {Kernel, :is_integer, 1} => :native_term,
+    {Kernel, :is_float, 1} => :native_term,
     {Kernel, :is_list, 1} => :native_term,
     {Kernel, :is_map, 1} => :native_term,
     {Kernel, :is_tuple, 1} => :native_term,
@@ -32,6 +33,7 @@ defmodule Batata.Stdlib.Kernel do
     {:erlang, :is_atom, 1} => :native_term,
     {:erlang, :is_binary, 1} => :native_term,
     {:erlang, :is_integer, 1} => :native_term,
+    {:erlang, :is_float, 1} => :native_term,
     {:erlang, :is_list, 1} => :native_term,
     {:erlang, :is_map, 1} => :native_term,
     {:erlang, :is_tuple, 1} => :native_term,
@@ -193,7 +195,8 @@ defmodule Batata.Stdlib.String do
 
   @class_map %{
     {String, :length, 1} => :native_term,
-    {String, :to_integer, 1} => :native_term
+    {String, :to_integer, 1} => :native_term,
+    {String, :to_float, 1} => :native_term
   }
 
   @doc "Returns string-domain stdlib replacement declarations."

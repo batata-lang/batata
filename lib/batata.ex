@@ -186,6 +186,12 @@ defmodule Batata do
     raise ResultError, "native closures cannot cross the host result boundary"
   end
 
+  defp materialize_word(jit, handle, word, 7, _atoms) do
+    bits = invoke_i64(jit, "__batata_result_term_get", [handle, word, 0])
+    <<value::float-64-native>> = <<bits::signed-64-native>>
+    value
+  end
+
   defp materialize_word(_jit, _handle, _word, kind, _atoms) do
     raise ResultError, "invalid native term kind #{kind}"
   end

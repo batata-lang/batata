@@ -44,6 +44,18 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "materializes boxed float terms without changing their bits", %{ctx: ctx} do
+    for value <- [12.5, -0.0, :math.pow(2.0, 1023)] do
+      source = """
+      defmodule FloatLiteral do
+        def main(), do: #{inspect(value)}
+      end
+      """
+
+      assert <<Batata.execute(source, ctx)::float-64-native>> == <<value::float-64-native>>
+    end
+  end
+
   test "executes a local call", %{ctx: ctx} do
     assert 3 ==
              Batata.execute(

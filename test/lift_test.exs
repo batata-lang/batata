@@ -650,7 +650,7 @@ defmodule Batata.LiftTest do
         """
         defmodule M do
           def main() do
-            1.0
+            (1 + 2).unknown()
           end
         end
         """,

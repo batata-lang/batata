@@ -22,6 +22,9 @@ const tag_list: usize = 3;
 const tag_map: usize = 4;
 const tag_binary: usize = 5;
 const tag_fun: usize = 6;
+// Tag 7 is shared by arena-owned boxed floats and immediate runtime-local
+// words. The latter carry runtime_local_marker and are never arena pointers.
+const tag_float: usize = 7;
 const tag_runtime_local: usize = 7;
 
 const tag_mask: usize = 7;
@@ -41,6 +44,7 @@ const nil_word: i64 = 1;
 //   binary: [len: i64] [packed byte: u8 ... len] [alignment padding]
 //   list:   cons cells [head: i64] [tail: i64]
 //   fun:    [fn_idx: i64] [env_len: i64] [env: i64 ... env_len]
+//   float:  [IEEE-754 bits: u64]
 
 // Runtime instances own execution state. The compatibility path lazily binds
 // one instance per OS thread; explicit handles let future actor workers enter
@@ -164,6 +168,11 @@ fn map_entries(map: i64) [*]i64 {
 
 fn fun_words(fun: i64) [*]i64 {
     return @ptrFromInt(@as(usize, @bitCast(fun)) & ~tag_mask);
+}
+
+fn float_bits(float: i64) u64 {
+    const payload: *const i64 = @ptrFromInt(@as(usize, @bitCast(float)) & ~tag_mask);
+    return @bitCast(payload.*);
 }
 
 // Actor scheduling model (#35): a single process with a FIFO mailbox and a
@@ -821,7 +830,8 @@ fn result_slot_locked(handle: i64) ?*ResultSlot {
 
 fn runtime_owns_word(instance: *Runtime, word: i64) bool {
     const tag = word_tag(word);
-    if (tag < tag_tuple or tag > tag_fun) return false;
+    if (tag < tag_tuple or tag > tag_float) return false;
+    if (tag == tag_runtime_local and runtime_local_kind(word) != null) return false;
     const address = @as(usize, @bitCast(word)) & ~tag_mask;
     for (instance.arena_chunks[0..instance.arena_chunk_count]) |chunk| {
         const words = chunk.words orelse continue;
@@ -1309,6 +1319,7 @@ pub export fn ex_term_result_term_length(handle: i64, word: i64) i64 {
         tag_map => @intCast(map_len(word)),
         tag_binary => @intCast(binary_len(word)),
         tag_fun => fun_words(word)[1],
+        tag_float => 1,
         else => -1,
     };
 }
@@ -1324,6 +1335,7 @@ pub export fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) i
         tag_tuple => if (index < tuple_len(word)) tuple_elems(word)[index] else -1,
         tag_map => if (index < map_len(word) * 2) map_entries(word)[index] else -1,
         tag_binary => if (index < binary_len(word)) binary_bytes(word)[index] else -1,
+        tag_float => if (index == 0) @bitCast(float_bits(word)) else -1,
         tag_fun => if (index < @as(usize, @intCast(fun_words(word)[1])) + 1)
             fun_words(word)[index * 0 + index]
         else
@@ -1349,6 +1361,7 @@ const codec_tuple: u8 = 3;
 const codec_cons: u8 = 4;
 const codec_map: u8 = 5;
 const codec_binary: u8 = 6;
+const codec_float: u8 = 7;
 
 fn checkedAdd(a: usize, b: usize) CodecError!usize {
     const value = std.math.add(usize, a, b) catch return error.Limit;
@@ -1414,7 +1427,11 @@ fn encodedTermSize(instance: *Runtime, word: i64, root_scalar: bool, depth: usiz
             if (!runtime_owns_bytes(instance, address, total_bytes)) return error.Invalid;
             break :blk try checkedAdd(1 + @sizeOf(u32), len);
         },
-        tag_fun, tag_runtime_local => error.Unsupported,
+        tag_float => if (runtime_local_kind(word) == null)
+            1 + @sizeOf(i64)
+        else
+            error.Unsupported,
+        tag_fun => error.Unsupported,
         else => error.Invalid,
     };
 }
@@ -1445,11 +1462,13 @@ fn encodeTerm(instance: *Runtime, word: i64, root_scalar: bool, bytes: []u8, cur
         tag_list => codec_cons,
         tag_map => codec_map,
         tag_binary => codec_binary,
+        tag_float => codec_float,
         else => unreachable,
     };
     cursor.* += 1;
     switch (tag) {
         tag_int, tag_atom => writeI64(bytes, cursor, word),
+        tag_float => writeI64(bytes, cursor, @bitCast(float_bits(word))),
         tag_tuple => {
             const len = tuple_len(word);
             writeU32(bytes, cursor, @intCast(len));
@@ -1740,6 +1759,10 @@ fn decodedWords(decoder: *Decoder, depth: usize, root: bool) CodecError!usize {
             try decoder.skip(len);
             break :blk try checkedAdd(1, (try checkedAdd(len, @sizeOf(i64) - 1)) / @sizeOf(i64));
         },
+        codec_float => blk: {
+            _ = try decoder.readI64();
+            break :blk 1;
+        },
         else => error.Invalid,
     };
 }
@@ -1786,6 +1809,12 @@ fn decodeTerm(decoder: *Decoder, storage: [*]i64, next: *usize, root: bool, root
             @memcpy(destination[0..len], decoder.bytes[decoder.cursor .. decoder.cursor + len]);
             decoder.cursor += len;
             break :blk word_from_ptr(storage + start, tag_binary);
+        },
+        codec_float => blk: {
+            const start = next.*;
+            next.* += 1;
+            storage[start] = try decoder.readI64();
+            break :blk word_from_ptr(storage + start, tag_float);
         },
         else => error.Invalid,
     };
@@ -3604,6 +3633,8 @@ fn term_eq(left: i64, right: i64) bool {
     if (left == right) return true;
     const ltag = word_tag(left);
     if (ltag != word_tag(right)) return false;
+    if (ltag == tag_runtime_local and
+        (runtime_local_kind(left) != null or runtime_local_kind(right) != null)) return false;
 
     switch (ltag) {
         tag_tuple => {
@@ -3644,8 +3675,30 @@ fn term_eq(left: i64, right: i64) bool {
             }
             return true;
         },
+        tag_float => return float_bits(left) == float_bits(right),
         else => return false,
     }
+}
+
+/// Boxes an IEEE-754 binary64 bit pattern as a first-class dynamic term.
+pub export fn ex_term_float_lit(bits: i64) i64 {
+    const payload = alloc_words(1) orelse return nil_word;
+    payload[0] = bits;
+    return word_from_ptr(payload, tag_float);
+}
+
+pub export fn ex_term_is_float(word: i64) i64 {
+    return if (word_tag(word) == tag_float and runtime_local_kind(word) == null) 1 else 0;
+}
+
+/// Parses an already validated JSON number token into a boxed binary64 term.
+/// Invalid syntax and non-finite results return nil; callers own error shape.
+pub export fn ex_term_string_to_float(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const bytes = binary_bytes(binary)[0..binary_len(binary)];
+    const value = std.fmt.parseFloat(f64, bytes) catch return nil_word;
+    if (!std.math.isFinite(value)) return nil_word;
+    return ex_term_float_lit(@bitCast(@as(u64, @bitCast(value))));
 }
 
 /// Returns the byte length of a binary word; 0 for non-binaries.
@@ -4070,6 +4123,9 @@ comptime {
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_map_put, .{ .name = "ex.term.map_put" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
+    @export(&ex_term_float_lit, .{ .name = "ex.term.float_lit" });
+    @export(&ex_term_is_float, .{ .name = "ex.term.is_float" });
+    @export(&ex_term_string_to_float, .{ .name = "ex.term.string_to_float" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
     @export(&ex_term_is_atom, .{ .name = "ex.term.is_atom" });
     @export(&ex_term_is_binary, .{ .name = "ex.term.is_binary" });
@@ -4088,6 +4144,35 @@ test "term ABI tag and word layout" {
     // nil is both the empty list and an atom.
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(nil_word));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_list(nil_word));
+}
+
+test "boxed floats share tag 7 without colliding with runtime-local words" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const value = ex_term_float_lit(@bitCast(@as(u64, @bitCast(@as(f64, -0.0)))));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_float(value));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_is_float(runtime_local_word(runtime_local_ref, 42)));
+}
+
+test "string to float preserves finite binary64 values and rejects overflow" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const value = ex_term_string_to_float(test_binary_from_string("12.5"));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_float(value));
+    try std.testing.expectEqual(@as(u64, @bitCast(@as(f64, 12.5))), float_bits(value));
+
+    const overflow = ex_term_string_to_float(test_binary_from_string("1e400"));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(overflow));
 }
 
 test "term ABI construction and predicates" {
