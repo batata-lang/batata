@@ -26,9 +26,10 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     {"empty object", "{}", %{}},
     {"shallow array", "[true,null]", [true, nil]},
     {"shallow object", ~s({"ok":true}), %{"ok" => true}},
+    {"recursive containers", ~s([{"ok":[true,null]}]), [%{"ok" => [true, nil]}]},
     {"rejects unterminated string", ~s("abc), 99},
-    {"rejects trailing content", "true!", 99},
-    {"rejects unknown token", "wat", 99}
+    {"rejects trailing content", "true!", {:error, :invalid_json}},
+    {"rejects unknown token", "wat", {:error, :invalid_json}}
   ]
 
   for {name, input, expected} <- @cases do
