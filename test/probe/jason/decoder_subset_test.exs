@@ -59,6 +59,14 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     assert expected == Batata.execute(source, ctx)
   end
 
+  test "constructs escaped string bytes at runtime", %{ctx: ctx} do
+    source = JasonDecoderSubset.escape_source(~s("a\\n\\"b"))
+    expected = "b\"\na"
+
+    assert expected == beam_result(source)
+    assert expected == Batata.execute(source, ctx)
+  end
+
   defp beam_result(source) do
     [{module, _binary}] = Code.compile_string(source)
 

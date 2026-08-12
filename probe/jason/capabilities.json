@@ -6,11 +6,11 @@
     {"id": "number.integer", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "number.float", "status": "blocked", "owner": "runtime", "reason": "ex.dyn has no float representation"},
     {"id": "string.utf8", "status": "executable", "gate": "decoder_subset_test"},
-    {"id": "string.escape", "status": "shaped", "gate": "semantic_kernels_test"},
+    {"id": "string.escape", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "container.recursive", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "parser.cursor_value", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "container.dynamic_map", "status": "executable", "gate": "decoder_subset_test"},
-    {"id": "string.dynamic_binary", "status": "blocked", "owner": "lower", "reason": "escape decoding needs a runtime binary builder over decoded bytes or codepoints"},
+    {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
     {"id": "fixture.second", "status": "blocked", "owner": "probe", "reason": "requires zero runtime-owned blockers in its minimized kernel inventory"}

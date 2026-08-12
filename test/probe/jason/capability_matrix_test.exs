@@ -10,7 +10,7 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["container.recursive"]["status"] == "executable"
     assert capabilities["parser.cursor_value"]["status"] == "executable"
     assert capabilities["container.dynamic_map"]["status"] == "executable"
-    assert capabilities["string.dynamic_binary"]["status"] == "blocked"
+    assert capabilities["string.dynamic_binary"]["status"] == "executable"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"
     assert capabilities["fixture.second"]["status"] == "blocked"
   end

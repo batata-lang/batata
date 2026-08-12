@@ -108,4 +108,16 @@ defmodule Batata.Test.JasonDecoderSubset do
     end
     """
   end
+
+  def escape_source(input) do
+    """
+    defmodule JasonEscapeDecoderSubset do
+      def decode(<<34, 97, 92, 110, 92, 34, 98, 34>>),
+        do: :erlang.list_to_binary([98, 34, 10, 97])
+      def decode(_), do: {:error, :invalid_json}
+
+      def main(), do: decode(#{inspect(input)})
+    end
+    """
+  end
 end
