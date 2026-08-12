@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {"id": "literal.boolean", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "literal.null", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "number.integer", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "number.float", "status": "blocked", "owner": "runtime", "reason": "ex.dyn has no float representation"},
+    {"id": "string.utf8", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "string.escape", "status": "shaped", "gate": "semantic_kernels_test"},
+    {"id": "container.recursive", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
+    {"id": "fixture.second", "status": "blocked", "owner": "probe", "reason": "requires zero runtime-owned blockers in its minimized kernel inventory"}
+  ]
+}
