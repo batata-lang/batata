@@ -94,12 +94,18 @@ defmodule Batata.LiftTest do
              )
 
     rendered = MLIR.to_string(module, generic: true)
+    runtime_create = first_index(rendered, ~s{"ex.runtime_create"})
     runtime_enter = first_index(rendered, ~s{"ex.runtime_enter"})
     process_table_reset = first_index(rendered, ~s{"ex.process_table_reset"})
     entry_call = first_index(rendered, ~s{"ex.call"})
+    result_create = first_index(rendered, ~s{"ex.result_create"})
+    runtime_leave = first_index(rendered, ~s{"ex.runtime_leave"})
 
+    assert runtime_create < runtime_enter
     assert runtime_enter < process_table_reset
     assert process_table_reset < entry_call
+    assert entry_call < result_create
+    assert result_create < runtime_leave
   end
 
   test "lifts tuple and list literals plus predicates into ex IR", %{ctx: ctx} do

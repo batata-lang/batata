@@ -4881,6 +4881,95 @@ test "runtime lifecycle admits one owner and tracks joined workers" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
 }
 
+const WorkerRoleBoundaryProbe = struct {
+    instance: *Runtime,
+    handle: i64,
+    stale_epoch: u64,
+    current_epoch: u64,
+    stale_joined: bool = true,
+    foreign_joined: bool = true,
+    current_joined: bool = false,
+    enter_result: i64 = 99,
+    reset_result: i64 = 99,
+    result_create_result: i64 = 99,
+    public_leave_result: i64 = 99,
+    first_worker_leave: bool = false,
+    repeated_worker_leave: bool = true,
+
+    fn run(self: *@This()) void {
+        self.stale_joined = worker_join(self.instance, self.handle, self.stale_epoch);
+        self.foreign_joined = worker_join(self.instance, self.handle + 1, self.current_epoch);
+        self.current_joined = worker_join(self.instance, self.handle, self.current_epoch);
+        if (!self.current_joined) return;
+
+        self.enter_result = ex_term_runtime_enter(self.handle);
+        self.reset_result = ex_term_process_table_reset(default_process_cap);
+        self.result_create_result = ex_term_result_create(self.handle, 7);
+        self.public_leave_result = ex_term_runtime_leave();
+        self.first_worker_leave = worker_leave();
+        self.repeated_worker_leave = worker_leave();
+    }
+};
+
+test "worker tokens reject stale foreign and repeated lifecycle operations" {
+    try std.testing.expectEqual(@as(i64, -1), ex_term_runtime_leave());
+
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    const instance = active_runtime.?;
+    const stale_epoch = instance.execution_epoch;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    const current_epoch = instance.execution_epoch;
+    try std.testing.expect(current_epoch != stale_epoch);
+
+    var probe = WorkerRoleBoundaryProbe{
+        .instance = instance,
+        .handle = handle,
+        .stale_epoch = stale_epoch,
+        .current_epoch = current_epoch,
+    };
+    const thread = try std.Thread.spawn(.{}, WorkerRoleBoundaryProbe.run, .{&probe});
+    thread.join();
+
+    try std.testing.expect(!probe.stale_joined);
+    try std.testing.expect(!probe.foreign_joined);
+    try std.testing.expect(probe.current_joined);
+    try std.testing.expectEqual(@as(i64, -2), probe.enter_result);
+    try std.testing.expectEqual(@as(i64, -1), probe.reset_result);
+    try std.testing.expectEqual(@as(i64, -1), probe.result_create_result);
+    try std.testing.expectEqual(@as(i64, -1), probe.public_leave_result);
+    try std.testing.expect(probe.first_worker_leave);
+    try std.testing.expect(!probe.repeated_worker_leave);
+    try std.testing.expectEqual(@as(u32, 1), instance.execution_participants);
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
+test "execution epoch reaches its maximum without wrapping" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    const instance = active_runtime.?;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    instance.lifecycle_lock.lock();
+    instance.execution_epoch = std.math.maxInt(u64) - 1;
+    instance.lifecycle_lock.unlock();
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    try std.testing.expectEqual(std.math.maxInt(u64), instance.execution_epoch);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_enter(handle));
+    try std.testing.expectEqual(std.math.maxInt(u64), instance.execution_epoch);
+    try std.testing.expectEqual(LifecyclePhase.idle, instance.lifecycle_phase);
+    try std.testing.expectEqual(@as(i64, 0), instance.execution_handle);
+    try std.testing.expectEqual(@as(u32, 0), instance.execution_participants);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(handle));
+}
+
 test "host result handles retain terms and reject stale generations" {
     const runtime_handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
