@@ -2094,13 +2094,9 @@ defmodule Batata.Lift do
       create_op("ex.clock_init", [lit(budget, ctx, block)], [i64], ctx, block)
       batch_size = batch_size || budget
 
-      # Resume on any saved continuation (valid or stale): the cursor-loop
-      # state is positionally valid even after a message arrival invalidates
-      # the token, and a selective-receive scan observes new messages through
-      # the live mailbox-length check. Epoch invalidation is detected by
-      # `ex.term.cont_pending` (the driver's parking check and runtime tests);
-      # restarting the loop here would re-run the entry's pre-loop side
-      # effects.
+      # Resume the saved cursor even when message delivery invalidated its
+      # epoch. The state remains positionally valid and the receive loop reads
+      # the live mailbox length; restarting would repeat pre-loop effects.
       active = create_op("ex.cont_active", [], [i64], ctx, block)
 
       active_i1 =
