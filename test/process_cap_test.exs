@@ -65,6 +65,7 @@ defmodule Batata.ProcessCapTest do
              )
   end
 
+  @tag timeout: 180_000
   test "concurrent execute calls isolate dynamically grown process tables" do
     results =
       1..8

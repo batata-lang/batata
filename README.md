@@ -288,11 +288,17 @@ zig run -O ReleaseFast --dep runtime \
 This benchmark isolates invocation cost: it does not include Elixir parsing,
 MLIR lowering, or JIT construction.
 
-Run the native concurrency suite under ThreadSanitizer with:
+Run the native concurrency suite under ThreadSanitizer with the replayable
+runner (arguments are report directory, repetitions per seed, and seeds):
 
 ```sh
-zig test native/term_runtime.zig -lc -fsanitize-thread
+bash scripts/tsan.sh _build/tsan 1 0x6201
 ```
+
+Zig 0.16 must use its LLVM backend for TSan. The runner passes `-fllvm`, keeps
+debug symbols and frame pointers, and rejects the binary unless the linked
+`__tsan_init` symbol proves that instrumentation is active. There are no
+suppressions; failures retain the build flags, seed, case output, and log.
 
 Measure process-slot recycling under a long-running, short-lived-actor
 workload (one JSON object with spawn count, per-cap reuse success, peak
