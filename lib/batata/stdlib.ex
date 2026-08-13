@@ -197,6 +197,7 @@ defmodule Batata.Stdlib.String do
 
   @class_map %{
     {String, :length, 1} => :native_term,
+    {String, :printable?, 1} => :native_term,
     {String, :to_integer, 1} => :native_term,
     {String, :to_float, 1} => :native_term
   }
@@ -308,7 +309,8 @@ defmodule Batata.Stdlib do
            )
 
   @raising_mfas MapSet.new([
-                  {Kernel, :to_string, 1}
+                  {Kernel, :to_string, 1},
+                  {String, :printable?, 1}
                 ])
 
   @impure_mfas MapSet.new([
