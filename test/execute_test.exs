@@ -400,6 +400,20 @@ defmodule Batata.ExecuteTest do
     assert error.value == [1]
   end
 
+  test "lowers binary interpolation through Kernel.to_string", %{ctx: ctx} do
+    assert {"value=42!", "left/right", "atom=known"} ==
+             Batata.execute(
+               """
+               defmodule NativeInterpolation do
+                 def main() do
+                   {"value=#{42}!", "#{"left"}/#{"right"}", "atom=#{:known}"}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

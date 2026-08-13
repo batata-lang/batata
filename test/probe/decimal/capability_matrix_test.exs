@@ -10,6 +10,9 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["pattern.map_subset"]["gate"] == "execute_test"
     assert capabilities["pattern.map_parameter"]["status"] == "executable"
     assert capabilities["dispatch.non_exhaustive"]["status"] == "executable"
+    assert capabilities["string.interpolation"]["status"] == "executable"
+    assert capabilities["string.interpolation"]["gate"] == "execute_test"
+    assert capabilities["string.interpolation"]["scope"] =~ "compile-known atom"
 
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
