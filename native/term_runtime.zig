@@ -1042,6 +1042,14 @@ fn tuple3(a: i64, b: i64, d: i64) i64 {
     return word_from_ptr(words, tag_tuple);
 }
 
+fn tuple2(a: i64, b: i64) i64 {
+    const words = alloc_words(3) orelse return nil_word;
+    words[0] = 2;
+    words[1] = a;
+    words[2] = b;
+    return word_from_ptr(words, tag_tuple);
+}
+
 fn tuple5(a: i64, b: i64, d: i64, e: i64, f: i64) i64 {
     const words = alloc_words(6) orelse return nil_word;
     words[0] = 5;
@@ -3062,6 +3070,18 @@ pub export fn ex_term_map_length(map: i64) i64 {
     return @intCast(map_len(map));
 }
 
+/// Returns `{found, value}` for a map key. `found` is a tagged integer term,
+/// so a stored nil value remains distinguishable from a missing key.
+pub export fn ex_term_map_fetch(map: i64, key: i64) i64 {
+    if (word_tag(map) != tag_map) return tuple2(0, nil_word);
+    const len = map_len(map);
+    const entries = map_entries(map);
+    for (0..len) |i| {
+        if (term_eq(entries[i * 2], key)) return tuple2(1 << tag_shift, entries[i * 2 + 1]);
+    }
+    return tuple2(0, nil_word);
+}
+
 /// Returns the element count of an enumerable term: list length, tuple
 /// arity, map pair count, or binary byte length; 0 for non-enumerables.
 pub export fn ex_term_enumerable_count(word: i64) i64 {
@@ -4157,6 +4177,7 @@ comptime {
     @export(&ex_term_tuple_get, .{ .name = "ex.term.tuple_get" });
     @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
     @export(&ex_term_map_length, .{ .name = "ex.term.map_length" });
+    @export(&ex_term_map_fetch, .{ .name = "ex.term.map_fetch" });
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
@@ -4335,6 +4356,23 @@ test "term ABI reads" {
     const map = ex_term_map_from_list(entries);
     try std.testing.expectEqual(@as(i64, 1), ex_term_map_length(map));
     try std.testing.expectEqual(@as(i64, 0), ex_term_map_length(one));
+
+    const found = ex_term_map_fetch(map, one);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_to_int(ex_term_tuple_get(found, 0)));
+    try std.testing.expectEqual(two, ex_term_tuple_get(found, 1));
+
+    const missing = ex_term_map_fetch(map, two);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_tuple_get(missing, 0)));
+    try std.testing.expectEqual(nil_word, ex_term_tuple_get(missing, 1));
+
+    const nil_map = ex_term_map_from_list(ex_term_list_cons(one, ex_term_list_cons(nil_word, nil_word)));
+    const found_nil = ex_term_map_fetch(nil_map, one);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_to_int(ex_term_tuple_get(found_nil, 0)));
+    try std.testing.expectEqual(nil_word, ex_term_tuple_get(found_nil, 1));
+
+    const non_map = ex_term_map_fetch(one, one);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_tuple_get(non_map, 0)));
+    try std.testing.expectEqual(nil_word, ex_term_tuple_get(non_map, 1));
 
     // enumerable counts: list length, tuple arity, map pairs, binary bytes
     const count_bytes = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(one, nil_word)));
