@@ -16,6 +16,11 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["string.concat"]["status"] == "executable"
     assert capabilities["string.concat"]["gate"] == "execute_test"
     assert capabilities["string.concat"]["scope"] == "binary operands"
+    assert capabilities["control.short_circuit_and"]["status"] == "executable"
+    assert capabilities["control.short_circuit_and"]["gate"] == "execute_test"
+
+    assert capabilities["control.short_circuit_and"]["scope"] =~
+             "right-hand-side assignments excluded"
 
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
