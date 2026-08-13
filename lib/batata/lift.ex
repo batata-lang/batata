@@ -4463,6 +4463,41 @@ defmodule Batata.Lift do
   defp native_term_call(String, :length, [value], ctx, block),
     do: create_op("ex.binary_utf8_length", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(String, :printable?, [value], ctx, block) do
+    binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
+    condition = create_op("arith.trunci", [binary?], [MLIR.Type.i1()], ctx, block)
+    dyn = ex_type("dyn", ctx)
+
+    build_scf_if(
+      condition,
+      ctx,
+      block,
+      [integer_type(ctx)],
+      fn b ->
+        printable = create_op("ex.string_printable", [value], [MLIR.Type.i64()], ctx, b)
+        [unbox(boolean_term(printable, ctx, b), ctx, b)]
+      end,
+      fn b ->
+        payload =
+          create_term_op(
+            "ex.tuple",
+            [
+              atom_term(String, ctx, b),
+              atom_term(:printable?, ctx, b),
+              box_term(lit(2, ctx, b), ctx, b),
+              atom_term(nil, ctx, b)
+            ],
+            ctx,
+            b
+          )
+
+        raised = create_op("ex.raise", [payload, lit(2, ctx, b)], [dyn], ctx, b)
+        [unbox(raised, ctx, b)]
+      end
+    )
+    |> hd()
+  end
+
   defp native_term_call(String, :to_integer, [value], ctx, block),
     do: create_op("ex.string_to_int", [value], [MLIR.Type.i64()], ctx, block)
 

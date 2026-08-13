@@ -17,6 +17,7 @@
     {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "string.interpolation", "status": "executable", "gate": "execute_test", "scope": "integer, binary, and compile-known atom terms"},
     {"id": "string.concat", "status": "executable", "gate": "execute_test", "scope": "binary operands"},
+    {"id": "string.printable", "status": "executable", "gate": "stdlib_test", "scope": "String.printable?/1 including invalid UTF-8 and non-binary FunctionClauseError"},
     {"id": "control.short_circuit_and", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; returns original operand values; right-hand-side assignments excluded"},
     {"id": "guard.byte_size", "status": "executable", "gate": "guard_byte_size_test"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},

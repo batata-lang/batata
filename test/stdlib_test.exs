@@ -21,6 +21,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Map, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
+      assert Stdlib.class({String, :printable?, 1}) == :native_term
       assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
       assert Stdlib.class({Process, :link, 1}) == :native_term
@@ -37,6 +38,7 @@ defmodule Batata.StdlibTest do
 
     test "declares native calls which require an actor exception boundary" do
       assert Stdlib.may_raise?({Kernel, :to_string, 1})
+      assert Stdlib.may_raise?({String, :printable?, 1})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
     end
@@ -385,12 +387,44 @@ defmodule Batata.StdlibTest do
                )
     end
 
-    test "executes String.length/1 and String.to_integer/1", %{ctx: ctx} do
+    test "executes String length, printable, and integer conversions", %{ctx: ctx} do
       assert 3 == execute("String.length(\"abc\")", ctx)
       assert 3 == execute("String.length(\"aé中\")", ctx)
+      assert true == execute("String.printable?(\"\")", ctx)
+      assert true == execute("String.printable?(\" ~\\a\\b\\t\\n\\v\\f\\r\\e\\d\")", ctx)
+      assert false == execute("String.printable?(<<0>>)", ctx)
+      assert false == execute("String.printable?(<<0xC2, 0x80>>)", ctx)
+      assert true == execute("String.printable?(<<0xC2, 0xA0>>)", ctx)
+      assert true == execute("String.printable?(<<0xED, 0x9F, 0xBF>>)", ctx)
+      assert true == execute("String.printable?(<<0xEE, 0x80, 0x80>>)", ctx)
+      assert true == execute("String.printable?(<<0xEF, 0xBF, 0xBD>>)", ctx)
+      assert true == execute("String.printable?(<<0xF0, 0x90, 0x80, 0x80>>)", ctx)
+      assert true == execute("String.printable?(<<0xF4, 0x8F, 0xBF, 0xBF>>)", ctx)
+      assert false == execute("String.printable?(<<0xFF>>)", ctx)
+      assert false == execute("String.printable?(<<0xC0, 0xAF>>)", ctx)
+      assert false == execute("String.printable?(<<0xE2, 0x82>>)", ctx)
+      assert false == execute("String.printable?(<<0xED, 0xA0, 0x80>>)", ctx)
+      assert false == execute("String.printable?(<<0xF4, 0x90, 0x80, 0x80>>)", ctx)
       assert 42 == execute("String.to_integer(\"42\")", ctx)
       assert -7 == execute("String.to_integer(\"-7\")", ctx)
       assert 42 == execute("String.to_integer(Integer.to_string(42))", ctx)
+    end
+
+    test "matches String.printable?/1 non-binary FunctionClauseError", %{ctx: ctx} do
+      expected =
+        assert_raise FunctionClauseError, fn ->
+          String.printable?(System.get_env("BATATA_NON_BINARY_ORACLE") || 1)
+        end
+
+      actual =
+        assert_raise FunctionClauseError, fn ->
+          execute("String.printable?(1)", ctx)
+        end
+
+      assert actual.module == expected.module
+      assert actual.function == expected.function
+      assert actual.arity == expected.arity
+      assert actual.args == expected.args
     end
 
     test "executes Base16 encode/decode", %{ctx: ctx} do

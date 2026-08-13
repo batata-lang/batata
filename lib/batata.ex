@@ -177,6 +177,13 @@ defmodule Batata do
           arity: arity,
           args: args
 
+      {2, {module, function, arity, args}} ->
+        raise FunctionClauseError,
+          module: module,
+          function: function,
+          arity: arity,
+          args: args
+
       {3, {reason, value}} when reason in [:unknown_atom, :unsupported_type] ->
         raise UnsupportedFeatureError,
           reason: reason,
@@ -301,6 +308,10 @@ defmodule Batata do
     atoms = if Regex.match?(~r/\bnil\b/, source), do: Map.put(atoms, 1, nil), else: atoms
 
     atoms
+    |> Map.put(atom_word(true), true)
+    |> Map.put(atom_word(false), false)
+    |> Map.put(atom_word(String), String)
+    |> Map.put(atom_word(:printable?), :printable?)
     |> Map.put(atom_word(:unknown_atom), :unknown_atom)
     |> Map.put(atom_word(:unsupported_type), :unsupported_type)
   end
