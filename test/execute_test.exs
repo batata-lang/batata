@@ -489,6 +489,24 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "rejects an unprotected integer BIF in a term-pattern guard", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/unsupported guard on term pattern/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            case {100, 10} do
+              {value, _} when rem(value, 10) == 0 -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes binary rest matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

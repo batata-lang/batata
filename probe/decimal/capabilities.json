@@ -3,8 +3,8 @@
   "capabilities": [
     {"id": "decimal.finite_arithmetic", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.comparison_guards", "status": "executable", "gate": "decimal_subset_test"},
-    {"id": "decimal.guard_bifs", "status": "blocked", "owner": "frontend", "reason": "integer BIF calls such as rem/2 are not yet accepted in term-pattern guards"},
-    {"id": "decimal.numeric_guards", "status": "blocked", "owner": "lift", "reason": "comparison guards execute, but guarded integer BIF calls remain unsupported"},
+    {"id": "decimal.guard_bifs", "status": "executable", "gate": "decimal_subset_test"},
+    {"id": "decimal.numeric_guards", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.normalization", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.struct_surface", "status": "blocked", "owner": "frontend", "reason": "defstruct and struct patterns remain compile-time frontend forms"}
   ]

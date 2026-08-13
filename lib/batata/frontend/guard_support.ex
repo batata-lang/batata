@@ -10,26 +10,28 @@ defmodule Batata.Frontend.GuardSupport do
   @boolean_operators [:and, :andalso, :or, :orelse]
 
   @spec supported?(Macro.t()) :: boolean()
-  def supported?({predicate, _, [var_ast]}) when predicate in @predicates do
+  def supported?(guard_ast), do: do_supported?(guard_ast) and guard_bifs_protected?(guard_ast)
+
+  defp do_supported?({predicate, _, [var_ast]}) when predicate in @predicates do
     match?(
       {name, _, context} when is_atom(name) and (is_atom(context) or is_nil(context)),
       var_ast
     )
   end
 
-  def supported?({op, _, [left, right]}) when op in [:==, :!=, :===, :!==],
+  defp do_supported?({op, _, [left, right]}) when op in [:==, :!=, :===, :!==],
     do: operand?(left) and operand?(right)
 
-  def supported?({op, _, [left, right]}) when op in [:<, :<=, :>, :>=],
+  defp do_supported?({op, _, [left, right]}) when op in [:<, :<=, :>, :>=],
     do: integer_expression?(left) and integer_expression?(right)
 
-  def supported?({:in, _, [{name, _, _}, members]}) when is_atom(name),
+  defp do_supported?({:in, _, [{name, _, _}, members]}) when is_atom(name),
     do: integer_members(members) != nil
 
-  def supported?({op, _, [left, right]}) when op in @boolean_operators,
-    do: supported?(left) and supported?(right)
+  defp do_supported?({op, _, [left, right]}) when op in @boolean_operators,
+    do: do_supported?(left) and do_supported?(right)
 
-  def supported?(_guard_ast), do: false
+  defp do_supported?(_guard_ast), do: false
 
   @spec integer_members(Macro.t()) :: {:range, integer(), integer()} | {:set, [integer()]} | nil
   def integer_members({:.., _, [first, last]}) when is_integer(first) and is_integer(last),
@@ -48,6 +50,12 @@ defmodule Batata.Frontend.GuardSupport do
   defp operand?(value) when is_binary(value), do: true
   defp operand?(value) when is_atom(value), do: true
   defp operand?(value) when is_list(value), do: Enum.all?(value, &operand?/1)
+
+  defp operand?({:rem, _, [left, right]}),
+    do: integer_expression?(left) and integer_expression?(right)
+
+  defp operand?({{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, [left, right]}),
+    do: integer_expression?(left) and integer_expression?(right)
 
   defp operand?({name, _, context})
        when is_atom(name) and (is_atom(context) or is_nil(context)),
@@ -68,4 +76,62 @@ defmodule Batata.Frontend.GuardSupport do
     do: integer_expression?(left) and integer_expression?(right)
 
   defp integer_expression?(_expression), do: false
+
+  defp guard_bifs_protected?(guard_ast),
+    do: protected_guard_bifs?(guard_ast, MapSet.new())
+
+  defp protected_guard_bifs?({op, _, [left, right]}, protected)
+       when op in [:and, :andalso] do
+    protected_guard_bifs?(left, protected) and
+      protected_guard_bifs?(right, MapSet.union(protected, integer_predicate_vars(left)))
+  end
+
+  defp protected_guard_bifs?({op, _, [left, right]}, protected)
+       when op in [:or, :orelse],
+       do: protected_guard_bifs?(left, protected) and protected_guard_bifs?(right, protected)
+
+  defp protected_guard_bifs?({:rem, _, args}, protected),
+    do: MapSet.subset?(expression_vars(args), protected)
+
+  defp protected_guard_bifs?(
+         {{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, args},
+         protected
+       ),
+       do: MapSet.subset?(expression_vars(args), protected)
+
+  defp protected_guard_bifs?(tuple, protected) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.all?(&protected_guard_bifs?(&1, protected))
+
+  defp protected_guard_bifs?(list, protected) when is_list(list),
+    do: Enum.all?(list, &protected_guard_bifs?(&1, protected))
+
+  defp protected_guard_bifs?(_ast, _protected), do: true
+
+  defp integer_predicate_vars(ast) do
+    {_ast, vars} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {:is_integer, _, [{var, _, context}]} = node, vars
+        when is_atom(var) and (is_atom(context) or is_nil(context)) ->
+          {node, MapSet.put(vars, var)}
+
+        node, vars ->
+          {node, vars}
+      end)
+
+    vars
+  end
+
+  defp expression_vars(ast) do
+    {_ast, vars} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {var, _, context} = node, vars
+        when is_atom(var) and (is_atom(context) or is_nil(context)) ->
+          {node, MapSet.put(vars, var)}
+
+        node, vars ->
+          {node, vars}
+      end)
+
+    vars
+  end
 end

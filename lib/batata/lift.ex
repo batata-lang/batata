@@ -5019,6 +5019,16 @@ defmodule Batata.Lift do
     lower_integer_guard_comparison(left, right, op, env, ctx, block)
   end
 
+  defp lift_term_guard_expr({op, _, [left, right]} = guard_ast, env, ctx, block)
+       when op in [:==, :!=, :===, :!==] do
+    if guard_rem_call?(left) or guard_rem_call?(right) do
+      lower_integer_guard_comparison(left, right, op, env, ctx, block)
+    else
+      {value, _env} = lift_expr(guard_ast, ctx, block, env)
+      value
+    end
+  end
+
   defp lift_term_guard_expr(guard_ast, env, ctx, block) do
     {value, _env} = lift_expr(guard_ast, ctx, block, env)
     value
@@ -5062,6 +5072,31 @@ defmodule Batata.Lift do
     value = create_op(operation, [left, right], [integer_type(ctx)], ctx, block)
     {value, combine([left_valid, right_valid], ctx, block)}
   end
+
+  defp lower_integer_guard_expression({:rem, _, [left, right]}, env, ctx, block),
+    do: lower_integer_guard_rem(left, right, env, ctx, block)
+
+  defp lower_integer_guard_expression(
+         {{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, [left, right]},
+         env,
+         ctx,
+         block
+       ),
+       do: lower_integer_guard_rem(left, right, env, ctx, block)
+
+  defp lower_integer_guard_rem(left, right, env, ctx, block) do
+    {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
+    {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
+    value = create_op("ex.rem", [left, right], [integer_type(ctx)], ctx, block)
+    {value, combine([left_valid, right_valid], ctx, block)}
+  end
+
+  defp guard_rem_call?({:rem, _, [_left, _right]}), do: true
+
+  defp guard_rem_call?({{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, [_left, _right]}),
+    do: true
+
+  defp guard_rem_call?(_ast), do: false
 
   defp combine_any([], ctx, block), do: lit(0, ctx, block)
   defp combine_any([single], _ctx, _block), do: single
