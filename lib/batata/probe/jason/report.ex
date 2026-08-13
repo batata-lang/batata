@@ -8,7 +8,13 @@ defmodule Batata.Probe.Jason.Report do
   from later semantic, lowering, and runtime failures.
   """
 
-  alias Batata.Probe.Jason.{CompileAttempt, DependencyFrontier, Inventory}
+  alias Batata.Probe.Jason.{
+    BlockerIdentity,
+    CompileAttempt,
+    DependencyFrontier,
+    DiagnosticAttempt,
+    Inventory
+  }
 
   @schema_version 4
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
@@ -38,6 +44,7 @@ defmodule Batata.Probe.Jason.Report do
     files = Inventory.discover!(source)
     {ignored_metadata, blockers} = entries(files)
     compile_attempts = CompileAttempt.run(files)
+    diagnostic_attempts = DiagnosticAttempt.run(files)
     dependency_frontier = DependencyFrontier.collect(files)
 
     %{
@@ -51,9 +58,17 @@ defmodule Batata.Probe.Jason.Report do
       "scope_limits" => @scope_limits,
       "stages" => @known_stages,
       "summary" =>
-        summary(files, blockers, ignored_metadata, compile_attempts, dependency_frontier),
+        summary(
+          files,
+          blockers,
+          ignored_metadata,
+          compile_attempts,
+          diagnostic_attempts,
+          dependency_frontier
+        ),
       "ignored_metadata" => ignored_metadata,
       "module_compile_attempts" => compile_attempts,
+      "diagnostic_attempts" => diagnostic_attempts,
       "dependency_frontier" => dependency_frontier,
       "blockers" => blockers
     }
@@ -85,7 +100,7 @@ defmodule Batata.Probe.Jason.Report do
     error = file.parse_error
 
     [
-      blocker(%{
+      BlockerIdentity.put_id(%{
         "path" => file.path,
         "module" => nil,
         "line" => nil,
@@ -126,15 +141,7 @@ defmodule Batata.Probe.Jason.Report do
         :error -> entry
       end
 
-    blocker(entry)
-  end
-
-  defp blocker(entry) do
-    identity =
-      ~w(path module line reason form)
-      |> Enum.map_join("\0", &to_string(entry[&1]))
-
-    Map.put(entry, "id", digest(identity))
+    BlockerIdentity.put_id(entry)
   end
 
   defp stage(reason)
@@ -172,7 +179,14 @@ defmodule Batata.Probe.Jason.Report do
     }
   end
 
-  defp summary(files, blockers, ignored_metadata, compile_attempts, dependency_frontier) do
+  defp summary(
+         files,
+         blockers,
+         ignored_metadata,
+         compile_attempts,
+         diagnostic_attempts,
+         dependency_frontier
+       ) do
     modules = Enum.sum(Enum.map(files, &length(&1.modules)))
 
     definitions =
@@ -181,6 +195,8 @@ defmodule Batata.Probe.Jason.Report do
     counts = Enum.frequencies_by(blockers, & &1["stage"])
     categories = Enum.frequencies_by(blockers, & &1["reason"])
     attempt_counts = Enum.frequencies_by(compile_attempts, & &1["status"])
+    diagnostic_outcomes = Enum.frequencies_by(diagnostic_attempts, & &1["outcome"])
+    diagnostic_phases = Enum.frequencies_by(diagnostic_attempts, & &1["phase"])
 
     %{
       "files" => length(files),
@@ -208,6 +224,11 @@ defmodule Batata.Probe.Jason.Report do
       },
       "module_compile_attempts" =>
         Map.new(CompileAttempt.statuses(), &{&1, Map.get(attempt_counts, &1, 0)}),
+      "diagnostic_attempts" => %{
+        "total" => length(diagnostic_attempts),
+        "outcomes" => diagnostic_outcomes,
+        "phases" => diagnostic_phases
+      },
       "by_stage" => Map.new(@known_stages, &{&1, Map.get(counts, &1, 0)})
     }
   end

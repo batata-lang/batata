@@ -61,6 +61,13 @@ defmodule Batata.Probe.Jason.ReportTest do
            }
 
     assert first["dependency_frontier"] == []
+    assert first["diagnostic_attempts"] == []
+
+    assert first["summary"]["diagnostic_attempts"] == %{
+             "outcomes" => %{},
+             "phases" => %{},
+             "total" => 0
+           }
 
     assert first["summary"]["module_compile_attempts"] == %{
              "blocked_by_module_forms" => 1,
@@ -180,5 +187,23 @@ defmodule Batata.Probe.Jason.ReportTest do
                jason["module_compile_attempts"],
                &(&1["status"] == "frontend_normalization_failure")
              )
+
+    assert Enum.map(jason["diagnostic_attempts"], &{&1["module"], &1["reason_class"]}) == [
+             {"Jason.DecodeError", "map_pattern"},
+             {"Jason.EncodeError", "non_exhaustive_clauses"}
+           ]
+
+    assert Enum.all?(jason["diagnostic_attempts"], fn attempt ->
+             attempt["diagnostic_only"] and not Map.has_key?(attempt, "status") and
+               Enum.all?(attempt["removed_blockers"], fn removed ->
+                 Enum.any?(jason["blockers"], &(&1["id"] == removed["id"]))
+               end)
+           end)
+
+    assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
+             attempt["module"] == "Decimal.Macros" and
+               attempt["outcome"] == "synthetic_only" and
+               attempt["phase"] == "not_attempted"
+           end)
   end
 end
