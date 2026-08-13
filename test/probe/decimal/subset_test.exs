@@ -16,7 +16,12 @@ defmodule Batata.Probe.Decimal.SubsetTest do
   @cases [
     {"multiplies finite coefficients", "finite_mult(1, 125, 2, 0 - 1, 20, 1)"},
     {"preserves a positive sign", "finite_mult(1, 7, 0, 1, 9, 4)"},
-    {"preserves a zero coefficient", "finite_mult(0 - 1, 0, 3, 1, 99, 2)"}
+    {"preserves a zero coefficient", "finite_mult(0 - 1, 0, 3, 1, 99, 2)"},
+    {"accepts an equal scaled coefficient", "comparison_guard(100, 10, 10)"},
+    {"rejects a negative coefficient", "comparison_guard(0 - 1, 0 - 1, 1)"},
+    {"rejects a smaller scaled coefficient", "comparison_guard(99, 10, 10)"},
+    {"accepts a positive exponent", "positive_guard(1)"},
+    {"rejects a zero exponent", "positive_guard(0)"}
   ]
 
   for {name, expression} <- @cases do

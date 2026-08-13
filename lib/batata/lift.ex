@@ -4975,8 +4975,8 @@ defmodule Batata.Lift do
 
   # Term-pattern guards are evaluated eagerly against the (nil-safe) bound
   # values, so they must be composed of term-safe predicates only: `is_*`
-  # calls on bound or outer variables. Comparisons and arithmetic on terms
-  # are rejected explicitly.
+  # calls and explicitly supported integer expressions on bound or outer
+  # variables. Other term operations are rejected explicitly.
   defp lift_term_guard(guard_ast, binds, env, ctx, block) do
     unless GuardSupport.supported?(guard_ast) do
       raise Error,
@@ -5018,9 +5018,9 @@ defmodule Batata.Lift do
     create_op(mlir_op, [left, right], [MLIR.Type.i64()], ctx, block)
   end
 
-  defp lift_term_guard_expr({op, _, [{name, _, _}, integer]}, env, ctx, block)
-       when op in [:<=] and is_atom(name) and is_integer(integer) do
-    lower_integer_guard_comparison(Map.fetch!(env, name), integer, op, ctx, block)
+  defp lift_term_guard_expr({op, _, [left, right]}, env, ctx, block)
+       when op in [:<, :<=, :>, :>=] do
+    lower_integer_guard_comparison(left, right, op, env, ctx, block)
   end
 
   defp lift_term_guard_expr(guard_ast, env, ctx, block) do
@@ -5033,12 +5033,38 @@ defmodule Batata.Lift do
     combine([cmp(value, low, "sge", ctx, block), cmp(value, high, "sle", ctx, block)], ctx, block)
   end
 
-  defp lower_integer_guard_comparison(value, integer, op, ctx, block) do
-    word = box_if_scalar(value, ctx, block)
-    is_integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
+  defp lower_integer_guard_comparison(left, right, op, env, ctx, block) do
+    {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
+    {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
+    comparison = cmp(left, right, cmp_predicate(op), ctx, block)
+    combine([left_valid, right_valid, comparison], ctx, block)
+  end
+
+  defp lower_integer_guard_expression(integer, _env, ctx, block) when is_integer(integer),
+    do: {lit(integer, ctx, block), nil}
+
+  defp lower_integer_guard_expression({name, _, context}, env, ctx, block)
+       when is_atom(name) and (is_atom(context) or is_nil(context)) do
+    word = env |> Map.fetch!(name) |> box_if_scalar(ctx, block)
+    valid = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
     scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
-    comparison = cmp(scalar, integer, cmp_predicate(op), ctx, block)
-    combine([is_integer, comparison], ctx, block)
+    {scalar, valid}
+  end
+
+  defp lower_integer_guard_expression({op, _, [left, right]}, env, ctx, block)
+       when op in [:+, :-, :*] do
+    {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
+    {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
+
+    operation =
+      case op do
+        :+ -> "ex.add"
+        :- -> "ex.sub"
+        :* -> "ex.mul"
+      end
+
+    value = create_op(operation, [left, right], [integer_type(ctx)], ctx, block)
+    {value, combine([left_valid, right_valid], ctx, block)}
   end
 
   defp combine_any([], ctx, block), do: lit(0, ctx, block)
