@@ -294,6 +294,46 @@ defmodule Batata.LiftTest do
     assert "ex.tuple_get" in names
   end
 
+  test "lifts atom-keyed map subset patterns", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case %{position: nil, extra: 1} do
+              %{position: position} -> is_atom(position)
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.is_map" in names
+    assert "ex.map_fetch" in names
+    assert "ex.tuple_get" in names
+  end
+
+  test "rejects map pattern values outside the binding subset", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/map patterns only support/, fn ->
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case %{position: 1} do
+              %{position: 1} -> 1
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "lifts term pattern guards into the eager match condition", %{ctx: ctx} do
     module =
       lift!(

@@ -277,6 +277,47 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "executes atom-keyed map subset patterns through the Zig runtime", %{ctx: ctx} do
+    assert %{position: nil, extra: 1} ==
+             Batata.execute(
+               """
+               defmodule AtomMap do
+                 def main(), do: %{position: nil, extra: 1}
+               end
+               """,
+               ctx
+             )
+
+    assert {1, 0, 0, 1} ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   {
+                     case %{position: nil, extra: 1} do
+                       %{position: position} -> is_atom(position)
+                       _ -> 0
+                     end,
+                     case %{extra: 1} do
+                       %{position: position} -> is_atom(position)
+                       _ -> 0
+                     end,
+                     case 1 do
+                       %{position: position} -> is_atom(position)
+                       _ -> 0
+                     end,
+                     case %{position: nil, token: 7, extra: 1} do
+                       %{position: position, token: _token} -> is_atom(position)
+                       _ -> 0
+                     end
+                   }
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

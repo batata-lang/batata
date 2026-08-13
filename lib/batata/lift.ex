@@ -4726,6 +4726,10 @@ defmodule Batata.Lift do
     build_tuple_match(elements, value, ctx, block)
   end
 
+  defp do_build_match({:%{}, _, entries}, value, ctx, block) do
+    build_map_match(entries, value, ctx, block)
+  end
+
   defp do_build_match({:<<>>, _, segments}, value, ctx, block) do
     build_binary_match(segments, value, ctx, block)
   end
@@ -4821,6 +4825,60 @@ defmodule Batata.Lift do
 
     {combine([cond_tuple, cond_len | elem_conds], ctx, block), Enum.reverse(binds)}
   end
+
+  defp build_map_match(entries, value, ctx, block) do
+    unless Enum.all?(entries, &supported_map_pattern_entry?/1) do
+      raise Error,
+            "map patterns only support atom literal keys bound to variables or _: #{inspect(entries)}"
+    end
+
+    cond_map = create_op("ex.is_map", [value], [MLIR.Type.i64()], ctx, block)
+
+    {conds, binds} =
+      Enum.map_reduce(entries, [], fn {key, pattern}, binds ->
+        key_word =
+          create_op(
+            "ex.to_word",
+            [lit(atom_word(key), ctx, block)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+
+        fetched = create_op("ex.map_fetch", [value, key_word], [ex_type("dyn", ctx)], ctx, block)
+
+        found =
+          create_op(
+            "ex.tuple_get",
+            [fetched, lit(0, ctx, block)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+
+        fetched_value =
+          create_op(
+            "ex.tuple_get",
+            [fetched, lit(1, ctx, block)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+
+        found_int = create_op("ex.to_int", [found], [MLIR.Type.i64()], ctx, block)
+        found_cond = cmp(found_int, 1, "eq", ctx, block)
+        {_value_cond, value_binds} = do_build_match(pattern, fetched_value, ctx, block)
+        {found_cond, value_binds ++ binds}
+      end)
+
+    {combine([cond_map | conds], ctx, block), Enum.reverse(binds)}
+  end
+
+  defp supported_map_pattern_entry?({key, {name, _, nil}})
+       when is_atom(key) and is_atom(name),
+       do: true
+
+  defp supported_map_pattern_entry?(_entry), do: false
 
   defp list_elements_match([], _value, _ctx, _block, binds), do: {[], binds}
 
@@ -5224,9 +5282,10 @@ defmodule Batata.Lift do
   end
 
   defp term_pattern?(pattern) do
-    pattern
-    |> PatternPlan.lower_pattern()
-    |> Enum.any?(&(&1.op in [:tuple, :list_exact, :list_cons, :binary]))
+    match?({:%{}, _, _}, pattern) or
+      pattern
+      |> PatternPlan.lower_pattern()
+      |> Enum.any?(&(&1.op in [:tuple, :list_exact, :list_cons, :binary, :map]))
   end
 
   defp parse_clause({:->, _, [args, body]}) when is_list(args) do
@@ -5309,10 +5368,6 @@ defmodule Batata.Lift do
   defp lift_map_entries(entries, ctx, block, env) do
     Enum.flat_map_reduce(entries, env, fn entry, env ->
       case entry do
-        {key, _value} when is_atom(key) ->
-          raise Error,
-                "atom-keyed map entries are unsupported in the term slice: #{inspect(entry)}"
-
         {key, value} ->
           {key_value, env} = lift_expr(key, ctx, block, env)
           {value_value, env} = lift_expr(value, ctx, block, env)

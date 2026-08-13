@@ -8,7 +8,7 @@ defmodule Batata.Transform.PatternPlan do
   re-parsing clause AST shapes.
 
   The current subset covers integer literals, `_`/variables, and
-  tuple/list patterns (exact and cons). Anything else lowers to an
+  tuple/list patterns (exact and cons), and atom-keyed map patterns. Anything else lowers to an
   `:unsupported` step so the eventual lowering rejects it explicitly instead
   of guessing.
   """
@@ -157,7 +157,11 @@ defmodule Batata.Transform.PatternPlan do
   end
 
   defp do_lower_pattern({:%{}, _, entries}, path) do
-    [%Step{op: :unsupported, path: path, value: {:%{}, [], entries}}]
+    if Enum.all?(entries, &supported_map_entry?/1) do
+      [%Step{op: :map, path: path, value: Enum.map(entries, &elem(&1, 0))}]
+    else
+      [%Step{op: :unsupported, path: path, value: {:%{}, [], entries}}]
+    end
   end
 
   defp do_lower_pattern({:<<>>, _, segments}, path) do
@@ -219,6 +223,12 @@ defmodule Batata.Transform.PatternPlan do
   defp do_lower_pattern(other, path) do
     [%Step{op: :unsupported, path: path, value: other}]
   end
+
+  defp supported_map_entry?({key, {name, _, nil}})
+       when is_atom(key) and is_atom(name),
+       do: true
+
+  defp supported_map_entry?(_entry), do: false
 
   defp byte_pat({:"::", _, [pat, 8]}), do: pat
   defp byte_pat(pat), do: pat
