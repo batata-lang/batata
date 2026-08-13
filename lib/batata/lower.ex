@@ -46,6 +46,8 @@ defmodule Batata.Lower do
         "__batata_result_destroy",
         "__batata_result_root_kind",
         "__batata_result_root_word",
+        "__batata_result_exception_kind",
+        "__batata_result_exception_reason",
         "__batata_result_term_kind",
         "__batata_result_term_length",
         "__batata_result_term_get",

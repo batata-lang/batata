@@ -343,6 +343,7 @@ const Process = struct {
     status: ProcessStatus = .runnable,
     result: i64 = nil_word,
     exit_reason: i64 = nil_word,
+    exit_kind: i64 = 0,
     trap_exit: bool = false,
     links: [relation_cap]Link = undefined,
     link_count: usize = 0,
@@ -2072,6 +2073,7 @@ fn process_table_reset(instance: *Runtime, cap: i64) i64 {
 threadlocal var jmp_stack: [16]*c.jmp_buf = undefined;
 threadlocal var jmp_depth: usize = 0;
 threadlocal var throw_value: i64 = 0;
+threadlocal var unwind_kind: i64 = 0;
 // The worker boundary is distinct from user try frames, so programs retain
 // all 16 nested catch slots. An otherwise uncaught throw lands here and exits
 // only the current actor instead of panicking the native runtime.
@@ -2107,9 +2109,19 @@ pub export fn ex_term_try_pop() i64 {
 /// uncaught values at the actor boundary; calls outside a worker still abort.
 pub export fn ex_term_throw(value: i64) noreturn {
     throw_value = value;
+    unwind_kind = 0;
     if (jmp_depth > 0) c.longjmp(jmp_stack[jmp_depth - 1], 1);
     if (uncaught_boundary) |boundary| c.longjmp(boundary, 1);
     @panic("uncaught throw outside an actor boundary");
+}
+
+/// Raises an exception past user catch frames to the actor boundary. `kind`
+/// is kept as runtime metadata, never encoded in the user-controlled reason.
+pub export fn ex_term_raise(reason: i64, kind: i64) noreturn {
+    throw_value = reason;
+    unwind_kind = kind;
+    if (uncaught_boundary) |boundary| c.longjmp(boundary, 1);
+    @panic("uncaught exception outside an actor boundary");
 }
 
 /// Returns the value delivered by the most recent throw (called from the
@@ -2517,7 +2529,9 @@ const Worker = struct {
                     _ = ex_term_process_done(result);
                 } else {
                     const reason = throw_value;
+                    current_proc().exit_kind = unwind_kind;
                     jmp_depth = 0;
+                    unwind_kind = 0;
                     uncaught_boundary = null;
                     _ = self.instance.active_actors.fetchSub(1, .acq_rel);
                     _ = ex_term_process_exit(reason);
@@ -2927,6 +2941,46 @@ pub export fn ex_term_process_exit_reason(pid: i64) i64 {
     defer instance.scheduler_lock.unlock();
     if (!is_pid(pid)) return nil_word;
     const proc = resolve_pid(instance, pid) orelse return nil_word;
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return if (proc.status == .exited) proc.exit_reason else nil_word;
+}
+
+/// Exception discriminator for an abnormally exited process; zero denotes
+/// an ordinary uncaught throw or a non-exception exit.
+pub export fn ex_term_process_exit_kind(pid: i64) i64 {
+    const instance = runtime();
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    if (!is_pid(pid)) return 0;
+    const proc = resolve_pid(instance, pid) orelse return 0;
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return if (proc.status == .exited) proc.exit_kind else 0;
+}
+
+/// Reads exception metadata through a retained host result handle.
+pub export fn ex_term_result_exception_kind(handle: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const proc = resolve_pid(instance, pid_of(0, 1)) orelse return 0;
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    return if (proc.status == .exited) proc.exit_kind else 0;
+}
+
+pub export fn ex_term_result_exception_reason(handle: i64) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
+    instance.scheduler_lock.lock();
+    defer instance.scheduler_lock.unlock();
+    const proc = resolve_pid(instance, pid_of(0, 1)) orelse return nil_word;
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
     return if (proc.status == .exited) proc.exit_reason else nil_word;
@@ -4100,6 +4154,8 @@ comptime {
     @export(&ex_term_result_destroy, .{ .name = "ex.term.result_destroy" });
     @export(&ex_term_result_root_kind, .{ .name = "ex.term.result_root_kind" });
     @export(&ex_term_result_root_word, .{ .name = "ex.term.result_root_word" });
+    @export(&ex_term_result_exception_kind, .{ .name = "ex.term.result_exception_kind" });
+    @export(&ex_term_result_exception_reason, .{ .name = "ex.term.result_exception_reason" });
     @export(&ex_term_result_term_kind, .{ .name = "ex.term.result_term_kind" });
     @export(&ex_term_result_term_length, .{ .name = "ex.term.result_term_length" });
     @export(&ex_term_result_term_get, .{ .name = "ex.term.result_term_get" });
@@ -4155,6 +4211,7 @@ comptime {
     @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
     @export(&ex_term_process_result, .{ .name = "ex.term.process_result" });
     @export(&ex_term_process_exit_reason, .{ .name = "ex.term.process_exit_reason" });
+    @export(&ex_term_process_exit_kind, .{ .name = "ex.term.process_exit_kind" });
     @export(&ex_term_clock_init, .{ .name = "ex.term.clock_init" });
     @export(&ex_term_clock_tick, .{ .name = "ex.term.clock_tick" });
     @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
@@ -4168,6 +4225,7 @@ comptime {
     @export(&ex_term_try_push, .{ .name = "ex.term.try_push" });
     @export(&ex_term_try_pop, .{ .name = "ex.term.try_pop" });
     @export(&ex_term_throw, .{ .name = "ex.term.throw" });
+    @export(&ex_term_raise, .{ .name = "ex.term.raise" });
     @export(&ex_term_catch_value, .{ .name = "ex.term.catch_value" });
     @export(&ex_term_make_fun, .{ .name = "ex.term.make_fun" });
     @export(&ex_term_fun_idx, .{ .name = "ex.term.fun_idx" });
@@ -6080,6 +6138,28 @@ fn failure_boundary_dispatch(pid: i64) callconv(.c) i64 {
     if (pid_index(pid) == 1) ex_term_throw(77 << @intCast(tag_shift));
     _ = failure_boundary_probe.completed.fetchAdd(1, .acq_rel);
     return pid;
+}
+
+fn exception_boundary_dispatch(pid: i64) callconv(.c) i64 {
+    if (pid_index(pid) == 0) ex_term_raise(99 << @intCast(tag_shift), 1);
+    return pid;
+}
+
+test "typed raise bypasses catch frames and survives result ownership" {
+    const runtime_handle = ex_term_runtime_create();
+    _ = ex_term_runtime_enter(runtime_handle);
+    _ = ex_term_process_table_reset(default_process_cap);
+
+    var user_catch: c.jmp_buf = undefined;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_try_push(&user_catch));
+    _ = ex_term_worker_run(1, &exception_boundary_dispatch);
+
+    const handle = ex_term_result_create(runtime_handle, nil_word);
+    try std.testing.expect(handle > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 1), ex_term_result_exception_kind(handle));
+    try std.testing.expectEqual(99 << @intCast(tag_shift), ex_term_result_exception_reason(handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
 }
 
 test "uncaught throw exits only its actor and workers continue" {
