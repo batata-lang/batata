@@ -12,11 +12,15 @@ defmodule Batata.Frontend.GuardSupportTest do
     assert GuardSupport.supported?(quote(do: value >= 0))
     assert GuardSupport.supported?(quote(do: value > other * 10))
     assert GuardSupport.supported?(quote(do: value - offset < other + 1))
+    assert GuardSupport.supported?(quote(do: is_integer(value) and rem(value, 10) == 0))
+    assert GuardSupport.supported?(quote(do: is_integer(value) and Kernel.rem(value, 10) == 0))
     assert GuardSupport.supported?(quote(do: list == []))
     assert GuardSupport.supported?(quote(do: pretty !== false))
 
     refute GuardSupport.supported?(quote(do: is_function(value, 1)))
     refute GuardSupport.supported?(quote(do: value >= rem(other, 10)))
+    refute GuardSupport.supported?(quote(do: rem(value, 10) == 0))
+    refute GuardSupport.supported?(quote(do: is_integer(value) or rem(value, 10) == 0))
     refute GuardSupport.supported?(quote(do: value <= byte_size(data)))
   end
 end

@@ -34,6 +34,12 @@ defmodule Batata.Test.DecimalSubset do
             {0, 0, 0}
         end
       end
+      def divisible_guard(coef) do
+        case {coef, 10} do
+          {value, 10} when is_integer(value) and rem(value, 10) == 0 -> 1
+          _ -> 0
+        end
+      end
       def main(), do: #{expression}
     end
     """
