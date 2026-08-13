@@ -10,7 +10,7 @@ defmodule Batata.Probe.Jason.Report do
 
   alias Batata.Probe.Jason.{CompileAttempt, DependencyFrontier, Inventory}
 
-  @schema_version 3
+  @schema_version 4
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
   @scope_limits [
     "top-level forms only",
@@ -192,6 +192,14 @@ defmodule Batata.Probe.Jason.Report do
       "categories" => categories,
       "dependency_frontier" => %{
         "calls" => Enum.sum(Enum.map(dependency_frontier, & &1["count"])),
+        "eligible_calls" =>
+          dependency_frontier
+          |> Enum.filter(&(&1["source_eligibility"] == "compile_eligible"))
+          |> Enum.sum_by(& &1["count"]),
+        "blocked_calls" =>
+          dependency_frontier
+          |> Enum.filter(&(&1["source_eligibility"] == "blocked_by_module_forms"))
+          |> Enum.sum_by(& &1["count"]),
         "corpus_calls" =>
           dependency_frontier
           |> Enum.filter(&(&1["target_kind"] == "corpus"))

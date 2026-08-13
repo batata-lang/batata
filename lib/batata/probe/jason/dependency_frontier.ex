@@ -7,7 +7,7 @@ defmodule Batata.Probe.Jason.DependencyFrontier do
   external calls so future multi-module work can be prioritized by evidence.
   """
 
-  @doc "Collects deterministic remote-call counts from compile-eligible modules."
+  @doc "Collects deterministic remote-call counts from every discovered module."
   @spec collect([map()]) :: [map()]
   def collect(files) do
     corpus_modules =
@@ -18,16 +18,20 @@ defmodule Batata.Probe.Jason.DependencyFrontier do
     files
     |> Enum.flat_map(&file_calls(&1, corpus_modules))
     |> Enum.frequencies()
-    |> Enum.map(fn {{path, source, target, function, arity, target_kind}, count} ->
-      %{
-        "path" => path,
-        "module" => source,
-        "target" => target,
-        "function" => Atom.to_string(function),
-        "arity" => arity,
-        "target_kind" => target_kind,
-        "count" => count
-      }
+    |> Enum.map(fn
+      {{path, source, target, function, arity, target_kind, source_eligibility,
+        blocker_categories}, count} ->
+        %{
+          "path" => path,
+          "module" => source,
+          "target" => target,
+          "function" => Atom.to_string(function),
+          "arity" => arity,
+          "target_kind" => target_kind,
+          "source_eligibility" => source_eligibility,
+          "blocker_categories" => Map.new(blocker_categories),
+          "count" => count
+        }
     end)
     |> Enum.sort_by(&{&1["path"], &1["module"], &1["target"], &1["function"], &1["arity"]})
   end
@@ -36,15 +40,24 @@ defmodule Batata.Probe.Jason.DependencyFrontier do
     Enum.flat_map(file.modules, &module_calls(&1, file.path, corpus_modules))
   end
 
-  defp module_calls(%{compile_source: nil}, _path, _corpus_modules), do: []
-
   defp module_calls(module, path, corpus_modules) do
-    module.compile_source
-    |> Code.string_to_quoted!()
+    source_eligibility =
+      if module.compile_source, do: "compile_eligible", else: "blocked_by_module_forms"
+
+    blocker_categories =
+      module.unsupported
+      |> Enum.reject(&(&1.reason == :ignored_metadata))
+      |> Enum.frequencies_by(&to_string(&1.reason))
+      |> Enum.sort()
+
+    module.dependency_forms
+    |> then(&{:__block__, [], &1})
     |> remote_calls()
     |> Enum.map(fn {target, function, arity} ->
       target_kind = if MapSet.member?(corpus_modules, target), do: "corpus", else: "external"
-      {path, module.module, target, function, arity, target_kind}
+
+      {path, module.module, target, function, arity, target_kind, source_eligibility,
+       blocker_categories}
     end)
   end
 
