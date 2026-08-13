@@ -17,8 +17,11 @@ defmodule Batata.Frontend.GuardSupport do
     )
   end
 
-  def supported?({op, _, [left, right]}) when op in [:==, :!=],
+  def supported?({op, _, [left, right]}) when op in [:==, :!=, :===, :!==],
     do: operand?(left) and operand?(right)
+
+  def supported?({op, _, [left, right]}) when op in [:<=],
+    do: integer_comparison_operands?(left, right)
 
   def supported?({:in, _, [{name, _, _}, members]}) when is_atom(name),
     do: integer_members(members) != nil
@@ -43,6 +46,8 @@ defmodule Batata.Frontend.GuardSupport do
 
   defp operand?(value) when is_integer(value), do: true
   defp operand?(value) when is_binary(value), do: true
+  defp operand?(value) when is_atom(value), do: true
+  defp operand?(value) when is_list(value), do: Enum.all?(value, &operand?/1)
 
   defp operand?({name, _, context})
        when is_atom(name) and (is_atom(context) or is_nil(context)),
@@ -52,4 +57,10 @@ defmodule Batata.Frontend.GuardSupport do
   defp operand?({:%{}, _, _}), do: true
   defp operand?(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3, do: true
   defp operand?(_value), do: false
+
+  defp integer_comparison_operands?({name, _, context}, value)
+       when is_atom(name) and (is_atom(context) or is_nil(context)) and is_integer(value),
+       do: true
+
+  defp integer_comparison_operands?(_left, _right), do: false
 end

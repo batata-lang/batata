@@ -10,7 +10,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
       @moduledoc false
       import Bitwise
       def guarded(value) when is_integer(value), do: value
-      def unsupported(value) when value > 0, do: value
+      def unsupported(value) when is_function(value, 1), do: value
       def plain(value), do: value
 
       defmodule Inner do

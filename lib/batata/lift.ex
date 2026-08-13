@@ -2784,12 +2784,12 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({op, _, [left, right]}, ctx, block, env)
-       when op in [:==, :!=, :<, :<=, :>, :>=] do
+       when op in [:==, :!=, :===, :!==, :<, :<=, :>, :>=] do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
 
     if term_operand?(left_value) or term_operand?(right_value) do
-      unless op in [:==, :!=] do
+      unless op in [:==, :!=, :===, :!==] do
         raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
       end
 
@@ -2802,7 +2802,7 @@ defmodule Batata.Lift do
           block
         )
 
-      if op == :== do
+      if op in [:==, :===] do
         {eq, env}
       else
         {create_op(
@@ -4472,6 +4472,8 @@ defmodule Batata.Lift do
 
   defp cmp_predicate(:==), do: "eq"
   defp cmp_predicate(:!=), do: "ne"
+  defp cmp_predicate(:===), do: "eq"
+  defp cmp_predicate(:!==), do: "ne"
   defp cmp_predicate(:<), do: "slt"
   defp cmp_predicate(:<=), do: "sle"
   defp cmp_predicate(:>), do: "sgt"
@@ -5016,6 +5018,11 @@ defmodule Batata.Lift do
     create_op(mlir_op, [left, right], [MLIR.Type.i64()], ctx, block)
   end
 
+  defp lift_term_guard_expr({op, _, [{name, _, _}, integer]}, env, ctx, block)
+       when op in [:<=] and is_atom(name) and is_integer(integer) do
+    lower_integer_guard_comparison(Map.fetch!(env, name), integer, op, ctx, block)
+  end
+
   defp lift_term_guard_expr(guard_ast, env, ctx, block) do
     {value, _env} = lift_expr(guard_ast, ctx, block, env)
     value
@@ -5024,6 +5031,14 @@ defmodule Batata.Lift do
   defp lower_integer_range_membership(value, first, last, ctx, block) do
     {low, high} = if first <= last, do: {first, last}, else: {last, first}
     combine([cmp(value, low, "sge", ctx, block), cmp(value, high, "sle", ctx, block)], ctx, block)
+  end
+
+  defp lower_integer_guard_comparison(value, integer, op, ctx, block) do
+    word = box_if_scalar(value, ctx, block)
+    is_integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
+    scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
+    comparison = cmp(scalar, integer, cmp_predicate(op), ctx, block)
+    combine([is_integer, comparison], ctx, block)
   end
 
   defp combine_any([], ctx, block), do: lit(0, ctx, block)
