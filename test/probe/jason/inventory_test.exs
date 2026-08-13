@@ -94,4 +94,19 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert [%{status: :parse_error, parse_error: parse_error}] = Inventory.discover!(tmp_dir)
     assert is_binary(parse_error.description)
   end
+
+  @tag :tmp_dir
+  test "uses frontend alias expansion for inventory and compile source", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "sample.ex"), """
+    defmodule Sample do
+      alias Jason.Decoder
+      def parse(input), do: Decoder.parse(input)
+    end
+    """)
+
+    assert [%{modules: [module]}] = Inventory.discover!(tmp_dir)
+    assert module.unsupported == []
+    assert module.compile_source =~ "Jason.Decoder.parse(input)"
+    refute module.compile_source =~ "alias "
+  end
 end
