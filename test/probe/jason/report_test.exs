@@ -189,8 +189,8 @@ defmodule Batata.Probe.Jason.ReportTest do
              )
 
     assert Enum.map(jason["diagnostic_attempts"], &{&1["module"], &1["reason_class"]}) == [
-             {"Jason.DecodeError", "non_exhaustive_clauses"},
-             {"Jason.EncodeError", "non_exhaustive_clauses"}
+             {"Jason.DecodeError", "unsupported_stdlib_call"},
+             {"Jason.EncodeError", "unsupported_stdlib_call"}
            ]
 
     assert Enum.all?(jason["diagnostic_attempts"], fn attempt ->
@@ -198,6 +198,11 @@ defmodule Batata.Probe.Jason.ReportTest do
                Enum.all?(attempt["removed_blockers"], fn removed ->
                  Enum.any?(jason["blockers"], &(&1["id"] == removed["id"]))
                end)
+           end)
+
+    assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
+             attempt["module"] == "Decimal.Error" and
+               attempt["reason_class"] == "unsupported_stdlib_call"
            end)
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
