@@ -16,6 +16,7 @@
     {"id": "dispatch.non_exhaustive", "status": "executable", "gate": "execute_test"},
     {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "string.interpolation", "status": "executable", "gate": "execute_test", "scope": "integer, binary, and compile-known atom terms"},
+    {"id": "string.concat", "status": "executable", "gate": "execute_test", "scope": "binary operands"},
     {"id": "guard.byte_size", "status": "executable", "gate": "guard_byte_size_test"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},

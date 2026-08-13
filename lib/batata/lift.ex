@@ -236,17 +236,20 @@ defmodule Batata.Lift do
       (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
         (length(clauses) == 1 and Enum.any?(clauses, &function_clause_has_pattern?/1))
     end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
-      Enum.any?(definitions, &definition_uses_to_string?/1)
+      Enum.any?(definitions, &definition_uses_native_raise?/1)
   end
 
-  defp definition_uses_to_string?(%Frontend.Definition{clauses: clauses}) do
-    Enum.any?(clauses, fn %Frontend.Clause{body_ast: body} -> ast_uses_to_string?(body) end)
+  defp definition_uses_native_raise?(%Frontend.Definition{clauses: clauses}) do
+    Enum.any?(clauses, fn %Frontend.Clause{body_ast: body} -> ast_uses_native_raise?(body) end)
   end
 
-  defp ast_uses_to_string?(ast) do
+  defp ast_uses_native_raise?(ast) do
     {_ast, found?} =
       Macro.prewalk(ast, false, fn
         node, true ->
+          {node, true}
+
+        {:<>, _, [_, _]} = node, false ->
           {node, true}
 
         {:to_string, _, [_]} = node, false ->
@@ -2886,6 +2889,21 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_expr({:<>, _, [left_ast, right_ast]}, ctx, block, env) do
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    {right, env} = lift_expr(right_ast, ctx, block, env)
+    left = box_term(lift_value(left, ctx, block, env), ctx, block)
+    right = box_term(lift_value(right, ctx, block, env), ctx, block)
+
+    left_binary = create_op("ex.is_binary", [left], [MLIR.Type.i64()], ctx, block)
+    right_binary = create_op("ex.is_binary", [right], [MLIR.Type.i64()], ctx, block)
+
+    both_binary =
+      create_op("arith.andi", [left_binary, right_binary], [MLIR.Type.i64()], ctx, block)
+
+    {lower_binary_concat(left, right, both_binary, ctx, block), env}
+  end
+
   defp lift_expr({name, _, [arg]}, ctx, block, env)
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float] do
     {value, env} = lift_expr(arg, ctx, block, env)
@@ -4606,6 +4624,48 @@ defmodule Batata.Lift do
         ip: block,
         ctx: ctx,
         arguments: [value, operandSegmentSizes: segment_sizes([1])],
+        results: [dyn],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_binary_concat(left, right, both_binary, ctx, block) do
+    dyn = ex_type("dyn", ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    valid_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, valid_block)
+    create_op("ex.clause", [both_binary, patterns: pattern_attr([])], [], ctx, valid_block)
+    iodata = create_term_op("ex.list", [left, right], ctx, valid_block)
+    result = create_op("ex.iodata_to_binary", [iodata], [dyn], ctx, valid_block)
+    create_op("ex.yield", [result, operandSegmentSizes: segment_sizes([1])], [], ctx, valid_block)
+
+    fallback_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, fallback_block)
+    create_op("ex.clause", [patterns: pattern_attr([])], [], ctx, fallback_block)
+    operands = create_term_op("ex.tuple", [left, right], ctx, fallback_block)
+
+    raised =
+      create_op("ex.raise", [operands, lit(1, ctx, fallback_block)], [dyn], ctx, fallback_block)
+
+    create_op(
+      "ex.yield",
+      [raised, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      fallback_block
+    )
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [left, operandSegmentSizes: segment_sizes([1])],
         results: [dyn],
         loc: MLIR.Location.unknown(),
         filler: fn -> [region] end

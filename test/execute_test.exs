@@ -429,6 +429,35 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "concatenates values within the supported binary domain", %{ctx: ctx} do
+    assert {"leftright", "value", "three-parts"} ==
+             Batata.execute(
+               """
+               defmodule NativeBinaryConcat do
+                 def main() do
+                   left = "left"
+                   right = "right"
+                   {left <> right, "" <> "value", "three" <> "-" <> "parts"}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "fails closed when binary concat receives a non-binary operand", %{ctx: ctx} do
+    assert_raise CaseClauseError, fn ->
+      Batata.execute(
+        """
+        defmodule NativeBinaryConcat do
+          def main(), do: "value=" <> [1]
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
