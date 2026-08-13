@@ -61,18 +61,21 @@ that deeper diagnostic as a complete module pass.
 String interpolation now executes for integer, binary, and compile-known atom
 terms. Binary reads execute for valid binaries with in-range integer indexes;
 binary concatenation executes for binary operands and fails closed outside
-that domain. The refreshed diagnostic lane therefore exposes three distinct
-next frontiers: `String.printable?/1` for `Jason.DecodeError`, struct
-construction for `Jason.EncodeError`, and body-level short-circuit `&&` for
-`Decimal.Error`. Module pass counts remain zero: these are deeper diagnostic
-positions, not claims that the corpus modules compile.
+that domain. Body-level short-circuit `&&` now preserves Elixir's original
+operand values, treats only `false` and `nil` as falsy, and keeps the right-hand
+side lazy; assignments in that right-hand side remain outside the supported
+environment model. The refreshed diagnostic lane therefore reaches lowering
+completion for the shadow `Decimal.Error`, while `String.printable?/1` for
+`Jason.DecodeError` and struct construction for `Jason.EncodeError` remain the
+two distinct next frontiers. Module pass counts remain zero: a shadow diagnostic
+completion is deeper evidence, not a claim that the corpus module compiles.
 
-Those three frontiers no longer share a lowering primitive. Struct support
+The remaining frontiers do not share a lowering primitive. Struct support
 requires a deliberate `defstruct`/`__struct__` representation and field
-validation contract; `String.printable?/1` and body-level `&&` are separate
-language surfaces. The next stack should be chosen from their measured reuse
-across the existing fixtures, or a second fixture should be admitted if none
-has enough cross-corpus leverage.
+validation contract, while `String.printable?/1` is a separate standard-library
+surface. The next stack should be chosen from their measured reuse across the
+existing fixtures, or a second fixture should be admitted if neither has enough
+cross-corpus leverage.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
