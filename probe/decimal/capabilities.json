@@ -8,6 +8,8 @@
     {"id": "decimal.atom_membership", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.normalization", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "pattern.map_subset", "status": "executable", "gate": "execute_test"},
+    {"id": "pattern.map_parameter", "status": "executable", "gate": "execute_test"},
+    {"id": "dispatch.non_exhaustive", "status": "executable", "gate": "execute_test"},
     {"id": "decimal.struct_surface", "status": "blocked", "owner": "frontend", "reason": "defstruct and struct patterns remain compile-time frontend forms"}
   ]
 }

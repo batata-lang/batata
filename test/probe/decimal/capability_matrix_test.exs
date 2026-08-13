@@ -8,6 +8,8 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     capabilities = Map.new(matrix["capabilities"], &{&1["id"], &1})
 
     assert capabilities["pattern.map_subset"]["gate"] == "execute_test"
+    assert capabilities["pattern.map_parameter"]["status"] == "executable"
+    assert capabilities["dispatch.non_exhaustive"]["status"] == "executable"
 
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
