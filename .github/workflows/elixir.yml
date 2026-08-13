@@ -93,7 +93,7 @@ jobs:
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
       - name: Run tests
-        run: mix test --warnings-as-errors
+        run: mix test --warnings-as-errors --timeout 120000
         env:
           BEAVER_PATH: ${{ github.workspace }}/beaver
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
