@@ -226,21 +226,48 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects case without a final catch-all clause", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/catch-all/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def main() do
-            case 2 do
-              1 -> 10
+  test "raises CaseClauseError when case has no matching clause", %{ctx: ctx} do
+    error =
+      assert_raise CaseClauseError, fn ->
+        Batata.execute(
+          """
+          defmodule Math do
+            def main() do
+              case 2 do
+                1 -> 10
+              end
             end
           end
-        end
-        """,
-        ctx
-      )
-    end
+          """,
+          ctx
+        )
+      end
+
+    assert error.term == 2
+  end
+
+  test "typed case failures bypass user catch frames", %{ctx: ctx} do
+    error =
+      assert_raise CaseClauseError, fn ->
+        Batata.execute(
+          """
+          defmodule Math do
+            def main() do
+              try do
+                case 2 do
+                  1 -> 10
+                end
+              catch
+                _ -> 99
+              end
+            end
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert error.term == 2
   end
 
   test "executes tuple pattern matching through the Zig runtime", %{ctx: ctx} do
@@ -967,27 +994,33 @@ defmodule Batata.ExecuteTest do
   end
 
   @tag :multi_clause
-  test "rejects multi-clause functions without a final catch-all", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/catch-all/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def f(1) do
-            1
-          end
+  test "raises FunctionClauseError when no function clause matches", %{ctx: ctx} do
+    error =
+      assert_raise FunctionClauseError, fn ->
+        Batata.execute(
+          """
+          defmodule Math do
+            def f(1) do
+              1
+            end
 
-          def f(2) do
-            2
-          end
+            def f(2) do
+              2
+            end
 
-          def main() do
-            f(1)
+            def main() do
+              f(3)
+            end
           end
-        end
-        """,
-        ctx
-      )
-    end
+          """,
+          ctx
+        )
+      end
+
+    assert error.module == Math
+    assert error.function == :f
+    assert error.arity == 1
+    assert error.args == [3]
   end
 
   @tag :multi_clause

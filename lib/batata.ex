@@ -161,9 +161,9 @@ defmodule Batata do
       {1, term} ->
         raise CaseClauseError, term: term
 
-      {2, {module, function, arity, args}} ->
+      {2, {function, arity, args}} ->
         raise FunctionClauseError,
-          module: module,
+          module: Batata.Frontend.from_source(source).name,
           function: function,
           arity: arity,
           args: args
@@ -271,6 +271,14 @@ defmodule Batata do
           {node, acc}
       end)
       |> elem(1)
+
+    atoms =
+      source
+      |> Batata.Frontend.from_source()
+      |> Map.fetch!(:definitions)
+      |> Enum.reduce(atoms, fn definition, acc ->
+        Map.put(acc, atom_word(definition.name), definition.name)
+      end)
 
     # `nil` also appears pervasively as quoted AST metadata/context. Only
     # expose its immediate word when the source contains the literal token;

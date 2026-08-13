@@ -89,7 +89,7 @@ defmodule Batata.Lift do
   defp lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
     has_dispatch = dispatch_exists?(definitions)
 
-    if workers > 1 do
+    if workers > 1 or definitions_may_raise?(definitions) do
       lift_actor_step(ctx, body, has_dispatch)
       lift_parallel_driver(entry_name, ctx, body, workers, process_cap)
     else
@@ -220,7 +220,42 @@ defmodule Batata.Lift do
   # reduction budget is set (the entry may be preempted and must be resumed)
   # or when the source spawns processes (they must be executed to completion).
   defp driver_needed?(definitions, budget, workers) do
-    workers > 1 or budget != nil or Enum.any?(definitions, &definition_spawns?/1)
+    workers > 1 or budget != nil or definitions_may_raise?(definitions) or
+      Enum.any?(definitions, &definition_spawns?/1)
+  end
+
+  defp definitions_may_raise?(definitions) do
+    definitions
+    |> Enum.group_by(&{&1.name, &1.arity})
+    |> Enum.any?(fn {_key, group} ->
+      clauses = Enum.flat_map(group, & &1.clauses)
+      length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))
+    end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1)
+  end
+
+  defp function_clause_catch_all?(%Frontend.Clause{patterns: patterns, guard_ast: nil}) do
+    Enum.all?(patterns, &match?({name, _, nil} when is_atom(name), &1))
+  end
+
+  defp function_clause_catch_all?(_clause), do: false
+
+  defp definition_has_non_exhaustive_case?(%Frontend.Definition{clauses: clauses}) do
+    Enum.any?(clauses, fn %Frontend.Clause{body_ast: body} ->
+      ast_has_non_exhaustive_case?(body)
+    end)
+  end
+
+  defp ast_has_non_exhaustive_case?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        {:case, _, [_value, [do: clauses]]} = node, found? ->
+          {node, found? or not Enum.any?(clauses, &clause_catch_all?/1)}
+
+        node, found? ->
+          {node, found?}
+      end)
+
+    found?
   end
 
   defp definition_spawns?(%Frontend.Definition{clauses: clauses}) do
@@ -1087,7 +1122,9 @@ defmodule Batata.Lift do
       lift_case(clause_asts, arg, %{}, ctx, block,
         relax_types: true,
         box_scrutinee: false,
-        untag_int_binds: true
+        untag_int_binds: true,
+        failure_kind: 2,
+        failure_reason: {:{}, [], [name, 1, [{:__batata_unmatched__, [], nil}]]}
       )
 
     insert_return(return_value, ctx, block, %{})
@@ -1133,7 +1170,15 @@ defmodule Batata.Lift do
       lift_case(clause_asts, arg1, tail_env, ctx, block,
         relax_types: true,
         box_scrutinee: false,
-        untag_int_binds: true
+        untag_int_binds: true,
+        failure_kind: 2,
+        failure_reason:
+          {:{}, [],
+           [
+             name,
+             arity,
+             [{:__batata_unmatched__, [], nil} | Enum.map(tail_names, &{&1, [], nil})]
+           ]}
       )
 
     insert_return(return_value, ctx, block, tail_env)
@@ -2842,6 +2887,19 @@ defmodule Batata.Lift do
     {lift_case(clauses, scrutinee, env, ctx, block), env}
   end
 
+  defp lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env) do
+    {reason, env} = lift_expr(reason_ast, ctx, block, env)
+    reason = box_term(reason, ctx, block)
+
+    {create_op("ex.raise", [reason, lit(kind, ctx, block)], [ex_type("dyn", ctx)], ctx, block),
+     env}
+  end
+
+  defp lift_expr({:__batata_raise_scalar__, kind, reason_ast}, ctx, block, env) do
+    {raised, env} = lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env)
+    {create_op("ex.to_int", [raised], [integer_type(ctx)], ctx, block), env}
+  end
+
   defp lift_expr({:__block__, _, expressions}, ctx, block, env) do
     lift_block(expressions, ctx, block, env)
   end
@@ -4483,12 +4541,35 @@ defmodule Batata.Lift do
   defp cmp_predicate(:>=), do: "sge"
 
   defp lift_case(clauses, scrutinee, env, ctx, block, opts \\ []) do
-    if Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?())) do
+    term_case? = Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?()))
+    clauses = ensure_case_fallback(clauses, Keyword.put(opts, :term_case?, term_case?))
+
+    if term_case? do
       lift_term_case(clauses, scrutinee, env, ctx, block, opts)
     else
       lift_scalar_case(clauses, scrutinee, env, ctx, block, opts)
     end
   end
+
+  defp ensure_case_fallback(clauses, opts) do
+    if Enum.any?(clauses, &clause_catch_all?/1) do
+      clauses
+    else
+      unmatched = {:__batata_unmatched__, [], nil}
+      reason = Keyword.get(opts, :failure_reason, unmatched)
+      kind = Keyword.get(opts, :failure_kind, 1)
+
+      marker =
+        if Keyword.fetch!(opts, :term_case?),
+          do: :__batata_raise__,
+          else: :__batata_raise_scalar__
+
+      clauses ++ [{:->, [], [[unmatched], {marker, kind, reason}]}]
+    end
+  end
+
+  defp clause_catch_all?({:->, _, [[{name, _, nil}], _body]}) when is_atom(name), do: true
+  defp clause_catch_all?(_clause), do: false
 
   defp lift_scalar_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_clause/1)
