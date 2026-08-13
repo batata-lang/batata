@@ -40,7 +40,22 @@ defmodule Batata.Test.DecimalSubset do
           _ -> 0
         end
       end
-      def main(), do: #{expression}
+      def main(), do: (#{expression})
+    end
+    """
+  end
+
+  def new_guard_expression(sign, coef, exp) do
+    """
+    case {#{sign}, #{coef}, #{exp}} do
+      {sign, coef, exp}
+      when sign in [1, -1] and
+             ((is_integer(coef) and coef >= 0) or coef in [:NaN, :inf]) and
+             is_integer(exp) ->
+        1
+
+      _ ->
+        0
     end
     """
   end

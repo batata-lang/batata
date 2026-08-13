@@ -28,7 +28,16 @@ defmodule Batata.Probe.Decimal.SubsetTest do
     {"accepts a divisible coefficient", "divisible_guard(100)"},
     {"accepts a negative divisible coefficient", "divisible_guard(0 - 20)"},
     {"rejects a non-divisible coefficient", "divisible_guard(105)"},
-    {"rejects a non-integer coefficient", "divisible_guard(false)"}
+    {"rejects a non-integer coefficient", "divisible_guard(false)"},
+    {"accepts a finite new guard", DecimalSubset.new_guard_expression("1", "42", "0")},
+    {"accepts a NaN new guard", DecimalSubset.new_guard_expression("0 - 1", ":NaN", "3")},
+    {"accepts an infinity new guard", DecimalSubset.new_guard_expression("1", ":inf", "0 - 2")},
+    {"rejects a negative finite coefficient",
+     DecimalSubset.new_guard_expression("1", "0 - 1", "0")},
+    {"rejects an unknown atom coefficient",
+     DecimalSubset.new_guard_expression("1", ":other", "0")},
+    {"rejects an invalid sign", DecimalSubset.new_guard_expression("0", "10", "0")},
+    {"rejects a non-integer exponent", DecimalSubset.new_guard_expression("1", "10", "false")}
   ]
 
   for {name, expression} <- @cases do
