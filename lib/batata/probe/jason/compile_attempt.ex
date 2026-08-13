@@ -105,7 +105,7 @@ defmodule Batata.Probe.Jason.CompileAttempt do
       String.starts_with?(message, "unsupported parameter pattern: {:\\") ->
         "default_argument_pattern"
 
-      Regex.match?(~r/unsupported AST in the current slice: [A-Z][\w.]*\.[a-z_?!]+/u, message) ->
+      remote_module_call?(message) ->
         "remote_module_call"
 
       String.starts_with?(message, "unsupported stdlib call:") ->
@@ -126,6 +126,12 @@ defmodule Batata.Probe.Jason.CompileAttempt do
     error.__struct__
     |> inspect()
     |> Macro.underscore()
+  end
+
+  defp remote_module_call?(message) do
+    Regex.match?(~r/unsupported AST in the current slice: [A-Z][\w.]*\.[a-z_?!]+/u, message) or
+      (String.starts_with?(message, "unsupported AST in the current slice: {:__aliases__") and
+         Regex.match?(~r/\}\.[a-z_?!]+/u, message))
   end
 
   defp normalize_message(message) do
