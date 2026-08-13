@@ -12,6 +12,7 @@
     {"id": "parser.cursor_value", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "container.dynamic_map", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "guard.byte_size", "status": "executable", "gate": "guard_byte_size_test"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
     {"id": "fixture.second", "status": "executable", "gate": "decimal_subset_test"}

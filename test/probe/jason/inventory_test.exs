@@ -10,6 +10,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
       @moduledoc false
       import Bitwise
       def guarded(value) when is_integer(value), do: value
+      def at_end(position, data) when position == byte_size(data), do: position
       def unsupported(value) when is_function(value, 1), do: value
       def plain(value), do: value
 
@@ -31,6 +32,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
 
     assert outer.definitions == [
              %{kind: :def, name: :guarded, arity: 1, clauses: 1},
+             %{kind: :def, name: :at_end, arity: 2, clauses: 1},
              %{kind: :def, name: :plain, arity: 1, clauses: 1}
            ]
 
