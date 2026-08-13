@@ -1738,6 +1738,8 @@ defmodule Batata.Lift do
     {"__batata_result_destroy", "ex.result_destroy", 1},
     {"__batata_result_root_kind", "ex.result_root_kind", 1},
     {"__batata_result_root_word", "ex.result_root_word", 1},
+    {"__batata_result_exception_kind", "ex.result_exception_kind", 1},
+    {"__batata_result_exception_reason", "ex.result_exception_reason", 1},
     {"__batata_result_term_kind", "ex.result_term_kind", 2},
     {"__batata_result_term_length", "ex.result_term_length", 2},
     {"__batata_result_term_get", "ex.result_term_get", 3},

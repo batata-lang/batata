@@ -139,13 +139,37 @@ defmodule Batata do
       end
 
       try do
-        materialize_result(jit, handle, source)
+        case invoke_i64(jit, "__batata_result_exception_kind", [handle]) do
+          0 -> materialize_result(jit, handle, source)
+          kind -> materialize_exception(jit, handle, kind, source)
+        end
       after
         invoke_i64(jit, "__batata_result_destroy", [handle])
       end
     after
       MLIR.ExecutionEngine.destroy(jit)
       MLIR.Module.destroy(module)
+    end
+  end
+
+  defp materialize_exception(jit, handle, kind, source) do
+    word = invoke_i64(jit, "__batata_result_exception_reason", [handle])
+    term_kind = invoke_i64(jit, "__batata_result_term_kind", [handle, word])
+    reason = materialize_word(jit, handle, word, term_kind, literal_atom_table(source))
+
+    case {kind, reason} do
+      {1, term} ->
+        raise CaseClauseError, term: term
+
+      {2, {module, function, arity, args}} ->
+        raise FunctionClauseError,
+          module: module,
+          function: function,
+          arity: arity,
+          args: args
+
+      _ ->
+        raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
     end
   end
 

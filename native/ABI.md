@@ -137,6 +137,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | atomically release a live result pin and its runtime; -1 stale, -2 during execution/export or while another term pin remains; busy is side-effect free |
 | `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for stale/runtime-local values |
 | `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
+| `ex.term.result_exception_kind` | `(handle: i64) -> i64` | return the retained entry actor's exception discriminator, zero for no exception |
+| `ex.term.result_exception_reason` | `(handle: i64) -> i64` | return the retained entry actor's exception reason word |
 | `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
 | `ex.term.result_term_length` | `(handle: i64, word: i64) -> i64` | container length under a live result, or -1 when invalid |
 | `ex.term.result_term_get` | `(handle: i64, word: i64, index: i64) -> i64` | indexed tuple/list/map/binary access while the result is live; -1 when invalid |
@@ -191,6 +193,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.processes_runnable` | `() -> i64` | number of runnable processes (the driver loops while > 0) |
 | `ex.term.process_result` | `(pid: i64) -> i64` | result of a completed process; nil when unknown or still runnable |
 | `ex.term.process_exit_reason` | `(pid: i64) -> i64` | abnormal exit reason; nil for live, normally completed, stale or unknown pids |
+| `ex.term.process_exit_kind` | `(pid: i64) -> i64` | typed exception discriminator; zero for ordinary exits and throws |
+| `ex.term.raise` | `(reason: i64, kind: i64) -> noreturn` | bypass user catch frames and unwind to the actor boundary |
 | `ex.term.clock_init` | `(budget: i64) -> i64` | set the reduction budget and reset the used counter |
 | `ex.term.clock_tick` | `(cost: i64) -> i64` | charge reductions; 1 when the budget is exhausted (yield), else 0 |
 | `ex.term.clock_budget_left` | `() -> i64` | remaining budget clamped to >= 0; -1 when no budget is set |
