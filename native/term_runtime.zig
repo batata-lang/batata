@@ -3886,6 +3886,31 @@ pub export fn ex_term_binary_utf8_length(binary: i64) i64 {
     return count;
 }
 
+fn printable_codepoint(cp: i64) bool {
+    return (cp >= 0x20 and cp <= 0x7E) or
+        cp == '\n' or cp == '\r' or cp == '\t' or cp == 0x0B or
+        cp == 0x08 or cp == 0x0C or cp == 0x1B or cp == 0x7F or cp == 0x07 or
+        (cp >= 0xA0 and cp <= 0xD7FF) or
+        (cp >= 0xE000 and cp <= 0xFFFD) or
+        (cp >= 0x10000 and cp <= 0x10FFFF);
+}
+
+/// Returns whether every UTF-8 codepoint in a binary is printable according
+/// to Elixir's String.printable?/1 contract. Invalid UTF-8 and non-binaries
+/// return false; the empty binary is printable.
+pub export fn ex_term_string_printable(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return 0;
+
+    const len: i64 = @intCast(binary_len(binary));
+    var i: i64 = 0;
+    while (i < len) {
+        const decoded = utf8_at(binary, i) orelse return 0;
+        if (!printable_codepoint(decoded.cp)) return 0;
+        i += decoded.width;
+    }
+    return 1;
+}
+
 /// Encodes the bytes of a binary as an uppercase hexadecimal binary; nil for
 /// non-binaries.
 pub export fn ex_term_binary_encode16(binary: i64) i64 {
@@ -4265,6 +4290,7 @@ comptime {
     @export(&ex_term_binary_utf8_get, .{ .name = "ex.term.binary_utf8_get" });
     @export(&ex_term_binary_utf8_width, .{ .name = "ex.term.binary_utf8_width" });
     @export(&ex_term_binary_utf8_length, .{ .name = "ex.term.binary_utf8_length" });
+    @export(&ex_term_string_printable, .{ .name = "ex.term.string_printable" });
     @export(&ex_term_binary_encode16, .{ .name = "ex.term.binary_encode16" });
     @export(&ex_term_binary_decode16, .{ .name = "ex.term.binary_decode16" });
     @export(&ex_term_int_to_string, .{ .name = "ex.term.int_to_string" });
@@ -4615,6 +4641,35 @@ fn test_binary_from_string(s: []const u8) i64 {
         list = ex_term_list_cons(@as(i64, s[i]) << @intCast(tag_shift), list);
     }
     return ex_term_binary_from_list(list);
+}
+
+test "string printable follows Elixir UTF-8 and control character boundaries" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string(" ~")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\x07\x08\t\n\x0B\x0C\r\x1B\x7F")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\x00")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\x1F")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xC2\x80")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\xC2\xA0")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\xED\x9F\xBF")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\xEE\x80\x80")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\xEF\xBF\xBD")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\xF0\x90\x80\x80")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_string_printable(test_binary_from_string("\xF4\x8F\xBF\xBF")));
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xFF")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xC0\xAF")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xE2\x82")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xED\xA0\x80")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xF4\x90\x80\x80")));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(@as(i64, 1) << @intCast(tag_shift)));
 }
 
 test "iodata flatten handles nested lists and binary improper tails" {

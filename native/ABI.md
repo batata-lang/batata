@@ -240,6 +240,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.binary_utf8_get` | `(binary: i64, index: i64) -> i64` | UTF-8 codepoint at index as a tagged int term; nil for invalid/out-of-range |
 | `ex.term.binary_utf8_width` | `(binary: i64, index: i64) -> i64` | UTF-8 codepoint byte width; 0 for invalid/out-of-range |
 | `ex.term.binary_utf8_length` | `(binary: i64) -> i64` | UTF-8 codepoint count; invalid sequences count as one byte; 0 for non-binaries |
+| `ex.term.string_printable` | `(binary: i64) -> i64` | 1 when every UTF-8 codepoint is printable under Elixir's `String.printable?/1` contract; 0 for invalid UTF-8 or non-binaries |
 | `ex.term.binary_encode16` | `(binary: i64) -> i64` | uppercase hexadecimal binary of the bytes; nil for non-binaries |
 | `ex.term.binary_decode16` | `(binary: i64) -> i64` | bytes from an uppercase hexadecimal binary; nil for non-binaries, odd lengths, or invalid digits |
 | `ex.term.int_to_string` | `(word: i64) -> i64` | decimal binary of a tagged integer term; nil for non-integers |
