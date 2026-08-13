@@ -1645,6 +1645,31 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "rejects multiple receive sites on parallel workers", %{ctx: ctx} do
+    assert_raise ArgumentError,
+                 ~r/parallel workers currently support at most one receive site/,
+                 fn ->
+                   Batata.execute(
+                     """
+                     defmodule Math do
+                       def main() do
+                         receive do
+                           1 -> 1
+                         end
+
+                         receive do
+                           2 -> 2
+                         end
+                       end
+                     end
+                     """,
+                     ctx,
+                     workers: 2,
+                     reduction_budget: 2
+                   )
+                 end
+  end
+
   test "round-robins multiple spawned processes between preempted slices", %{ctx: ctx} do
     # Each spawned process gets its own slice while the entry is suspended;
     # both messages are delivered FIFO and observed by the entry on resume.

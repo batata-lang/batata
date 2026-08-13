@@ -27,6 +27,7 @@ defmodule Batata do
   @spec compile(String.t(), MLIR.Context.t()) :: MLIR.Module.t()
   def compile(source, ctx, opts \\ []) do
     validate_reduction_budget!(opts[:reduction_budget])
+    validate_parallel_receive_sites!(source, Keyword.get(opts, :workers, 1))
 
     module =
       source
@@ -57,6 +58,31 @@ defmodule Batata do
   defp validate_reduction_budget!(budget) do
     raise ArgumentError,
           "reduction_budget must be a positive integer or nil, got: #{inspect(budget)}"
+  end
+
+  # The current continuation ABI has one slot per actor. With multiple native
+  # workers, a later blocking receive can suspend after an earlier receive has
+  # completed, then re-enter the function at that earlier site. Fail before
+  # entering the JIT instead of allowing a wrong result, hang, or a timeout-
+  # induced VM crash. The serial scheduler remains the supported path for
+  # multiple receive sites until continuations carry a stable site identity.
+  defp validate_parallel_receive_sites!(_source, workers) when workers <= 1, do: :ok
+
+  defp validate_parallel_receive_sites!(source, workers) do
+    receive_sites =
+      source
+      |> Code.string_to_quoted!()
+      |> Macro.prewalk(0, fn
+        {:receive, _, _} = node, count -> {node, count + 1}
+        node, count -> {node, count}
+      end)
+      |> elem(1)
+
+    if receive_sites > 1 do
+      raise ArgumentError,
+            "parallel workers currently support at most one receive site per module; " <>
+              "got #{receive_sites} with workers: #{workers}"
+    end
   end
 
   @doc """
