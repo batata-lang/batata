@@ -414,6 +414,21 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "reads bytes within the supported :binary.at domain", %{ctx: ctx} do
+    assert {1, 2, 3} ==
+             Batata.execute(
+               """
+               defmodule NativeBinaryAt do
+                 def main() do
+                   binary = <<1, 2, 3>>
+                   {:binary.at(binary, 0), :binary.at(binary, 1), :binary.at(binary, 2)}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

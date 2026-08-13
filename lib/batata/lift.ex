@@ -4387,6 +4387,11 @@ defmodule Batata.Lift do
   defp native_term_call(module, :map_size, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(:binary, :at, [binary, index], ctx, block) do
+    index = create_op("ex.to_int", [index], [integer_type(ctx)], ctx, block)
+    create_op("ex.binary_get", [binary, index], [ex_type("dyn", ctx)], ctx, block)
+  end
+
   defp native_term_call(module, :list_to_binary, [value], ctx, block)
        when module in [Kernel, :erlang],
        do: create_op("ex.binary_from_list", [value], [ex_type("dyn", ctx)], ctx, block)

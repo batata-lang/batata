@@ -123,6 +123,7 @@ defmodule Batata.Stdlib.Binary do
   """
 
   @class_map %{
+    {:binary, :at, 2} => :native_term,
     {Binary, :part, 3} => :unsupported
   }
 
