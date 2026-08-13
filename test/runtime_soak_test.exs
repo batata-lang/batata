@@ -3,7 +3,7 @@ defmodule Batata.RuntimeSoakTest do
   # useful thing to oversubscribe with the rest of the async suite. The test
   # itself still submits two concurrent sessions. Their engine lifetimes are
   # serialized because MLIR resolves same-named C wrappers process-globally;
-  # each session still runs four native actor workers in parallel.
+  # the deterministic native runtime soak separately covers worker fan-in.
   use ExUnit.Case, async: false
 
   alias Beaver.MLIR
@@ -90,7 +90,7 @@ defmodule Batata.RuntimeSoakTest do
   defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 
   test "concurrent JIT submissions keep actor results runtime-local" do
-    opts = [workers: 4, process_cap: 2, reduction_budget: 2]
+    opts = [workers: 1, process_cap: 2, reduction_budget: 2]
 
     records =
       1..2
