@@ -59,11 +59,20 @@ The diagnostic lane records the next blocker actually reached by
 that deeper diagnostic as a complete module pass.
 
 String interpolation now executes for integer, binary, and compile-known atom
-terms. The refreshed diagnostic lane therefore exposes three distinct next
-frontiers: `:binary.at/2` for `Jason.DecodeError`, struct construction for
-`Jason.EncodeError`, and binary concatenation for `Decimal.Error`. With the
-shared interpolation blocker removed, the next stack should be selected from
-those measured frontiers before adding another implementation fixture.
+terms. Binary reads execute for valid binaries with in-range integer indexes;
+binary concatenation executes for binary operands and fails closed outside
+that domain. The refreshed diagnostic lane therefore exposes three distinct
+next frontiers: `String.printable?/1` for `Jason.DecodeError`, struct
+construction for `Jason.EncodeError`, and body-level short-circuit `&&` for
+`Decimal.Error`. Module pass counts remain zero: these are deeper diagnostic
+positions, not claims that the corpus modules compile.
+
+Those three frontiers no longer share a lowering primitive. Struct support
+requires a deliberate `defstruct`/`__struct__` representation and field
+validation contract; `String.printable?/1` and body-level `&&` are separate
+language surfaces. The next stack should be chosen from their measured reuse
+across the existing fixtures, or a second fixture should be admitted if none
+has enough cross-corpus leverage.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
