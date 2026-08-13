@@ -8,7 +8,7 @@ defmodule Batata.Probe.Jason.Report do
   from later semantic, lowering, and runtime failures.
   """
 
-  alias Batata.Probe.Jason.{CompileAttempt, Inventory}
+  alias Batata.Probe.Jason.{CompileAttempt, DependencyFrontier, Inventory}
 
   @schema_version 3
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
@@ -38,6 +38,7 @@ defmodule Batata.Probe.Jason.Report do
     files = Inventory.discover!(source)
     {ignored_metadata, blockers} = entries(files)
     compile_attempts = CompileAttempt.run(files)
+    dependency_frontier = DependencyFrontier.collect(files)
 
     %{
       "schema_version" => @schema_version,
@@ -49,9 +50,11 @@ defmodule Batata.Probe.Jason.Report do
       "coverage_claim" => @coverage_claim,
       "scope_limits" => @scope_limits,
       "stages" => @known_stages,
-      "summary" => summary(files, blockers, ignored_metadata, compile_attempts),
+      "summary" =>
+        summary(files, blockers, ignored_metadata, compile_attempts, dependency_frontier),
       "ignored_metadata" => ignored_metadata,
       "module_compile_attempts" => compile_attempts,
+      "dependency_frontier" => dependency_frontier,
       "blockers" => blockers
     }
   end
@@ -169,7 +172,7 @@ defmodule Batata.Probe.Jason.Report do
     }
   end
 
-  defp summary(files, blockers, ignored_metadata, compile_attempts) do
+  defp summary(files, blockers, ignored_metadata, compile_attempts, dependency_frontier) do
     modules = Enum.sum(Enum.map(files, &length(&1.modules)))
 
     definitions =
@@ -187,6 +190,14 @@ defmodule Batata.Probe.Jason.Report do
       "ignored_metadata" => length(ignored_metadata),
       "ignored_metadata_by_attribute" => Enum.frequencies_by(ignored_metadata, & &1["attribute"]),
       "categories" => categories,
+      "dependency_frontier" => %{
+        "calls" => Enum.sum(Enum.map(dependency_frontier, & &1["count"])),
+        "corpus_calls" =>
+          dependency_frontier
+          |> Enum.filter(&(&1["target_kind"] == "corpus"))
+          |> Enum.sum_by(& &1["count"]),
+        "targets" => dependency_frontier |> Enum.map(& &1["target"]) |> Enum.uniq() |> length()
+      },
       "module_compile_attempts" =>
         Map.new(CompileAttempt.statuses(), &{&1, Map.get(attempt_counts, &1, 0)}),
       "by_stage" => Map.new(@known_stages, &{&1, Map.get(counts, &1, 0)})
