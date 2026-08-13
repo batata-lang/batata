@@ -134,6 +134,21 @@ defmodule Batata.Probe.Jason.CompileAttempt do
     end
   end
 
+  defp reason_class(%Batata.Lower.Error{}, message) do
+    cond do
+      String.contains?(message, "does not reference a valid function") and
+          String.contains?(message, "@\"<>\"") ->
+        "unresolved_binary_concat"
+
+      String.contains?(message, "does not reference a valid function") and
+          String.contains?(message, "@__aliases__") ->
+        "unresolved_struct_constructor"
+
+      true ->
+        "lowering_pass_failure"
+    end
+  end
+
   defp reason_class(error, _message) do
     error.__struct__
     |> inspect()

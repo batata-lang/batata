@@ -12,6 +12,11 @@ defmodule Batata.Lower do
   alias Beaver.MLIR.Conversion.Plan
   alias Beaver.Walker
 
+  defmodule Error do
+    @moduledoc "Raised when a standard MLIR lowering pass rejects the generated module."
+    defexception [:message]
+  end
+
   @doc """
   Converts an `ex` dialect module to `func`/`arith`/`scf`/`cf`.
 
@@ -99,7 +104,15 @@ defmodule Batata.Lower do
 
     try do
       MLIR.CAPI.mlirPassManagerAddOwnedPass(pass_manager, pass_fun.())
-      {:ok, _} = MLIR.PassManager.run(pass_manager, module)
+
+      case MLIR.PassManager.run(pass_manager, module) do
+        {:ok, _diagnostics} ->
+          :ok
+
+        {:error, diagnostics} ->
+          raise Error,
+            message: MLIR.Diagnostic.format(diagnostics, "standard MLIR lowering pass failed")
+      end
     after
       MLIR.PassManager.destroy(pass_manager)
     end

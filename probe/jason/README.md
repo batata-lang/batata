@@ -58,6 +58,13 @@ The diagnostic lane records the next blocker actually reached by
 `Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error`; it does not count
 that deeper diagnostic as a complete module pass.
 
+String interpolation now executes for integer, binary, and compile-known atom
+terms. The refreshed diagnostic lane therefore exposes three distinct next
+frontiers: `:binary.at/2` for `Jason.DecodeError`, struct construction for
+`Jason.EncodeError`, and binary concatenation for `Decimal.Error`. With the
+shared interpolation blocker removed, the next stack should be selected from
+those measured frontiers before adding another implementation fixture.
+
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
 scanner/IR probe; and every `blocked` row has one owning layer and a reason.
