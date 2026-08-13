@@ -31,6 +31,20 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   @spec statuses() :: [String.t()]
   def statuses, do: @statuses
 
+  @doc false
+  @spec failure_details(Exception.t()) :: map()
+  def failure_details(error) do
+    message = Exception.message(error)
+    reason_class = reason_class(error, message)
+    normalized_message = normalize_message(message)
+
+    %{
+      "error" => error.__struct__ |> inspect(),
+      "reason_class" => reason_class,
+      "fingerprint" => digest(reason_class <> "\0" <> normalized_message)
+    }
+  end
+
   defp attempt(path, %{compile_source: nil} = module) do
     reasons =
       module.unsupported
@@ -76,11 +90,54 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   end
 
   defp failure(path, module_name, status, error) do
-    %{
-      "path" => path,
-      "module" => module_name,
-      "status" => status,
-      "error" => error.__struct__ |> inspect()
-    }
+    Map.merge(
+      %{
+        "path" => path,
+        "module" => module_name,
+        "status" => status
+      },
+      failure_details(error)
+    )
   end
+
+  defp reason_class(%Batata.Lift.Error{}, message) do
+    cond do
+      String.starts_with?(message, "unsupported parameter pattern: {:\\") ->
+        "default_argument_pattern"
+
+      Regex.match?(~r/unsupported AST in the current slice: [A-Z][\w.]*\.[a-z_?!]+/u, message) ->
+        "remote_module_call"
+
+      String.starts_with?(message, "unsupported stdlib call:") ->
+        "unsupported_stdlib_call"
+
+      String.starts_with?(message, "unsupported AST in the current slice:") ->
+        "unsupported_ast"
+
+      String.contains?(message, "interpolation") ->
+        "string_interpolation"
+
+      true ->
+        "lift_error"
+    end
+  end
+
+  defp reason_class(error, _message) do
+    error.__struct__
+    |> inspect()
+    |> Macro.underscore()
+  end
+
+  defp normalize_message(message) do
+    message
+    |> String.replace(~r/(?<![\w.])(?:[A-Za-z]:)?\/(?:[\w.\-]+\/)+[\w.\-]+/, "<path>")
+    |> String.replace(~r/:(?:line\s*)?\d+(?::\d+)?/i, ":<location>")
+    |> String.replace(~r/#PID<[^>]+>/, "#PID<...>")
+    |> String.replace(~r/#Reference<[^>]+>/, "#Reference<...>")
+    |> String.replace(~r/0x[0-9a-f]+/i, "0x...")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
+
+  defp digest(value), do: :crypto.hash(:sha256, value) |> Base.encode16(case: :lower)
 end

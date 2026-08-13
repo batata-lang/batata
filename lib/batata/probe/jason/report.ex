@@ -14,7 +14,8 @@ defmodule Batata.Probe.Jason.Report do
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
   @scope_limits [
     "top-level forms only",
-    "macro calls inside definition bodies are not attributed"
+    "macro calls inside definition bodies are not attributed",
+    "single-module compile attempts; cross-module calls are not resolvable"
   ]
   @known_stages ~w(
     parse

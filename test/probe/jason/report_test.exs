@@ -36,7 +36,8 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert first["scope_limits"] == [
              "top-level forms only",
-             "macro calls inside definition bodies are not attributed"
+             "macro calls inside definition bodies are not attributed",
+             "single-module compile attempts; cross-module calls are not resolvable"
            ]
 
     assert first["corpus"]["ref"] == "v1.4.5"
