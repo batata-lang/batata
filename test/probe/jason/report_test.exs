@@ -125,4 +125,22 @@ defmodule Batata.Probe.Jason.ReportTest do
              }
            ]
   end
+
+  test "committed corpus baselines contain no supported alias blockers" do
+    jason = "probe/jason/baseline.json" |> File.read!() |> JSON.decode!()
+    decimal = "probe/decimal/baseline.json" |> File.read!() |> JSON.decode!()
+
+    assert jason["summary"]["categories"]["alias"] == nil
+    assert decimal["summary"]["categories"]["alias"] == nil
+    assert jason["summary"]["blockers"] == 85
+    assert decimal["summary"]["blockers"] == 43
+    assert jason["summary"]["definitions"] == 239
+    assert decimal["summary"]["definitions"] == 243
+
+    assert [%{"reason_class" => "default_argument_pattern"}] =
+             Enum.filter(
+               jason["module_compile_attempts"],
+               &(&1["status"] == "frontend_normalization_failure")
+             )
+  end
 end

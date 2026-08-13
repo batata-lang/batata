@@ -35,6 +35,8 @@ defmodule Batata.Frontend do
     defstruct [:form, :reason]
   end
 
+  alias Batata.Frontend.AliasExpand
+
   @doc """
   Parses source text and normalizes the resulting module AST.
 
@@ -50,7 +52,15 @@ defmodule Batata.Frontend do
   Normalizes an already-parsed `defmodule` AST.
   """
   @spec from_ast(Macro.t()) :: Module.t()
-  def from_ast({:defmodule, _, [{:__aliases__, _, name_parts}, [do: body]]}) do
+  def from_ast(ast) do
+    ast
+    |> AliasExpand.expand()
+    |> from_expanded_ast()
+  end
+
+  @doc false
+  @spec from_expanded_ast(Macro.t()) :: Module.t()
+  def from_expanded_ast({:defmodule, _, [{:__aliases__, _, name_parts}, [do: body]]}) do
     {definitions, unsupported} = body |> body_forms() |> normalize_body()
 
     %Module{

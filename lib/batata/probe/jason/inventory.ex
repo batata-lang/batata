@@ -10,6 +10,7 @@ defmodule Batata.Probe.Jason.Inventory do
   """
 
   alias Batata.Frontend
+  alias Batata.Frontend.AliasExpand
   alias Batata.Frontend.GuardSupport
 
   @ignored_metadata_attributes [
@@ -110,21 +111,30 @@ defmodule Batata.Probe.Jason.Inventory do
     })
   end
 
-  defp inventory_module_tree({:defmodule, _, [name_ast, [do: body]]} = ast, parent) do
+  defp inventory_module_tree({:defmodule, _, [name_ast, [do: _body]]} = ast, parent) do
     module_name = declared_module(name_ast, parent)
-    snapshot = Frontend.from_ast(ast)
-    body_forms = forms(body)
-    unsupported = unsupported_forms(body_forms, snapshot.unsupported)
+    {:defmodule, _, [_name, [do: source_body]]} = ast
+    source_snapshot = Frontend.from_expanded_ast(ast)
+    expanded_ast = AliasExpand.expand(ast)
+    snapshot = Frontend.from_expanded_ast(expanded_ast)
+    {:defmodule, _, [_name, [do: expanded_body]]} = expanded_ast
+    source_forms = forms(source_body)
+    expanded_forms = forms(expanded_body)
+
+    unsupported =
+      source_forms
+      |> unsupported_forms(source_snapshot.unsupported)
+      |> Enum.reject(&supported_alias?/1)
 
     current = %{
       module: inspect(module_name),
       definitions: accepted_definitions(snapshot),
       unsupported: unsupported,
-      compile_source: compile_source(module_name, body_forms, unsupported)
+      compile_source: compile_source(module_name, expanded_forms, unsupported)
     }
 
     nested =
-      body_forms
+      source_forms
       |> Enum.flat_map(fn
         {:defmodule, _, _} = nested_ast -> inventory_module_tree(nested_ast, module_name)
         _ -> []
@@ -132,6 +142,11 @@ defmodule Batata.Probe.Jason.Inventory do
 
     [current | nested]
   end
+
+  defp supported_alias?(%{reason: :alias, form_ast: form}),
+    do: AliasExpand.supported_declaration?(form)
+
+  defp supported_alias?(_unsupported), do: false
 
   defp definition(%Frontend.Definition{} = definition) do
     %{
@@ -200,7 +215,8 @@ defmodule Batata.Probe.Jason.Inventory do
       reason: classify(form, frontend_reason),
       frontend_reason: frontend_reason,
       line: line(form),
-      form: summarize(form)
+      form: summarize(form),
+      form_ast: form
     }
 
     case module_attribute(form) do
