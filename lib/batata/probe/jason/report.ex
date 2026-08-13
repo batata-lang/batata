@@ -10,7 +10,12 @@ defmodule Batata.Probe.Jason.Report do
 
   alias Batata.Probe.Jason.Inventory
 
-  @schema_version 2
+  @schema_version 3
+  @coverage_claim "no library-definition compile coverage"
+  @scope_limits [
+    "top-level forms only",
+    "macro calls inside definition bodies are not attributed"
+  ]
   @known_stages ~w(
     parse
     macro_or_compile_time
@@ -39,6 +44,8 @@ defmodule Batata.Probe.Jason.Report do
         "elixir" => System.version(),
         "otp" => System.otp_release()
       },
+      "coverage_claim" => @coverage_claim,
+      "scope_limits" => @scope_limits,
       "stages" => @known_stages,
       "summary" => summary(files, blockers, ignored_metadata),
       "ignored_metadata" => ignored_metadata,
@@ -126,19 +133,26 @@ defmodule Batata.Probe.Jason.Report do
 
   defp stage(reason)
        when reason in [
-              :module_attribute,
+              :compile_annotation,
+              :compile_time_eval_attribute,
+              :semantic_module_attribute,
               :import,
               :require,
               :use,
               :alias,
-              :defmacro,
-              :defmacrop
+              :macro_definition,
+              :module_level_generation
             ],
        do: "macro_or_compile_time"
 
   defp stage(:ignored_metadata), do: "ignored_metadata"
   defp stage(reason) when reason in [:defprotocol, :defimpl], do: "protocol_or_dispatch"
   defp stage(:guarded_definition), do: "pattern_or_guard"
+
+  defp stage(reason)
+       when reason in [:struct_semantics, :exception_semantics, :record_semantics],
+       do: "frontend_normalization"
+
   defp stage(_reason), do: "frontend_normalization"
 
   defp corpus(metadata, files) do
@@ -159,6 +173,7 @@ defmodule Batata.Probe.Jason.Report do
       Enum.sum(for file <- files, module <- file.modules, do: length(module.definitions))
 
     counts = Enum.frequencies_by(blockers, & &1["stage"])
+    categories = Enum.frequencies_by(blockers, & &1["reason"])
 
     %{
       "files" => length(files),
@@ -167,6 +182,7 @@ defmodule Batata.Probe.Jason.Report do
       "blockers" => length(blockers),
       "ignored_metadata" => length(ignored_metadata),
       "ignored_metadata_by_attribute" => Enum.frequencies_by(ignored_metadata, & &1["attribute"]),
+      "categories" => categories,
       "by_stage" => Map.new(@known_stages, &{&1, Map.get(counts, &1, 0)})
     }
   end

@@ -9,7 +9,15 @@ defmodule Batata.Probe.Jason.InventoryTest do
     defmodule Outer do
       @moduledoc false
       @compile {:inline, plain: 1}
+      @semantic_key :value
+      @digits Enum.to_list(0..9)
       import Bitwise
+      defstruct [:value]
+      defexception [:message]
+      defrecordp :state, value: nil
+      defmacro generated(value), do: value
+      generated :value
+      for value <- [1], do: defp(generated_value(), do: value)
       def guarded(value) when is_integer(value), do: value
       def at_end(position, data) when position == byte_size(data), do: position
       def unsupported(value) when is_function(value, 1), do: value
@@ -39,14 +47,24 @@ defmodule Batata.Probe.Jason.InventoryTest do
 
     assert Enum.map(outer.unsupported, & &1.reason) == [
              :ignored_metadata,
-             :module_attribute,
+             :compile_annotation,
+             :semantic_module_attribute,
+             :compile_time_eval_attribute,
              :import,
+             :struct_semantics,
+             :exception_semantics,
+             :record_semantics,
+             :macro_definition,
+             :module_level_generation,
+             :module_level_generation,
              :guarded_definition,
              :nested_defmodule
            ]
 
     assert hd(outer.unsupported).attribute == :moduledoc
     assert Enum.at(outer.unsupported, 1).attribute == :compile
+    assert Enum.at(outer.unsupported, 2).attribute == :semantic_key
+    assert Enum.at(outer.unsupported, 3).attribute == :digits
 
     assert Enum.map(inner.unsupported, & &1.reason) == [:require]
   end
