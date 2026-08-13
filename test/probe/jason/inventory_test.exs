@@ -9,6 +9,11 @@ defmodule Batata.Probe.Jason.InventoryTest do
     defmodule Outer do
       @moduledoc false
       @compile {:inline, plain: 1}
+      @dialyzer :no_improper_lists
+      @impl Access
+      @compile {:always, plain: 1}
+      @dialyzer {:nowarn_function, plain: 1}
+      @impl false
       @semantic_key :value
       @digits Enum.to_list(0..9)
       import Bitwise
@@ -49,6 +54,11 @@ defmodule Batata.Probe.Jason.InventoryTest do
 
     assert Enum.map(outer.unsupported, & &1.reason) == [
              :ignored_metadata,
+             :ignored_metadata,
+             :ignored_metadata,
+             :ignored_metadata,
+             :compile_annotation,
+             :compile_annotation,
              :compile_annotation,
              :semantic_module_attribute,
              :compile_time_eval_attribute,
@@ -64,9 +74,19 @@ defmodule Batata.Probe.Jason.InventoryTest do
            ]
 
     assert hd(outer.unsupported).attribute == :moduledoc
-    assert Enum.at(outer.unsupported, 1).attribute == :compile
-    assert Enum.at(outer.unsupported, 2).attribute == :semantic_key
-    assert Enum.at(outer.unsupported, 3).attribute == :digits
+
+    assert Enum.map(Enum.take(outer.unsupported, 7), & &1.attribute) == [
+             :moduledoc,
+             :compile,
+             :dialyzer,
+             :impl,
+             :compile,
+             :dialyzer,
+             :impl
+           ]
+
+    assert Enum.at(outer.unsupported, 7).attribute == :semantic_key
+    assert Enum.at(outer.unsupported, 8).attribute == :digits
 
     assert Enum.map(inner.unsupported, & &1.reason) == [:require]
   end
@@ -126,5 +146,41 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert module.compile_source =~ "def parse(batata_arg0)"
     assert module.compile_source =~ "def parse(input, opts)"
     refute module.compile_source =~ "\\\\"
+  end
+
+  @tag :tmp_dir
+  test "known compile metadata shapes preserve BEAM results", %{tmp_dir: tmp_dir} do
+    original = Path.join(tmp_dir, "original.exs")
+    stripped = Path.join(tmp_dir, "stripped.exs")
+
+    File.write!(original, """
+    defmodule MetadataBehaviour do
+      @callback value() :: integer()
+    end
+
+    defmodule MetadataFixture do
+      @behaviour MetadataBehaviour
+      @compile {:inline, value: 0}
+      @dialyzer :no_improper_lists
+      @impl true
+      def value, do: 42
+    end
+    IO.write(MetadataFixture.value())
+    """)
+
+    File.write!(stripped, """
+    defmodule MetadataBehaviour do
+      @callback value() :: integer()
+    end
+
+    defmodule MetadataFixture do
+      @behaviour MetadataBehaviour
+      def value, do: 42
+    end
+    IO.write(MetadataFixture.value())
+    """)
+
+    assert {"42", 0} = System.cmd("elixir", [original], stderr_to_stdout: false)
+    assert {"42", 0} = System.cmd("elixir", [stripped], stderr_to_stdout: false)
   end
 end

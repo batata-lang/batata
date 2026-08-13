@@ -42,11 +42,15 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert first["corpus"]["ref"] == "v1.4.5"
     assert first["summary"]["definitions"] == 2
-    assert first["summary"]["blockers"] == 2
-    assert first["summary"]["by_stage"]["macro_or_compile_time"] == 2
+    assert first["summary"]["blockers"] == 1
+    assert first["summary"]["by_stage"]["macro_or_compile_time"] == 1
     assert first["summary"]["by_stage"]["pattern_or_guard"] == 0
-    assert first["summary"]["ignored_metadata"] == 1
-    assert first["summary"]["ignored_metadata_by_attribute"] == %{"moduledoc" => 1}
+    assert first["summary"]["ignored_metadata"] == 2
+
+    assert first["summary"]["ignored_metadata_by_attribute"] == %{
+             "compile" => 1,
+             "moduledoc" => 1
+           }
 
     assert first["summary"]["dependency_frontier"] == %{
              "calls" => 0,
@@ -66,20 +70,16 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert first["module_compile_attempts"] == [
              %{
-               "blocker_categories" => %{"compile_annotation" => 1, "import" => 1},
+               "blocker_categories" => %{"import" => 1},
                "module" => "Jason.Decoder",
                "path" => "lib/decoder.ex",
                "status" => "blocked_by_module_forms"
              }
            ]
 
-    assert first["summary"]["categories"] == %{
-             "compile_annotation" => 1,
-             "import" => 1
-           }
+    assert first["summary"]["categories"] == %{"import" => 1}
 
-    assert [%{"attribute" => "moduledoc", "reason" => "ignored_metadata"}] =
-             first["ignored_metadata"]
+    assert Enum.map(first["ignored_metadata"], & &1["attribute"]) == ["moduledoc", "compile"]
 
     assert Enum.all?(first["blockers"], &(byte_size(&1["id"]) == 64))
     assert Enum.all?(first["ignored_metadata"], &(byte_size(&1["id"]) == 64))
@@ -140,8 +140,8 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert jason["summary"]["categories"]["alias"] == nil
     assert decimal["summary"]["categories"]["alias"] == nil
-    assert jason["summary"]["blockers"] == 85
-    assert decimal["summary"]["blockers"] == 43
+    assert jason["summary"]["blockers"] == 73
+    assert decimal["summary"]["blockers"] == 42
     assert jason["summary"]["definitions"] == 239
     assert decimal["summary"]["definitions"] == 243
 

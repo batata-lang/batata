@@ -229,15 +229,10 @@ defmodule Batata.Probe.Jason.Inventory do
        when attribute in @ignored_metadata_attributes,
        do: :ignored_metadata
 
-  defp classify({:@, _, [{attribute, _, _}]}, _)
-       when attribute in @compile_annotation_attributes,
-       do: :compile_annotation
+  defp classify({:@, _, _} = form, _) do
+    if ignored_compile_metadata?(form), do: :ignored_metadata, else: classify_attribute(form)
+  end
 
-  defp classify({:@, _, [{attribute, _, _}]}, _)
-       when attribute in @compile_time_eval_attributes,
-       do: :compile_time_eval_attribute
-
-  defp classify({:@, _, _}, _), do: :semantic_module_attribute
   defp classify({kind, _, _}, _) when kind in [:import, :require, :use, :alias], do: kind
   defp classify({kind, _, _}, _) when kind in [:defmacro, :defmacrop], do: :macro_definition
   defp classify({kind, _, _}, _) when kind in [:defprotocol, :defimpl], do: kind
@@ -260,6 +255,29 @@ defmodule Batata.Probe.Jason.Inventory do
     do: :module_level_generation
 
   defp classify(_form, frontend_reason), do: frontend_reason
+
+  defp classify_attribute({:@, _, [{attribute, _, _}]})
+       when attribute in @compile_annotation_attributes,
+       do: :compile_annotation
+
+  defp classify_attribute({:@, _, [{attribute, _, _}]})
+       when attribute in @compile_time_eval_attributes,
+       do: :compile_time_eval_attribute
+
+  defp classify_attribute({:@, _, _}), do: :semantic_module_attribute
+
+  defp ignored_compile_metadata?({:@, _, [{:compile, _, [inline: entries]}]})
+       when is_list(entries),
+       do: Keyword.keyword?(entries)
+
+  defp ignored_compile_metadata?({:@, _, [{:dialyzer, _, [:no_improper_lists]}]}), do: true
+  defp ignored_compile_metadata?({:@, _, [{:impl, _, [true]}]}), do: true
+
+  defp ignored_compile_metadata?({:@, _, [{:impl, _, [{:__aliases__, _, parts}]}]})
+       when is_list(parts),
+       do: Enum.all?(parts, &is_atom/1)
+
+  defp ignored_compile_metadata?(_form), do: false
 
   defp module_attribute({:@, _, [{attribute, _, _}]}) when is_atom(attribute), do: attribute
   defp module_attribute(_form), do: nil
