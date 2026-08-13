@@ -512,6 +512,28 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes the Decimal.Error message short-circuit kernel", %{ctx: ctx} do
+    source = """
+    defmodule DecimalErrorMessage do
+      def message(%{signal: signal, reason: reason}) do
+        reason = reason && ": " <> reason
+        "\#{signal}\#{reason}"
+      end
+
+      def main() do
+        {message(%{signal: :invalid_operation, reason: nil}),
+         message(%{signal: :division_by_zero, reason: "ctx"})}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nDecimalErrorMessage.main()") |> Code.eval_string() |> elem(0)
+
+    assert expected == {"invalid_operation", "division_by_zero: ctx"}
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

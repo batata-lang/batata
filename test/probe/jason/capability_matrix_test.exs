@@ -20,6 +20,12 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["string.concat"]["status"] == "executable"
     assert capabilities["string.concat"]["gate"] == "execute_test"
     assert capabilities["string.concat"]["scope"] == "binary operands"
+    assert capabilities["control.short_circuit_and"]["status"] == "executable"
+    assert capabilities["control.short_circuit_and"]["gate"] == "execute_test"
+
+    assert capabilities["control.short_circuit_and"]["scope"] =~
+             "right-hand-side assignments excluded"
+
     assert capabilities["guard.byte_size"]["status"] == "executable"
     assert capabilities["guard.byte_size"]["gate"] == "guard_byte_size_test"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"
