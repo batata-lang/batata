@@ -2904,6 +2904,22 @@ defmodule Batata.Lift do
     {lower_binary_concat(left, right, both_binary, ctx, block), env}
   end
 
+  defp lift_expr({:&&, _, [left_ast, right_ast]}, ctx, block, env) do
+    if ast_has_assignment?(right_ast) do
+      raise Error, "assignments in the right-hand side of && are unsupported"
+    end
+
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    left = box_term(lift_value(left, ctx, block, env), ctx, block)
+    false_term = atom_term(false, ctx, block)
+    nil_term = atom_term(nil, ctx, block)
+    false? = create_op("ex.term_eq", [left, false_term], [MLIR.Type.i64()], ctx, block)
+    nil? = create_op("ex.term_eq", [left, nil_term], [MLIR.Type.i64()], ctx, block)
+    falsy = create_op("arith.ori", [false?, nil?], [MLIR.Type.i64()], ctx, block)
+
+    {lower_short_circuit_and(left, right_ast, falsy, env, ctx, block), env}
+  end
+
   defp lift_expr({name, _, [arg]}, ctx, block, env)
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float] do
     {value, env} = lift_expr(arg, ctx, block, env)
@@ -3421,6 +3437,17 @@ defmodule Batata.Lift do
 
   defp interpolation_segment?({:"::", _, [_, {:binary, _, nil}]}), do: true
   defp interpolation_segment?(_segment), do: false
+
+  defp ast_has_assignment?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        node, true -> {node, true}
+        {:=, _, _} = node, false -> {node, true}
+        node, false -> {node, false}
+      end)
+
+    found?
+  end
 
   defp lift_interpolation_segments(segments, ctx, block, env) do
     Enum.map_reduce(segments, env, fn
@@ -4658,6 +4685,44 @@ defmodule Batata.Lift do
       [],
       ctx,
       fallback_block
+    )
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [left, operandSegmentSizes: segment_sizes([1])],
+        results: [dyn],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_short_circuit_and(left, right_ast, falsy, env, ctx, block) do
+    dyn = ex_type("dyn", ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    falsy_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, falsy_block)
+    create_op("ex.clause", [falsy, patterns: pattern_attr([])], [], ctx, falsy_block)
+    create_op("ex.yield", [left, operandSegmentSizes: segment_sizes([1])], [], ctx, falsy_block)
+
+    truthy_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, truthy_block)
+    create_op("ex.clause", [patterns: pattern_attr([])], [], ctx, truthy_block)
+    {right, _right_env} = lift_expr(right_ast, ctx, truthy_block, env)
+    right = box_term(lift_value(right, ctx, truthy_block, env), ctx, truthy_block)
+
+    create_op(
+      "ex.yield",
+      [right, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      truthy_block
     )
 
     case_op =

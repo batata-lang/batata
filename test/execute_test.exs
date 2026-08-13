@@ -458,6 +458,60 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes body-level short-circuit and with Elixir truthiness", %{ctx: ctx} do
+    assert {false, nil, 2, 2, 2, 2} ==
+             Batata.execute(
+               """
+               defmodule NativeShortCircuitAnd do
+                 def main() do
+                   falsy_false = false && 1
+                   falsy_nil = nil && 1
+                   truthy_zero = 0 && 2
+                   truthy_binary = "" && 2
+                   truthy_atom = :known && 2
+                   truthy_true = true && 2
+
+                   {falsy_false, falsy_nil, truthy_zero, truthy_binary, truthy_atom,
+                    truthy_true}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "does not execute the right-hand side of falsy short-circuit and", %{ctx: ctx} do
+    assert {false, nil, false} ==
+             Batata.execute(
+               """
+               defmodule NativeShortCircuitAnd do
+                 def main() do
+                   {false && Kernel.to_string([1]), nil && Kernel.to_string([1]),
+                    false && Kernel.to_string([1]) && 1}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects assignments inside the right-hand side of short-circuit and", %{ctx: ctx} do
+    for rhs <- ["value = 1", "case 1 do x -> value = x end"] do
+      assert_raise Batata.Lift.Error,
+                   "assignments in the right-hand side of && are unsupported",
+                   fn ->
+                     Batata.compile(
+                       """
+                       defmodule NativeShortCircuitAnd do
+                         def main(), do: false && (#{rhs})
+                       end
+                       """,
+                       ctx
+                     )
+                   end
+    end
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
