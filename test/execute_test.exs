@@ -345,6 +345,30 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "matches atom-keyed map patterns in function parameters", %{ctx: ctx} do
+    source = fn argument ->
+      """
+      defmodule DecimalStyleError do
+        def message(%{signal: signal, reason: reason}), do: {signal, reason}
+        def main(), do: message(#{argument})
+      end
+      """
+    end
+
+    assert {:invalid_operation, :bad_number} ==
+             Batata.execute(
+               source.("%{signal: :invalid_operation, reason: :bad_number, extra: 1}"),
+               ctx
+             )
+
+    for argument <- ["%{signal: :invalid_operation}", "1"] do
+      error = assert_raise FunctionClauseError, fn -> Batata.execute(source.(argument), ctx) end
+      assert error.module == DecimalStyleError
+      assert error.function == :message
+      assert error.arity == 1
+    end
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
