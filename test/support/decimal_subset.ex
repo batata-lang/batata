@@ -13,6 +13,18 @@ defmodule Batata.Test.DecimalSubset do
         sign = sign1 * sign2
         {sign, coef1 * coef2, scale1 + scale2}
       end
+      def comparison_guard(coef, other, multiplier) do
+        case {coef, other, multiplier} do
+          {left, right, factor} when left >= 0 and left >= right * factor -> 1
+          _ -> 0
+        end
+      end
+      def positive_guard(exp) do
+        case {exp, 0} do
+          {value, _} when value > 0 -> 1
+          _ -> 0
+        end
+      end
       def main(), do: #{expression}
     end
     """
