@@ -35,7 +35,7 @@ defmodule Batata.Probe.CorpusTest do
 
     assert report == output |> File.read!() |> JSON.decode!()
     assert report["corpus"]["name"] == "decimal"
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
 
     assert report["coverage_claim"] ==
              "eligible-module compile attempts; no per-definition coverage"

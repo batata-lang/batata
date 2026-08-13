@@ -27,7 +27,9 @@ defmodule Batata.Probe.Jason.DependencyFrontierTest do
                "module" => "Sample",
                "path" => "sample.ex",
                "target" => "Dependency",
-               "target_kind" => "corpus"
+               "target_kind" => "corpus",
+               "source_eligibility" => "compile_eligible",
+               "blocker_categories" => %{}
              },
              %{
                "arity" => 1,
@@ -36,20 +38,38 @@ defmodule Batata.Probe.Jason.DependencyFrontierTest do
                "module" => "Sample",
                "path" => "sample.ex",
                "target" => "IO",
-               "target_kind" => "external"
+               "target_kind" => "external",
+               "source_eligibility" => "compile_eligible",
+               "blocker_categories" => %{}
              }
            ]
   end
 
   @tag :tmp_dir
-  test "ignores modules blocked before compile attempts", %{tmp_dir: tmp_dir} do
+  test "keeps calls from modules blocked before compile attempts", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "blocked.ex"), """
     defmodule Blocked do
       import Bitwise
       def value(), do: Dependency.value()
     end
+
+    defmodule Dependency do
+      def value(), do: 1
+    end
     """)
 
-    assert tmp_dir |> Inventory.discover!() |> DependencyFrontier.collect() == []
+    assert tmp_dir |> Inventory.discover!() |> DependencyFrontier.collect() == [
+             %{
+               "arity" => 0,
+               "blocker_categories" => %{"import" => 1},
+               "count" => 1,
+               "function" => "value",
+               "module" => "Blocked",
+               "path" => "blocked.ex",
+               "source_eligibility" => "blocked_by_module_forms",
+               "target" => "Dependency",
+               "target_kind" => "corpus"
+             }
+           ]
   end
 end

@@ -29,7 +29,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     second = Report.build(source_dir, metadata: metadata)
 
     assert first == second
-    assert first["schema_version"] == 3
+    assert first["schema_version"] == 4
 
     assert first["coverage_claim"] ==
              "eligible-module compile attempts; no per-definition coverage"
@@ -53,8 +53,10 @@ defmodule Batata.Probe.Jason.ReportTest do
            }
 
     assert first["summary"]["dependency_frontier"] == %{
+             "blocked_calls" => 0,
              "calls" => 0,
              "corpus_calls" => 0,
+             "eligible_calls" => 0,
              "targets" => 0
            }
 
@@ -146,20 +148,31 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal["summary"]["definitions"] == 243
 
     assert jason["summary"]["dependency_frontier"] == %{
-             "calls" => 11,
-             "corpus_calls" => 6,
-             "targets" => 5
+             "blocked_calls" => 109,
+             "calls" => 120,
+             "corpus_calls" => 18,
+             "eligible_calls" => 11,
+             "targets" => 24
            }
 
     assert decimal["summary"]["dependency_frontier"] == %{
-             "calls" => 0,
-             "corpus_calls" => 0,
-             "targets" => 0
+             "blocked_calls" => 70,
+             "calls" => 70,
+             "corpus_calls" => 11,
+             "eligible_calls" => 0,
+             "targets" => 11
            }
 
     assert Enum.any?(jason["dependency_frontier"], fn call ->
              call["module"] == "Jason" and call["target"] == "Jason.Decoder" and
                call["function"] == "parse" and call["target_kind"] == "corpus"
+           end)
+
+    assert Enum.any?(jason["dependency_frontier"], fn call ->
+             call["module"] == "Jason.Encode" and call["target"] == "Map" and
+               call["function"] == "put" and
+               call["source_eligibility"] == "blocked_by_module_forms" and
+               call["blocker_categories"]["module_level_generation"] == 24
            end)
 
     assert [%{"reason_class" => "remote_module_call", "module" => "Jason"}] =

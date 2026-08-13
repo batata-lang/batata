@@ -40,6 +40,7 @@ defmodule Batata.Probe.Jason.Inventory do
           required(:module) => String.t(),
           required(:definitions) => [map()],
           required(:unsupported) => [unsupported()],
+          required(:dependency_forms) => [Macro.t()],
           required(:compile_source) => String.t() | nil
         }
 
@@ -130,6 +131,7 @@ defmodule Batata.Probe.Jason.Inventory do
       module: inspect(module_name),
       definitions: accepted_definitions(source_snapshot),
       unsupported: unsupported,
+      dependency_forms: dependency_forms(expanded_forms),
       compile_source: compile_source(module_name, expanded_forms, unsupported)
     }
 
@@ -195,6 +197,13 @@ defmodule Batata.Probe.Jason.Inventory do
       {:defmodule, [], [module_name, [do: {:__block__, [], definitions}]]}
       |> Macro.to_string()
     end
+  end
+
+  defp dependency_forms(forms) do
+    Enum.reject(forms, fn
+      {:defmodule, _, _} -> true
+      form -> classify(form, :unknown_form) == :ignored_metadata
+    end)
   end
 
   defp ensure_main(definitions) do
