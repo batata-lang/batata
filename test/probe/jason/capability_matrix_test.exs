@@ -11,6 +11,8 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["parser.cursor_value"]["status"] == "executable"
     assert capabilities["container.dynamic_map"]["status"] == "executable"
     assert capabilities["string.dynamic_binary"]["status"] == "executable"
+    assert capabilities["guard.byte_size"]["status"] == "executable"
+    assert capabilities["guard.byte_size"]["gate"] == "guard_byte_size_test"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"
     assert capabilities["fixture.second"]["status"] == "executable"
     assert capabilities["fixture.second"]["gate"] == "decimal_subset_test"

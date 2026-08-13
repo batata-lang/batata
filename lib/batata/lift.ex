@@ -5021,7 +5021,7 @@ defmodule Batata.Lift do
 
   defp lift_term_guard_expr({op, _, [left, right]} = guard_ast, env, ctx, block)
        when op in [:==, :!=, :===, :!==] do
-    if guard_rem_call?(left) or guard_rem_call?(right) do
+    if integer_guard_call?(left) or integer_guard_call?(right) do
       lower_integer_guard_comparison(left, right, op, env, ctx, block)
     else
       {value, _env} = lift_expr(guard_ast, ctx, block, env)
@@ -5084,6 +5084,29 @@ defmodule Batata.Lift do
        ),
        do: lower_integer_guard_rem(left, right, env, ctx, block)
 
+  defp lower_integer_guard_expression({:byte_size, _, [{name, _, context}]}, env, ctx, block)
+       when is_atom(name) and (is_atom(context) or is_nil(context)) do
+    lower_binary_size_guard(name, env, ctx, block)
+  end
+
+  defp lower_integer_guard_expression(
+         {{:., _, [module, :byte_size]}, _, [{name, _, context}]},
+         env,
+         ctx,
+         block
+       )
+       when module in [:erlang, Kernel] and is_atom(name) and
+              (is_atom(context) or is_nil(context)) do
+    lower_binary_size_guard(name, env, ctx, block)
+  end
+
+  defp lower_binary_size_guard(name, env, ctx, block) do
+    word = env |> Map.fetch!(name) |> box_if_scalar(ctx, block)
+    valid = create_op("ex.is_binary", [word], [MLIR.Type.i64()], ctx, block)
+    length = create_op("ex.binary_length", [word], [MLIR.Type.i64()], ctx, block)
+    {length, valid}
+  end
+
   defp lower_integer_guard_rem(left, right, env, ctx, block) do
     {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
     {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
@@ -5091,12 +5114,18 @@ defmodule Batata.Lift do
     {value, combine([left_valid, right_valid], ctx, block)}
   end
 
-  defp guard_rem_call?({:rem, _, [_left, _right]}), do: true
+  defp integer_guard_call?({:rem, _, [_left, _right]}), do: true
 
-  defp guard_rem_call?({{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, [_left, _right]}),
+  defp integer_guard_call?({{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, [_left, _right]}),
     do: true
 
-  defp guard_rem_call?(_ast), do: false
+  defp integer_guard_call?({:byte_size, _, [_value]}), do: true
+
+  defp integer_guard_call?({{:., _, [module, :byte_size]}, _, [_value]})
+       when module in [:erlang, Kernel],
+       do: true
+
+  defp integer_guard_call?(_ast), do: false
 
   defp combine_any([], ctx, block), do: lit(0, ctx, block)
   defp combine_any([single], _ctx, _block), do: single
@@ -5200,9 +5229,20 @@ defmodule Batata.Lift do
 
   defp lift_guard(guard_ast, vars, scrutinee, env, ctx, block) do
     guard_env = Enum.reduce(vars, env, fn var, acc -> Map.put(acc, var, scrutinee) end)
-    {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
-    value
+
+    if integer_guard_comparison?(guard_ast) do
+      lift_term_guard_expr(guard_ast, guard_env, ctx, block)
+    else
+      {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
+      value
+    end
   end
+
+  defp integer_guard_comparison?({op, _, [left, right]})
+       when op in [:==, :!=, :===, :!==],
+       do: integer_guard_call?(left) or integer_guard_call?(right)
+
+  defp integer_guard_comparison?(_guard_ast), do: false
 
   defp add_clause_block(clause, guard, scrutinee, env, ctx, region) do
     block = MLIR.Block.create([], [])

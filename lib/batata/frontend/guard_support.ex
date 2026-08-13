@@ -54,6 +54,11 @@ defmodule Batata.Frontend.GuardSupport do
   defp operand?({:rem, _, [left, right]}),
     do: integer_expression?(left) and integer_expression?(right)
 
+  defp operand?({:byte_size, _, [value]}), do: variable?(value)
+
+  defp operand?({{:., _, [module, :byte_size]}, _, [value]}) when module in [:erlang, Kernel],
+    do: variable?(value)
+
   defp operand?({{:., _, [{:__aliases__, _, [:Kernel]}, :rem]}, _, [left, right]}),
     do: integer_expression?(left) and integer_expression?(right)
 
@@ -65,6 +70,12 @@ defmodule Batata.Frontend.GuardSupport do
   defp operand?({:%{}, _, _}), do: true
   defp operand?(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3, do: true
   defp operand?(_value), do: false
+
+  defp variable?({name, _, context})
+       when is_atom(name) and (is_atom(context) or is_nil(context)),
+       do: true
+
+  defp variable?(_value), do: false
 
   defp integer_expression?(value) when is_integer(value), do: true
 
