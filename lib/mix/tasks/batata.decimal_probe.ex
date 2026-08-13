@@ -1,9 +1,10 @@
 defmodule Mix.Tasks.Batata.DecimalProbe do
-  @shortdoc "Inventories a pinned Decimal source tree"
+  @shortdoc "Reports compile blockers and ignored metadata in pinned Decimal"
 
   @moduledoc """
-  Generates a read-only, machine-readable report for Decimal without adding
-  it as a Batata or Beaver production dependency.
+  Generates a read-only, machine-readable report that separates compile
+  blockers from ignored documentation and typespec metadata, without adding
+  Decimal as a Batata or Beaver production dependency.
 
       mix batata.decimal_probe --source /path/to/decimal
   """

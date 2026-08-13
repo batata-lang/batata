@@ -8,6 +8,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
     source = """
     defmodule Outer do
       @moduledoc false
+      @compile {:inline, plain: 1}
       import Bitwise
       def guarded(value) when is_integer(value), do: value
       def at_end(position, data) when position == byte_size(data), do: position
@@ -37,11 +38,15 @@ defmodule Batata.Probe.Jason.InventoryTest do
            ]
 
     assert Enum.map(outer.unsupported, & &1.reason) == [
+             :ignored_metadata,
              :module_attribute,
              :import,
              :guarded_definition,
              :nested_defmodule
            ]
+
+    assert hd(outer.unsupported).attribute == :moduledoc
+    assert Enum.at(outer.unsupported, 1).attribute == :compile
 
     assert Enum.map(inner.unsupported, & &1.reason) == [:require]
   end
