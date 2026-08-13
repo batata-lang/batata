@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "capabilities": [
+    {"id": "decimal.finite_arithmetic", "status": "executable", "gate": "decimal_subset_test"},
+    {"id": "decimal.numeric_guards", "status": "blocked", "owner": "lowering", "reason": "ordering guard on a realistic term-pattern coefficient evaluates false for a true BEAM oracle"},
+    {"id": "decimal.normalization", "status": "blocked", "owner": "lowering", "reason": "term-pattern coefficient remains ex.dyn in rem/div body operations"},
+    {"id": "decimal.struct_surface", "status": "blocked", "owner": "frontend", "reason": "defstruct and struct patterns remain compile-time frontend forms"}
+  ]
+}

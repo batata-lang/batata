@@ -12,7 +12,8 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["container.dynamic_map"]["status"] == "executable"
     assert capabilities["string.dynamic_binary"]["status"] == "executable"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"
-    assert capabilities["fixture.second"]["status"] == "blocked"
+    assert capabilities["fixture.second"]["status"] == "executable"
+    assert capabilities["fixture.second"]["gate"] == "decimal_subset_test"
   end
 
   test "pins JSONTestSuite as data corpus rather than implementation fixture" do

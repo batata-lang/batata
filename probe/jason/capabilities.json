@@ -14,6 +14,6 @@
     {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
-    {"id": "fixture.second", "status": "blocked", "owner": "probe", "reason": "requires zero runtime-owned blockers in its minimized kernel inventory"}
+    {"id": "fixture.second", "status": "executable", "gate": "decimal_subset_test"}
   ]
 }
