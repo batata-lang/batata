@@ -64,18 +64,20 @@ binary concatenation executes for binary operands and fails closed outside
 that domain. Body-level short-circuit `&&` now preserves Elixir's original
 operand values, treats only `false` and `nil` as falsy, and keeps the right-hand
 side lazy; assignments in that right-hand side remain outside the supported
-environment model. The refreshed diagnostic lane therefore reaches lowering
-completion for the shadow `Decimal.Error`, while `String.printable?/1` for
-`Jason.DecodeError` and struct construction for `Jason.EncodeError` remain the
-two distinct next frontiers. Module pass counts remain zero: a shadow diagnostic
-completion is deeper evidence, not a claim that the corpus module compiles.
+environment model. `String.printable?/1` now has an executable runtime and
+BEAM-oracle gate, so the shadow `Jason.DecodeError` advances from frontend
+normalization into lowering and now stops at unresolved `inspect/1,2` calls.
+The shadow `Decimal.Error` still reaches lowering completion, while struct
+construction remains the separate `Jason.EncodeError` frontier. Module pass
+counts remain zero: deeper shadow diagnostics are evidence, not claims that
+the corpus modules compile.
 
 The remaining frontiers do not share a lowering primitive. Struct support
 requires a deliberate `defstruct`/`__struct__` representation and field
-validation contract, while `String.printable?/1` is a separate standard-library
-surface. The next stack should be chosen from their measured reuse across the
-existing fixtures, or a second fixture should be admitted if neither has enough
-cross-corpus leverage.
+validation contract, while `inspect/1,2` requires a bounded formatting surface
+before Jason's error-message path can advance again. The next stack should be
+chosen from their measured reuse across the existing fixtures, or a second
+fixture should be admitted if neither has enough cross-corpus leverage.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
