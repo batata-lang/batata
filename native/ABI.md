@@ -248,6 +248,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.file_read` | `(path: i64) -> i64` | file contents as a binary term; nil for missing files/non-binaries/oversized |
 | `ex.term.file_read_lines` | `(path: i64) -> i64` | file contents split into line binaries (no trailing newlines); nil on read failure |
 | `ex.term.binary_from_list` | `(list: i64) -> i64` | integer byte list -> binary |
+| `ex.term.iodata_to_binary` | `(iodata: i64) -> i64` | recursively flatten nested byte lists and binaries; nil for invalid iodata |
 | `ex.term.is_integer` | `(word: i64) -> i64` | 1 if int |
 | `ex.term.is_atom` | `(word: i64) -> i64` | 1 if atom (incl. nil) |
 | `ex.term.is_binary` | `(word: i64) -> i64` | 1 if binary |

@@ -3970,6 +3970,76 @@ pub export fn ex_term_binary_from_list(list: i64) i64 {
     return result;
 }
 
+fn iodata_size(word: i64, allow_byte: bool, depth: usize) ?usize {
+    if (depth > exported_max_depth) return null;
+
+    return switch (word_tag(word)) {
+        tag_binary => binary_len(word),
+        tag_int => blk: {
+            if (!allow_byte) break :blk null;
+            const value = word_payload(word);
+            break :blk if (value >= 0 and value <= 255) 1 else null;
+        },
+        tag_atom => if (word == nil_word) 0 else null,
+        tag_list => blk: {
+            var total: usize = 0;
+            var current = word;
+            while (word_tag(current) == tag_list) {
+                const cell = list_cell(current);
+                const child = iodata_size(cell[0], true, depth + 1) orelse break :blk null;
+                total = std.math.add(usize, total, child) catch break :blk null;
+                current = cell[1];
+            }
+            const tail = iodata_size(current, false, depth + 1) orelse break :blk null;
+            break :blk std.math.add(usize, total, tail) catch null;
+        },
+        else => null,
+    };
+}
+
+fn write_iodata(word: i64, output: []u8, offset: *usize, allow_byte: bool, depth: usize) bool {
+    if (depth > exported_max_depth) return false;
+
+    switch (word_tag(word)) {
+        tag_binary => {
+            const len = binary_len(word);
+            @memcpy(output[offset.*..][0..len], binary_bytes(word)[0..len]);
+            offset.* += len;
+            return true;
+        },
+        tag_int => {
+            if (!allow_byte) return false;
+            const value = word_payload(word);
+            if (value < 0 or value > 255) return false;
+            output[offset.*] = @intCast(value);
+            offset.* += 1;
+            return true;
+        },
+        tag_atom => return word == nil_word,
+        tag_list => {
+            var current = word;
+            while (word_tag(current) == tag_list) {
+                const cell = list_cell(current);
+                if (!write_iodata(cell[0], output, offset, true, depth + 1)) return false;
+                current = cell[1];
+            }
+            return write_iodata(current, output, offset, false, depth + 1);
+        },
+        else => return false,
+    }
+}
+
+/// Flattens nested byte lists and binaries, including a binary improper tail.
+pub export fn ex_term_iodata_to_binary(iodata: i64) i64 {
+    if (word_tag(iodata) == tag_binary) return iodata;
+    const len = iodata_size(iodata, false, 0) orelse return nil_word;
+    const binary = alloc_binary(len) orelse return nil_word;
+    const result = word_from_ptr(binary, tag_binary);
+    var offset: usize = 0;
+    if (!write_iodata(iodata, binary_bytes(result)[0..len], &offset, false, 0)) return nil_word;
+    return result;
+}
+
 pub export fn ex_term_is_integer(word: i64) i64 {
     return if (is_int(word)) 1 else 0;
 }
@@ -4123,6 +4193,7 @@ comptime {
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_map_put, .{ .name = "ex.term.map_put" });
     @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
+    @export(&ex_term_iodata_to_binary, .{ .name = "ex.term.iodata_to_binary" });
     @export(&ex_term_float_lit, .{ .name = "ex.term.float_lit" });
     @export(&ex_term_is_float, .{ .name = "ex.term.is_float" });
     @export(&ex_term_string_to_float, .{ .name = "ex.term.string_to_float" });
@@ -4448,6 +4519,28 @@ fn test_binary_from_string(s: []const u8) i64 {
         list = ex_term_list_cons(@as(i64, s[i]) << @intCast(tag_shift), list);
     }
     return ex_term_binary_from_list(list);
+}
+
+test "iodata flatten handles nested lists and binary improper tails" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const inner = ex_term_list_cons(@as(i64, 'b') << @intCast(tag_shift), ex_term_list_cons(test_binary_from_string("c"), nil_word));
+    const nested = ex_term_list_cons(test_binary_from_string("a"), ex_term_list_cons(inner, nil_word));
+    const flattened = ex_term_iodata_to_binary(nested);
+    try std.testing.expectEqual(@as(usize, 3), binary_len(flattened));
+    try std.testing.expectEqualSlices(u8, "abc", binary_bytes(flattened)[0..3]);
+
+    const improper = ex_term_list_cons(@as(i64, 'a') << @intCast(tag_shift), test_binary_from_string("bc"));
+    const improper_flattened = ex_term_iodata_to_binary(improper);
+    try std.testing.expectEqualSlices(u8, "abc", binary_bytes(improper_flattened)[0..3]);
+
+    const invalid = ex_term_list_cons(@as(i64, 256) << @intCast(tag_shift), nil_word);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_iodata_to_binary(invalid)));
 }
 
 test "term ABI file read and lines" {
