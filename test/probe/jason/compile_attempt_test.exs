@@ -46,4 +46,14 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
 
     assert details["reason_class"] == "default_argument_pattern"
   end
+
+  test "classifies unexpanded alias AST remote calls" do
+    details =
+      CompileAttempt.failure_details(%Batata.Lift.Error{
+        message:
+          "unsupported AST in the current slice: {:__aliases__, [line: 4], [:Jason, :Decoder]}.parse"
+      })
+
+    assert details["reason_class"] == "remote_module_call"
+  end
 end

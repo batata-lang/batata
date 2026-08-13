@@ -109,4 +109,22 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert module.compile_source =~ "Jason.Decoder.parse(input)"
     refute module.compile_source =~ "alias "
   end
+
+  @tag :tmp_dir
+  test "keeps source definition counts while compiling expanded default arities", %{
+    tmp_dir: tmp_dir
+  } do
+    File.write!(Path.join(tmp_dir, "sample.ex"), """
+    defmodule Sample do
+      def parse(input, opts \\\\ []), do: {input, opts}
+    end
+    """)
+
+    assert [%{modules: [module]}] = Inventory.discover!(tmp_dir)
+    assert module.definitions == [%{kind: :def, name: :parse, arity: 2, clauses: 1}]
+    assert module.unsupported == []
+    assert module.compile_source =~ "def parse(batata_arg0)"
+    assert module.compile_source =~ "def parse(input, opts)"
+    refute module.compile_source =~ "\\\\"
+  end
 end

@@ -137,7 +137,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert jason["summary"]["definitions"] == 239
     assert decimal["summary"]["definitions"] == 243
 
-    assert [%{"reason_class" => "default_argument_pattern"}] =
+    assert [%{"reason_class" => "remote_module_call", "module" => "Jason"}] =
              Enum.filter(
                jason["module_compile_attempts"],
                &(&1["status"] == "frontend_normalization_failure")

@@ -11,6 +11,7 @@ defmodule Batata.Probe.Jason.Inventory do
 
   alias Batata.Frontend
   alias Batata.Frontend.AliasExpand
+  alias Batata.Frontend.DefaultArgExpand
   alias Batata.Frontend.GuardSupport
 
   @ignored_metadata_attributes [
@@ -115,8 +116,7 @@ defmodule Batata.Probe.Jason.Inventory do
     module_name = declared_module(name_ast, parent)
     {:defmodule, _, [_name, [do: source_body]]} = ast
     source_snapshot = Frontend.from_expanded_ast(ast)
-    expanded_ast = AliasExpand.expand(ast)
-    snapshot = Frontend.from_expanded_ast(expanded_ast)
+    expanded_ast = ast |> AliasExpand.expand() |> DefaultArgExpand.expand()
     {:defmodule, _, [_name, [do: expanded_body]]} = expanded_ast
     source_forms = forms(source_body)
     expanded_forms = forms(expanded_body)
@@ -128,7 +128,7 @@ defmodule Batata.Probe.Jason.Inventory do
 
     current = %{
       module: inspect(module_name),
-      definitions: accepted_definitions(snapshot),
+      definitions: accepted_definitions(source_snapshot),
       unsupported: unsupported,
       compile_source: compile_source(module_name, expanded_forms, unsupported)
     }

@@ -61,4 +61,16 @@ defmodule Batata.FrontendTest do
              }
            ] = snapshot.definitions
   end
+
+  test "normalizes default arguments into callable arities" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule Options do
+        def get(input, opts \\\\ []), do: {input, opts}
+      end
+      """)
+
+    assert Enum.map(snapshot.definitions, &{&1.name, &1.arity}) == [get: 1, get: 2]
+    assert snapshot.unsupported == []
+  end
 end
