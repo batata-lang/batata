@@ -28,6 +28,8 @@ defmodule Batata.Lift do
   alias Beaver.MLIR.Dialect.Ex
   alias Beaver.Walker
 
+  @known_atoms_key {__MODULE__, :known_atoms}
+
   defmodule Error do
     @moduledoc "Raised when the frontend encounters an unsupported AST form."
     defexception [:message]
@@ -51,6 +53,7 @@ defmodule Batata.Lift do
       batching = Keyword.get(opts, :reduction_batching) != false
       batch_size = reduction_batch_size(budget, batching)
       {workers, process_cap} = validate_runtime_options!(opts)
+      known_atoms = opts |> Keyword.get(:atom_table, %{}) |> Enum.sort_by(&elem(&1, 0))
 
       {definitions, entry_name} = rename_entry(mod.definitions)
 
@@ -64,7 +67,7 @@ defmodule Batata.Lift do
       enforce_resumable_plan(groups, budget)
 
       Enum.each(groups, fn {_key, definitions} ->
-        lift_definitions(definitions, ctx, body, budget, batch_size)
+        lift_definitions(definitions, ctx, body, budget, batch_size, known_atoms)
       end)
 
       maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
@@ -232,7 +235,31 @@ defmodule Batata.Lift do
 
       (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
         (length(clauses) == 1 and Enum.any?(clauses, &function_clause_has_pattern?/1))
-    end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1)
+    end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
+      Enum.any?(definitions, &definition_uses_to_string?/1)
+  end
+
+  defp definition_uses_to_string?(%Frontend.Definition{clauses: clauses}) do
+    Enum.any?(clauses, fn %Frontend.Clause{body_ast: body} -> ast_uses_to_string?(body) end)
+  end
+
+  defp ast_uses_to_string?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        node, true ->
+          {node, true}
+
+        {:to_string, _, [_]} = node, false ->
+          {node, true}
+
+        {{:., _, [module_ast, :to_string]}, _, [_]} = node, false ->
+          {node, module_ref(module_ast) == {:ok, Kernel}}
+
+        node, false ->
+          {node, false}
+      end)
+
+    found?
   end
 
   defp function_clause_catch_all?(%Frontend.Clause{patterns: patterns, guard_ast: nil}) do
@@ -958,7 +985,8 @@ defmodule Batata.Lift do
          ctx,
          ip,
          budget,
-         batch_size
+         batch_size,
+         known_atoms
        ) do
     unless kind in [:def, :defp] do
       raise Error, "unsupported definition kind: #{inspect(kind)}"
@@ -986,7 +1014,7 @@ defmodule Batata.Lift do
       |> Walker.arguments()
       |> Enum.to_list()
       |> Enum.zip(patterns)
-      |> Enum.reduce(%{}, fn {value, pattern}, env ->
+      |> Enum.reduce(%{@known_atoms_key => known_atoms}, fn {value, pattern}, env ->
         Map.put(env, param_name(pattern), value)
       end)
       |> Map.put(:__budget__, budget)
@@ -1077,15 +1105,16 @@ defmodule Batata.Lift do
          ctx,
          ip,
          budget,
-         batch_size
+         batch_size,
+         known_atoms
        ) do
     if Enum.any?(clauses, &function_clause_has_pattern?/1) do
       case arity do
-        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip)
-        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip)
+        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip, known_atoms)
+        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, known_atoms)
       end
     else
-      lift_definition(hd(definitions), ctx, ip, budget, batch_size)
+      lift_definition(hd(definitions), ctx, ip, budget, batch_size, known_atoms)
     end
   end
 
@@ -1093,7 +1122,7 @@ defmodule Batata.Lift do
   # body dispatches on the argument with ex.case, matching each clause's
   # pattern (the cursor-loop foundation for recursive scanners). M2 requires
   # a single argument and a final catch-all clause.
-  defp lift_definitions(definitions, ctx, ip, budget, batch_size) do
+  defp lift_definitions(definitions, ctx, ip, budget, batch_size, known_atoms) do
     %Frontend.Definition{kind: kind, name: name, arity: arity} = hd(definitions)
 
     unless kind in [:def, :defp] do
@@ -1106,13 +1135,13 @@ defmodule Batata.Lift do
       arity == 1 ->
         case detect_scanner(name, clauses) do
           {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip, budget, batch_size)
-          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip)
+          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip, known_atoms)
         end
 
       arity >= 2 ->
         case detect_accumulator_scanner(name, clauses) do
           {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip, budget, batch_size)
-          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip)
+          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, known_atoms)
         end
 
       true ->
@@ -1120,7 +1149,7 @@ defmodule Batata.Lift do
     end
   end
 
-  defp lift_multi_clause_dispatch(name, clauses, ctx, ip) do
+  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, known_atoms) do
     region = MLIR.CAPI.mlirRegionCreate()
 
     # The argument is a scalar word (like single-clause functions); the term
@@ -1141,7 +1170,7 @@ defmodule Batata.Lift do
       end)
 
     return_value =
-      lift_case(clause_asts, arg, %{}, ctx, block,
+      lift_case(clause_asts, arg, %{@known_atoms_key => known_atoms}, ctx, block,
         relax_types: true,
         box_scrutinee: false,
         untag_int_binds: true,
@@ -1165,7 +1194,7 @@ defmodule Batata.Lift do
   # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
   # first argument dispatches with `ex.case`; the trailing arguments must be
   # bound as variables and are threaded through the clause environments.
-  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip) do
+  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, known_atoms) do
     tail_names = validate_multi_arg_clauses!(arity, clauses)
 
     region = MLIR.CAPI.mlirRegionCreate()
@@ -1176,7 +1205,12 @@ defmodule Batata.Lift do
     block = MLIR.Block.create(List.duplicate(i64, arity), locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
     [arg1 | tail_args] = block |> Walker.arguments() |> Enum.to_list()
-    tail_env = Map.new(Enum.zip(tail_names, tail_args))
+
+    tail_env =
+      tail_names
+      |> Enum.zip(tail_args)
+      |> Map.new()
+      |> Map.put(@known_atoms_key, known_atoms)
 
     clause_asts =
       Enum.map(clauses, fn %Frontend.Clause{
@@ -4221,6 +4255,12 @@ defmodule Batata.Lift do
     {native_term_call(Process, :monitor, [box_term(pid, ctx, block)], ctx, block), env}
   end
 
+  defp lift_stdlib_call(Kernel, :to_string, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = box_term(value, ctx, block)
+    {lower_kernel_to_string(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
+  end
+
   defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
     {start, env} = lift_expr(start_ast, ctx, block, env)
     {stop, env} = lift_expr(stop_ast, ctx, block, env)
@@ -4484,6 +4524,83 @@ defmodule Batata.Lift do
 
   defp native_term_call(module, fun, _args, _ctx, _block) do
     raise Error, "no native_term lowering for #{inspect(module)}.#{fun}"
+  end
+
+  defp lower_kernel_to_string(value, known_atoms, ctx, block) do
+    dyn = ex_type("dyn", ctx)
+    integer? = create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
+    binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
+    atom? = create_op("ex.is_atom", [value], [MLIR.Type.i64()], ctx, block)
+
+    atom_clauses =
+      Enum.map(known_atoms, fn {word, atom} ->
+        tagged = create_op("ex.to_word", [lit(word, ctx, block)], [dyn], ctx, block)
+        equal? = create_op("ex.term_eq", [value, tagged], [MLIR.Type.i64()], ctx, block)
+
+        {equal?,
+         fn b ->
+           rendered = if is_nil(atom), do: "", else: Atom.to_string(atom)
+           {binary, _env} = lift_expr(rendered, ctx, b, %{})
+           binary
+         end}
+      end)
+
+    clauses =
+      [
+        {integer?, fn b -> create_op("ex.int_to_string", [value], [dyn], ctx, b) end},
+        {binary?, fn _b -> value end}
+      ] ++
+        atom_clauses ++
+        [
+          {atom?, fn b -> raise_unsupported_to_string(:unknown_atom, value, ctx, b) end},
+          {nil, fn b -> raise_unsupported_to_string(:unsupported_type, value, ctx, b) end}
+        ]
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    Enum.each(clauses, fn {guard, body_fn} ->
+      clause_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(region, clause_block)
+      clause_args = if guard, do: [guard], else: []
+      create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, clause_block)
+      result = body_fn.(clause_block)
+
+      create_op(
+        "ex.yield",
+        [result, operandSegmentSizes: segment_sizes([1])],
+        [],
+        ctx,
+        clause_block
+      )
+    end)
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [value, operandSegmentSizes: segment_sizes([1])],
+        results: [dyn],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp raise_unsupported_to_string(reason, value, ctx, block) do
+    reported_value = if reason == :unknown_atom, do: atom_term(reason, ctx, block), else: value
+
+    payload =
+      create_term_op(
+        "ex.tuple",
+        [atom_term(reason, ctx, block), reported_value],
+        ctx,
+        block
+      )
+
+    create_op("ex.raise", [payload, lit(3, ctx, block)], [ex_type("dyn", ctx)], ctx, block)
   end
 
   defp resolve_fun_ref({name, _, nil}, env) when is_atom(name) do

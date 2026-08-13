@@ -13,6 +13,7 @@ defmodule Batata.Stdlib.Kernel do
     {Kernel, :byte_size, 1} => :native_term,
     {Kernel, :map_size, 1} => :native_term,
     {Kernel, :list_to_binary, 1} => :native_term,
+    {Kernel, :to_string, 1} => :native_term,
     {Kernel, :is_atom, 1} => :native_term,
     {Kernel, :is_binary, 1} => :native_term,
     {Kernel, :is_integer, 1} => :native_term,
