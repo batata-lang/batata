@@ -369,6 +369,37 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes Kernel.to_string over its supported dynamic term domain", %{ctx: ctx} do
+    assert {"123", "binary", "known"} ==
+             Batata.execute(
+               """
+               defmodule NativeStringChars do
+                 def main() do
+                   {Kernel.to_string(123), Kernel.to_string("binary"), Kernel.to_string(:known)}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "raises a typed error for unsupported Kernel.to_string values", %{ctx: ctx} do
+    error =
+      assert_raise Batata.UnsupportedFeatureError, fn ->
+        Batata.execute(
+          """
+          defmodule NativeStringChars do
+            def main(), do: Kernel.to_string([1])
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert error.reason == :unsupported_type
+    assert error.value == [1]
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

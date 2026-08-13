@@ -20,6 +20,11 @@ defmodule Batata do
     defexception [:message]
   end
 
+  defmodule UnsupportedFeatureError do
+    @moduledoc "Raised when native execution reaches a deliberately unsupported value domain."
+    defexception [:message, :reason, :value]
+  end
+
   @doc """
   Parses and lowers Elixir source into a verified `builtin.module` of `ex`
   operations.
@@ -34,6 +39,7 @@ defmodule Batata do
       |> Batata.Frontend.from_source()
       |> Batata.Lift.module_to_ir(
         ctx: ctx,
+        atom_table: literal_atom_table(source),
         reduction_budget: opts[:reduction_budget],
         reduction_batching: opts[:reduction_batching],
         workers: Keyword.get(opts, :workers, 1),
@@ -171,6 +177,12 @@ defmodule Batata do
           arity: arity,
           args: args
 
+      {3, {reason, value}} when reason in [:unknown_atom, :unsupported_type] ->
+        raise UnsupportedFeatureError,
+          reason: reason,
+          value: value,
+          message: "Kernel.to_string/1 native subset rejected #{reason}: #{inspect(value)}"
+
       _ ->
         raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
     end
@@ -286,7 +298,11 @@ defmodule Batata do
     # `nil` also appears pervasively as quoted AST metadata/context. Only
     # expose its immediate word when the source contains the literal token;
     # otherwise an unboxed scalar result of 1 must remain the integer 1.
-    if Regex.match?(~r/\bnil\b/, source), do: Map.put(atoms, 1, nil), else: atoms
+    atoms = if Regex.match?(~r/\bnil\b/, source), do: Map.put(atoms, 1, nil), else: atoms
+
+    atoms
+    |> Map.put(atom_word(:unknown_atom), :unknown_atom)
+    |> Map.put(atom_word(:unsupported_type), :unsupported_type)
   end
 
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
@@ -338,7 +354,11 @@ defmodule Batata do
 
     module =
       snapshot
-      |> Batata.Lift.module_to_ir(Keyword.put(opts, :ctx, ctx))
+      |> Batata.Lift.module_to_ir(
+        opts
+        |> Keyword.put(:ctx, ctx)
+        |> Keyword.put(:atom_table, literal_atom_table(source))
+      )
       |> Beaver.Deferred.resolve(ctx)
       |> Batata.Transform.run!([
         Batata.Transform.InlineScalarCalls,
