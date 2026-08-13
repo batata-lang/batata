@@ -21,7 +21,10 @@ defmodule Batata.Probe.Decimal.SubsetTest do
     {"rejects a negative coefficient", "comparison_guard(0 - 1, 0 - 1, 1)"},
     {"rejects a smaller scaled coefficient", "comparison_guard(99, 10, 10)"},
     {"accepts a positive exponent", "positive_guard(1)"},
-    {"rejects a zero exponent", "positive_guard(0)"}
+    {"rejects a zero exponent", "positive_guard(0)"},
+    {"normalizes a positive coefficient", "normalize(100)"},
+    {"normalizes a negative coefficient", "normalize(0 - 15)"},
+    {"normalizes a zero coefficient", "normalize(0)"}
   ]
 
   for {name, expression} <- @cases do

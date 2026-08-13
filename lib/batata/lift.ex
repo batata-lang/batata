@@ -2830,6 +2830,7 @@ defmodule Batata.Lift do
   defp lift_expr({name, _, [left, right]}, ctx, block, env) when name in [:div, :rem] do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
+    ensure_refined_integer_operands!([left_value, right_value])
     op = if name == :div, do: "ex.div", else: "ex.rem"
     {create_op(op, [left_value, right_value], [integer_type(ctx)], ctx, block), env}
   end
@@ -4576,15 +4577,10 @@ defmodule Batata.Lift do
       end)
       |> Enum.unzip()
 
-    # `receive` clauses guard integer messages with `is_integer(x)`; the
-    # bound word is untagged so the clause body can use it in scalar
-    # arithmetic.
-    bindss =
-      if Keyword.get(opts, :untag_int_binds, false) do
-        untag_int_binds(parsed, bindss, ctx, block)
-      else
-        bindss
-      end
+    # An explicit `is_integer(x)` guard refines the bound word for the clause
+    # body. Without that proof term values remain dynamic and integer
+    # arithmetic rejects them before invalid IR can be created.
+    bindss = untag_int_binds(parsed, bindss, ctx, block)
 
     region = MLIR.CAPI.mlirRegionCreate()
 
@@ -5081,6 +5077,13 @@ defmodule Batata.Lift do
     |> MLIR.Value.type()
     |> MLIR.to_string()
     |> then(&(&1 in ["!ex.dyn", "!ex.bound", "!ex.unbound"]))
+  end
+
+  defp ensure_refined_integer_operands!(values) do
+    if Enum.any?(values, &(MLIR.Value.type(&1) |> MLIR.to_string() == "!ex.dyn")) do
+      raise Error,
+            "integer arithmetic on a term-pattern binding requires an is_integer/1 guard"
+    end
   end
 
   defp box_if_scalar(value, ctx, block) do

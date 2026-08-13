@@ -25,6 +25,15 @@ defmodule Batata.Test.DecimalSubset do
           _ -> 0
         end
       end
+      def normalize(coef) do
+        case {coef, 7} do
+          {value, 7} when is_integer(value) ->
+            {rem(value, 7), div(value, 7), value + 1}
+
+          _ ->
+            {0, 0, 0}
+        end
+      end
       def main(), do: #{expression}
     end
     """
