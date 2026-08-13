@@ -38,6 +38,8 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert Enum.map(file.modules, & &1.module) == ["Outer", "Outer.Inner"]
 
     [outer, inner] = file.modules
+    assert outer.compile_source == nil
+    assert inner.compile_source == nil
 
     assert outer.definitions == [
              %{kind: :def, name: :guarded, arity: 1, clauses: 1},
@@ -67,6 +69,22 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert Enum.at(outer.unsupported, 3).attribute == :digits
 
     assert Enum.map(inner.unsupported, & &1.reason) == [:require]
+  end
+
+  @tag :tmp_dir
+  test "builds a self-contained compile candidate only for eligible modules", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "eligible.ex"), """
+    defmodule Eligible do
+      @moduledoc false
+      def double(value), do: value * 2
+    end
+    """)
+
+    assert [%{modules: [module]}] = Inventory.discover!(tmp_dir)
+    assert module.unsupported |> Enum.map(& &1.reason) == [:ignored_metadata]
+    assert module.compile_source =~ "defmodule Eligible"
+    assert module.compile_source =~ "def main do"
+    refute module.compile_source =~ "@moduledoc"
   end
 
   @tag :tmp_dir

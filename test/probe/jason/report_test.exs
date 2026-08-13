@@ -30,7 +30,9 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert first == second
     assert first["schema_version"] == 3
-    assert first["coverage_claim"] == "no library-definition compile coverage"
+
+    assert first["coverage_claim"] ==
+             "eligible-module compile attempts; no per-definition coverage"
 
     assert first["scope_limits"] == [
              "top-level forms only",
@@ -44,6 +46,23 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert first["summary"]["by_stage"]["pattern_or_guard"] == 0
     assert first["summary"]["ignored_metadata"] == 1
     assert first["summary"]["ignored_metadata_by_attribute"] == %{"moduledoc" => 1}
+
+    assert first["summary"]["module_compile_attempts"] == %{
+             "blocked_by_module_forms" => 1,
+             "frontend_normalization_failure" => 0,
+             "ir_verification_failure" => 0,
+             "lowering_failure" => 0,
+             "pass" => 0
+           }
+
+    assert first["module_compile_attempts"] == [
+             %{
+               "blocker_categories" => %{"compile_annotation" => 1, "import" => 1},
+               "module" => "Jason.Decoder",
+               "path" => "lib/decoder.ex",
+               "status" => "blocked_by_module_forms"
+             }
+           ]
 
     assert first["summary"]["categories"] == %{
              "compile_annotation" => 1,
@@ -65,10 +84,26 @@ defmodule Batata.Probe.Jason.ReportTest do
     metadata_keep = %{"id" => "metadata-keep", "attribute" => "doc"}
     metadata_new = %{"id" => "metadata-new", "attribute" => "spec"}
 
+    current_attempts = [
+      %{"path" => "lib/pass.ex", "module" => "Pass", "status" => "lowering_failure"}
+    ]
+
+    baseline_attempts = [
+      %{"path" => "lib/pass.ex", "module" => "Pass", "status" => "pass"}
+    ]
+
     diff =
       Diff.compare(
-        %{"blockers" => [keep, new], "ignored_metadata" => [metadata_keep, metadata_new]},
-        %{"blockers" => [keep, old], "ignored_metadata" => [metadata_keep]}
+        %{
+          "blockers" => [keep, new],
+          "ignored_metadata" => [metadata_keep, metadata_new],
+          "module_compile_attempts" => current_attempts
+        },
+        %{
+          "blockers" => [keep, old],
+          "ignored_metadata" => [metadata_keep],
+          "module_compile_attempts" => baseline_attempts
+        }
       )
 
     assert diff["added"] == [new]
@@ -78,5 +113,15 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert diff["ignored_metadata_added"] == [metadata_new]
     assert diff["ignored_metadata_resolved"] == []
     assert diff["ignored_metadata_unchanged"] == 1
+    assert diff["compile_attempt_regression"]
+
+    assert diff["compile_attempt_changes"] == [
+             %{
+               "from" => "pass",
+               "module" => "Pass",
+               "path" => "lib/pass.ex",
+               "to" => "lowering_failure"
+             }
+           ]
   end
 end
