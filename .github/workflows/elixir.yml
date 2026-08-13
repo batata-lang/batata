@@ -99,6 +99,14 @@ jobs:
           BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
           LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
+      - name: Upload concurrent runtime traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: concurrent-runtime-traces
+          path: _build/runtime_soak/*.json
+          if-no-files-found: warn
+
       - name: Run fixed runtime soak gate
         run: bash scripts/runtime-soak.sh _build/runtime_soak 1 0x6101
 
