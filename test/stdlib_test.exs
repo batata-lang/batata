@@ -13,6 +13,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:erlang, :length, 1}) == :native_term
       assert Stdlib.class({IO, :iodata_to_binary, 1}) == :native_term
       assert Stdlib.class({:erlang, :iolist_to_binary, 1}) == :native_term
+      assert Stdlib.class({:binary, :at, 2}) == :native_term
     end
 
     test "classifies declared domain modules" do
