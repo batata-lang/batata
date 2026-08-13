@@ -49,6 +49,13 @@ Modules blocked by top-level forms remain visible as
 `blocked_by_module_forms`; a previously passing module compile attempt becoming
 a compile or lowering failure is a probe regression.
 
+The atom-keyed map subset gate covers case-clause subset matching, including
+present-nil versus missing keys and non-map fall-through. In the diagnostic
+lane it advances `Jason.DecodeError` from `map_pattern` to
+`non_exhaustive_clauses`. `Decimal.Error` remains at `map_pattern` because its
+map destructuring occurs in a single function parameter; accepting that shape
+without FunctionClauseError routing would overstate semantic support.
+
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
 scanner/IR probe; and every `blocked` row has one owning layer and a reason.

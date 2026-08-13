@@ -7,6 +7,8 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     matrix = CapabilityMatrix.load!("probe/decimal/capabilities.json")
     capabilities = Map.new(matrix["capabilities"], &{&1["id"], &1})
 
+    assert capabilities["pattern.map_subset"]["gate"] == "execute_test"
+
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
     assert capabilities["decimal.guard_bifs"]["status"] == "executable"
