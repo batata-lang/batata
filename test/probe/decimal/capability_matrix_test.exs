@@ -11,5 +11,7 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
     assert capabilities["decimal.guard_bifs"]["status"] == "blocked"
     assert capabilities["decimal.numeric_guards"]["status"] == "blocked"
+    assert capabilities["decimal.normalization"]["status"] == "executable"
+    assert capabilities["decimal.normalization"]["gate"] == "decimal_subset_test"
   end
 end

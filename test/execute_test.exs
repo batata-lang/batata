@@ -471,6 +471,24 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "rejects unrefined term-pattern integer arithmetic before verification", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/requires an is_integer\/1 guard/, fn ->
+      Batata.execute(
+        """
+        defmodule Math do
+          def main() do
+            case {100, 7} do
+              {value, divisor} -> rem(value, divisor)
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes binary rest matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
