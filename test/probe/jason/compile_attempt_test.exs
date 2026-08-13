@@ -56,4 +56,19 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
 
     assert details["reason_class"] == "remote_module_call"
   end
+
+  test "classifies map patterns and non-exhaustive clauses" do
+    map_pattern =
+      CompileAttempt.failure_details(%Batata.Lift.Error{
+        message: "unsupported case pattern: {:%{}, [line: 4], [message: {:message, [], nil}]}"
+      })
+
+    non_exhaustive =
+      CompileAttempt.failure_details(%Batata.Lift.Error{
+        message: "case requires a final catch-all clause"
+      })
+
+    assert map_pattern["reason_class"] == "map_pattern"
+    assert non_exhaustive["reason_class"] == "non_exhaustive_clauses"
+  end
 end

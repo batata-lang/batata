@@ -32,6 +32,21 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   def statuses, do: @statuses
 
   @doc false
+  @spec run_source(String.t(), String.t(), String.t()) :: map()
+  def run_source(path, module_name, source) do
+    ctx = MLIR.Context.create()
+
+    try do
+      case compile(source, ctx) do
+        {:ok, compiled} -> lower(path, module_name, compiled, ctx)
+        {:error, stage, error} -> failure(path, module_name, stage, error)
+      end
+    after
+      MLIR.Context.destroy(ctx)
+    end
+  end
+
+  @doc false
   @spec failure_details(Exception.t()) :: map()
   def failure_details(error) do
     message = Exception.message(error)
@@ -60,16 +75,7 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   end
 
   defp attempt(path, module) do
-    ctx = MLIR.Context.create()
-
-    try do
-      case compile(module.compile_source, ctx) do
-        {:ok, compiled} -> lower(path, module.module, compiled, ctx)
-        {:error, stage, error} -> failure(path, module.module, stage, error)
-      end
-    after
-      MLIR.Context.destroy(ctx)
-    end
+    run_source(path, module.module, module.compile_source)
   end
 
   defp compile(source, ctx) do
@@ -102,8 +108,14 @@ defmodule Batata.Probe.Jason.CompileAttempt do
 
   defp reason_class(%Batata.Lift.Error{}, message) do
     cond do
+      map_pattern?(message) ->
+        "map_pattern"
+
       String.starts_with?(message, "unsupported parameter pattern: {:\\") ->
         "default_argument_pattern"
+
+      String.contains?(message, "requires a final catch-all clause") ->
+        "non_exhaustive_clauses"
 
       remote_module_call?(message) ->
         "remote_module_call"
@@ -126,6 +138,12 @@ defmodule Batata.Probe.Jason.CompileAttempt do
     error.__struct__
     |> inspect()
     |> Macro.underscore()
+  end
+
+  defp map_pattern?(message) do
+    (String.starts_with?(message, "unsupported parameter pattern:") or
+       String.starts_with?(message, "unsupported case pattern:")) and
+      String.contains?(message, "{:%{}")
   end
 
   defp remote_module_call?(message) do

@@ -41,6 +41,7 @@ defmodule Batata.Probe.Jason.Inventory do
           required(:definitions) => [map()],
           required(:unsupported) => [unsupported()],
           required(:dependency_forms) => [Macro.t()],
+          required(:diagnostic_source) => String.t() | nil,
           required(:compile_source) => String.t() | nil
         }
 
@@ -132,6 +133,7 @@ defmodule Batata.Probe.Jason.Inventory do
       definitions: accepted_definitions(source_snapshot),
       unsupported: unsupported,
       dependency_forms: dependency_forms(expanded_forms),
+      diagnostic_source: diagnostic_source(module_name, expanded_forms, unsupported),
       compile_source: compile_source(module_name, expanded_forms, unsupported)
     }
 
@@ -193,6 +195,17 @@ defmodule Batata.Probe.Jason.Inventory do
     if Enum.all?(unsupported, &(&1.reason == :ignored_metadata)) do
       definitions = Enum.filter(body_forms, &simple_definition?/1)
       definitions = ensure_main(definitions)
+
+      {:defmodule, [], [module_name, [do: {:__block__, [], definitions}]]}
+      |> Macro.to_string()
+    end
+  end
+
+  defp diagnostic_source(module_name, body_forms, unsupported) do
+    blockers = Enum.reject(unsupported, &(&1.reason == :ignored_metadata))
+
+    if blockers != [] and Enum.all?(blockers, &(&1.reason == :exception_semantics)) do
+      definitions = body_forms |> Enum.filter(&simple_definition?/1) |> ensure_main()
 
       {:defmodule, [], [module_name, [do: {:__block__, [], definitions}]]}
       |> Macro.to_string()
