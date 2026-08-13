@@ -202,7 +202,9 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Decimal.Error" and
-               attempt["reason_class"] == "unresolved_short_circuit_and"
+               attempt["outcome"] == "reached_compile_pipeline" and
+               attempt["phase"] == "lowering_complete" and
+               not Map.has_key?(attempt, "reason_class")
            end)
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
