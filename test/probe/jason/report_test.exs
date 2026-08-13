@@ -48,6 +48,14 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert first["summary"]["ignored_metadata"] == 1
     assert first["summary"]["ignored_metadata_by_attribute"] == %{"moduledoc" => 1}
 
+    assert first["summary"]["dependency_frontier"] == %{
+             "calls" => 0,
+             "corpus_calls" => 0,
+             "targets" => 0
+           }
+
+    assert first["dependency_frontier"] == []
+
     assert first["summary"]["module_compile_attempts"] == %{
              "blocked_by_module_forms" => 1,
              "frontend_normalization_failure" => 0,
@@ -136,6 +144,23 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal["summary"]["blockers"] == 43
     assert jason["summary"]["definitions"] == 239
     assert decimal["summary"]["definitions"] == 243
+
+    assert jason["summary"]["dependency_frontier"] == %{
+             "calls" => 11,
+             "corpus_calls" => 6,
+             "targets" => 5
+           }
+
+    assert decimal["summary"]["dependency_frontier"] == %{
+             "calls" => 0,
+             "corpus_calls" => 0,
+             "targets" => 0
+           }
+
+    assert Enum.any?(jason["dependency_frontier"], fn call ->
+             call["module"] == "Jason" and call["target"] == "Jason.Decoder" and
+               call["function"] == "parse" and call["target_kind"] == "corpus"
+           end)
 
     assert [%{"reason_class" => "remote_module_call", "module" => "Jason"}] =
              Enum.filter(
