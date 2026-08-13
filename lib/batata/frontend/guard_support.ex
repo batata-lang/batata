@@ -26,25 +26,70 @@ defmodule Batata.Frontend.GuardSupport do
     do: integer_expression?(left) and integer_expression?(right)
 
   defp do_supported?({:in, _, [{name, _, _}, members]}) when is_atom(name),
-    do: integer_members(members) != nil
+    do: term_members(members) != nil
 
   defp do_supported?({op, _, [left, right]}) when op in @boolean_operators,
     do: do_supported?(left) and do_supported?(right)
 
   defp do_supported?(_guard_ast), do: false
 
-  @spec integer_members(Macro.t()) :: {:range, integer(), integer()} | {:set, [integer()]} | nil
-  def integer_members({:.., _, [first, last]}) when is_integer(first) and is_integer(last),
-    do: {:range, first, last}
+  @type term_members ::
+          {:integer_range, integer(), integer()}
+          | {:integer_set, [integer()]}
+          | {:atom_set, [atom()]}
 
-  def integer_members(values) when is_list(values) do
-    if Enum.all?(values, &is_integer/1), do: {:set, Enum.uniq(values)}
+  @spec term_members(Macro.t()) :: term_members() | nil
+  def term_members({:.., _, [first, last]}) do
+    with {:ok, first} <- integer_literal(first),
+         {:ok, last} <- integer_literal(last) do
+      {:integer_range, first, last}
+    else
+      _ -> nil
+    end
   end
 
-  def integer_members({:sigil_c, _, [{:<<>>, _, [value]}, []]}) when is_binary(value),
-    do: {:set, value |> String.to_charlist() |> Enum.uniq()}
+  def term_members(values) when is_list(values) do
+    values = Enum.map(values, &term_literal/1)
 
-  def integer_members(_members), do: nil
+    cond do
+      Enum.all?(values, &match?({:integer, _}, &1)) ->
+        {:integer_set, values |> Enum.map(&elem(&1, 1)) |> Enum.uniq()}
+
+      Enum.all?(values, &match?({:atom, _}, &1)) ->
+        {:atom_set, values |> Enum.map(&elem(&1, 1)) |> Enum.uniq()}
+
+      true ->
+        nil
+    end
+  end
+
+  def term_members({:sigil_c, _, [{:<<>>, _, [value]}, []]}) when is_binary(value),
+    do: {:integer_set, value |> String.to_charlist() |> Enum.uniq()}
+
+  def term_members(_members), do: nil
+
+  defp term_literal(value) when is_atom(value), do: {:atom, value}
+
+  defp term_literal(value) do
+    case integer_literal(value) do
+      {:ok, integer} -> {:integer, integer}
+      :error -> :error
+    end
+  end
+
+  defp integer_literal(value) when is_integer(value), do: {:ok, value}
+  defp integer_literal({:-, _, [value]}) when is_integer(value), do: {:ok, -value}
+  defp integer_literal({:+, _, [value]}) when is_integer(value), do: {:ok, value}
+  defp integer_literal(_value), do: :error
+
+  @spec integer_members(Macro.t()) :: {:range, integer(), integer()} | {:set, [integer()]} | nil
+  def integer_members(members) do
+    case term_members(members) do
+      {:integer_range, first, last} -> {:range, first, last}
+      {:integer_set, integers} -> {:set, integers}
+      _ -> nil
+    end
+  end
 
   defp operand?(value) when is_integer(value), do: true
   defp operand?(value) when is_binary(value), do: true

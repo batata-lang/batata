@@ -4986,24 +4986,11 @@ defmodule Batata.Lift do
 
   defp lift_term_guard_expr({:in, _, [{name, _, _}, members]}, env, ctx, block)
        when is_atom(name) do
-    values = GuardSupport.integer_members(members)
+    values = GuardSupport.term_members(members)
     value = Map.fetch!(env, name)
     word = box_if_scalar(value, ctx, block)
-    integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
-    scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
 
-    membership =
-      case values do
-        {:range, first, last} ->
-          lower_integer_range_membership(scalar, first, last, ctx, block)
-
-        {:set, integers} ->
-          integers
-          |> Enum.map(&cmp(scalar, &1, "eq", ctx, block))
-          |> combine_any(ctx, block)
-      end
-
-    combine([integer, membership], ctx, block)
+    lower_term_membership(word, values, ctx, block)
   end
 
   defp lift_term_guard_expr({op, _, [left, right]}, env, ctx, block)
@@ -5032,6 +5019,47 @@ defmodule Batata.Lift do
   defp lift_term_guard_expr(guard_ast, env, ctx, block) do
     {value, _env} = lift_expr(guard_ast, ctx, block, env)
     value
+  end
+
+  defp lower_term_membership(word, {:integer_range, first, last}, ctx, block) do
+    integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
+    scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
+    membership = lower_integer_range_membership(scalar, first, last, ctx, block)
+    combine([integer, membership], ctx, block)
+  end
+
+  defp lower_term_membership(word, {:integer_set, integers}, ctx, block) do
+    integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
+    scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
+
+    membership =
+      integers
+      |> Enum.map(&cmp(scalar, &1, "eq", ctx, block))
+      |> combine_any(ctx, block)
+
+    combine([integer, membership], ctx, block)
+  end
+
+  defp lower_term_membership(word, {:atom_set, atoms}, ctx, block) do
+    atom = create_op("ex.is_atom", [word], [MLIR.Type.i64()], ctx, block)
+
+    membership =
+      atoms
+      |> Enum.map(fn member ->
+        tagged_atom =
+          create_op(
+            "ex.to_word",
+            [lit(atom_word(member), ctx, block)],
+            [ex_type("dyn", ctx)],
+            ctx,
+            block
+          )
+
+        create_op("ex.term_eq", [word, tagged_atom], [MLIR.Type.i64()], ctx, block)
+      end)
+      |> combine_any(ctx, block)
+
+    combine([atom, membership], ctx, block)
   end
 
   defp lower_integer_range_membership(value, first, last, ctx, block) do

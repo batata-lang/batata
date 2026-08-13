@@ -7,6 +7,8 @@ defmodule Batata.Frontend.GuardSupportTest do
     assert GuardSupport.supported?(quote(do: is_binary(value)))
     assert GuardSupport.supported?(quote(do: byte in ?0..?9))
     assert GuardSupport.supported?(quote(do: byte in [?e, ?E]))
+    assert GuardSupport.supported?(quote(do: coefficient in [:NaN, :inf]))
+    assert GuardSupport.supported?(quote(do: sign in [1, -1]))
     assert GuardSupport.supported?(quote(do: is_integer(value) and value != 0))
     assert GuardSupport.supported?(quote(do: value <= 0))
     assert GuardSupport.supported?(quote(do: value >= 0))
@@ -22,5 +24,6 @@ defmodule Batata.Frontend.GuardSupportTest do
     refute GuardSupport.supported?(quote(do: rem(value, 10) == 0))
     refute GuardSupport.supported?(quote(do: is_integer(value) or rem(value, 10) == 0))
     refute GuardSupport.supported?(quote(do: value <= byte_size(data)))
+    refute GuardSupport.supported?(quote(do: value in [1, :inf]))
   end
 end
