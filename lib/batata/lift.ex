@@ -2876,8 +2876,14 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:<<>>, _, segments}, ctx, block, env) do
-    {values, env} = lift_operands_boxed(segments, ctx, block, env)
-    {create_term_op("ex.binary", values, ctx, block), env}
+    if Enum.any?(segments, &interpolation_segment?/1) do
+      {values, env} = lift_interpolation_segments(segments, ctx, block, env)
+      iodata = create_term_op("ex.list", values, ctx, block)
+      {create_op("ex.iodata_to_binary", [iodata], [ex_type("dyn", ctx)], ctx, block), env}
+    else
+      {values, env} = lift_operands_boxed(segments, ctx, block, env)
+      {create_term_op("ex.binary", values, ctx, block), env}
+    end
   end
 
   defp lift_expr({name, _, [arg]}, ctx, block, env)
@@ -3393,6 +3399,21 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp interpolation_segment?({:"::", _, [_, {:binary, _, nil}]}), do: true
+  defp interpolation_segment?(_segment), do: false
+
+  defp lift_interpolation_segments(segments, ctx, block, env) do
+    Enum.map_reduce(segments, env, fn
+      {:"::", _, [expression, {:binary, _, nil}]}, env ->
+        {value, env} = lift_expr(expression, ctx, block, env)
+        {box_term(value, ctx, block), env}
+
+      segment, env ->
+        {value, env} = lift_expr(segment, ctx, block, env)
+        {box_term(value, ctx, block), env}
+    end)
   end
 
   # Selective receive: a cursor loop over the mailbox that tries each message
