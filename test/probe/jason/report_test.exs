@@ -189,7 +189,7 @@ defmodule Batata.Probe.Jason.ReportTest do
              )
 
     assert Enum.map(jason["diagnostic_attempts"], &{&1["module"], &1["reason_class"]}) == [
-             {"Jason.DecodeError", "map_pattern"},
+             {"Jason.DecodeError", "non_exhaustive_clauses"},
              {"Jason.EncodeError", "non_exhaustive_clauses"}
            ]
 
