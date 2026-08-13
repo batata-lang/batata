@@ -16,8 +16,8 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     assert attempt["module"] == "Fixture.Error"
     assert attempt["diagnostic_only"]
     assert attempt["outcome"] == "reached_compile_pipeline"
-    assert attempt["phase"] == "frontend_normalization_failure"
-    assert attempt["reason_class"] == "map_pattern"
+    assert attempt["phase"] == "lowering_complete"
+    refute Map.has_key?(attempt, "reason_class")
 
     assert [%{"id" => id, "reason" => "exception_semantics"}] =
              attempt["removed_blockers"]

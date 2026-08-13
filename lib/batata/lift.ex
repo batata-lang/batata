@@ -229,7 +229,9 @@ defmodule Batata.Lift do
     |> Enum.group_by(&{&1.name, &1.arity})
     |> Enum.any?(fn {_key, group} ->
       clauses = Enum.flat_map(group, & &1.clauses)
-      length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))
+
+      (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
+        (length(clauses) == 1 and Enum.any?(clauses, &function_clause_has_pattern?/1))
     end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1)
   end
 
@@ -238,6 +240,13 @@ defmodule Batata.Lift do
   end
 
   defp function_clause_catch_all?(_clause), do: false
+
+  defp function_clause_has_pattern?(%Frontend.Clause{patterns: patterns}) do
+    Enum.any?(patterns, fn
+      {name, _, nil} when is_atom(name) -> false
+      _pattern -> true
+    end)
+  end
 
   defp definition_has_non_exhaustive_case?(%Frontend.Definition{clauses: clauses}) do
     Enum.any?(clauses, fn %Frontend.Clause{body_ast: body} ->
@@ -1063,8 +1072,21 @@ defmodule Batata.Lift do
     |> elem(1)
   end
 
-  defp lift_definitions([definition], ctx, ip, budget, batch_size) do
-    lift_definition(definition, ctx, ip, budget, batch_size)
+  defp lift_definitions(
+         [%Frontend.Definition{name: name, arity: arity, clauses: clauses}] = definitions,
+         ctx,
+         ip,
+         budget,
+         batch_size
+       ) do
+    if Enum.any?(clauses, &function_clause_has_pattern?/1) do
+      case arity do
+        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip)
+        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip)
+      end
+    else
+      lift_definition(hd(definitions), ctx, ip, budget, batch_size)
+    end
   end
 
   # Multiple `def` forms with the same name/arity become one ex.func whose
