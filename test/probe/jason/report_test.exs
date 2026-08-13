@@ -202,7 +202,7 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Decimal.Error" and
-               attempt["reason_class"] == "unresolved_binary_concat"
+               attempt["reason_class"] == "unresolved_short_circuit_and"
            end)
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->

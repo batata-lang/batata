@@ -137,6 +137,10 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   defp reason_class(%Batata.Lower.Error{}, message) do
     cond do
       String.contains?(message, "does not reference a valid function") and
+          String.contains?(message, "@\"&&\"") ->
+        "unresolved_short_circuit_and"
+
+      String.contains?(message, "does not reference a valid function") and
           String.contains?(message, "@\"<>\"") ->
         "unresolved_binary_concat"
 
