@@ -137,6 +137,32 @@ jobs:
           path: _build/jason_probe/report.json
           if-no-files-found: error
 
+      - name: Checkout pinned Decimal probe corpus
+        uses: actions/checkout@v4
+        with:
+          repository: ericmj/decimal
+          ref: 592d59ac4474933f91cdc3e8e037f137f7e008b0
+          path: decimal-probe-source
+
+      - name: Run Decimal compile probe
+        run: |
+          mix batata.decimal_probe \
+            --source decimal-probe-source \
+            --output _build/decimal_probe/report.json \
+            --baseline probe/decimal/baseline.json
+        env:
+          BEAVER_PATH: ${{ github.workspace }}/beaver
+          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
+          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
+
+      - name: Upload Decimal probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: decimal-probe-report
+          path: _build/decimal_probe/report.json
+          if-no-files-found: error
+
       - name: Run process-reuse benchmark
         # The slot-recycling benchmark (#50 stage 1) must keep producing a
         # full-success result under the small table and a failing baseline

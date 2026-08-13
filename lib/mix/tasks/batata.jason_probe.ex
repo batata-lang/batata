@@ -14,7 +14,7 @@ defmodule Mix.Tasks.Batata.JasonProbe do
 
   use Mix.Task
 
-  alias Batata.Probe.Jason.{Diff, Report}
+  alias Batata.Probe.Corpus
 
   @switches [
     source: :string,
@@ -34,34 +34,13 @@ defmodule Mix.Tasks.Batata.JasonProbe do
 
     source = opts[:source] || Mix.raise("--source is required")
     output = opts[:output] || "_build/jason_probe/report.json"
-    metadata_path = opts[:metadata] || "probe/jason/source.json"
-    metadata = Report.read_metadata!(metadata_path)
-    report = Report.write!(source, output, metadata: metadata)
 
-    Mix.shell().info(
-      "Jason probe: #{report["summary"]["files"]} files, " <>
-        "#{report["summary"]["blockers"]} blockers -> #{output}"
+    Corpus.run!(source,
+      name: "Jason",
+      output: output,
+      metadata: opts[:metadata] || "probe/jason/source.json",
+      baseline: opts[:baseline],
+      fail_on_regression: opts[:fail_on_regression]
     )
-
-    compare_baseline(report, opts)
-  end
-
-  defp compare_baseline(report, opts) do
-    case opts[:baseline] do
-      nil ->
-        :ok
-
-      path ->
-        baseline = path |> File.read!() |> JSON.decode!()
-        diff = Diff.compare(report, baseline)
-
-        Mix.shell().info(
-          "Jason probe diff: +#{length(diff["added"])} -#{length(diff["resolved"])}"
-        )
-
-        if opts[:fail_on_regression] and diff["regression"] do
-          Mix.raise("Jason probe introduced #{length(diff["added"])} blocker(s)")
-        end
-    end
   end
 end
