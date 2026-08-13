@@ -252,11 +252,18 @@ defmodule Batata.Lift do
         {:<>, _, [_, _]} = node, false ->
           {node, true}
 
-        {:to_string, _, [_]} = node, false ->
-          {node, true}
+        {name, _, args} = node, false when is_atom(name) and is_list(args) ->
+          {node, Batata.Stdlib.may_raise?({Kernel, name, length(args)})}
 
-        {{:., _, [module_ast, :to_string]}, _, [_]} = node, false ->
-          {node, module_ref(module_ast) == {:ok, Kernel}}
+        {{:., _, [module_ast, name]}, _, args} = node, false
+        when is_atom(name) and is_list(args) ->
+          raises? =
+            case module_ref(module_ast) do
+              {:ok, module} -> Batata.Stdlib.may_raise?({module, name, length(args)})
+              :error -> false
+            end
+
+          {node, raises?}
 
         node, false ->
           {node, false}

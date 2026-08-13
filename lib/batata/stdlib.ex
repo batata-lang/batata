@@ -307,6 +307,10 @@ defmodule Batata.Stdlib do
              &Elixir.Map.merge(&2, &1)
            )
 
+  @raising_mfas MapSet.new([
+                  {Kernel, :to_string, 1}
+                ])
+
   @impure_mfas MapSet.new([
                  {Kernel, :self, 0},
                  {Kernel, :send, 2},
@@ -427,4 +431,7 @@ defmodule Batata.Stdlib do
 
   @doc "All declared entries, for diagnostics and tests."
   def classes, do: @classes
+
+  @doc "Returns whether a native replacement can raise through the actor boundary."
+  def may_raise?(mfa), do: MapSet.member?(@raising_mfas, mfa)
 end

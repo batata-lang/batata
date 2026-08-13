@@ -35,6 +35,12 @@ defmodule Batata.StdlibTest do
       assert Stdlib.metadata({Foo, :bar, 1}) == nil
     end
 
+    test "declares native calls which require an actor exception boundary" do
+      assert Stdlib.may_raise?({Kernel, :to_string, 1})
+      refute Stdlib.may_raise?({String, :length, 1})
+      refute Stdlib.may_raise?({Foo, :bar, 1})
+    end
+
     test "classifies effects and resumable safe points" do
       assert Stdlib.metadata({Kernel, :byte_size, 1}) == %{
                purity: :pure,
