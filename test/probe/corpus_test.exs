@@ -36,7 +36,12 @@ defmodule Batata.Probe.CorpusTest do
     assert report == output |> File.read!() |> JSON.decode!()
     assert report["corpus"]["name"] == "decimal"
     assert report["schema_version"] == 3
-    assert report["coverage_claim"] == "no library-definition compile coverage"
+
+    assert report["coverage_claim"] ==
+             "eligible-module compile attempts; no per-definition coverage"
+
+    assert report["summary"]["module_compile_attempts"]["pass"] == 1
+    assert [%{"module" => "Decimal", "status" => "pass"}] = report["module_compile_attempts"]
     assert report["summary"]["definitions"] == 1
     assert report["summary"]["ignored_metadata"] == 0
     assert report["ignored_metadata"] == []

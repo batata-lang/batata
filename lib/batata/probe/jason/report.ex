@@ -8,10 +8,10 @@ defmodule Batata.Probe.Jason.Report do
   from later semantic, lowering, and runtime failures.
   """
 
-  alias Batata.Probe.Jason.Inventory
+  alias Batata.Probe.Jason.{CompileAttempt, Inventory}
 
   @schema_version 3
-  @coverage_claim "no library-definition compile coverage"
+  @coverage_claim "eligible-module compile attempts; no per-definition coverage"
   @scope_limits [
     "top-level forms only",
     "macro calls inside definition bodies are not attributed"
@@ -36,6 +36,7 @@ defmodule Batata.Probe.Jason.Report do
     metadata = Keyword.get(opts, :metadata, %{})
     files = Inventory.discover!(source)
     {ignored_metadata, blockers} = entries(files)
+    compile_attempts = CompileAttempt.run(files)
 
     %{
       "schema_version" => @schema_version,
@@ -47,8 +48,9 @@ defmodule Batata.Probe.Jason.Report do
       "coverage_claim" => @coverage_claim,
       "scope_limits" => @scope_limits,
       "stages" => @known_stages,
-      "summary" => summary(files, blockers, ignored_metadata),
+      "summary" => summary(files, blockers, ignored_metadata, compile_attempts),
       "ignored_metadata" => ignored_metadata,
+      "module_compile_attempts" => compile_attempts,
       "blockers" => blockers
     }
   end
@@ -166,7 +168,7 @@ defmodule Batata.Probe.Jason.Report do
     }
   end
 
-  defp summary(files, blockers, ignored_metadata) do
+  defp summary(files, blockers, ignored_metadata, compile_attempts) do
     modules = Enum.sum(Enum.map(files, &length(&1.modules)))
 
     definitions =
@@ -174,6 +176,7 @@ defmodule Batata.Probe.Jason.Report do
 
     counts = Enum.frequencies_by(blockers, & &1["stage"])
     categories = Enum.frequencies_by(blockers, & &1["reason"])
+    attempt_counts = Enum.frequencies_by(compile_attempts, & &1["status"])
 
     %{
       "files" => length(files),
@@ -183,6 +186,8 @@ defmodule Batata.Probe.Jason.Report do
       "ignored_metadata" => length(ignored_metadata),
       "ignored_metadata_by_attribute" => Enum.frequencies_by(ignored_metadata, & &1["attribute"]),
       "categories" => categories,
+      "module_compile_attempts" =>
+        Map.new(CompileAttempt.statuses(), &{&1, Map.get(attempt_counts, &1, 0)}),
       "by_stage" => Map.new(@known_stages, &{&1, Map.get(counts, &1, 0)})
     }
   end

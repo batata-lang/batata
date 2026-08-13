@@ -37,7 +37,8 @@ defmodule Batata.Probe.Jason.Inventory do
   @type module_inventory :: %{
           required(:module) => String.t(),
           required(:definitions) => [map()],
-          required(:unsupported) => [unsupported()]
+          required(:unsupported) => [unsupported()],
+          required(:compile_source) => String.t() | nil
         }
 
   @type file_inventory :: %{
@@ -113,11 +114,13 @@ defmodule Batata.Probe.Jason.Inventory do
     module_name = declared_module(name_ast, parent)
     snapshot = Frontend.from_ast(ast)
     body_forms = forms(body)
+    unsupported = unsupported_forms(body_forms, snapshot.unsupported)
 
     current = %{
       module: inspect(module_name),
       definitions: accepted_definitions(snapshot),
-      unsupported: unsupported_forms(body_forms, snapshot.unsupported)
+      unsupported: unsupported,
+      compile_source: compile_source(module_name, body_forms, unsupported)
     }
 
     nested =
@@ -168,6 +171,29 @@ defmodule Batata.Probe.Jason.Inventory do
        do: GuardSupport.supported?(guard_ast)
 
   defp simple_definition?(_form), do: false
+
+  defp compile_source(module_name, body_forms, unsupported) do
+    if Enum.all?(unsupported, &(&1.reason == :ignored_metadata)) do
+      definitions = Enum.filter(body_forms, &simple_definition?/1)
+      definitions = ensure_main(definitions)
+
+      {:defmodule, [], [module_name, [do: {:__block__, [], definitions}]]}
+      |> Macro.to_string()
+    end
+  end
+
+  defp ensure_main(definitions) do
+    if Enum.any?(definitions, &main_definition?/1) do
+      definitions
+    else
+      definitions ++ [quote(do: def(main, do: 0))]
+    end
+  end
+
+  defp main_definition?({:def, _, [{:main, _, args}, [do: _body]]}) when args in [[], nil],
+    do: true
+
+  defp main_definition?(_form), do: false
 
   defp unsupported_form(form, frontend_reason) do
     entry = %{

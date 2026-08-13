@@ -44,6 +44,10 @@ defmodule Batata.Probe.Corpus do
             "-#{length(diff["ignored_metadata_resolved"])}"
         )
 
+        Mix.shell().info(
+          "#{name} module compile-attempt changes: #{length(diff["compile_attempt_changes"])}"
+        )
+
         if Keyword.get(opts, :fail_on_regression, false) and diff["regression"] do
           Mix.raise("#{name} probe introduced #{length(diff["added"])} blocker(s)")
         end

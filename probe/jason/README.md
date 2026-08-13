@@ -8,6 +8,9 @@ The probe has two deliberately separate surfaces:
 - `mix batata.jason_probe` inventories unmodified Jason source at the current
   parse/frontend boundary. It collects every blocker instead of stopping at
   the first unsupported form.
+- Structurally eligible modules also enter a non-executing compile-attempt
+  lane. The lane compiles and lowers a complete synthetic module, records the
+  first failing phase, and never treats its result as per-definition coverage.
 - `test/probe/jason/semantic_kernels_test.exs` executes minimized,
   Batata-owned kernels shaped like Jason's token, number, UTF-8, and escape
   scanners and compares their results with the BEAM implementation.
@@ -39,6 +42,9 @@ disappearing is progress; a newly accepted form must still be tested through
 IR verification, lowering, execution, and a BEAM oracle before it counts as
 semantic support. Compiler crashes, verifier failures, and runtime mismatches
 must never be converted into expected frontend blockers.
+Modules blocked by top-level forms remain visible as
+`blocked_by_module_forms`; a previously passing module compile attempt becoming
+a compile or lowering failure is a probe regression.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
