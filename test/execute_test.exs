@@ -409,14 +409,58 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects non-predicate guards on term patterns explicitly", %{ctx: ctx} do
+  test "executes integer ordering guards on term patterns", %{ctx: ctx} do
+    source = """
+    defmodule Math do
+      def main() do
+        case {7, 2} do
+          {value, _} when value <= 7 -> 1
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    beam_result =
+      case {7, 2} do
+        {value, _} when value <= 7 -> 1
+        _ -> 0
+      end
+
+    assert 1 == beam_result
+    assert 1 == Batata.execute(source, ctx)
+  end
+
+  test "executes literal equality guards on term patterns", %{ctx: ctx} do
+    source = """
+    defmodule Math do
+      def main() do
+        case {[], false} do
+          {list, pretty} when list == [] and pretty !== true -> 1
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    beam_result =
+      case {[], false} do
+        {list, pretty} when list == [] and pretty !== true -> 1
+        _ -> 0
+      end
+
+    assert 1 == beam_result
+    assert 1 == Batata.execute(source, ctx)
+  end
+
+  test "rejects unsupported guards on term patterns explicitly", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/unsupported guard on term pattern/, fn ->
       Batata.execute(
         """
         defmodule Math do
           def main() do
             case {1, 2} do
-              {a, b} when a > 1 -> 1
+              {a, b} when is_function(a, 1) -> 1
               _ -> 0
             end
           end
