@@ -10,7 +10,7 @@ defmodule Batata.Probe.Jason.Report do
 
   alias Batata.Probe.Jason.Inventory
 
-  @schema_version 1
+  @schema_version 2
   @known_stages ~w(
     parse
     macro_or_compile_time
@@ -30,7 +30,7 @@ defmodule Batata.Probe.Jason.Report do
   def build(source, opts \\ []) do
     metadata = Keyword.get(opts, :metadata, %{})
     files = Inventory.discover!(source)
-    blockers = blockers(files)
+    {ignored_metadata, blockers} = entries(files)
 
     %{
       "schema_version" => @schema_version,
@@ -40,7 +40,8 @@ defmodule Batata.Probe.Jason.Report do
         "otp" => System.otp_release()
       },
       "stages" => @known_stages,
-      "summary" => summary(files, blockers),
+      "summary" => summary(files, blockers, ignored_metadata),
+      "ignored_metadata" => ignored_metadata,
       "blockers" => blockers
     }
   end
@@ -58,13 +59,16 @@ defmodule Batata.Probe.Jason.Report do
   @spec read_metadata!(Path.t()) :: map()
   def read_metadata!(path), do: path |> File.read!() |> JSON.decode!()
 
-  defp blockers(files) do
-    files
-    |> Enum.flat_map(&file_blockers/1)
-    |> Enum.sort_by(&{&1["path"], &1["module"], &1["line"], &1["reason"], &1["id"]})
+  defp entries(files) do
+    entries =
+      files
+      |> Enum.flat_map(&file_entries/1)
+      |> Enum.sort_by(&{&1["path"], &1["module"], &1["line"], &1["reason"], &1["id"]})
+
+    Enum.split_with(entries, &(&1["reason"] == "ignored_metadata"))
   end
 
-  defp file_blockers(%{status: :parse_error} = file) do
+  defp file_entries(%{status: :parse_error} = file) do
     error = file.parse_error
 
     [
@@ -80,7 +84,7 @@ defmodule Batata.Probe.Jason.Report do
     ]
   end
 
-  defp file_blockers(file) do
+  defp file_entries(file) do
     top_level =
       Enum.map(file.top_level_unsupported, &blocker_entry(file.path, nil, &1))
 
@@ -93,7 +97,7 @@ defmodule Batata.Probe.Jason.Report do
   end
 
   defp blocker_entry(path, module, unsupported) do
-    blocker(%{
+    entry = %{
       "path" => path,
       "module" => module,
       "line" => unsupported.line,
@@ -101,7 +105,15 @@ defmodule Batata.Probe.Jason.Report do
       "frontend_reason" => to_string(unsupported.frontend_reason),
       "form" => unsupported.form,
       "stage" => stage(unsupported.reason)
-    })
+    }
+
+    entry =
+      case Map.fetch(unsupported, :attribute) do
+        {:ok, attribute} -> Map.put(entry, "attribute", to_string(attribute))
+        :error -> entry
+      end
+
+    blocker(entry)
   end
 
   defp blocker(entry) do
@@ -124,6 +136,7 @@ defmodule Batata.Probe.Jason.Report do
             ],
        do: "macro_or_compile_time"
 
+  defp stage(:ignored_metadata), do: "ignored_metadata"
   defp stage(reason) when reason in [:defprotocol, :defimpl], do: "protocol_or_dispatch"
   defp stage(:guarded_definition), do: "pattern_or_guard"
   defp stage(_reason), do: "frontend_normalization"
@@ -139,7 +152,7 @@ defmodule Batata.Probe.Jason.Report do
     }
   end
 
-  defp summary(files, blockers) do
+  defp summary(files, blockers, ignored_metadata) do
     modules = Enum.sum(Enum.map(files, &length(&1.modules)))
 
     definitions =
@@ -152,6 +165,8 @@ defmodule Batata.Probe.Jason.Report do
       "modules" => modules,
       "definitions" => definitions,
       "blockers" => length(blockers),
+      "ignored_metadata" => length(ignored_metadata),
+      "ignored_metadata_by_attribute" => Enum.frequencies_by(ignored_metadata, & &1["attribute"]),
       "by_stage" => Map.new(@known_stages, &{&1, Map.get(counts, &1, 0)})
     }
   end

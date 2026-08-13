@@ -38,6 +38,12 @@ defmodule Batata.Probe.Corpus do
           "#{name} probe diff: +#{length(diff["added"])} -#{length(diff["resolved"])}"
         )
 
+        Mix.shell().info(
+          "#{name} ignored metadata diff: " <>
+            "+#{length(diff["ignored_metadata_added"])} " <>
+            "-#{length(diff["ignored_metadata_resolved"])}"
+        )
+
         if Keyword.get(opts, :fail_on_regression, false) and diff["regression"] do
           Mix.raise("#{name} probe introduced #{length(diff["added"])} blocker(s)")
         end

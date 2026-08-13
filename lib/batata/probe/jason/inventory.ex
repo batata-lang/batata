@@ -12,6 +12,17 @@ defmodule Batata.Probe.Jason.Inventory do
   alias Batata.Frontend
   alias Batata.Frontend.GuardSupport
 
+  @ignored_metadata_attributes [
+    :doc,
+    :moduledoc,
+    :spec,
+    :type,
+    :typep,
+    :opaque,
+    :typedoc,
+    :deprecated
+  ]
+
   @type unsupported :: %{
           required(:reason) => atom(),
           required(:frontend_reason) => atom(),
@@ -155,13 +166,22 @@ defmodule Batata.Probe.Jason.Inventory do
   defp simple_definition?(_form), do: false
 
   defp unsupported_form(form, frontend_reason) do
-    %{
+    entry = %{
       reason: classify(form, frontend_reason),
       frontend_reason: frontend_reason,
       line: line(form),
       form: summarize(form)
     }
+
+    case module_attribute(form) do
+      nil -> entry
+      attribute -> Map.put(entry, :attribute, attribute)
+    end
   end
+
+  defp classify({:@, _, [{attribute, _, _}]}, _)
+       when attribute in @ignored_metadata_attributes,
+       do: :ignored_metadata
 
   defp classify({:@, _, _}, _), do: :module_attribute
   defp classify({kind, _, _}, _) when kind in [:import, :require, :use, :alias], do: kind
@@ -173,6 +193,9 @@ defmodule Batata.Probe.Jason.Inventory do
 
   defp classify({:defmodule, _, _}, _), do: :nested_defmodule
   defp classify(_form, frontend_reason), do: frontend_reason
+
+  defp module_attribute({:@, _, [{attribute, _, _}]}) when is_atom(attribute), do: attribute
+  defp module_attribute(_form), do: nil
 
   defp declared_module({:__aliases__, _, parts}, nil), do: Module.concat(parts)
 

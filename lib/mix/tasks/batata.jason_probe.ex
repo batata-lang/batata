@@ -1,9 +1,10 @@
 defmodule Mix.Tasks.Batata.JasonProbe do
-  @shortdoc "Inventories a pinned Jason source tree"
+  @shortdoc "Reports compile blockers and ignored metadata in pinned Jason"
 
   @moduledoc """
-  Generates a machine-readable report without adding Jason as a Batata or
-  Beaver production dependency.
+  Generates a machine-readable report that separates compile blockers from
+  ignored documentation and typespec metadata, without adding Jason as a
+  Batata or Beaver production dependency.
 
       mix batata.jason_probe --source /path/to/jason \
         --output _build/jason_probe/report.json
