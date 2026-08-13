@@ -110,14 +110,17 @@ defmodule Batata do
   """
   @spec execute(String.t(), MLIR.Context.t()) :: term()
   def execute(source, ctx, opts \\ []) do
-    :global.trans({__MODULE__, :execution_engine}, fn -> execute_isolated(source, ctx, opts) end)
+    lock = {{__MODULE__, :execution_engine}, self()}
+    :global.trans(lock, fn -> execute_isolated(source, ctx, opts) end)
   end
 
   # MLIR's process-global execution-engine symbol registry can resolve the
   # identically named C wrappers from a concurrently active engine. Keep the
   # complete engine lifetime atomic so a result handle is always inspected by
   # the engine which created it. Native actors inside one execution remain
-  # parallel; only independent host engine lifetimes are serialized.
+  # parallel; only independent host engine lifetimes are serialized. The
+  # caller pid is the requester component of the global lock id; sharing a
+  # constant requester would make concurrent callers look reentrant.
   defp execute_isolated(source, ctx, opts) do
     module =
       source
