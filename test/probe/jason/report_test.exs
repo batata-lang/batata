@@ -29,7 +29,14 @@ defmodule Batata.Probe.Jason.ReportTest do
     second = Report.build(source_dir, metadata: metadata)
 
     assert first == second
-    assert first["schema_version"] == 2
+    assert first["schema_version"] == 3
+    assert first["coverage_claim"] == "no library-definition compile coverage"
+
+    assert first["scope_limits"] == [
+             "top-level forms only",
+             "macro calls inside definition bodies are not attributed"
+           ]
+
     assert first["corpus"]["ref"] == "v1.4.5"
     assert first["summary"]["definitions"] == 2
     assert first["summary"]["blockers"] == 2
@@ -37,6 +44,11 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert first["summary"]["by_stage"]["pattern_or_guard"] == 0
     assert first["summary"]["ignored_metadata"] == 1
     assert first["summary"]["ignored_metadata_by_attribute"] == %{"moduledoc" => 1}
+
+    assert first["summary"]["categories"] == %{
+             "compile_annotation" => 1,
+             "import" => 1
+           }
 
     assert [%{"attribute" => "moduledoc", "reason" => "ignored_metadata"}] =
              first["ignored_metadata"]

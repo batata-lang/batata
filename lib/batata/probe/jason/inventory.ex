@@ -23,6 +23,10 @@ defmodule Batata.Probe.Jason.Inventory do
     :deprecated
   ]
 
+  @compile_annotation_attributes [:compile, :dialyzer, :impl]
+  @compile_time_eval_attributes [:digits, :power_of_2_to_52]
+  @module_generation_forms [:for, :if, :unless, :case, :cond, :try, :with]
+
   @type unsupported :: %{
           required(:reason) => atom(),
           required(:frontend_reason) => atom(),
@@ -183,15 +187,36 @@ defmodule Batata.Probe.Jason.Inventory do
        when attribute in @ignored_metadata_attributes,
        do: :ignored_metadata
 
-  defp classify({:@, _, _}, _), do: :module_attribute
+  defp classify({:@, _, [{attribute, _, _}]}, _)
+       when attribute in @compile_annotation_attributes,
+       do: :compile_annotation
+
+  defp classify({:@, _, [{attribute, _, _}]}, _)
+       when attribute in @compile_time_eval_attributes,
+       do: :compile_time_eval_attribute
+
+  defp classify({:@, _, _}, _), do: :semantic_module_attribute
   defp classify({kind, _, _}, _) when kind in [:import, :require, :use, :alias], do: kind
-  defp classify({kind, _, _}, _) when kind in [:defmacro, :defmacrop], do: kind
+  defp classify({kind, _, _}, _) when kind in [:defmacro, :defmacrop], do: :macro_definition
   defp classify({kind, _, _}, _) when kind in [:defprotocol, :defimpl], do: kind
 
   defp classify({kind, _, [{:when, _, _} | _]}, _) when kind in [:def, :defp],
     do: :guarded_definition
 
   defp classify({:defmodule, _, _}, _), do: :nested_defmodule
+  defp classify({:defstruct, _, _}, _), do: :struct_semantics
+  defp classify({:defexception, _, _}, _), do: :exception_semantics
+  defp classify({:defrecordp, _, _}, _), do: :record_semantics
+
+  defp classify({kind, _, _}, _) when kind in @module_generation_forms,
+    do: :module_level_generation
+
+  defp classify({:=, _, _}, _), do: :module_level_generation
+  defp classify({{:., _, _}, _, _}, _), do: :module_level_generation
+
+  defp classify({name, _, args}, _) when is_atom(name) and is_list(args),
+    do: :module_level_generation
+
   defp classify(_form, frontend_reason), do: frontend_reason
 
   defp module_attribute({:@, _, [{attribute, _, _}]}) when is_atom(attribute), do: attribute
