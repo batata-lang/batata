@@ -22,6 +22,7 @@ defmodule Batata.Lift do
   """
 
   alias Batata.Frontend
+  alias Batata.Frontend.GuardSupport
   alias Batata.Transform.PatternPlan
   alias Beaver.MLIR
   alias Beaver.MLIR.Dialect.Ex
@@ -4642,7 +4643,9 @@ defmodule Batata.Lift do
           {ast, MapSet.put(vars, var)}
 
         {:in, _, [{var, _, _}, values]} = ast, vars when is_atom(var) ->
-          if integer_members(values), do: {ast, MapSet.put(vars, var)}, else: {ast, vars}
+          if GuardSupport.integer_members(values),
+            do: {ast, MapSet.put(vars, var)},
+            else: {ast, vars}
 
         ast, vars ->
           {ast, vars}
@@ -4967,7 +4970,7 @@ defmodule Batata.Lift do
   # calls on bound or outer variables. Comparisons and arithmetic on terms
   # are rejected explicitly.
   defp lift_term_guard(guard_ast, binds, env, ctx, block) do
-    unless supported_term_guard?(guard_ast) do
+    unless GuardSupport.supported?(guard_ast) do
       raise Error,
             "unsupported guard on term pattern (only is_* predicates on bound or outer variables): " <>
               inspect(guard_ast)
@@ -4979,7 +4982,7 @@ defmodule Batata.Lift do
 
   defp lift_term_guard_expr({:in, _, [{name, _, _}, members]}, env, ctx, block)
        when is_atom(name) do
-    values = integer_members(members)
+    values = GuardSupport.integer_members(members)
     value = Map.fetch!(env, name)
     word = box_if_scalar(value, ctx, block)
     integer = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
@@ -5016,53 +5019,6 @@ defmodule Batata.Lift do
     {low, high} = if first <= last, do: {first, last}, else: {last, first}
     combine([cmp(value, low, "sge", ctx, block), cmp(value, high, "sle", ctx, block)], ctx, block)
   end
-
-  defp supported_term_guard?({predicate, _, [var_ast]})
-       when predicate in [
-              :is_integer,
-              :is_float,
-              :is_atom,
-              :is_binary,
-              :is_list,
-              :is_tuple,
-              :is_map
-            ] do
-    match?({name, _, nil} when is_atom(name), var_ast)
-  end
-
-  defp supported_term_guard?({op, _, [left, right]}) when op in [:==, :!=] do
-    guard_operand?(left) and guard_operand?(right)
-  end
-
-  defp supported_term_guard?({:in, _, [{name, _, _}, members]}) when is_atom(name),
-    do: integer_members(members) != nil
-
-  defp supported_term_guard?({op, _, [left, right]})
-       when op in [:and, :andalso, :or, :orelse],
-       do: supported_term_guard?(left) and supported_term_guard?(right)
-
-  defp supported_term_guard?(_guard_ast), do: false
-
-  defp guard_operand?(value) when is_integer(value), do: true
-  defp guard_operand?(value) when is_binary(value), do: true
-  defp guard_operand?({name, _, nil}) when is_atom(name), do: true
-  defp guard_operand?({:<<>>, _, _}), do: true
-  defp guard_operand?({:%{}, _, _}), do: true
-  defp guard_operand?(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3, do: true
-
-  defp guard_operand?(_), do: false
-
-  defp integer_members({:.., _, [first, last]}) when is_integer(first) and is_integer(last),
-    do: {:range, first, last}
-
-  defp integer_members(values) when is_list(values) do
-    if Enum.all?(values, &is_integer/1), do: {:set, Enum.uniq(values)}
-  end
-
-  defp integer_members({:sigil_c, _, [{:<<>>, _, [value]}, []]}) when is_binary(value),
-    do: {:set, value |> String.to_charlist() |> Enum.uniq()}
-
-  defp integer_members(_), do: nil
 
   defp combine_any([], ctx, block), do: lit(0, ctx, block)
   defp combine_any([single], _ctx, _block), do: single

@@ -10,6 +10,7 @@ defmodule Batata.Probe.Jason.Inventory do
   """
 
   alias Batata.Frontend
+  alias Batata.Frontend.GuardSupport
 
   @type unsupported :: %{
           required(:reason) => atom(),
@@ -123,13 +124,13 @@ defmodule Batata.Probe.Jason.Inventory do
     }
   end
 
-  # The compiler accepts guarded definitions into its expanded-module
-  # snapshot, but only a deliberately small guard subset lowers today. Keep
-  # raw Jason guards in the inventory until they pass the executable probe;
-  # accepting the container shape alone is not semantic coverage.
   defp accepted_definitions(snapshot) do
     snapshot.definitions
-    |> Enum.reject(fn definition -> Enum.any?(definition.clauses, & &1.guard_ast) end)
+    |> Enum.reject(fn definition ->
+      Enum.any?(definition.clauses, fn clause ->
+        clause.guard_ast != nil and not GuardSupport.supported?(clause.guard_ast)
+      end)
+    end)
     |> Enum.map(&definition/1)
   end
 
@@ -146,6 +147,10 @@ defmodule Batata.Probe.Jason.Inventory do
   defp simple_definition?({kind, _, [{name, _, args}, [do: _body]]})
        when kind in [:def, :defp] and is_atom(name) and name != :when and is_list(args),
        do: true
+
+  defp simple_definition?({kind, _, [{:when, _, [{name, _, args}, guard_ast]}, [do: _body]]})
+       when kind in [:def, :defp] and is_atom(name) and is_list(args),
+       do: GuardSupport.supported?(guard_ast)
 
   defp simple_definition?(_form), do: false
 
