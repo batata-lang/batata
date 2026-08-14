@@ -7,6 +7,7 @@ defmodule Batata.Probe.Jason.Diff do
     blocker_diff = compare_entries(current, baseline, "blockers")
     metadata_diff = compare_entries(current, baseline, "ignored_metadata")
     compile_diff = compare_compile_attempts(current, baseline)
+    diagnostic_changes = compare_diagnostic_attempts(current, baseline)
 
     Map.merge(blocker_diff, %{
       "ignored_metadata_added" => metadata_diff["added"],
@@ -14,9 +15,68 @@ defmodule Batata.Probe.Jason.Diff do
       "ignored_metadata_unchanged" => metadata_diff["unchanged"],
       "compile_attempt_changes" => compile_diff.changes,
       "compile_attempt_regression" => compile_diff.regression,
+      "diagnostic_attempt_changes" => diagnostic_changes,
       "regression" => blocker_diff["regression"] or compile_diff.regression
     })
   end
+
+  defp compare_diagnostic_attempts(current, baseline) do
+    current = diagnostic_index(current)
+    baseline = diagnostic_index(baseline)
+
+    (Map.keys(current) ++ Map.keys(baseline))
+    |> Enum.uniq()
+    |> Enum.flat_map(fn key ->
+      diagnostic_change(key, Map.get(current, key), Map.get(baseline, key))
+    end)
+    |> Enum.sort_by(&{&1["path"], &1["module"]})
+  end
+
+  defp diagnostic_change(_key, current, current), do: []
+
+  defp diagnostic_change({path, module}, current, nil) do
+    [diagnostic_change_entry(path, module, "added", nil, current)]
+  end
+
+  defp diagnostic_change({path, module}, nil, baseline) do
+    [diagnostic_change_entry(path, module, "removed", baseline, nil)]
+  end
+
+  defp diagnostic_change({path, module}, current, baseline) do
+    kind =
+      if diagnostic_class(current) == diagnostic_class(baseline),
+        do: "fingerprint_only",
+        else: "changed"
+
+    [diagnostic_change_entry(path, module, kind, baseline, current)]
+  end
+
+  defp diagnostic_change_entry(path, module, kind, from, to) do
+    %{
+      "path" => path,
+      "module" => module,
+      "kind" => kind,
+      "from" => from,
+      "to" => to
+    }
+  end
+
+  defp diagnostic_index(report) do
+    report
+    |> Map.get("diagnostic_attempts", [])
+    |> Map.new(fn entry ->
+      key = {entry["path"], entry["module"]}
+      {key, Map.take(entry, diagnostic_fields())}
+    end)
+  end
+
+  defp diagnostic_class(entry), do: Map.take(entry, diagnostic_class_fields())
+
+  defp diagnostic_fields,
+    do: ["outcome", "error", "phase", "reason_class", "fingerprint"]
+
+  defp diagnostic_class_fields,
+    do: ["outcome", "error", "phase", "reason_class"]
 
   defp compare_compile_attempts(current, baseline) do
     current = compile_index(current)
