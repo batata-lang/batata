@@ -193,8 +193,13 @@ defmodule Batata.Probe.Jason.ReportTest do
            ] == "lowering_complete"
 
     assert Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.EncodeError"))[
+             "phase"
+           ] == "lowering_complete"
+
+    refute Map.has_key?(
+             Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.EncodeError")),
              "reason_class"
-           ] == "unresolved_struct_constructor"
+           )
 
     assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Jason.DecodeError" and

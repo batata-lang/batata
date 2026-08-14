@@ -70,17 +70,19 @@ excludes assignments inside branches until branch-local SSA environments are
 modeled. `String.printable?/1` now has an executable runtime and
 BEAM-oracle gate, and bounded `Kernel.inspect/1,2` now covers the integer,
 binary, compile-known atom, nil, and boolean terms used by its error messages.
-The shadow `Jason.DecodeError` now reaches lowering completion.
-The shadow `Decimal.Error` still reaches lowering completion, while struct
-construction remains the separate `Jason.EncodeError` frontier. Module pass
-counts remain zero: deeper shadow diagnostics are evidence, not claims that
-the corpus modules compile.
+The shadow `Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error` now
+reach lowering completion. Current-module struct constructors have an
+executable BEAM-oracle gate covering declared defaults, validated overrides,
+the `__struct__` marker, and exception marker injection. Struct patterns,
+updates, cross-module schemas, and complete exception semantics remain outside
+that claim. Module pass counts remain zero: deeper shadow diagnostics are
+evidence, not claims that the corpus modules compile.
 
-The next measured Jason diagnostic frontier is struct support in
-`Jason.EncodeError`, which requires a deliberate `defstruct`/`__struct__`
-representation and field-validation contract. Decimal's full modules remain
-blocked earlier by compile-time and frontend forms, so lowering-complete shadow
-diagnostics do not change either corpus's module-pass count.
+The next measured struct frontier is therefore no longer constructor syntax.
+Decimal's full modules remain blocked earlier by compile-time forms plus struct
+patterns and updates, while Jason's full modules remain dominated by macro,
+attribute, generation, and protocol surfaces. Those blockers must be measured
+independently of the lowering-complete exception shadows.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
