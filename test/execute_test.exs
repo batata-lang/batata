@@ -452,6 +452,78 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes exact map updates with BEAM evaluation order", %{ctx: ctx} do
+    source = """
+    defmodule ExactMapUpdate do
+      def emit(parent, value) do
+        send(parent, value)
+      end
+
+      def main() do
+        parent = self()
+        map = %{first: 0, second: 0, keep: 3}
+        updated = %{map | first: emit(parent, 1), second: emit(parent, 2)}
+
+        first = receive do value -> value end
+        second = receive do value -> value end
+        {updated, first, second}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nExactMapUpdate.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx, reduction_budget: 2) == expected
+  end
+
+  test "raises typed errors for invalid exact map updates", %{ctx: ctx} do
+    key_error =
+      assert_raise KeyError, fn ->
+        Batata.execute(
+          """
+          defmodule MissingMapUpdateKey do
+            def main(), do: %{%{} | missing: 1}
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert key_error.key == :missing
+    assert key_error.term == %{}
+
+    bad_map_error =
+      assert_raise BadMapError, fn ->
+        Batata.execute(
+          """
+          defmodule InvalidMapUpdateBase do
+            def main(), do: %{1 | missing: 1}
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert bad_map_error.term == 1
+  end
+
+  test "evaluates map update values before validating keys", %{ctx: ctx} do
+    error =
+      assert_raise CaseClauseError, fn ->
+        Batata.execute(
+          """
+          defmodule MapUpdateValueOrder do
+            def main() do
+              %{%{} | missing: 1, later: (case 2 do 1 -> 2 end)}
+            end
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert error.term == 2
+  end
+
   test "executes Kernel.to_string over its supported dynamic term domain", %{ctx: ctx} do
     assert {"123", "binary", "known"} ==
              Batata.execute(

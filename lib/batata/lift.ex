@@ -2885,6 +2885,24 @@ defmodule Batata.Lift do
     {create_term_op("ex.list", values, ctx, block), env}
   end
 
+  defp lift_expr({:%{}, _, [{:|, _, [base_ast, updates]}]}, ctx, block, env)
+       when is_list(updates) do
+    unless Enum.all?(updates, &match?({key, _value} when is_atom(key), &1)) do
+      raise Error, "map updates only support literal atom keys: #{inspect(updates)}"
+    end
+
+    {base, env} = lift_expr(base_ast, ctx, block, env)
+    base = box_term(lift_value(base, ctx, block, env), ctx, block)
+
+    {updates, env} =
+      Enum.map_reduce(updates, env, fn {key, value_ast}, env ->
+        {value, env} = lift_expr(value_ast, ctx, block, env)
+        {{key, box_term(lift_value(value, ctx, block, env), ctx, block)}, env}
+      end)
+
+    {lower_exact_map_update(base, updates, ctx, block), env}
+  end
+
   defp lift_expr({:%{}, _, entries}, ctx, block, env) do
     {values, env} = lift_map_entries(entries, ctx, block, env)
     {create_term_op("ex.map", values, ctx, block), env}
@@ -4866,6 +4884,90 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_exact_map_update(base, updates, ctx, block) do
+    dyn = ex_type("dyn", ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+    is_map = create_op("ex.is_map", [base], [MLIR.Type.i64()], ctx, block)
+    not_map = cmp(is_map, 0, "eq", ctx, block)
+
+    add_map_update_failure_clause(not_map, base, 5, ctx, region)
+
+    updates
+    |> Enum.uniq_by(&elem(&1, 0))
+    |> Enum.each(fn {key, _value} ->
+      key_term = atom_term(key, ctx, block)
+      fetched = create_op("ex.map_fetch", [base, key_term], [dyn], ctx, block)
+
+      found =
+        create_op(
+          "ex.tuple_get",
+          [fetched, lit(0, ctx, block)],
+          [dyn],
+          ctx,
+          block
+        )
+
+      found = create_op("ex.to_int", [found], [MLIR.Type.i64()], ctx, block)
+      missing = cmp(found, 0, "eq", ctx, block)
+      reason = create_term_op("ex.tuple", [key_term, base], ctx, block)
+      add_map_update_failure_clause(missing, reason, 4, ctx, region)
+    end)
+
+    success_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, success_block)
+    create_op("ex.clause", [patterns: pattern_attr([])], [], ctx, success_block)
+
+    updated =
+      Enum.reduce(updates, base, fn {key, value}, map ->
+        create_op(
+          "ex.map_put",
+          [map, atom_term(key, ctx, success_block), value],
+          [dyn],
+          ctx,
+          success_block
+        )
+      end)
+
+    create_op(
+      "ex.yield",
+      [updated, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      success_block
+    )
+
+    %Beaver.SSA{
+      op: "ex.case",
+      ip: block,
+      ctx: ctx,
+      arguments: [base, operandSegmentSizes: segment_sizes([1])],
+      results: [dyn],
+      loc: MLIR.Location.unknown(),
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+    |> MLIR.Operation.results()
+    |> Enum.to_list()
+    |> hd()
+  end
+
+  defp add_map_update_failure_clause(condition, reason, kind, ctx, region) do
+    block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    create_op("ex.clause", [condition, patterns: pattern_attr([])], [], ctx, block)
+
+    raised =
+      create_op("ex.raise", [reason, lit(kind, ctx, block)], [ex_type("dyn", ctx)], ctx, block)
+
+    create_op(
+      "ex.yield",
+      [raised, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      block
+    )
   end
 
   defp lower_short_circuit_and(left, right_ast, falsy, env, ctx, block) do

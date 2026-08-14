@@ -190,6 +190,12 @@ defmodule Batata do
           value: value,
           message: "Kernel.to_string/1 native subset rejected #{reason}: #{inspect(value)}"
 
+      {4, {key, term}} ->
+        raise KeyError, key: key, term: term
+
+      {5, term} ->
+        raise BadMapError, term: term
+
       _ ->
         raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
     end
