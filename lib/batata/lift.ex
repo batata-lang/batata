@@ -245,7 +245,7 @@ defmodule Batata.Lift do
       clauses = Enum.flat_map(group, & &1.clauses)
 
       (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
-        (length(clauses) == 1 and Enum.any?(clauses, &function_clause_has_pattern?/1))
+        (length(clauses) == 1 and Enum.any?(clauses, &function_clause_requires_dispatch?/1))
     end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
       Enum.any?(definitions, &definition_uses_native_raise?/1)
   end
@@ -297,6 +297,10 @@ defmodule Batata.Lift do
       {name, _, nil} when is_atom(name) -> false
       _pattern -> true
     end)
+  end
+
+  defp function_clause_requires_dispatch?(%Frontend.Clause{guard_ast: guard_ast} = clause) do
+    guard_ast != nil or function_clause_has_pattern?(clause)
   end
 
   defp definition_has_non_exhaustive_case?(%Frontend.Definition{clauses: clauses}) do
@@ -1124,6 +1128,18 @@ defmodule Batata.Lift do
     |> elem(1)
   end
 
+  defp validate_single_definition_guards!(clauses) do
+    Enum.each(clauses, fn
+      %Frontend.Clause{guard_ast: nil} ->
+        :ok
+
+      %Frontend.Clause{guard_ast: guard_ast} ->
+        unless GuardSupport.supported?(guard_ast) do
+          raise Error, "unsupported guard on term pattern: #{inspect(guard_ast)}"
+        end
+    end)
+  end
+
   defp lift_definitions(
          [%Frontend.Definition{name: name, arity: arity, clauses: clauses}] = definitions,
          ctx,
@@ -1132,10 +1148,15 @@ defmodule Batata.Lift do
          batch_size,
          module_env
        ) do
-    if Enum.any?(clauses, &function_clause_has_pattern?/1) do
+    if Enum.any?(clauses, &function_clause_requires_dispatch?/1) do
+      validate_single_definition_guards!(clauses)
+      first_mode = name |> function_arg_modes(arity, module_env) |> List.first()
+      opts = [term_case?: first_mode == :term]
+
       case arity do
-        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env)
-        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env)
+        0 -> raise Error, "guarded zero-arity definitions are unsupported: #{name}/0"
+        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env, opts)
+        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts)
       end
     else
       lift_definition(hd(definitions), ctx, ip, budget, batch_size, module_env)
@@ -1173,7 +1194,7 @@ defmodule Batata.Lift do
     end
   end
 
-  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env) do
+  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env, opts \\ []) do
     region = MLIR.CAPI.mlirRegionCreate()
 
     # The argument is a scalar word (like single-clause functions); the term
@@ -1194,12 +1215,22 @@ defmodule Batata.Lift do
       end)
 
     return_value =
-      lift_case(clause_asts, arg, module_env, ctx, block,
-        relax_types: true,
-        box_scrutinee: false,
-        untag_int_binds: true,
-        failure_kind: 2,
-        failure_reason: {:{}, [], [name, 1, [{:__batata_unmatched__, [], nil}]]}
+      lift_case(
+        clause_asts,
+        arg,
+        module_env,
+        ctx,
+        block,
+        Keyword.merge(
+          [
+            relax_types: true,
+            box_scrutinee: false,
+            untag_int_binds: true,
+            failure_kind: 2,
+            failure_reason: {:{}, [], [name, 1, [{:__batata_unmatched__, [], nil}]]}
+          ],
+          opts
+        )
       )
 
     insert_return(return_value, ctx, block, %{})
@@ -1218,7 +1249,7 @@ defmodule Batata.Lift do
   # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
   # first argument dispatches with `ex.case`; trailing variable names are
   # clause-local aliases for the same positional function arguments.
-  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env) do
+  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts \\ []) do
     clause_tail_names = validate_multi_arg_clauses!(arity, clauses)
 
     region = MLIR.CAPI.mlirRegionCreate()
@@ -1253,23 +1284,33 @@ defmodule Batata.Lift do
       end)
 
     return_value =
-      lift_case(clause_asts, arg1, module_env, ctx, block,
-        relax_types: true,
-        box_scrutinee: false,
-        untag_int_binds: true,
-        clause_bindss: clause_bindss,
-        fallback_binds: fallback_binds,
-        failure_kind: 2,
-        failure_reason:
-          {:{}, [],
-           [
-             name,
-             arity,
-             [
-               {:__batata_unmatched__, [], nil}
-               | Enum.map(failure_tail_names, &{&1, [], nil})
-             ]
-           ]}
+      lift_case(
+        clause_asts,
+        arg1,
+        module_env,
+        ctx,
+        block,
+        Keyword.merge(
+          [
+            relax_types: true,
+            box_scrutinee: false,
+            untag_int_binds: true,
+            clause_bindss: clause_bindss,
+            fallback_binds: fallback_binds,
+            failure_kind: 2,
+            failure_reason:
+              {:{}, [],
+               [
+                 name,
+                 arity,
+                 [
+                   {:__batata_unmatched__, [], nil}
+                   | Enum.map(failure_tail_names, &{&1, [], nil})
+                 ]
+               ]}
+          ],
+          opts
+        )
       )
 
     insert_return(return_value, ctx, block, module_env)
@@ -5483,7 +5524,11 @@ defmodule Batata.Lift do
   defp cmp_predicate(:>=), do: "sge"
 
   defp lift_case(clauses, scrutinee, env, ctx, block, opts \\ []) do
-    term_case? = Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?()))
+    term_case? =
+      Keyword.get_lazy(opts, :term_case?, fn ->
+        Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?()))
+      end)
+
     clauses = ensure_case_fallback(clauses, Keyword.put(opts, :term_case?, term_case?))
 
     if term_case? do
@@ -6471,7 +6516,7 @@ defmodule Batata.Lift do
   defp lift_guard(guard_ast, vars, scrutinee, env, ctx, block) do
     guard_env = Enum.reduce(vars, env, fn var, acc -> Map.put(acc, var, scrutinee) end)
 
-    if integer_guard_comparison?(guard_ast) do
+    if GuardSupport.supported?(guard_ast) or integer_guard_comparison?(guard_ast) do
       lift_term_guard_expr(guard_ast, guard_env, ctx, block)
     else
       {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
