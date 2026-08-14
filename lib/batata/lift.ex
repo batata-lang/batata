@@ -3051,7 +3051,9 @@ defmodule Batata.Lift do
   defp lift_expr({:=, _, [pattern, rhs]}, ctx, block, env) do
     {value, env} = lift_expr(rhs, ctx, block, env)
     value = box_if_scalar(lift_value(value, ctx, block, env), ctx, block)
-    {_match_cond, binds} = build_match(pattern, value, ctx, block, false)
+
+    {_match_cond, binds} =
+      build_match(pattern, value, ctx, block, false, Map.get(env, @struct_schema_key))
 
     {value, Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)}
   end
@@ -3700,7 +3702,9 @@ defmodule Batata.Lift do
 
   defp receive_match_try([clause | rest], msg, cursor, env, ctx, block, i64) do
     %{pattern: pattern, guard: guard, body: body} = clause
-    {match_cond, binds} = build_match(pattern, msg, ctx, block, guard == nil)
+
+    {match_cond, binds} =
+      build_match(pattern, msg, ctx, block, guard == nil, Map.get(env, @struct_schema_key))
 
     cond =
       case guard do
@@ -5176,7 +5180,14 @@ defmodule Batata.Lift do
       parsed
       |> Enum.map(fn clause ->
         {match_cond, binds} =
-          build_match(clause.pattern, scrutinee, ctx, block, clause.guard == nil)
+          build_match(
+            clause.pattern,
+            scrutinee,
+            ctx,
+            block,
+            clause.guard == nil,
+            Map.get(env, @struct_schema_key)
+          )
 
         cond =
           case clause.guard do
@@ -5281,11 +5292,39 @@ defmodule Batata.Lift do
   # pattern into the clause body (expandable 210418e): without a guard, the
   # slice is only needed when the clause matches, so a rejected clause never
   # allocates it.
-  defp build_match(pattern, value, ctx, block, defer_rest?) do
+  defp build_match(pattern, value, ctx, block, defer_rest?, struct_schema) do
+    pattern = normalize_struct_patterns(pattern, struct_schema)
+
     case pattern do
       {:<<>>, _, segments} -> build_binary_match(segments, value, ctx, block, defer_rest?)
       _ -> do_build_match(pattern, value, ctx, block)
     end
+  end
+
+  defp normalize_struct_patterns(pattern, struct_schema) do
+    Macro.prewalk(pattern, fn
+      {:%, _, [{:__aliases__, _, module_parts}, {:%{}, map_meta, fields}]} = struct_pattern ->
+        module = Elixir.Module.concat(module_parts)
+
+        unless match?(%Frontend.StructSchema{module: ^module}, struct_schema) do
+          raise Error,
+                "struct pattern requires the current-module schema, got: #{inspect(module)}"
+        end
+
+        unless is_list(fields) and Enum.all?(fields, &match?({key, _} when is_atom(key), &1)) do
+          raise Error, "struct patterns require literal atom fields: #{inspect(struct_pattern)}"
+        end
+
+        declared = MapSet.new(struct_schema.fields, &elem(&1, 0))
+
+        case fields |> Keyword.keys() |> Enum.reject(&MapSet.member?(declared, &1)) do
+          [] -> {:%{}, map_meta, [__struct__: module] ++ fields}
+          unknown -> raise Error, "unknown struct pattern fields: #{inspect(Enum.sort(unknown))}"
+        end
+
+      other ->
+        other
+    end)
   end
 
   defp do_build_match({name, _, nil}, value, _ctx, _block) when is_atom(name) do
@@ -5925,6 +5964,7 @@ defmodule Batata.Lift do
   end
 
   defp term_pattern?({:=, _, [left, right]}), do: term_pattern?(left) or term_pattern?(right)
+  defp term_pattern?({:%, _, _}), do: true
 
   defp term_pattern?(pattern) do
     match?({:%{}, _, _}, pattern) or

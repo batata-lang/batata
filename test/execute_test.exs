@@ -394,6 +394,64 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "matches validated current-module struct patterns", %{ctx: ctx} do
+    source = """
+    defmodule DecimalStructPattern do
+      defstruct sign: 1, coef: 0
+
+      def classify(%__MODULE__{coef: :NaN} = number), do: {:nan, number}
+      def classify(%__MODULE__{sign: sign}), do: {:finite, sign}
+      def classify(_other), do: :other
+
+      def struct?(%__MODULE__{}), do: true
+      def struct?(_other), do: false
+
+      def main() do
+        {
+          classify(%__MODULE__{coef: :NaN}),
+          classify(%__MODULE__{sign: -1, coef: 10}),
+          classify(%{__struct__: :"Elixir.Other", sign: 1, coef: 0}),
+          struct?(%__MODULE__{}),
+          struct?(%{sign: 1, coef: 0}),
+          struct?(1)
+        }
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nDecimalStructPattern.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects unknown and unavailable struct pattern schemas", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/unknown struct pattern fields: \[:unknown\]/, fn ->
+      Batata.compile(
+        """
+        defmodule UnknownStructPattern do
+          defstruct [:value]
+          def classify(%__MODULE__{unknown: value}), do: value
+          def main(), do: classify(%__MODULE__{})
+        end
+        """,
+        ctx
+      )
+    end
+
+    assert_raise Batata.Lift.Error, ~r/requires the current-module schema/, fn ->
+      Batata.compile(
+        """
+        defmodule UnavailableStructPattern do
+          def classify(%Other.Struct{value: value}), do: value
+          def main(), do: classify(%{value: 1})
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes Kernel.to_string over its supported dynamic term domain", %{ctx: ctx} do
     assert {"123", "binary", "known"} ==
              Batata.execute(
