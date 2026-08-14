@@ -1497,6 +1497,82 @@ defmodule Batata.ExecuteTest do
     assert error.args == [3]
   end
 
+  test "executes a single guarded function and preserves guard failures", %{ctx: ctx} do
+    source = fn argument ->
+      """
+      defmodule SingleGuardedClause do
+        def new(values) when is_list(values), do: values
+        def main(), do: new(#{argument})
+      end
+      """
+    end
+
+    assert [1, 2] == Batata.execute(source.("[1, 2]"), ctx)
+
+    error =
+      assert_raise FunctionClauseError, fn ->
+        Batata.execute(source.(":not_a_list"), ctx)
+      end
+
+    assert error.module == SingleGuardedClause
+    assert error.function == :new
+    assert error.arity == 1
+    assert error.args == [:not_a_list]
+  end
+
+  test "executes combined guards over every single-clause argument", %{ctx: ctx} do
+    source = fn right ->
+      """
+      defmodule CombinedSingleGuard do
+        def same_list(left, right)
+            when is_list(left) and is_list(right) and left == right,
+            do: :same
+
+        def main(), do: same_list([1], #{right})
+      end
+      """
+    end
+
+    assert :same == Batata.execute(source.("[1]"), ctx)
+
+    error =
+      assert_raise FunctionClauseError, fn ->
+        Batata.execute(source.("[2]"), ctx)
+      end
+
+    assert error.module == CombinedSingleGuard
+    assert error.function == :same_list
+    assert error.arity == 2
+    assert error.args == [[1], [2]]
+  end
+
+  test "executes a scalar single-clause guard", %{ctx: ctx} do
+    assert 8 ==
+             Batata.execute(
+               """
+               defmodule ScalarSingleGuard do
+                 def positive(value) when is_integer(value) and value > 0, do: value + 1
+                 def main(), do: positive(7)
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects unsupported single-clause guards explicitly", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/unsupported guard on term pattern/, fn ->
+      Batata.execute(
+        """
+        defmodule UnsupportedSingleGuard do
+          def call(fun) when is_function(fun, 1), do: fun
+          def main(), do: call(fn value -> value end)
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   @tag :multi_clause
   test "executes a cursor-loop scanner with a non-zero base and delta", %{ctx: ctx} do
     assert 14 ==
