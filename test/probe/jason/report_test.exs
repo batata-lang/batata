@@ -288,7 +288,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert generation_attempt["expanded_definition_count"] == 4
     assert generation_attempt["compile_phase"] == "frontend_normalization_failure"
     assert generation_attempt["phase"] == "frontend_normalization_failure"
-    assert generation_attempt["reason_class"] == "multi_clause_trailing_literal_pattern"
+    assert generation_attempt["reason_class"] == "unsupported_stdlib_call"
 
     assert Enum.any?(jason["blockers"], &(&1["id"] == generation_attempt["blocker_id"]))
 
