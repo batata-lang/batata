@@ -1207,10 +1207,10 @@ defmodule Batata.Lift do
   end
 
   # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
-  # first argument dispatches with `ex.case`; the trailing arguments must be
-  # bound as variables and are threaded through the clause environments.
+  # first argument dispatches with `ex.case`; trailing variable names are
+  # clause-local aliases for the same positional function arguments.
   defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env) do
-    tail_names = validate_multi_arg_clauses!(arity, clauses)
+    clause_tail_names = validate_multi_arg_clauses!(arity, clauses)
 
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
@@ -1221,11 +1221,12 @@ defmodule Batata.Lift do
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
     [arg1 | tail_args] = block |> Walker.arguments() |> Enum.to_list()
 
-    tail_env =
-      tail_names
-      |> Enum.zip(tail_args)
-      |> Map.new()
-      |> Map.merge(module_env)
+    clause_bindss = Enum.map(clause_tail_names, &tail_bindings(&1, tail_args))
+
+    failure_tail_names =
+      Enum.map(1..(arity - 1), &String.to_atom("__batata_tail_arg_#{&1}"))
+
+    fallback_binds = tail_bindings(failure_tail_names, tail_args)
 
     clause_asts =
       Enum.map(clauses, fn %Frontend.Clause{
@@ -1238,21 +1239,26 @@ defmodule Batata.Lift do
       end)
 
     return_value =
-      lift_case(clause_asts, arg1, tail_env, ctx, block,
+      lift_case(clause_asts, arg1, module_env, ctx, block,
         relax_types: true,
         box_scrutinee: false,
         untag_int_binds: true,
+        clause_bindss: clause_bindss,
+        fallback_binds: fallback_binds,
         failure_kind: 2,
         failure_reason:
           {:{}, [],
            [
              name,
              arity,
-             [{:__batata_unmatched__, [], nil} | Enum.map(tail_names, &{&1, [], nil})]
+             [
+               {:__batata_unmatched__, [], nil}
+               | Enum.map(failure_tail_names, &{&1, [], nil})
+             ]
            ]}
       )
 
-    insert_return(return_value, ctx, block, tail_env)
+    insert_return(return_value, ctx, block, module_env)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -1266,33 +1272,30 @@ defmodule Batata.Lift do
   end
 
   defp validate_multi_arg_clauses!(arity, clauses) do
-    tail_names =
-      clauses
-      |> Enum.map(fn %Frontend.Clause{patterns: patterns} ->
-        unless length(patterns) == arity do
-          raise Error, "clause arity mismatch for a multi-clause function"
-        end
+    Enum.map(clauses, fn %Frontend.Clause{patterns: patterns} ->
+      unless length(patterns) == arity do
+        raise Error, "clause arity mismatch for a multi-clause function"
+      end
 
-        {_first, tails} = Enum.split(patterns, 1)
+      {_first, tails} = Enum.split(patterns, 1)
 
-        Enum.map(tails, fn
-          {name, _, nil} when is_atom(name) and name != :_ ->
-            name
+      Enum.map(tails, fn
+        {:_, _, nil} ->
+          nil
 
-          other ->
-            raise Error, "multi-clause trailing arguments must be variables: #{inspect(other)}"
-        end)
+        {name, _, nil} when is_atom(name) ->
+          name
+
+        other ->
+          raise Error, "multi-clause trailing arguments must be variables: #{inspect(other)}"
       end)
-      |> Enum.uniq()
+    end)
+  end
 
-    case tail_names do
-      [names] ->
-        names
-
-      _ ->
-        raise Error,
-              "multi-clause multi-argument functions must use the same trailing argument names"
-    end
+  defp tail_bindings(names, arguments) do
+    names
+    |> Enum.zip(arguments)
+    |> Enum.reject(&(elem(&1, 0) == nil))
   end
 
   # Accumulator-scanner detection (the `reduce(binary, acc)` shape): a
@@ -5211,16 +5214,21 @@ defmodule Batata.Lift do
 
   defp lift_scalar_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_clause/1)
+    clause_bindss = case_clause_bindss(opts, length(parsed))
 
     unless parsed |> List.last() |> Map.fetch!(:patterns) == [] do
       raise Error, "case requires a final catch-all clause"
     end
 
     guards =
-      Enum.map(parsed, fn clause ->
+      parsed
+      |> Enum.zip(clause_bindss)
+      |> Enum.map(fn {clause, clause_binds} ->
+        clause_env = Map.merge(env, Map.new(clause_binds))
+
         case clause.guard do
           nil -> nil
-          guard_ast -> lift_guard(guard_ast, clause.vars, scrutinee, env, ctx, block)
+          guard_ast -> lift_guard(guard_ast, clause.vars, scrutinee, clause_env, ctx, block)
         end
       end)
 
@@ -5229,8 +5237,9 @@ defmodule Batata.Lift do
     yield_types =
       parsed
       |> Enum.zip(guards)
-      |> Enum.map(fn {clause, guard} ->
-        add_clause_block(clause, guard, scrutinee, env, ctx, region)
+      |> Enum.zip(clause_bindss)
+      |> Enum.map(fn {{clause, guard}, clause_binds} ->
+        add_clause_block(clause, guard, scrutinee, clause_binds, env, ctx, region)
       end)
 
     [first_type | rest_types] = yield_types
@@ -5259,6 +5268,7 @@ defmodule Batata.Lift do
 
   defp lift_term_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_term_clause/1)
+    clause_bindss = case_clause_bindss(opts, length(parsed))
 
     unless match?(
              {name, _, nil} when is_atom(name),
@@ -5280,8 +5290,9 @@ defmodule Batata.Lift do
 
     {guards, bindss} =
       parsed
-      |> Enum.map(fn clause ->
-        {match_cond, binds} =
+      |> Enum.zip(clause_bindss)
+      |> Enum.map(fn {clause, clause_binds} ->
+        {match_cond, pattern_binds} =
           build_match(
             clause.pattern,
             scrutinee,
@@ -5290,6 +5301,9 @@ defmodule Batata.Lift do
             clause.guard == nil,
             Map.get(env, @struct_schema_key)
           )
+
+        {match_cond, binds} =
+          reconcile_term_bindings(match_cond, clause_binds, pattern_binds, ctx, block)
 
         cond =
           case clause.guard do
@@ -5340,6 +5354,58 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp case_clause_bindss(opts, clause_count) do
+    case Keyword.fetch(opts, :clause_bindss) do
+      :error ->
+        List.duplicate([], clause_count)
+
+      {:ok, bindss} when length(bindss) == clause_count ->
+        bindss
+
+      {:ok, bindss} when length(bindss) + 1 == clause_count ->
+        bindss ++ [Keyword.get(opts, :fallback_binds, [])]
+
+      {:ok, bindss} ->
+        raise Error,
+              "case clause binding count mismatch: #{length(bindss)} bindings for #{clause_count} clauses"
+    end
+  end
+
+  defp reconcile_term_bindings(match_cond, clause_binds, pattern_binds, ctx, block) do
+    {conds, binds, _seen} =
+      Enum.reduce(clause_binds ++ pattern_binds, {[], [], %{}}, fn binding, acc ->
+        reconcile_term_binding(binding, acc, ctx, block)
+      end)
+
+    {combine([match_cond | conds], ctx, block), Enum.reverse(binds)}
+  end
+
+  defp reconcile_term_binding({name, value}, {conds, binds, seen}, ctx, block) do
+    case Map.fetch(seen, name) do
+      :error ->
+        {conds, [{name, value} | binds], Map.put(seen, name, value)}
+
+      {:ok, bound} ->
+        bound = create_op("ex.to_word", [bound], [ex_type("dyn", ctx)], ctx, block)
+
+        equality =
+          create_op(
+            "ex.term_eq",
+            [bound, box_if_scalar(value, ctx, block)],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          )
+
+        binds =
+          Enum.map(binds, fn {var, current} ->
+            {var, if(var == name, do: value, else: current)}
+          end)
+
+        {[equality | conds], binds, Map.put(seen, name, value)}
+    end
   end
 
   defp untag_int_binds(parsed, bindss, ctx, block) do
@@ -6118,11 +6184,12 @@ defmodule Batata.Lift do
 
   defp integer_guard_comparison?(_guard_ast), do: false
 
-  defp add_clause_block(clause, guard, scrutinee, env, ctx, region) do
+  defp add_clause_block(clause, guard, scrutinee, clause_binds, env, ctx, region) do
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
-    clause_env = Enum.reduce(clause.vars, env, fn var, acc -> Map.put(acc, var, scrutinee) end)
+    clause_env = Map.merge(env, Map.new(clause_binds))
+    clause_env = Enum.reduce(clause.vars, clause_env, &Map.put(&2, &1, scrutinee))
 
     clause_attrs = [patterns: pattern_attr(clause.patterns)]
     clause_args = if guard, do: [guard], else: []
