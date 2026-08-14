@@ -5296,6 +5296,21 @@ defmodule Batata.Lift do
     end
   end
 
+  defp do_build_match({:=, _, [left, right]} = alias_pattern, value, ctx, block) do
+    {subpattern, alias_name} = pattern_alias_parts!(left, right, alias_pattern)
+    {cond, binds} = do_build_match(subpattern, value, ctx, block)
+
+    if alias_name == :_ do
+      {cond, binds}
+    else
+      if Keyword.has_key?(binds, alias_name) do
+        raise Error, "pattern alias repeats binding: #{inspect(alias_name)}"
+      end
+
+      {cond, binds ++ [{alias_name, value}]}
+    end
+  end
+
   # An atom literal pattern (`receive do :urgent -> ... end`): compare the
   # scrutinee word against the atom's deterministic hash word.
   defp do_build_match(atom, value, ctx, block) when is_atom(atom) do
@@ -5442,9 +5457,9 @@ defmodule Batata.Lift do
   end
 
   defp build_map_match(entries, value, ctx, block) do
-    unless Enum.all?(entries, &supported_map_pattern_entry?/1) do
+    unless Enum.all?(entries, &atom_keyed_map_pattern_entry?/1) do
       raise Error,
-            "map patterns only support atom literal keys bound to variables or _: #{inspect(entries)}"
+            "map patterns only support atom literal keys: #{inspect(entries)}"
     end
 
     cond_map = create_op("ex.is_map", [value], [MLIR.Type.i64()], ctx, block)
@@ -5482,18 +5497,31 @@ defmodule Batata.Lift do
 
         found_int = create_op("ex.to_int", [found], [MLIR.Type.i64()], ctx, block)
         found_cond = cmp(found_int, 1, "eq", ctx, block)
-        {_value_cond, value_binds} = do_build_match(pattern, fetched_value, ctx, block)
-        {found_cond, value_binds ++ binds}
+        {value_cond, value_binds} = do_build_match(pattern, fetched_value, ctx, block)
+        {combine([found_cond, value_cond], ctx, block), value_binds ++ binds}
       end)
 
     {combine([cond_map | conds], ctx, block), Enum.reverse(binds)}
   end
 
-  defp supported_map_pattern_entry?({key, {name, _, nil}})
-       when is_atom(key) and is_atom(name),
-       do: true
+  defp atom_keyed_map_pattern_entry?({key, _pattern}) when is_atom(key), do: true
+  defp atom_keyed_map_pattern_entry?(_entry), do: false
 
-  defp supported_map_pattern_entry?(_entry), do: false
+  defp pattern_alias_parts!(left, right, alias_pattern) do
+    case {pattern_variable_name(left), pattern_variable_name(right)} do
+      {nil, name} when is_atom(name) ->
+        {left, name}
+
+      {name, nil} when is_atom(name) ->
+        {right, name}
+
+      _ ->
+        raise Error, "pattern alias requires exactly one variable side: #{inspect(alias_pattern)}"
+    end
+  end
+
+  defp pattern_variable_name({name, _, nil}) when is_atom(name), do: name
+  defp pattern_variable_name(_pattern), do: nil
 
   defp list_elements_match([], _value, _ctx, _block, binds), do: {[], binds}
 
@@ -5895,6 +5923,8 @@ defmodule Batata.Lift do
 
     %{pattern: pattern, guard: guard, body: body}
   end
+
+  defp term_pattern?({:=, _, [left, right]}), do: term_pattern?(left) or term_pattern?(right)
 
   defp term_pattern?(pattern) do
     match?({:%{}, _, _}, pattern) or
