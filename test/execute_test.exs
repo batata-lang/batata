@@ -2152,6 +2152,20 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "rejects dynamic application without a module-local closure dispatch", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/dynamic_apply_without_local_dispatch/, fn ->
+      Batata.execute(
+        """
+        defmodule ExternalDynamicApply do
+          def apply(fun, value), do: fun.(value)
+          def main(), do: 0
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "returns anonymous functions as values", %{ctx: ctx} do
     assert 3 ==
              Batata.execute(

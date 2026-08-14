@@ -63,7 +63,8 @@ defmodule Batata.Lift do
         definitions
         |> recognize_enum_calls()
         |> extract_all_fns()
-        |> then(&append_dispatch(&1))
+        |> ensure_dynamic_apply_dispatch!()
+        |> append_dispatch()
 
       module_env = %{
         @known_atoms_key => known_atoms,
@@ -381,6 +382,37 @@ defmodule Batata.Lift do
       end)
 
     defs ++ synthetic
+  end
+
+  defp ensure_dynamic_apply_dispatch!(definitions) do
+    if Enum.any?(definitions, &definition_has_dynamic_apply?/1) and
+         not Enum.any?(definitions, &fn_definition?/1) do
+      raise Error,
+            "dynamic_apply_without_local_dispatch: dynamic function application requires " <>
+              "at least one module-local anonymous function"
+    end
+
+    definitions
+  end
+
+  defp definition_has_dynamic_apply?(%Frontend.Definition{clauses: clauses}) do
+    Enum.any?(clauses, fn %Frontend.Clause{body_ast: body_ast} -> dynamic_apply?(body_ast) end)
+  end
+
+  defp dynamic_apply?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        {{:., _, [{:__fn_ref__, _, _}]}, _, args} = node, found? when is_list(args) ->
+          {node, found?}
+
+        {{:., _, [_fun_ast]}, _, args} = node, _found? when is_list(args) ->
+          {node, true}
+
+        node, found? ->
+          {node, found?}
+      end)
+
+    found?
   end
 
   # Recognizes `Enum.map/2` and `Enum.reduce/3` calls whose mapper/reducer
