@@ -73,4 +73,47 @@ defmodule Batata.FrontendTest do
     assert Enum.map(snapshot.definitions, &{&1.name, &1.arity}) == [get: 1, get: 2]
     assert snapshot.unsupported == []
   end
+
+  test "normalizes struct and exception schemas with literal defaults" do
+    struct =
+      Frontend.from_source("""
+      defmodule DecimalLike do
+        defstruct sign: 1, coef: 0, tags: []
+      end
+      """)
+
+    assert %Frontend.StructSchema{
+             module: DecimalLike,
+             kind: :struct,
+             fields: [sign: 1, coef: 0, tags: []]
+           } = struct.struct_schema
+
+    exception =
+      Frontend.from_source("""
+      defmodule ErrorLike do
+        defexception [:message]
+      end
+      """)
+
+    assert %Frontend.StructSchema{
+             module: ErrorLike,
+             kind: :exception,
+             fields: [message: nil]
+           } = exception.struct_schema
+  end
+
+  test "fails closed on invalid or duplicate struct schemas" do
+    invalid_sources = [
+      "defmodule Invalid do defstruct [:value, :value] end",
+      "defmodule Invalid do defstruct [__struct__: nil] end",
+      "defmodule Invalid do defstruct [value: helper()] end",
+      "defmodule Invalid do defstruct [:value]; defexception [:message] end"
+    ]
+
+    for source <- invalid_sources do
+      snapshot = Frontend.from_source(source)
+      assert snapshot.struct_schema == nil
+      assert snapshot.unsupported != []
+    end
+  end
 end

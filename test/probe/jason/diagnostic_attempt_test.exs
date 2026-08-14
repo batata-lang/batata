@@ -19,6 +19,10 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     assert attempt["phase"] == "lowering_complete"
     refute Map.has_key?(attempt, "reason_class")
 
+    [module] = tmp_dir |> Inventory.discover!() |> hd() |> Map.fetch!(:modules)
+    assert module.diagnostic_source =~ "defexception [:message]"
+    assert Enum.map(module.unsupported, & &1.reason) == [:exception_semantics]
+
     assert [%{"id" => id, "reason" => "exception_semantics"}] =
              attempt["removed_blockers"]
 
