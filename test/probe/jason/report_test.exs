@@ -233,12 +233,43 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert jason["summary"]["categories"]["alias"] == nil
     assert decimal["summary"]["categories"]["alias"] == nil
+    assert jason["schema_version"] == 5
+    assert decimal["schema_version"] == 5
     assert jason["summary"]["blockers"] == 72
     assert decimal["summary"]["blockers"] == 42
     assert jason["summary"]["ignored_metadata"] == 77
     assert decimal["summary"]["ignored_metadata"] == 106
     assert jason["summary"]["definitions"] == 239
     assert decimal["summary"]["definitions"] == 243
+
+    assert jason["summary"]["generation_constructs"] == %{
+             "definition_generation" => 19,
+             "generator_control" => 1,
+             "module_match" => 8
+           }
+
+    assert jason["summary"]["generation_roots"] == %{
+             "=/2" => 8,
+             "Enum.each/2" => 1,
+             "Enum.map/2" => 12,
+             "for/2" => 2,
+             "if/2" => 5
+           }
+
+    assert decimal["summary"]["generation_constructs"] == %{
+             "definition_generation" => 6,
+             "module_call" => 18
+           }
+
+    assert decimal["summary"]["generation_roots"] == %{
+             "=/2" => 1,
+             "def/1" => 2,
+             "doc_since/1" => 18,
+             "if/2" => 3
+           }
+
+    assert Enum.all?(jason["blockers"], &generation_evidence?/1)
+    assert Enum.all?(decimal["blockers"], &generation_evidence?/1)
 
     assert jason["summary"]["dependency_frontier"] == %{
              "blocked_calls" => 109,
@@ -324,4 +355,10 @@ defmodule Batata.Probe.Jason.ReportTest do
                attempt["phase"] == "not_attempted"
            end)
   end
+
+  defp generation_evidence?(%{"reason" => "module_level_generation"} = blocker) do
+    is_binary(blocker["generation_construct"]) and is_binary(blocker["generation_root"])
+  end
+
+  defp generation_evidence?(_blocker), do: true
 end
