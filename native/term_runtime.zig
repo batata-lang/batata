@@ -3703,6 +3703,86 @@ pub export fn ex_term_eq(left: i64, right: i64) i64 {
     return if (term_eq(left, right)) 1 else 0;
 }
 
+/// BEAM-style loose equality: integers and floats compare by numeric value,
+/// including when nested in tuples, lists, or maps. Other terms keep the
+/// runtime's structural equality semantics.
+pub export fn ex_term_eq_loose(left: i64, right: i64) i64 {
+    return if (term_eq_loose(left, right)) 1 else 0;
+}
+
+fn numeric_eq(int_word: i64, float_word: i64) bool {
+    const value: f64 = @bitCast(float_bits(float_word));
+    if (!std.math.isFinite(value) or @trunc(value) != value) return false;
+
+    const min_i64: f64 = @floatFromInt(std.math.minInt(i64));
+    const max_i64: f64 = @floatFromInt(std.math.maxInt(i64));
+    if (value < min_i64 or value >= max_i64) return false;
+
+    return word_payload(int_word) == @as(i64, @intFromFloat(value));
+}
+
+fn term_eq_loose(left: i64, right: i64) bool {
+    if (left == right) return true;
+
+    const ltag = word_tag(left);
+    const rtag = word_tag(right);
+    const left_float = ltag == tag_float and runtime_local_kind(left) == null;
+    const right_float = rtag == tag_float and runtime_local_kind(right) == null;
+
+    if (ltag == tag_int and right_float) return numeric_eq(left, right);
+    if (rtag == tag_int and left_float) return numeric_eq(right, left);
+    if (ltag != rtag) return false;
+
+    if (ltag == tag_runtime_local and
+        (runtime_local_kind(left) != null or runtime_local_kind(right) != null)) return false;
+
+    switch (ltag) {
+        tag_tuple => {
+            if (tuple_len(left) != tuple_len(right)) return false;
+            const n = tuple_len(left);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (!term_eq_loose(tuple_elems(left)[i], tuple_elems(right)[i])) return false;
+            }
+            return true;
+        },
+        tag_list => {
+            var a = left;
+            var b = right;
+            while (word_tag(a) == tag_list and word_tag(b) == tag_list) {
+                if (!term_eq_loose(list_cell(a)[0], list_cell(b)[0])) return false;
+                a = list_cell(a)[1];
+                b = list_cell(b)[1];
+            }
+            return term_eq_loose(a, b);
+        },
+        tag_map => {
+            if (map_len(left) != map_len(right)) return false;
+            const n = map_len(left);
+            var i: usize = 0;
+            while (i < 2 * n) : (i += 1) {
+                if (!term_eq_loose(map_entries(left)[i], map_entries(right)[i])) return false;
+            }
+            return true;
+        },
+        tag_binary => {
+            if (binary_len(left) != binary_len(right)) return false;
+            const n = binary_len(left);
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                if (binary_bytes(left)[i] != binary_bytes(right)[i]) return false;
+            }
+            return true;
+        },
+        tag_float => {
+            const a: f64 = @bitCast(float_bits(left));
+            const b: f64 = @bitCast(float_bits(right));
+            return a == b;
+        },
+        else => return false,
+    }
+}
+
 fn term_eq(left: i64, right: i64) bool {
     if (left == right) return true;
     const ltag = word_tag(left);
@@ -4434,6 +4514,7 @@ comptime {
     @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
     @export(&ex_term_list_length, .{ .name = "ex.term.list_length" });
     @export(&ex_term_eq, .{ .name = "ex.term.eq" });
+    @export(&ex_term_eq_loose, .{ .name = "ex.term.eq_loose" });
     @export(&ex_term_binary_length, .{ .name = "ex.term.binary_length" });
     @export(&ex_term_binary_get, .{ .name = "ex.term.binary_get" });
     @export(&ex_term_binary_slice, .{ .name = "ex.term.binary_slice" });
@@ -4735,6 +4816,18 @@ test "term ABI reads" {
     const list_b = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
     try std.testing.expectEqual(@as(i64, 1), ex_term_eq(list_a, list_b));
     try std.testing.expectEqual(@as(i64, 0), ex_term_eq(list_a, tuple_a));
+
+    // loose equality coerces integer/float values recursively without
+    // rounding large, non-representable integers into false matches.
+    const one_float = ex_term_float_lit(@bitCast(@as(f64, 1.0)));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_eq(one, one_float));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq_loose(one, one_float));
+    const tuple_float = ex_term_tuple_from_list(ex_term_list_cons(one_float, nil_word));
+    const tuple_int = ex_term_tuple_from_list(ex_term_list_cons(one, nil_word));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq_loose(tuple_int, tuple_float));
+    const rounded_int = @as(i64, 9_007_199_254_740_993) << @intCast(tag_shift);
+    const rounded_float = ex_term_float_lit(@bitCast(@as(f64, 9_007_199_254_740_992.0)));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_eq_loose(rounded_int, rounded_float));
 
     // binary reads
     const byte_list = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));

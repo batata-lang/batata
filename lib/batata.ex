@@ -196,6 +196,9 @@ defmodule Batata do
       {5, term} ->
         raise BadMapError, term: term
 
+      {6, message} when is_binary(message) ->
+        raise ArgumentError, message: message
+
       _ ->
         raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
     end
