@@ -254,9 +254,9 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Jason.OrderedObject" and
                attempt["outcome"] == "reached_compile_pipeline" and
-               attempt["error"] == "Batata.Lower.Error" and
-               attempt["phase"] == "lowering_failure" and
-               attempt["reason_class"] == "lowering_pass_failure" and
+               attempt["error"] == "Batata.Lift.Error" and
+               attempt["phase"] == "frontend_normalization_failure" and
+               attempt["reason_class"] == "dynamic_apply_without_local_dispatch" and
                Enum.map(attempt["removed_blockers"], & &1["reason"]) == ["struct_semantics"]
            end)
 
