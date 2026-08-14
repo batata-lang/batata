@@ -534,6 +534,79 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "executes body-level if with Elixir truthiness", %{ctx: ctx} do
+    assert {1, 2, 2, 1, 1, 1, nil, 2, 1} ==
+             Batata.execute(
+               """
+               defmodule NativeBodyIf do
+                 def main() do
+                   {if(true, do: 1, else: 2), if(false, do: 1, else: 2),
+                    if(nil, do: 1, else: 2), if(0, do: 1, else: 2),
+                    if("", do: 1, else: 2), if(:known, do: 1, else: 2),
+                    if(false, do: 1), if(1 == 2, do: 1, else: 2),
+                    if(is_integer(1), do: 1, else: 2)}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes nested body-level if expressions", %{ctx: ctx} do
+    assert {2, 3} ==
+             Batata.execute(
+               """
+               defmodule NativeNestedBodyIf do
+                 def choose(outer, inner) do
+                   if outer do
+                     if inner do
+                       1
+                     else
+                       2
+                     end
+                   else
+                     3
+                   end
+                 end
+
+                 def main(), do: {choose(true, false), choose(false, true)}
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes only the selected if branch and preserves condition bindings", %{ctx: ctx} do
+    assert {7, 8, true} ==
+             Batata.execute(
+               """
+               defmodule NativeLazyBodyIf do
+                 def main() do
+                   left = if false, do: Kernel.to_string([1]), else: 7
+                   right = if true, do: 8, else: Kernel.to_string([1])
+                   if value = true, do: {left, right, value}, else: nil
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects assignments inside body-level if branches", %{ctx: ctx} do
+    for branches <- ["do: (value = 1), else: 2", "do: 1, else: (value = 2)"] do
+      assert_raise Batata.Lift.Error, "assignments in if branches are unsupported", fn ->
+        Batata.compile(
+          """
+          defmodule NativeBodyIfAssignment do
+            def main(), do: if(true, #{branches})
+          end
+          """,
+          ctx
+        )
+      end
+    end
+  end
+
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(
