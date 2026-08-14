@@ -81,8 +81,12 @@ evaluation order, immutable replacement, `KeyError`, and `BadMapError`.
 `Jason.OrderedObject` enters the diagnostic lane with its schema preserved.
 Clause-local trailing argument names now let its recursive `delete_key/2`
 clauses pass frontend dispatch validation, including the repeated-key equality
-between the first pattern and trailing argument. The shadow now exposes the
-next precise blocker, unsupported `:lists.keyfind/3`; it is not a module pass.
+between the first pattern and trailing argument. Native, resumable
+`:lists.keyfind/3` and `:lists.reverse/1,2` now execute with BEAM-oracle gates,
+including loose numeric key equality and invalid-argument paths. The shadow
+crosses those calls and now exposes the next precise blocker: guarded `new/1`
+has no fallback clause in Batata's current dispatch model. It is not a module
+pass, and this frontend blocker is not evidence for a Beaver map-fetch stack.
 `Jason.Fragment` retains its guarded-definition blocker and is deliberately not
 stripped into a shadow attempt. Cross-module schemas and complete exception
 semantics remain outside the claim, and module pass counts remain zero.

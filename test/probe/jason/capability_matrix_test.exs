@@ -30,6 +30,9 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["kernel.inspect"]["status"] == "executable"
     assert capabilities["kernel.inspect"]["gate"] == "stdlib_test"
     assert capabilities["kernel.inspect"]["scope"] =~ "base: :hex"
+    assert capabilities["stdlib.lists_lookup_reverse"]["status"] == "executable"
+    assert capabilities["stdlib.lists_lookup_reverse"]["gate"] == "execute_test"
+    assert capabilities["stdlib.lists_lookup_reverse"]["scope"] =~ ":lists.keyfind/3"
     assert capabilities["control.short_circuit_and"]["status"] == "executable"
     assert capabilities["control.short_circuit_and"]["gate"] == "execute_test"
 
