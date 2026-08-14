@@ -13,6 +13,7 @@
     {"id": "string.interpolation", "status": "executable", "gate": "execute_test", "scope": "integer, binary, and compile-known atom terms"},
     {"id": "string.concat", "status": "executable", "gate": "execute_test", "scope": "binary operands"},
     {"id": "control.short_circuit_and", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; returns original operand values; right-hand-side assignments excluded"},
+    {"id": "control.if", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; missing else yields nil; branch assignments excluded"},
     {"id": "decimal.struct_surface", "status": "blocked", "owner": "frontend", "reason": "defstruct and struct patterns remain compile-time frontend forms"}
   ]
 }

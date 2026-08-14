@@ -22,6 +22,11 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["control.short_circuit_and"]["scope"] =~
              "right-hand-side assignments excluded"
 
+    assert capabilities["control.if"]["status"] == "executable"
+    assert capabilities["control.if"]["gate"] == "execute_test"
+    assert capabilities["control.if"]["scope"] =~ "missing else yields nil"
+    assert capabilities["control.if"]["scope"] =~ "branch assignments excluded"
+
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
     assert capabilities["decimal.guard_bifs"]["status"] == "executable"

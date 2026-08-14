@@ -32,6 +32,11 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["control.short_circuit_and"]["scope"] =~
              "right-hand-side assignments excluded"
 
+    assert capabilities["control.if"]["status"] == "executable"
+    assert capabilities["control.if"]["gate"] == "execute_test"
+    assert capabilities["control.if"]["scope"] =~ "missing else yields nil"
+    assert capabilities["control.if"]["scope"] =~ "branch assignments excluded"
+
     assert capabilities["guard.byte_size"]["status"] == "executable"
     assert capabilities["guard.byte_size"]["gate"] == "guard_byte_size_test"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"

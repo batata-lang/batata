@@ -188,14 +188,18 @@ defmodule Batata.Probe.Jason.ReportTest do
                &(&1["status"] == "frontend_normalization_failure")
              )
 
-    assert Enum.map(jason["diagnostic_attempts"], &{&1["module"], &1["reason_class"]}) == [
-             {"Jason.DecodeError", "unresolved_if"},
-             {"Jason.EncodeError", "unresolved_struct_constructor"}
-           ]
+    assert Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.DecodeError"))[
+             "phase"
+           ] == "lowering_complete"
+
+    assert Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.EncodeError"))[
+             "reason_class"
+           ] == "unresolved_struct_constructor"
 
     assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Jason.DecodeError" and
-               attempt["phase"] == "lowering_failure"
+               attempt["phase"] == "lowering_complete" and
+               not Map.has_key?(attempt, "reason_class")
            end)
 
     assert Enum.all?(jason["diagnostic_attempts"], fn attempt ->
