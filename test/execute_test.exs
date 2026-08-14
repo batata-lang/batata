@@ -1748,6 +1748,58 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "executes clause-local trailing bindings with BEAM semantics", %{ctx: ctx} do
+    source = """
+    defmodule ClauseLocalTailOracle do
+      def choose(0, left) when is_integer(left), do: left + 1
+      def choose(_, right) when is_integer(right), do: right + 2
+
+      def ignore(0, _), do: 11
+      def ignore(_, value), do: value
+
+      def delete_key([{key, _} | tail], key), do: delete_key(tail, key)
+      def delete_key([{_, _} = pair | tail], key), do: [pair | delete_key(tail, key)]
+      def delete_key([], _key), do: []
+
+      def main() do
+        {
+          choose(0, 4),
+          choose(1, 4),
+          ignore(0, 7),
+          ignore(1, 7),
+          delete_key([a: 1, b: 2, a: 3], :a)
+        }
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nClauseLocalTailOracle.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "preserves trailing arguments in multi-clause FunctionClauseError", %{ctx: ctx} do
+    error =
+      assert_raise FunctionClauseError, fn ->
+        Batata.execute(
+          """
+          defmodule ClauseLocalTailFailure do
+            def only(1, first), do: first
+            def only(2, second), do: second
+            def main(), do: only(3, 4)
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert error.module == ClauseLocalTailFailure
+    assert error.function == :only
+    assert error.arity == 2
+    assert error.args == [3, 4]
+  end
+
   test "rejects multi-clause functions with non-variable trailing arguments", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables/, fn ->
       Batata.execute(
@@ -1759,29 +1811,6 @@ defmodule Batata.ExecuteTest do
 
           def f(_, _) do
             0
-          end
-
-          def main() do
-            f(1, 2)
-          end
-        end
-        """,
-        ctx
-      )
-    end
-  end
-
-  test "rejects multi-clause functions with inconsistent trailing argument names", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/same trailing argument names/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def f(1, a) do
-            a
-          end
-
-          def f(_, b) do
-            b
           end
 
           def main() do
