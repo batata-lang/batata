@@ -90,11 +90,13 @@ between the first pattern and trailing argument. Native, resumable
 `:lists.keyfind/3` and `:lists.reverse/1,2` now execute with BEAM-oracle gates,
 including loose numeric key equality and invalid-argument paths. The shadow
 crosses those calls, guarded `new/1`, and the duplicate symbols previously
-emitted for `get_and_update/3,4`. Its diagnostic-only shadow now reaches the
-standard lowering pass, where dynamic `fun.(current)` application references
-an absent `__fn_dispatch` function. The full module remains blocked by its
-struct form. This is not a module pass, and the lowering failure does not yet
-establish a Beaver runtime change.
+emitted for `get_and_update/3,4`. Its diagnostic-only shadow now fails closed
+at frontend normalization because dynamic `fun.(current)` application has no
+module-local anonymous function from which Batata could build `__fn_dispatch`.
+Modules that pass locally-created closures through helper parameters retain
+their executable dispatch path. The host and AOT ABIs do not promise support
+for externally supplied closure terms. The full module remains blocked by its
+struct form; this is not a module pass or evidence for a Beaver runtime change.
 `Jason.Fragment` retains its guarded-definition blocker and is deliberately not
 stripped into a shadow attempt. Cross-module schemas and complete exception
 semantics remain outside the claim, and module pass counts remain zero.

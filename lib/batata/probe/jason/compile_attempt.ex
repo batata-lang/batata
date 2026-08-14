@@ -128,6 +128,9 @@ defmodule Batata.Probe.Jason.CompileAttempt do
     |> Macro.underscore()
   end
 
+  defp lift_reason_class("dynamic_apply_without_local_dispatch" <> _message),
+    do: "dynamic_apply_without_local_dispatch"
+
   defp lift_reason_class(message) do
     cond do
       map_pattern?(message) ->
