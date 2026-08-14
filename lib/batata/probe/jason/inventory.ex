@@ -29,12 +29,23 @@ defmodule Batata.Probe.Jason.Inventory do
   @compile_annotation_attributes [:compile, :dialyzer, :impl]
   @compile_time_eval_attributes [:digits, :power_of_2_to_52]
   @module_generation_forms [:for, :if, :unless, :case, :cond, :try, :with]
+  @definition_generation_forms [
+    :def,
+    :defp,
+    :defmacro,
+    :defmacrop,
+    :defmodule,
+    :defimpl,
+    :defprotocol
+  ]
 
   @type unsupported :: %{
           required(:reason) => atom(),
           required(:frontend_reason) => atom(),
           required(:line) => non_neg_integer() | nil,
-          required(:form) => String.t()
+          required(:form) => String.t(),
+          optional(:generation_construct) => atom(),
+          optional(:generation_root) => String.t()
         }
 
   @type module_inventory :: %{
@@ -247,11 +258,65 @@ defmodule Batata.Probe.Jason.Inventory do
       form_ast: form
     }
 
+    entry =
+      if entry.reason == :module_level_generation do
+        Map.merge(entry, %{
+          generation_construct: generation_construct(form),
+          generation_root: generation_root(form)
+        })
+      else
+        entry
+      end
+
     case module_attribute(form) do
       nil -> entry
       attribute -> Map.put(entry, :attribute, attribute)
     end
   end
+
+  defp generation_construct(form) do
+    cond do
+      definition_generation?(form) -> :definition_generation
+      match?({:=, _, _}, form) -> :module_match
+      generator_control?(form) -> :generator_control
+      module_call?(form) -> :module_call
+      true -> :other
+    end
+  end
+
+  defp definition_generation?(form) do
+    {_form, found?} =
+      Macro.prewalk(form, false, fn
+        {kind, _, _} = node, _found? when kind in @definition_generation_forms ->
+          {node, true}
+
+        node, found? ->
+          {node, found?}
+      end)
+
+    found?
+  end
+
+  defp generator_control?({kind, _, _}) when kind in @module_generation_forms, do: true
+  defp generator_control?(_form), do: false
+
+  defp module_call?({{:., _, _}, _, args}) when is_list(args), do: true
+  defp module_call?({name, _, args}) when is_atom(name) and is_list(args), do: true
+  defp module_call?(_form), do: false
+
+  defp generation_root({{:., _, [module, name]}, _, args})
+       when is_atom(name) and is_list(args) do
+    "#{Macro.to_string(module)}.#{name}/#{length(args)}"
+  end
+
+  defp generation_root({name, _, args}) when is_atom(name) and is_list(args) do
+    "#{root_name(name)}/#{length(args)}"
+  end
+
+  defp generation_root(_form), do: "other"
+
+  defp root_name(:=), do: "="
+  defp root_name(name), do: to_string(name)
 
   defp classify({:@, _, [{attribute, _, _}]}, _)
        when attribute in @ignored_metadata_attributes,

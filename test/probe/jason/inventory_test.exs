@@ -95,6 +95,29 @@ defmodule Batata.Probe.Jason.InventoryTest do
   end
 
   @tag :tmp_dir
+  test "classifies module generation by reproducible AST structure", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "generation.ex"), """
+    defmodule Generation do
+      value = Enum.count([])
+      if enabled(), do: :ok
+      Enum.each([1], fn item -> defp generated(), do: item end)
+      local_call(:value)
+    end
+    """)
+
+    assert [%{modules: [module]}] = Inventory.discover!(tmp_dir)
+
+    assert Enum.map(module.unsupported, fn entry ->
+             {entry.generation_construct, entry.generation_root}
+           end) == [
+             {:module_match, "=/2"},
+             {:generator_control, "if/2"},
+             {:definition_generation, "Enum.each/2"},
+             {:module_call, "local_call/1"}
+           ]
+  end
+
+  @tag :tmp_dir
   test "builds a self-contained compile candidate only for eligible modules", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "eligible.ex"), """
     defmodule Eligible do
