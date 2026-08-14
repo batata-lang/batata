@@ -254,6 +254,9 @@ defmodule Batata.Lift do
         {:<>, _, [_, _]} = node, false ->
           {node, true}
 
+        {:%{}, _, [{:|, _, [_base, _updates]}]} = node, false ->
+          {node, true}
+
         {name, _, args} = node, false when is_atom(name) and is_list(args) ->
           {node, Batata.Stdlib.may_raise?({Kernel, name, length(args)})}
 

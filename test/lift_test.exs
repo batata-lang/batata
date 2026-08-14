@@ -184,6 +184,23 @@ defmodule Batata.LiftTest do
              )
   end
 
+  test "selects the actor driver for potentially raising map updates", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            map = %{value: 1}
+            %{map | value: 2}
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert "ex.worker_run" in op_names(module)
+  end
+
   test "lifts an empty list into ex IR", %{ctx: ctx} do
     module =
       lift!(
