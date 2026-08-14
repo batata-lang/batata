@@ -72,6 +72,15 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
     assert non_exhaustive["reason_class"] == "non_exhaustive_clauses"
   end
 
+  test "classifies a single guarded definition without a fallback" do
+    details =
+      CompileAttempt.failure_details(%Batata.Lift.Error{
+        message: "a guarded function requires a following fallback clause: new/1"
+      })
+
+    assert details["reason_class"] == "guarded_definition"
+  end
+
   test "classifies unresolved calls reported by standard lowering passes" do
     short_circuit_and =
       CompileAttempt.failure_details(%Batata.Lower.Error{

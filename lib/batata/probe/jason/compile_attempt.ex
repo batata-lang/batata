@@ -107,6 +107,28 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   end
 
   defp reason_class(%Batata.Lift.Error{}, message) do
+    if String.contains?(message, "a guarded function requires a following fallback clause") do
+      "guarded_definition"
+    else
+      lift_reason_class(message)
+    end
+  end
+
+  defp reason_class(%Batata.Lower.Error{}, message) do
+    if String.contains?(message, "does not reference a valid function") do
+      unresolved_call_class(message)
+    else
+      "lowering_pass_failure"
+    end
+  end
+
+  defp reason_class(error, _message) do
+    error.__struct__
+    |> inspect()
+    |> Macro.underscore()
+  end
+
+  defp lift_reason_class(message) do
     cond do
       map_pattern?(message) ->
         "map_pattern"
@@ -132,20 +154,6 @@ defmodule Batata.Probe.Jason.CompileAttempt do
       true ->
         "lift_error"
     end
-  end
-
-  defp reason_class(%Batata.Lower.Error{}, message) do
-    if String.contains?(message, "does not reference a valid function") do
-      unresolved_call_class(message)
-    else
-      "lowering_pass_failure"
-    end
-  end
-
-  defp reason_class(error, _message) do
-    error.__struct__
-    |> inspect()
-    |> Macro.underscore()
   end
 
   defp unresolved_call_class(message) do
