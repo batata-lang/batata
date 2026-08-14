@@ -205,12 +205,16 @@ defmodule Batata.Probe.Jason.Inventory do
     blockers = Enum.reject(unsupported, &(&1.reason == :ignored_metadata))
 
     if blockers != [] and Enum.all?(blockers, &(&1.reason == :exception_semantics)) do
+      schema = Enum.filter(body_forms, &schema_declaration?/1)
       definitions = body_forms |> Enum.filter(&simple_definition?/1) |> ensure_main()
 
-      {:defmodule, [], [module_name, [do: {:__block__, [], definitions}]]}
+      {:defmodule, [], [module_name, [do: {:__block__, [], schema ++ definitions}]]}
       |> Macro.to_string()
     end
   end
+
+  defp schema_declaration?({kind, _, _}) when kind in [:defstruct, :defexception], do: true
+  defp schema_declaration?(_form), do: false
 
   defp dependency_forms(forms) do
     Enum.reject(forms, fn
