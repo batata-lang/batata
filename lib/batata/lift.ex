@@ -30,6 +30,7 @@ defmodule Batata.Lift do
 
   @known_atoms_key {__MODULE__, :known_atoms}
   @struct_schema_key {__MODULE__, :struct_schema}
+  @arg_modes_key {__MODULE__, :arg_modes}
 
   defmodule Error do
     @moduledoc "Raised when the frontend encounters an unsupported AST form."
@@ -55,8 +56,6 @@ defmodule Batata.Lift do
       batch_size = reduction_batch_size(budget, batching)
       {workers, process_cap} = validate_runtime_options!(opts)
       known_atoms = opts |> Keyword.get(:atom_table, %{}) |> Enum.sort_by(&elem(&1, 0))
-      module_env = %{@known_atoms_key => known_atoms, @struct_schema_key => mod.struct_schema}
-
       {definitions, entry_name} = rename_entry(mod.definitions)
 
       definitions =
@@ -64,6 +63,12 @@ defmodule Batata.Lift do
         |> recognize_enum_calls()
         |> extract_all_fns()
         |> then(&append_dispatch(&1))
+
+      module_env = %{
+        @known_atoms_key => known_atoms,
+        @struct_schema_key => mod.struct_schema,
+        @arg_modes_key => Batata.Signature.infer(definitions)
+      }
 
       groups = Enum.group_by(definitions, &{&1.name, &1.arity})
       enforce_resumable_plan(groups, budget)
@@ -1028,9 +1033,9 @@ defmodule Batata.Lift do
       block
       |> Walker.arguments()
       |> Enum.to_list()
-      |> Enum.zip(patterns)
-      |> Enum.reduce(module_env, fn {value, pattern}, env ->
-        Map.put(env, param_name(pattern), value)
+      |> Enum.zip(Enum.zip(patterns, function_arg_modes(name, arity, module_env)))
+      |> Enum.reduce(module_env, fn {value, {pattern, mode}}, env ->
+        Map.put(env, param_name(pattern), inbound_argument(value, mode, ctx, block))
       end)
       |> Map.put(:__budget__, budget)
       |> Map.put(:__batch_size__, batch_size)
@@ -1220,6 +1225,11 @@ defmodule Batata.Lift do
     block = MLIR.Block.create(List.duplicate(i64, arity), locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
     [arg1 | tail_args] = block |> Walker.arguments() |> Enum.to_list()
+
+    [_first_mode | tail_modes] = function_arg_modes(name, arity, module_env)
+
+    tail_args =
+      Enum.zip_with(tail_args, tail_modes, &inbound_argument(&1, &2, ctx, block))
 
     clause_bindss = Enum.map(clause_tail_names, &tail_bindings(&1, tail_args))
 
@@ -3460,6 +3470,8 @@ defmodule Batata.Lift do
           {value, env} = lift_expr(arg, ctx, block, env)
           {lift_value(value, ctx, block, env), env}
         end)
+
+      arg_values = adapt_call_arguments(name, arg_values, env, ctx, block)
 
       {
         create_op(
@@ -6323,6 +6335,29 @@ defmodule Batata.Lift do
 
   defp param_name({name, _, nil}) when is_atom(name), do: name
   defp param_name(pattern), do: raise(Error, "unsupported parameter pattern: #{inspect(pattern)}")
+
+  defp function_arg_modes(name, arity, module_env) do
+    module_env
+    |> Map.fetch!(@arg_modes_key)
+    |> Map.get({name, arity}, List.duplicate(:scalar, arity))
+  end
+
+  defp inbound_argument(value, :term, ctx, block),
+    do: create_op("ex.to_word", [value], [ex_type("dyn", ctx)], ctx, block)
+
+  defp inbound_argument(value, :scalar, _ctx, _block), do: value
+
+  defp adapt_call_arguments(name, values, env, ctx, block) do
+    modes =
+      env
+      |> Map.fetch!(@arg_modes_key)
+      |> Map.get({name, length(values)}, List.duplicate(:scalar, length(values)))
+
+    Enum.zip_with(values, modes, fn
+      value, :term -> value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
+      value, :scalar -> value
+    end)
+  end
 
   defp integer_type(ctx), do: MLIR.Type.integer(64, ctx: ctx)
 
