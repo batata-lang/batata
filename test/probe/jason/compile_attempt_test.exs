@@ -81,6 +81,16 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
     assert details["reason_class"] == "guarded_definition"
   end
 
+  test "classifies multi-clause trailing literal patterns" do
+    details =
+      CompileAttempt.failure_details(%Batata.Lift.Error{
+        message:
+          "multi-clause trailing arguments must be variables: {:__aliases__, [line: 2], [:Date]}"
+      })
+
+    assert details["reason_class"] == "multi_clause_trailing_literal_pattern"
+  end
+
   test "classifies unresolved calls reported by standard lowering passes" do
     short_circuit_and =
       CompileAttempt.failure_details(%Batata.Lower.Error{

@@ -29,7 +29,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     second = Report.build(source_dir, metadata: metadata)
 
     assert first == second
-    assert first["schema_version"] == 5
+    assert first["schema_version"] == 6
 
     assert first["coverage_claim"] ==
              "eligible-module compile attempts; no per-definition coverage"
@@ -62,9 +62,16 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert first["dependency_frontier"] == []
     assert first["diagnostic_attempts"] == []
+    assert first["generation_attempts"] == []
 
     assert first["summary"]["diagnostic_attempts"] == %{
              "outcomes" => %{},
+             "phases" => %{},
+             "total" => 0
+           }
+
+    assert first["summary"]["generation_attempts"] == %{
+             "expanded_definitions" => 0,
              "phases" => %{},
              "total" => 0
            }
