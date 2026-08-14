@@ -23,6 +23,7 @@ defmodule Batata.Lift do
 
   alias Batata.Frontend
   alias Batata.Frontend.GuardSupport
+  alias Batata.Symbol
   alias Batata.Transform.PatternPlan
   alias Beaver.MLIR
   alias Beaver.MLIR.Dialect.Ex
@@ -1097,7 +1098,7 @@ defmodule Batata.Lift do
       op: "ex.func",
       ip: ip,
       ctx: ctx,
-      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      arguments: [sym_name: MLIR.Attribute.string(Symbol.function(name, arity))],
       results: [],
       filler: fn -> [region] end
     }
@@ -1239,7 +1240,7 @@ defmodule Batata.Lift do
       op: "ex.func",
       ip: ip,
       ctx: ctx,
-      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      arguments: [sym_name: MLIR.Attribute.string(Symbol.function(name, 1))],
       results: [],
       filler: fn -> [region] end
     }
@@ -1319,7 +1320,7 @@ defmodule Batata.Lift do
       op: "ex.func",
       ip: ip,
       ctx: ctx,
-      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      arguments: [sym_name: MLIR.Attribute.string(Symbol.function(name, arity))],
       results: [],
       filler: fn -> [region] end
     }
@@ -1571,7 +1572,7 @@ defmodule Batata.Lift do
       op: "ex.func",
       ip: ip,
       ctx: ctx,
-      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      arguments: [sym_name: MLIR.Attribute.string(Symbol.function(name, 1))],
       results: [],
       filler: fn -> [region] end
     }
@@ -1593,7 +1594,7 @@ defmodule Batata.Lift do
       op: "ex.func",
       ip: ip,
       ctx: ctx,
-      arguments: [sym_name: MLIR.Attribute.string(to_string(name))],
+      arguments: [sym_name: MLIR.Attribute.string(Symbol.function(name, 2))],
       results: [],
       filler: fn -> [region] end
     }
@@ -3179,7 +3180,7 @@ defmodule Batata.Lift do
           addr =
             create_op(
               "ex.func_addr",
-              [sym_name: MLIR.Attribute.string(to_string(mapper_name))],
+              [sym_name: MLIR.Attribute.string(Symbol.function(mapper_name, 1))],
               [MLIR.Type.function([integer_type(ctx)], [integer_type(ctx)])],
               ctx,
               block
@@ -3266,7 +3267,7 @@ defmodule Batata.Lift do
     addr =
       create_op(
         "ex.func_addr",
-        [sym_name: MLIR.Attribute.string(to_string(predicate_name))],
+        [sym_name: MLIR.Attribute.string(Symbol.function(predicate_name, 1))],
         [MLIR.Type.function([integer_type(ctx)], [integer_type(ctx)])],
         ctx,
         block
@@ -3314,7 +3315,7 @@ defmodule Batata.Lift do
             "ex.call",
             call_args ++
               [
-                callee: MLIR.Attribute.string(to_string(name)),
+                callee: MLIR.Attribute.string(Symbol.function(name, 8)),
                 arity: MLIR.Attribute.integer(MLIR.Type.i64(), 8),
                 operandSegmentSizes: segment_sizes(arg_segment_sizes(8))
               ],
@@ -3523,7 +3524,7 @@ defmodule Batata.Lift do
           "ex.call",
           arg_values ++
             [
-              callee: MLIR.Attribute.string(to_string(name)),
+              callee: MLIR.Attribute.string(Symbol.function(name, length(args))),
               arity: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
               operandSegmentSizes: segment_sizes(arg_segment_sizes(length(args)))
             ],
@@ -4287,7 +4288,7 @@ defmodule Batata.Lift do
     addr =
       create_op(
         "ex.func_addr",
-        [sym_name: MLIR.Attribute.string(to_string(reducer_name))],
+        [sym_name: MLIR.Attribute.string(Symbol.function(reducer_name, 2))],
         [MLIR.Type.function([integer_type(ctx), integer_type(ctx)], [integer_type(ctx)])],
         ctx,
         block

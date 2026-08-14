@@ -1520,6 +1520,41 @@ defmodule Batata.ExecuteTest do
     assert error.args == [:not_a_list]
   end
 
+  test "keeps same-name functions distinct by arity", %{ctx: ctx} do
+    assert 16 ==
+             Batata.execute(
+               """
+               defmodule ArityQualifiedSymbols do
+                 def get_and_update(a, b, c), do: a + b + c
+                 def get_and_update(a, b, c, d), do: a + b + c + d
+
+                 def main(), do: get_and_update(1, 2, 3) + get_and_update(1, 2, 3, 4)
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "keeps encoded symbols separate from source names and recursive arities", %{ctx: ctx} do
+    assert 109 ==
+             Batata.execute(
+               """
+               defmodule AdversarialFunctionSymbols do
+                 def abc(a, b, c), do: a + b + c
+                 def __batata_fn_616263_3(), do: 100
+
+                 def walk(0), do: 0
+                 def walk(n), do: walk(n - 1, 1)
+                 def walk(0, acc), do: acc
+                 def walk(n, acc), do: walk(n - 1, acc + 1)
+
+                 def main(), do: abc(1, 2, 3) + __batata_fn_616263_3() + walk(3)
+               end
+               """,
+               ctx
+             )
+  end
+
   test "executes combined guards over every single-clause argument", %{ctx: ctx} do
     source = fn right ->
       """

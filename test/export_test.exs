@@ -65,7 +65,10 @@ defmodule Batata.ExportTest do
     %{bundle: bundle} = Export.read(tmp_dir)
 
     assert bundle["exports"] == [
-             %{"function" => "Math.helper/1", "symbol" => "helper"},
+             %{
+               "function" => "Math.helper/1",
+               "symbol" => "__batata_fn_68656c706572_1"
+             },
              %{"function" => "Math.main/0", "symbol" => "batata_main"}
            ]
 
