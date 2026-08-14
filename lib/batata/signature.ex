@@ -6,6 +6,7 @@ defmodule Batata.Signature do
   @term_guards ~w(is_atom is_binary is_float is_list is_map is_tuple)a
   @builtin_modes %{
     {:lists, :keyfind, 3} => [:term, :term, :term],
+    {:lists, :reverse, 1} => [:term],
     {:lists, :reverse, 2} => [:term, :term]
   }
 
