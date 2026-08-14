@@ -1281,9 +1281,11 @@ defmodule Batata.Lift do
 
   # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
   # first argument dispatches with `ex.case`; trailing variable names are
-  # clause-local aliases for the same positional function arguments.
+  # clause-local aliases for the same positional function arguments. A
+  # compile-known atom literal in a trailing position contributes an extra
+  # clause condition over that argument.
   defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts \\ []) do
-    clause_tail_names = validate_multi_arg_clauses!(arity, clauses)
+    clause_tail_patterns = validate_multi_arg_clauses!(arity, clauses)
 
     region = MLIR.CAPI.mlirRegionCreate()
     loc = MLIR.Location.unknown(ctx: ctx)
@@ -1296,10 +1298,30 @@ defmodule Batata.Lift do
 
     [_first_mode | tail_modes] = function_arg_modes(name, arity, module_env)
 
+    tail_modes =
+      tail_modes
+      |> Enum.with_index()
+      |> Enum.map(fn {mode, index} ->
+        if Enum.any?(clause_tail_patterns, &match?({:literal, _}, Enum.at(&1, index))),
+          do: :term,
+          else: mode
+      end)
+
     tail_args =
       Enum.zip_with(tail_args, tail_modes, &inbound_argument(&1, &2, ctx, block))
 
+    clause_tail_names =
+      Enum.map(clause_tail_patterns, fn patterns ->
+        Enum.map(patterns, fn
+          {:variable, name} -> name
+          {:literal, _atom} -> nil
+        end)
+      end)
+
     clause_bindss = Enum.map(clause_tail_names, &tail_bindings(&1, tail_args))
+
+    extra_clause_conds =
+      Enum.map(clause_tail_patterns, &tail_match_condition(&1, tail_args, ctx, block, module_env))
 
     failure_tail_names =
       Enum.map(1..(arity - 1), &String.to_atom("__batata_tail_arg_#{&1}"))
@@ -1329,6 +1351,8 @@ defmodule Batata.Lift do
             box_scrutinee: false,
             untag_int_binds: true,
             clause_bindss: clause_bindss,
+            extra_clause_conds: extra_clause_conds,
+            force_fallback: not multi_arg_catch_all?(clauses, clause_tail_patterns),
             fallback_binds: fallback_binds,
             failure_kind: 2,
             failure_reason:
@@ -1367,16 +1391,58 @@ defmodule Batata.Lift do
 
       {_first, tails} = Enum.split(patterns, 1)
 
-      Enum.map(tails, fn
-        {:_, _, nil} ->
-          nil
+      Enum.map(tails, &multi_arg_tail_pattern!/1)
+    end)
+  end
 
-        {name, _, nil} when is_atom(name) ->
-          name
+  defp multi_arg_tail_pattern!({:_, _, nil}), do: {:variable, nil}
 
-        other ->
-          raise Error, "multi-clause trailing arguments must be variables: #{inspect(other)}"
-      end)
+  defp multi_arg_tail_pattern!({name, _, nil}) when is_atom(name),
+    do: {:variable, name}
+
+  defp multi_arg_tail_pattern!({:__aliases__, _, parts} = pattern) when is_list(parts) do
+    if parts != [] and Enum.all?(parts, &is_atom/1) do
+      {:literal, Elixir.Module.concat(parts)}
+    else
+      unsupported_multi_arg_tail_pattern!(pattern)
+    end
+  end
+
+  defp multi_arg_tail_pattern!(atom) when is_atom(atom), do: {:literal, atom}
+  defp multi_arg_tail_pattern!(pattern), do: unsupported_multi_arg_tail_pattern!(pattern)
+
+  defp unsupported_multi_arg_tail_pattern!(pattern) do
+    raise Error,
+          "multi-clause trailing arguments must be variables, wildcards, or " <>
+            "compile-known atom literals: #{inspect(pattern)}"
+  end
+
+  defp tail_match_condition(patterns, arguments, ctx, block, module_env) do
+    patterns
+    |> Enum.zip(arguments)
+    |> Enum.flat_map(fn
+      {{:variable, _name}, _argument} ->
+        []
+
+      {{:literal, atom}, argument} ->
+        {condition, []} =
+          build_match(atom, argument, ctx, block, false, Map.get(module_env, @struct_schema_key))
+
+        [condition]
+    end)
+    |> combine(ctx, block)
+  end
+
+  defp multi_arg_catch_all?(clauses, clause_tail_patterns) do
+    clauses
+    |> Enum.zip(clause_tail_patterns)
+    |> Enum.any?(fn
+      {%Frontend.Clause{patterns: [{name, _, nil} | _], guard_ast: nil}, tails}
+      when is_atom(name) ->
+        Enum.all?(tails, &match?({:variable, _}, &1))
+
+      _clause ->
+        false
     end)
   end
 
@@ -5572,7 +5638,8 @@ defmodule Batata.Lift do
   end
 
   defp ensure_case_fallback(clauses, opts) do
-    if Enum.any?(clauses, &clause_catch_all?/1) do
+    if Enum.any?(clauses, &clause_catch_all?/1) and
+         not Keyword.get(opts, :force_fallback, false) do
       clauses
     else
       unmatched = {:__batata_unmatched__, [], nil}
@@ -5594,6 +5661,7 @@ defmodule Batata.Lift do
   defp lift_scalar_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_clause/1)
     clause_bindss = case_clause_bindss(opts, length(parsed))
+    extra_clause_conds = case_clause_conditions(opts, length(parsed))
 
     unless parsed |> List.last() |> Map.fetch!(:patterns) == [] do
       raise Error, "case requires a final catch-all clause"
@@ -5602,13 +5670,17 @@ defmodule Batata.Lift do
     guards =
       parsed
       |> Enum.zip(clause_bindss)
-      |> Enum.map(fn {clause, clause_binds} ->
+      |> Enum.zip(extra_clause_conds)
+      |> Enum.map(fn {{clause, clause_binds}, extra_clause_cond} ->
         clause_env = Map.merge(env, Map.new(clause_binds))
 
-        case clause.guard do
-          nil -> nil
-          guard_ast -> lift_guard(guard_ast, clause.vars, scrutinee, clause_env, ctx, block)
-        end
+        guard_cond =
+          case clause.guard do
+            nil -> nil
+            guard_ast -> lift_guard(guard_ast, clause.vars, scrutinee, clause_env, ctx, block)
+          end
+
+        combine([guard_cond, extra_clause_cond], ctx, block)
       end)
 
     region = MLIR.CAPI.mlirRegionCreate()
@@ -5648,6 +5720,7 @@ defmodule Batata.Lift do
   defp lift_term_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_term_clause/1)
     clause_bindss = case_clause_bindss(opts, length(parsed))
+    extra_clause_conds = case_clause_conditions(opts, length(parsed))
 
     unless match?(
              {name, _, nil} when is_atom(name),
@@ -5670,7 +5743,8 @@ defmodule Batata.Lift do
     {guards, bindss} =
       parsed
       |> Enum.zip(clause_bindss)
-      |> Enum.map(fn {clause, clause_binds} ->
+      |> Enum.zip(extra_clause_conds)
+      |> Enum.map(fn {{clause, clause_binds}, extra_clause_cond} ->
         {match_cond, pattern_binds} =
           build_match(
             clause.pattern,
@@ -5684,17 +5758,16 @@ defmodule Batata.Lift do
         {match_cond, binds} =
           reconcile_term_bindings(match_cond, clause_binds, pattern_binds, ctx, block)
 
-        cond =
+        guard_cond =
           case clause.guard do
             nil ->
-              match_cond
+              nil
 
             guard_ast ->
-              guard_cond = lift_term_guard(guard_ast, binds, env, ctx, block)
-              combine([match_cond, guard_cond], ctx, block)
+              lift_term_guard(guard_ast, binds, env, ctx, block)
           end
 
-        {cond, binds}
+        {combine([match_cond, guard_cond, extra_clause_cond], ctx, block), binds}
       end)
       |> Enum.unzip()
 
@@ -5749,6 +5822,24 @@ defmodule Batata.Lift do
       {:ok, bindss} ->
         raise Error,
               "case clause binding count mismatch: #{length(bindss)} bindings for #{clause_count} clauses"
+    end
+  end
+
+  defp case_clause_conditions(opts, clause_count) do
+    case Keyword.fetch(opts, :extra_clause_conds) do
+      :error ->
+        List.duplicate(nil, clause_count)
+
+      {:ok, conditions} when length(conditions) == clause_count ->
+        conditions
+
+      {:ok, conditions} when length(conditions) + 1 == clause_count ->
+        conditions ++ [nil]
+
+      {:ok, conditions} ->
+        raise Error,
+              "case clause condition count mismatch: #{length(conditions)} conditions for " <>
+                "#{clause_count} clauses"
     end
   end
 

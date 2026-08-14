@@ -1990,8 +1990,8 @@ defmodule Batata.ExecuteTest do
     assert error.args == [3, 4]
   end
 
-  test "rejects multi-clause functions with non-variable trailing arguments", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables/, fn ->
+  test "rejects multi-clause functions with non-atom trailing literals", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables, wildcards/, fn ->
       Batata.execute(
         """
         defmodule Math do
