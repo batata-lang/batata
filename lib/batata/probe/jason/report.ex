@@ -16,7 +16,7 @@ defmodule Batata.Probe.Jason.Report do
     Inventory
   }
 
-  @schema_version 4
+  @schema_version 5
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
   @scope_limits [
     "top-level forms only",
@@ -141,6 +141,18 @@ defmodule Batata.Probe.Jason.Report do
         :error -> entry
       end
 
+    entry =
+      case Map.fetch(unsupported, :generation_construct) do
+        {:ok, construct} -> Map.put(entry, "generation_construct", to_string(construct))
+        :error -> entry
+      end
+
+    entry =
+      case Map.fetch(unsupported, :generation_root) do
+        {:ok, root} -> Map.put(entry, "generation_root", root)
+        :error -> entry
+      end
+
     BlockerIdentity.put_id(entry)
   end
 
@@ -194,6 +206,7 @@ defmodule Batata.Probe.Jason.Report do
 
     counts = Enum.frequencies_by(blockers, & &1["stage"])
     categories = Enum.frequencies_by(blockers, & &1["reason"])
+    generation_entries = Enum.filter(blockers, &Map.has_key?(&1, "generation_construct"))
     attempt_counts = Enum.frequencies_by(compile_attempts, & &1["status"])
     diagnostic_outcomes = Enum.frequencies_by(diagnostic_attempts, & &1["outcome"])
     diagnostic_phases = Enum.frequencies_by(diagnostic_attempts, & &1["phase"])
@@ -206,6 +219,9 @@ defmodule Batata.Probe.Jason.Report do
       "ignored_metadata" => length(ignored_metadata),
       "ignored_metadata_by_attribute" => Enum.frequencies_by(ignored_metadata, & &1["attribute"]),
       "categories" => categories,
+      "generation_constructs" =>
+        Enum.frequencies_by(generation_entries, & &1["generation_construct"]),
+      "generation_roots" => Enum.frequencies_by(generation_entries, & &1["generation_root"]),
       "dependency_frontier" => %{
         "calls" => Enum.sum(Enum.map(dependency_frontier, & &1["count"])),
         "eligible_calls" =>

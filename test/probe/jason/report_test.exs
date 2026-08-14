@@ -29,7 +29,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     second = Report.build(source_dir, metadata: metadata)
 
     assert first == second
-    assert first["schema_version"] == 4
+    assert first["schema_version"] == 5
 
     assert first["coverage_claim"] ==
              "eligible-module compile attempts; no per-definition coverage"
@@ -87,6 +87,8 @@ defmodule Batata.Probe.Jason.ReportTest do
            ]
 
     assert first["summary"]["categories"] == %{"import" => 1}
+    assert first["summary"]["generation_constructs"] == %{}
+    assert first["summary"]["generation_roots"] == %{}
 
     assert Enum.map(first["ignored_metadata"], & &1["attribute"]) == ["moduledoc", "compile"]
 
@@ -94,8 +96,48 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert Enum.all?(first["ignored_metadata"], &(byte_size(&1["id"]) == 64))
   end
 
+  @tag :tmp_dir
+  test "reports module generation constructs without changing blocker identity", %{
+    tmp_dir: tmp_dir
+  } do
+    source_dir = Path.join(tmp_dir, "corpus")
+    File.mkdir_p!(Path.join(source_dir, "lib"))
+
+    File.write!(Path.join(source_dir, "lib/generation.ex"), """
+    defmodule Generation do
+      table = Enum.zip([1], [2])
+      if enabled(), do: :ok
+      Enum.each([1], fn item -> defp generated(), do: item end)
+      annotate(:value)
+    end
+    """)
+
+    report = Report.build(source_dir)
+
+    assert report["summary"]["generation_constructs"] == %{
+             "definition_generation" => 1,
+             "generator_control" => 1,
+             "module_call" => 1,
+             "module_match" => 1
+           }
+
+    assert report["summary"]["generation_roots"] == %{
+             "=/2" => 1,
+             "Enum.each/2" => 1,
+             "annotate/1" => 1,
+             "if/2" => 1
+           }
+
+    assert Enum.all?(report["blockers"], fn blocker ->
+             blocker["reason"] == "module_level_generation" and
+               is_binary(blocker["generation_construct"]) and
+               is_binary(blocker["generation_root"]) and byte_size(blocker["id"]) == 64
+           end)
+  end
+
   test "diff reports added and resolved blocker identities" do
     keep = %{"id" => "keep", "reason" => "import"}
+    enriched_keep = Map.put(keep, "generation_construct", "module_call")
     old = %{"id" => "old", "reason" => "module_attribute"}
     new = %{"id" => "new", "reason" => "guarded_definition"}
 
@@ -125,7 +167,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     diff =
       Diff.compare(
         %{
-          "blockers" => [keep, new],
+          "blockers" => [enriched_keep, new],
           "ignored_metadata" => [metadata_keep, metadata_new],
           "module_compile_attempts" => current_attempts,
           "diagnostic_attempts" => current_diagnostics
