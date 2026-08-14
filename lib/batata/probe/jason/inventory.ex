@@ -22,7 +22,8 @@ defmodule Batata.Probe.Jason.Inventory do
     :typep,
     :opaque,
     :typedoc,
-    :deprecated
+    :deprecated,
+    :behaviour
   ]
 
   @compile_annotation_attributes [:compile, :dialyzer, :impl]
@@ -204,7 +205,8 @@ defmodule Batata.Probe.Jason.Inventory do
   defp diagnostic_source(module_name, body_forms, unsupported) do
     blockers = Enum.reject(unsupported, &(&1.reason == :ignored_metadata))
 
-    if blockers != [] and Enum.all?(blockers, &(&1.reason == :exception_semantics)) do
+    if blockers != [] and
+         Enum.all?(blockers, &(&1.reason in [:exception_semantics, :struct_semantics])) do
       schema = Enum.filter(body_forms, &schema_declaration?/1)
       definitions = body_forms |> Enum.filter(&simple_definition?/1) |> ensure_main()
 

@@ -9,6 +9,10 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
 
     assert capabilities["pattern.map_subset"]["gate"] == "execute_test"
     assert capabilities["pattern.map_parameter"]["status"] == "executable"
+    assert capabilities["pattern.struct"]["status"] == "executable"
+    assert capabilities["pattern.struct"]["gate"] == "execute_test"
+    assert capabilities["map.update_exact"]["status"] == "executable"
+    assert capabilities["map.update_exact"]["gate"] == "execute_test"
     assert capabilities["dispatch.non_exhaustive"]["status"] == "executable"
     assert capabilities["string.interpolation"]["status"] == "executable"
     assert capabilities["string.interpolation"]["gate"] == "execute_test"
@@ -30,7 +34,7 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["struct.constructor"]["status"] == "executable"
     assert capabilities["struct.constructor"]["gate"] == "execute_test"
     assert capabilities["decimal.struct_surface"]["status"] == "blocked"
-    assert capabilities["decimal.struct_surface"]["reason"] =~ "patterns and updates"
+    assert capabilities["decimal.struct_surface"]["reason"] =~ "cross-module schemas"
 
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
