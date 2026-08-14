@@ -29,6 +29,7 @@ defmodule Batata.Lift do
   alias Beaver.Walker
 
   @known_atoms_key {__MODULE__, :known_atoms}
+  @struct_schema_key {__MODULE__, :struct_schema}
 
   defmodule Error do
     @moduledoc "Raised when the frontend encounters an unsupported AST form."
@@ -54,6 +55,7 @@ defmodule Batata.Lift do
       batch_size = reduction_batch_size(budget, batching)
       {workers, process_cap} = validate_runtime_options!(opts)
       known_atoms = opts |> Keyword.get(:atom_table, %{}) |> Enum.sort_by(&elem(&1, 0))
+      module_env = %{@known_atoms_key => known_atoms, @struct_schema_key => mod.struct_schema}
 
       {definitions, entry_name} = rename_entry(mod.definitions)
 
@@ -67,7 +69,7 @@ defmodule Batata.Lift do
       enforce_resumable_plan(groups, budget)
 
       Enum.each(groups, fn {_key, definitions} ->
-        lift_definitions(definitions, ctx, body, budget, batch_size, known_atoms)
+        lift_definitions(definitions, ctx, body, budget, batch_size, module_env)
       end)
 
       maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
@@ -996,7 +998,7 @@ defmodule Batata.Lift do
          ip,
          budget,
          batch_size,
-         known_atoms
+         module_env
        ) do
     unless kind in [:def, :defp] do
       raise Error, "unsupported definition kind: #{inspect(kind)}"
@@ -1024,7 +1026,7 @@ defmodule Batata.Lift do
       |> Walker.arguments()
       |> Enum.to_list()
       |> Enum.zip(patterns)
-      |> Enum.reduce(%{@known_atoms_key => known_atoms}, fn {value, pattern}, env ->
+      |> Enum.reduce(module_env, fn {value, pattern}, env ->
         Map.put(env, param_name(pattern), value)
       end)
       |> Map.put(:__budget__, budget)
@@ -1116,15 +1118,15 @@ defmodule Batata.Lift do
          ip,
          budget,
          batch_size,
-         known_atoms
+         module_env
        ) do
     if Enum.any?(clauses, &function_clause_has_pattern?/1) do
       case arity do
-        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip, known_atoms)
-        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, known_atoms)
+        1 -> lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env)
+        n when n >= 2 -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env)
       end
     else
-      lift_definition(hd(definitions), ctx, ip, budget, batch_size, known_atoms)
+      lift_definition(hd(definitions), ctx, ip, budget, batch_size, module_env)
     end
   end
 
@@ -1132,7 +1134,7 @@ defmodule Batata.Lift do
   # body dispatches on the argument with ex.case, matching each clause's
   # pattern (the cursor-loop foundation for recursive scanners). M2 requires
   # a single argument and a final catch-all clause.
-  defp lift_definitions(definitions, ctx, ip, budget, batch_size, known_atoms) do
+  defp lift_definitions(definitions, ctx, ip, budget, batch_size, module_env) do
     %Frontend.Definition{kind: kind, name: name, arity: arity} = hd(definitions)
 
     unless kind in [:def, :defp] do
@@ -1145,13 +1147,13 @@ defmodule Batata.Lift do
       arity == 1 ->
         case detect_scanner(name, clauses) do
           {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip, budget, batch_size)
-          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip, known_atoms)
+          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env)
         end
 
       arity >= 2 ->
         case detect_accumulator_scanner(name, clauses) do
           {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip, budget, batch_size)
-          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, known_atoms)
+          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env)
         end
 
       true ->
@@ -1159,7 +1161,7 @@ defmodule Batata.Lift do
     end
   end
 
-  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, known_atoms) do
+  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env) do
     region = MLIR.CAPI.mlirRegionCreate()
 
     # The argument is a scalar word (like single-clause functions); the term
@@ -1180,7 +1182,7 @@ defmodule Batata.Lift do
       end)
 
     return_value =
-      lift_case(clause_asts, arg, %{@known_atoms_key => known_atoms}, ctx, block,
+      lift_case(clause_asts, arg, module_env, ctx, block,
         relax_types: true,
         box_scrutinee: false,
         untag_int_binds: true,
@@ -1204,7 +1206,7 @@ defmodule Batata.Lift do
   # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
   # first argument dispatches with `ex.case`; the trailing arguments must be
   # bound as variables and are threaded through the clause environments.
-  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, known_atoms) do
+  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env) do
     tail_names = validate_multi_arg_clauses!(arity, clauses)
 
     region = MLIR.CAPI.mlirRegionCreate()
@@ -1220,7 +1222,7 @@ defmodule Batata.Lift do
       tail_names
       |> Enum.zip(tail_args)
       |> Map.new()
-      |> Map.put(@known_atoms_key, known_atoms)
+      |> Map.merge(module_env)
 
     clause_asts =
       Enum.map(clauses, fn %Frontend.Clause{
@@ -2881,6 +2883,25 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:%{}, _, entries}, ctx, block, env) do
+    {values, env} = lift_map_entries(entries, ctx, block, env)
+    {create_term_op("ex.map", values, ctx, block), env}
+  end
+
+  defp lift_expr(
+         {:%, _, [{:__aliases__, _, module_parts}, {:%{}, _, provided_fields}]},
+         ctx,
+         block,
+         env
+       ) do
+    module = Elixir.Module.concat(module_parts)
+    schema = Map.get(env, @struct_schema_key)
+
+    unless match?(%Frontend.StructSchema{module: ^module}, schema) do
+      raise Error,
+            "struct constructor requires the current-module schema, got: #{inspect(module)}"
+    end
+
+    entries = struct_constructor_entries(schema, provided_fields)
     {values, env} = lift_map_entries(entries, ctx, block, env)
     {create_term_op("ex.map", values, ctx, block), env}
   end
@@ -5977,6 +5998,46 @@ defmodule Batata.Lift do
       end
     end)
   end
+
+  defp struct_constructor_entries(%Frontend.StructSchema{} = schema, provided_fields)
+       when is_list(provided_fields) do
+    provided =
+      Enum.reduce(provided_fields, %{}, fn
+        {field, value}, fields when is_atom(field) ->
+          if Map.has_key?(fields, field) do
+            raise Error, "duplicate struct field: #{inspect(field)}"
+          end
+
+          Map.put(fields, field, normalize_struct_field_value(value))
+
+        field, _fields ->
+          raise Error, "struct fields must use atom keys, got: #{inspect(field)}"
+      end)
+
+    declared = MapSet.new(schema.fields, &elem(&1, 0))
+
+    case provided |> Map.keys() |> Enum.reject(&MapSet.member?(declared, &1)) do
+      [] -> :ok
+      unknown -> raise Error, "unknown struct fields: #{inspect(Enum.sort(unknown))}"
+    end
+
+    injected =
+      [__struct__: schema.module] ++
+        if(schema.kind == :exception, do: [__exception__: true], else: [])
+
+    injected ++
+      Enum.map(schema.fields, fn {field, default} ->
+        {field, Map.get(provided, field, default)}
+      end)
+  end
+
+  defp struct_constructor_entries(%Frontend.StructSchema{}, provided_fields) do
+    raise Error, "struct fields must be a literal keyword list, got: #{inspect(provided_fields)}"
+  end
+
+  defp normalize_struct_field_value({:-, _, [value]}) when is_number(value), do: -value
+  defp normalize_struct_field_value({:+, _, [value]}) when is_number(value), do: value
+  defp normalize_struct_field_value(value), do: value
 
   defp create_term_op(op_name, args, ctx, block) do
     create_op(

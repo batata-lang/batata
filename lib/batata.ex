@@ -282,6 +282,8 @@ defmodule Batata do
   end
 
   defp literal_atom_table(source) do
+    snapshot = Batata.Frontend.from_source(source)
+
     atoms =
       source
       |> Code.string_to_quoted!()
@@ -295,12 +297,13 @@ defmodule Batata do
       |> elem(1)
 
     atoms =
-      source
-      |> Batata.Frontend.from_source()
+      snapshot
       |> Map.fetch!(:definitions)
       |> Enum.reduce(atoms, fn definition, acc ->
         Map.put(acc, atom_word(definition.name), definition.name)
       end)
+
+    atoms = add_struct_schema_atoms(atoms, snapshot.struct_schema)
 
     # `nil` also appears pervasively as quoted AST metadata/context. Only
     # expose its immediate word when the source contains the literal token;
@@ -314,6 +317,17 @@ defmodule Batata do
     |> Map.put(atom_word(:printable?), :printable?)
     |> Map.put(atom_word(:unknown_atom), :unknown_atom)
     |> Map.put(atom_word(:unsupported_type), :unsupported_type)
+  end
+
+  defp add_struct_schema_atoms(atoms, nil), do: atoms
+
+  defp add_struct_schema_atoms(atoms, %Batata.Frontend.StructSchema{} = schema) do
+    schema_atoms =
+      [schema.module, :__struct__] ++
+        Enum.map(schema.fields, &elem(&1, 0)) ++
+        if(schema.kind == :exception, do: [:__exception__], else: [])
+
+    Enum.reduce(schema_atoms, atoms, fn atom, acc -> Map.put(acc, atom_word(atom), atom) end)
   end
 
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
