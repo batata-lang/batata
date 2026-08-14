@@ -66,13 +66,13 @@ regression gate.
 
 Pinned Jason has exactly one accepted candidate: the literal-list `for` at
 `lib/encode.ex:233`. It expands the Date, Time, NaiveDateTime, and DateTime
-clauses, then fails frontend normalization because multi-clause trailing
-arguments must be variables. A smaller Batata-owned integer fixture passes
-frontend compilation and IR verification but still fails the standard MLIR
-lowering pass, so this lane makes no execution claim. The next measured
-capability is therefore multi-clause trailing literal-pattern dispatch, not
-production module-level generation. The 72 blockers, their IDs, module
-attempts, and existing diagnostic attempts remain unchanged.
+clauses and now dispatches their compile-known atom literals. The generated
+Jason body next stops at the unsupported `Date.to_iso8601/1` standard-library
+call, while a smaller Batata-owned module-alias fixture reaches lowering
+completion. This lane still makes no execution claim: the next measured
+capability is the generated body's standard-library surface, not production
+module-level generation. The 72 blockers, their IDs, module attempts, and
+existing diagnostic attempts remain unchanged.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
