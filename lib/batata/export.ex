@@ -110,7 +110,8 @@ defmodule Batata.Export do
   Symbol-level export list for the snapshot's definitions.
 
   The entry function is renamed to `batata_main` by `Batata.build/3`; every
-  other definition keeps its source symbol (the LLVM `@<name>` symbol).
+  other definition uses the same arity-qualified internal symbol as the
+  compiler-generated LLVM function.
   """
   @spec exports([Batata.Frontend.Definition.t()], module(), atom()) :: [map()]
   def exports(definitions, module_name, entry_name \\ :main) do
@@ -121,7 +122,12 @@ defmodule Batata.Export do
 
     Enum.map(definitions, fn definition ->
       entry? = definition.name == :batata_main
-      symbol = if entry?, do: "batata_main", else: to_string(definition.name)
+
+      symbol =
+        if entry?,
+          do: "batata_main",
+          else: Batata.Symbol.function(definition.name, definition.arity)
+
       function = if entry?, do: to_string(entry_name), else: to_string(definition.name)
 
       %{

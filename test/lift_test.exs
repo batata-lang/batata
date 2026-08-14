@@ -670,7 +670,7 @@ defmodule Batata.LiftTest do
 
     assert attributes["callee"]
            |> MLIR.CAPI.mlirStringAttrGetValue()
-           |> MLIR.to_string() == "add"
+           |> MLIR.to_string() == Batata.Symbol.function(:add, 2)
 
     assert attributes["arity"]
            |> MLIR.CAPI.mlirIntegerAttrGetValueInt()
