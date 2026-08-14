@@ -89,10 +89,12 @@ clauses pass frontend dispatch validation, including the repeated-key equality
 between the first pattern and trailing argument. Native, resumable
 `:lists.keyfind/3` and `:lists.reverse/1,2` now execute with BEAM-oracle gates,
 including loose numeric key equality and invalid-argument paths. The shadow
-crosses those calls and guarded `new/1`. Its post-#228 diagnostic-only shadow
-now reaches IR verification and exposes duplicate `get_and_update` symbols;
-the full module remains blocked by its struct form. This is not a module pass,
-and the verifier failure is not evidence for a Beaver map-fetch stack.
+crosses those calls, guarded `new/1`, and the duplicate symbols previously
+emitted for `get_and_update/3,4`. Its diagnostic-only shadow now reaches the
+standard lowering pass, where dynamic `fun.(current)` application references
+an absent `__fn_dispatch` function. The full module remains blocked by its
+struct form. This is not a module pass, and the lowering failure does not yet
+establish a Beaver runtime change.
 `Jason.Fragment` retains its guarded-definition blocker and is deliberately not
 stripped into a shadow attempt. Cross-module schemas and complete exception
 semantics remain outside the claim, and module pass counts remain zero.
