@@ -48,6 +48,11 @@ must never be converted into expected frontend blockers.
 Modules blocked by top-level forms remain visible as
 `blocked_by_module_forms`; a previously passing module compile attempt becoming
 a compile or lowering failure is a probe regression.
+Diagnostic-attempt changes are reported separately by module and path. Changes
+to their outcome, error, phase, or reason class expose movement in the shadow
+compile frontier; fingerprint-only drift remains visible but informational.
+Diagnostic-only changes do not affect the blocker or compile-attempt regression
+gate.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
@@ -84,9 +89,10 @@ clauses pass frontend dispatch validation, including the repeated-key equality
 between the first pattern and trailing argument. Native, resumable
 `:lists.keyfind/3` and `:lists.reverse/1,2` now execute with BEAM-oracle gates,
 including loose numeric key equality and invalid-argument paths. The shadow
-crosses those calls and now exposes the next precise blocker: guarded `new/1`
-has no fallback clause in Batata's current dispatch model. It is not a module
-pass, and this frontend blocker is not evidence for a Beaver map-fetch stack.
+crosses those calls and guarded `new/1`. Its post-#228 diagnostic-only shadow
+now reaches IR verification and exposes duplicate `get_and_update` symbols;
+the full module remains blocked by its struct form. This is not a module pass,
+and the verifier failure is not evidence for a Beaver map-fetch stack.
 `Jason.Fragment` retains its guarded-definition blocker and is deliberately not
 stripped into a shadow attempt. Cross-module schemas and complete exception
 semantics remain outside the claim, and module pass counts remain zero.

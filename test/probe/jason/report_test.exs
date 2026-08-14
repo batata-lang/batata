@@ -110,17 +110,31 @@ defmodule Batata.Probe.Jason.ReportTest do
       %{"path" => "lib/pass.ex", "module" => "Pass", "status" => "pass"}
     ]
 
+    current_diagnostics = [
+      diagnostic("Added", "lowering_complete", "added"),
+      diagnostic("Changed", "ir_verification_failure", "changed"),
+      diagnostic("Fingerprint", "lowering_complete", "new")
+    ]
+
+    baseline_diagnostics = [
+      diagnostic("Removed", "lowering_complete", "removed"),
+      diagnostic("Changed", "frontend_normalization_failure", "changed"),
+      diagnostic("Fingerprint", "lowering_complete", "old")
+    ]
+
     diff =
       Diff.compare(
         %{
           "blockers" => [keep, new],
           "ignored_metadata" => [metadata_keep, metadata_new],
-          "module_compile_attempts" => current_attempts
+          "module_compile_attempts" => current_attempts,
+          "diagnostic_attempts" => current_diagnostics
         },
         %{
           "blockers" => [keep, old],
           "ignored_metadata" => [metadata_keep],
-          "module_compile_attempts" => baseline_attempts
+          "module_compile_attempts" => baseline_attempts,
+          "diagnostic_attempts" => baseline_diagnostics
         }
       )
 
@@ -141,6 +155,34 @@ defmodule Batata.Probe.Jason.ReportTest do
                "to" => "lowering_failure"
              }
            ]
+
+    assert Enum.map(diff["diagnostic_attempt_changes"], &{&1["module"], &1["kind"]}) == [
+             {"Added", "added"},
+             {"Changed", "changed"},
+             {"Fingerprint", "fingerprint_only"},
+             {"Removed", "removed"}
+           ]
+
+    changed = Enum.find(diff["diagnostic_attempt_changes"], &(&1["module"] == "Changed"))
+    assert changed["from"]["phase"] == "frontend_normalization_failure"
+    assert changed["to"]["phase"] == "ir_verification_failure"
+
+    refute Diff.compare(
+             %{"diagnostic_attempts" => current_diagnostics},
+             %{"diagnostic_attempts" => baseline_diagnostics}
+           )["regression"]
+  end
+
+  defp diagnostic(module, phase, fingerprint) do
+    %{
+      "path" => "lib/#{String.downcase(module)}.ex",
+      "module" => module,
+      "outcome" => "reached_compile_pipeline",
+      "error" => "Batata.Lift.Error",
+      "phase" => phase,
+      "reason_class" => "guarded_definition",
+      "fingerprint" => fingerprint
+    }
   end
 
   test "committed corpus baselines contain no supported alias blockers" do
@@ -212,8 +254,8 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Jason.OrderedObject" and
                attempt["outcome"] == "reached_compile_pipeline" and
-               attempt["phase"] == "frontend_normalization_failure" and
-               attempt["reason_class"] == "guarded_definition" and
+               attempt["phase"] == "ir_verification_failure" and
+               attempt["reason_class"] == "runtime_error" and
                Enum.map(attempt["removed_blockers"], & &1["reason"]) == ["struct_semantics"]
            end)
 
