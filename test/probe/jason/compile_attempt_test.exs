@@ -91,8 +91,15 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
           "standard MLIR lowering pass failed: 'func.call' op '__aliases__' does not reference a valid function; callee = @__aliases__"
       })
 
+    conditional =
+      CompileAttempt.failure_details(%Batata.Lower.Error{
+        message:
+          "standard MLIR lowering pass failed: 'func.call' op 'if' does not reference a valid function; callee = @if"
+      })
+
     assert short_circuit_and["reason_class"] == "unresolved_short_circuit_and"
     assert concat["reason_class"] == "unresolved_binary_concat"
     assert struct["reason_class"] == "unresolved_struct_constructor"
+    assert conditional["reason_class"] == "unresolved_if"
   end
 end

@@ -65,8 +65,10 @@ that domain. Body-level short-circuit `&&` now preserves Elixir's original
 operand values, treats only `false` and `nil` as falsy, and keeps the right-hand
 side lazy; assignments in that right-hand side remain outside the supported
 environment model. `String.printable?/1` now has an executable runtime and
-BEAM-oracle gate, so the shadow `Jason.DecodeError` advances from frontend
-normalization into lowering and now stops at unresolved `inspect/1,2` calls.
+BEAM-oracle gate, and bounded `Kernel.inspect/1,2` now covers the integer,
+binary, compile-known atom, nil, and boolean terms used by its error messages.
+The shadow `Jason.DecodeError` therefore advances again and now stops at an
+unresolved body-level `if` expression.
 The shadow `Decimal.Error` still reaches lowering completion, while struct
 construction remains the separate `Jason.EncodeError` frontier. Module pass
 counts remain zero: deeper shadow diagnostics are evidence, not claims that
@@ -74,8 +76,8 @@ the corpus modules compile.
 
 The remaining frontiers do not share a lowering primitive. Struct support
 requires a deliberate `defstruct`/`__struct__` representation and field
-validation contract, while `inspect/1,2` requires a bounded formatting surface
-before Jason's error-message path can advance again. The next stack should be
+validation contract, while body-level `if` requires a value-preserving lazy
+control-flow lowering before Jason's error-message path can advance again. The next stack should be
 chosen from their measured reuse across the existing fixtures, or a second
 fixture should be admitted if neither has enough cross-corpus leverage.
 

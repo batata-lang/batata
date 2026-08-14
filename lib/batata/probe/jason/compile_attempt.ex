@@ -135,21 +135,10 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   end
 
   defp reason_class(%Batata.Lower.Error{}, message) do
-    cond do
-      String.contains?(message, "does not reference a valid function") and
-          String.contains?(message, "@\"&&\"") ->
-        "unresolved_short_circuit_and"
-
-      String.contains?(message, "does not reference a valid function") and
-          String.contains?(message, "@\"<>\"") ->
-        "unresolved_binary_concat"
-
-      String.contains?(message, "does not reference a valid function") and
-          String.contains?(message, "@__aliases__") ->
-        "unresolved_struct_constructor"
-
-      true ->
-        "lowering_pass_failure"
+    if String.contains?(message, "does not reference a valid function") do
+      unresolved_call_class(message)
+    else
+      "lowering_pass_failure"
     end
   end
 
@@ -157,6 +146,16 @@ defmodule Batata.Probe.Jason.CompileAttempt do
     error.__struct__
     |> inspect()
     |> Macro.underscore()
+  end
+
+  defp unresolved_call_class(message) do
+    cond do
+      String.contains?(message, "@\"&&\"") -> "unresolved_short_circuit_and"
+      String.contains?(message, "@\"<>\"") -> "unresolved_binary_concat"
+      String.contains?(message, "@__aliases__") -> "unresolved_struct_constructor"
+      String.contains?(message, "@if") -> "unresolved_if"
+      true -> "lowering_pass_failure"
+    end
   end
 
   defp map_pattern?(message) do
