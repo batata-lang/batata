@@ -1779,6 +1779,26 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "preserves term-valued arguments across inferred local-call signatures", %{ctx: ctx} do
+    source = """
+    defmodule TermArgumentModes do
+      def keep(0, value) when is_atom(value), do: value
+      def keep(_, value), do: value
+
+      def forward(value), do: keep(0, value)
+
+      def main() do
+        {forward(:original), forward(<<1, 2>>), forward(7)}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nTermArgumentModes.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "preserves trailing arguments in multi-clause FunctionClauseError", %{ctx: ctx} do
     error =
       assert_raise FunctionClauseError, fn ->
