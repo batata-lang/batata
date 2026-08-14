@@ -335,14 +335,35 @@ defmodule Batata.LiftTest do
     assert "ex.tuple_get" in names
   end
 
-  test "rejects map pattern values outside the binding subset", %{ctx: ctx} do
+  test "lifts literal and nested values in atom-keyed map patterns", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case %{position: 1, nested: %{status: :ok}} do
+              %{position: 1, nested: %{status: :ok}} = whole -> whole
+              _ -> %{}
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert Enum.count(names, &(&1 == "ex.map_fetch")) == 3
+    assert "ex.term_eq" in names
+  end
+
+  test "rejects non-atom map pattern keys", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/map patterns only support/, fn ->
       lift!(
         """
         defmodule Math do
           def main() do
             case %{position: 1} do
-              %{position: 1} -> 1
+              %{"position" => value} -> value
               _ -> 0
             end
           end

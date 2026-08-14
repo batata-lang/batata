@@ -369,6 +369,31 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "matches map value subpatterns and binds pattern aliases", %{ctx: ctx} do
+    source = """
+    defmodule DecimalPatternShape do
+      def classify(%{coef: :NaN} = number), do: {:nan, number}
+      def classify(%{sign: sign}), do: {:finite, sign}
+
+      def main() do
+        {
+          classify(%{coef: :NaN, sign: 1}),
+          classify(%{coef: 10, sign: 2}),
+          case %{outer: %{status: :ok}, extra: 1} do
+            %{outer: %{status: :ok}} = whole -> whole
+            _ -> :miss
+          end
+        }
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nDecimalPatternShape.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "executes Kernel.to_string over its supported dynamic term domain", %{ctx: ctx} do
     assert {"123", "binary", "known"} ==
              Batata.execute(
