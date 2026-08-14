@@ -2918,13 +2918,25 @@ defmodule Batata.Lift do
 
     {left, env} = lift_expr(left_ast, ctx, block, env)
     left = box_term(lift_value(left, ctx, block, env), ctx, block)
-    false_term = atom_term(false, ctx, block)
-    nil_term = atom_term(nil, ctx, block)
-    false? = create_op("ex.term_eq", [left, false_term], [MLIR.Type.i64()], ctx, block)
-    nil? = create_op("ex.term_eq", [left, nil_term], [MLIR.Type.i64()], ctx, block)
-    falsy = create_op("arith.ori", [false?, nil?], [MLIR.Type.i64()], ctx, block)
+    falsy = term_falsy_condition(left, ctx, block)
 
     {lower_short_circuit_and(left, right_ast, falsy, env, ctx, block), env}
+  end
+
+  defp lift_expr({:if, _, [condition_ast, options]}, ctx, block, env)
+       when is_list(options) do
+    then_ast = Keyword.fetch!(options, :do)
+    else_ast = Keyword.get(options, :else, nil)
+
+    if ast_has_assignment?(then_ast) or ast_has_assignment?(else_ast) do
+      raise Error, "assignments in if branches are unsupported"
+    end
+
+    {condition, env} = lift_expr(condition_ast, ctx, block, env)
+    condition = lift_value(condition, ctx, block, env)
+    {condition, falsy} = lower_if_truthiness(condition_ast, condition, ctx, block)
+
+    {lower_body_if(condition, then_ast, else_ast, falsy, env, ctx, block), env}
   end
 
   defp lift_expr({name, _, [arg]}, ctx, block, env)
@@ -4865,6 +4877,86 @@ defmodule Batata.Lift do
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
   end
+
+  defp lower_body_if(condition, then_ast, else_ast, falsy, env, ctx, block) do
+    dyn = ex_type("dyn", ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    falsy_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, falsy_block)
+    create_op("ex.clause", [falsy, patterns: pattern_attr([])], [], ctx, falsy_block)
+    {else_value, else_env} = lift_expr(else_ast, ctx, falsy_block, env)
+    else_value = box_term(lift_value(else_value, ctx, falsy_block, else_env), ctx, falsy_block)
+
+    create_op(
+      "ex.yield",
+      [else_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      falsy_block
+    )
+
+    truthy_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, truthy_block)
+    create_op("ex.clause", [patterns: pattern_attr([])], [], ctx, truthy_block)
+    {then_value, then_env} = lift_expr(then_ast, ctx, truthy_block, env)
+    then_value = box_term(lift_value(then_value, ctx, truthy_block, then_env), ctx, truthy_block)
+
+    create_op(
+      "ex.yield",
+      [then_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      truthy_block
+    )
+
+    %Beaver.SSA{
+      op: "ex.case",
+      ip: block,
+      ctx: ctx,
+      arguments: [condition, operandSegmentSizes: segment_sizes([1])],
+      results: [dyn],
+      loc: MLIR.Location.unknown(),
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+    |> MLIR.Operation.results()
+    |> Enum.to_list()
+    |> hd()
+  end
+
+  defp term_falsy_condition(value, ctx, block) do
+    false_term = atom_term(false, ctx, block)
+    nil_term = atom_term(nil, ctx, block)
+    false? = create_op("ex.term_eq", [value, false_term], [MLIR.Type.i64()], ctx, block)
+    nil? = create_op("ex.term_eq", [value, nil_term], [MLIR.Type.i64()], ctx, block)
+    create_op("arith.ori", [false?, nil?], [MLIR.Type.i64()], ctx, block)
+  end
+
+  defp lower_if_truthiness(condition_ast, condition, ctx, block) do
+    if boolean_scalar_ast?(condition_ast) do
+      {condition, cmp(condition, 0, "eq", ctx, block)}
+    else
+      condition =
+        if term_operand?(condition) do
+          condition
+        else
+          create_op("ex.to_word", [condition], [ex_type("dyn", ctx)], ctx, block)
+        end
+
+      {condition, term_falsy_condition(condition, ctx, block)}
+    end
+  end
+
+  defp boolean_scalar_ast?({name, _, [_arg]})
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
+       do: true
+
+  defp boolean_scalar_ast?({op, _, [_left, _right]})
+       when op in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       do: true
+
+  defp boolean_scalar_ast?(_ast), do: false
 
   defp raise_unsupported_to_string(reason, value, ctx, block) do
     reported_value = if reason == :unknown_atom, do: atom_term(reason, ctx, block), else: value
