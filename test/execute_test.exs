@@ -624,6 +624,63 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "constructs current-module structs with defaults and overrides", %{ctx: ctx} do
+    source = """
+    defmodule NativeStructConstructor do
+      defstruct sign: 1, coef: 0, tags: [:default]
+
+      def main() do
+        {%__MODULE__{}, %__MODULE__{sign: -1, tags: [:exact]}}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nNativeStructConstructor.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "constructs current-module exception structs with injected fields", %{ctx: ctx} do
+    source = """
+    defmodule NativeExceptionConstructor do
+      defexception [:message]
+      def main(), do: %__MODULE__{message: "exact"}
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nNativeExceptionConstructor.main()") |> Code.eval_string() |> elem(0)
+
+    assert Map.from_struct(expected) == %{message: "exact", __exception__: true}
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects unknown and unavailable struct schemas", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/unknown struct fields: \[:unknown\]/, fn ->
+      Batata.compile(
+        """
+        defmodule NativeUnknownStructField do
+          defstruct [:value]
+          def main(), do: %__MODULE__{unknown: 1}
+        end
+        """,
+        ctx
+      )
+    end
+
+    assert_raise Batata.Lift.Error, ~r/requires the current-module schema/, fn ->
+      Batata.compile(
+        """
+        defmodule NativeUnavailableStructSchema do
+          def main(), do: %Other.Struct{value: 1}
+        end
+        """,
+        ctx
+      )
+    end
+  end
+
   test "executes exact list pattern fall-through", %{ctx: ctx} do
     assert 0 ==
              Batata.execute(
