@@ -13,6 +13,8 @@ defmodule Batata.Stdlib.Kernel do
     {Kernel, :byte_size, 1} => :native_term,
     {Kernel, :map_size, 1} => :native_term,
     {Kernel, :list_to_binary, 1} => :native_term,
+    {Kernel, :inspect, 1} => :native_term,
+    {Kernel, :inspect, 2} => :native_term,
     {Kernel, :to_string, 1} => :native_term,
     {Kernel, :is_atom, 1} => :native_term,
     {Kernel, :is_binary, 1} => :native_term,
@@ -309,6 +311,8 @@ defmodule Batata.Stdlib do
            )
 
   @raising_mfas MapSet.new([
+                  {Kernel, :inspect, 1},
+                  {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
                   {String, :printable?, 1}
                 ])
@@ -346,6 +350,8 @@ defmodule Batata.Stdlib do
                      {MapSet, :put, 2},
                      {Map, :put, 3},
                      {Kernel, :list_to_binary, 1},
+                     {Kernel, :inspect, 1},
+                     {Kernel, :inspect, 2},
                      {IO, :iodata_to_binary, 1},
                      {:erlang, :iolist_to_binary, 1},
                      {HashSet, :new, 1},

@@ -4334,6 +4334,23 @@ defmodule Batata.Lift do
     {lower_kernel_to_string(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
   end
 
+  defp lift_stdlib_call(Kernel, :inspect, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = box_term(value, ctx, block)
+    {lower_kernel_inspect(value, :default, Map.fetch!(env, @known_atoms_key), ctx, block), env}
+  end
+
+  defp lift_stdlib_call(Kernel, :inspect, [value_ast, [base: :hex]], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = box_term(value, ctx, block)
+    {lower_kernel_inspect(value, :hex, Map.fetch!(env, @known_atoms_key), ctx, block), env}
+  end
+
+  defp lift_stdlib_call(Kernel, :inspect, [_value_ast, opts], _ctx, _block, _env) do
+    raise Error,
+          "Kernel.inspect/2 supports only the literal option [base: :hex], got: #{inspect(opts)}"
+  end
+
   defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
     {start, env} = lift_expr(start_ast, ctx, block, env)
     {stop, env} = lift_expr(stop_ast, ctx, block, env)
@@ -4662,6 +4679,73 @@ defmodule Batata.Lift do
       [
         {integer?, fn b -> create_op("ex.int_to_string", [value], [dyn], ctx, b) end},
         {binary?, fn _b -> value end}
+      ] ++
+        atom_clauses ++
+        [
+          {atom?, fn b -> raise_unsupported_to_string(:unknown_atom, value, ctx, b) end},
+          {nil, fn b -> raise_unsupported_to_string(:unsupported_type, value, ctx, b) end}
+        ]
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    Enum.each(clauses, fn {guard, body_fn} ->
+      clause_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(region, clause_block)
+      clause_args = if guard, do: [guard], else: []
+      create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, clause_block)
+      result = body_fn.(clause_block)
+
+      create_op(
+        "ex.yield",
+        [result, operandSegmentSizes: segment_sizes([1])],
+        [],
+        ctx,
+        clause_block
+      )
+    end)
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [value, operandSegmentSizes: segment_sizes([1])],
+        results: [dyn],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_kernel_inspect(value, mode, known_atoms, ctx, block) do
+    dyn = ex_type("dyn", ctx)
+    integer? = create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
+    binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
+    atom? = create_op("ex.is_atom", [value], [MLIR.Type.i64()], ctx, block)
+
+    atom_clauses =
+      Enum.map(known_atoms, fn {word, atom} ->
+        tagged = create_op("ex.to_word", [lit(word, ctx, block)], [dyn], ctx, block)
+        equal? = create_op("ex.term_eq", [value, tagged], [MLIR.Type.i64()], ctx, block)
+
+        {equal?,
+         fn b ->
+           rendered = if atom in [nil, true, false], do: Atom.to_string(atom), else: ":#{atom}"
+           {binary, _env} = lift_expr(rendered, ctx, b, %{})
+           binary
+         end}
+      end)
+
+    clauses =
+      [
+        {integer?,
+         fn b ->
+           op = if mode == :hex, do: "ex.int_to_hex", else: "ex.int_to_string"
+           create_op(op, [value], [dyn], ctx, b)
+         end},
+        {binary?, fn b -> create_op("ex.binary_quote", [value], [dyn], ctx, b) end}
       ] ++
         atom_clauses ++
         [

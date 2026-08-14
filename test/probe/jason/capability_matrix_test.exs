@@ -23,6 +23,9 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["string.printable"]["status"] == "executable"
     assert capabilities["string.printable"]["gate"] == "stdlib_test"
     assert capabilities["string.printable"]["scope"] =~ "FunctionClauseError"
+    assert capabilities["kernel.inspect"]["status"] == "executable"
+    assert capabilities["kernel.inspect"]["gate"] == "stdlib_test"
+    assert capabilities["kernel.inspect"]["scope"] =~ "base: :hex"
     assert capabilities["control.short_circuit_and"]["status"] == "executable"
     assert capabilities["control.short_circuit_and"]["gate"] == "execute_test"
 
