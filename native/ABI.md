@@ -234,6 +234,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.list_get` | `(list: i64, index: i64) -> i64` | element at index; nil for empty/non-lists or out of range |
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
 | `ex.term.eq` | `(left: i64, right: i64) -> i64` | deep equality: exact for immediates, structural for containers |
+| `ex.term.eq_loose` | `(left: i64, right: i64) -> i64` | BEAM-style loose equality: numeric int/float coercion, recursively structural for containers |
 | `ex.term.binary_length` | `(binary: i64) -> i64` | byte length; 0 for non-binaries |
 | `ex.term.binary_get` | `(binary: i64, index: i64) -> i64` | byte at index as a tagged int term; nil out of range / non-binary |
 | `ex.term.binary_slice` | `(binary: i64, start: i64) -> i64` | materialized binary of bytes [start..len); nil for non-binaries / bad start |
