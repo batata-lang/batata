@@ -13,10 +13,11 @@ defmodule Batata.Probe.Jason.Report do
     CompileAttempt,
     DependencyFrontier,
     DiagnosticAttempt,
+    GenerationAttempt,
     Inventory
   }
 
-  @schema_version 5
+  @schema_version 6
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
   @scope_limits [
     "top-level forms only",
@@ -45,6 +46,7 @@ defmodule Batata.Probe.Jason.Report do
     {ignored_metadata, blockers} = entries(files)
     compile_attempts = CompileAttempt.run(files)
     diagnostic_attempts = DiagnosticAttempt.run(files)
+    generation_attempts = GenerationAttempt.run(files)
     dependency_frontier = DependencyFrontier.collect(files)
 
     %{
@@ -64,11 +66,13 @@ defmodule Batata.Probe.Jason.Report do
           ignored_metadata,
           compile_attempts,
           diagnostic_attempts,
+          generation_attempts,
           dependency_frontier
         ),
       "ignored_metadata" => ignored_metadata,
       "module_compile_attempts" => compile_attempts,
       "diagnostic_attempts" => diagnostic_attempts,
+      "generation_attempts" => generation_attempts,
       "dependency_frontier" => dependency_frontier,
       "blockers" => blockers
     }
@@ -197,6 +201,7 @@ defmodule Batata.Probe.Jason.Report do
          ignored_metadata,
          compile_attempts,
          diagnostic_attempts,
+         generation_attempts,
          dependency_frontier
        ) do
     modules = Enum.sum(Enum.map(files, &length(&1.modules)))
@@ -210,6 +215,7 @@ defmodule Batata.Probe.Jason.Report do
     attempt_counts = Enum.frequencies_by(compile_attempts, & &1["status"])
     diagnostic_outcomes = Enum.frequencies_by(diagnostic_attempts, & &1["outcome"])
     diagnostic_phases = Enum.frequencies_by(diagnostic_attempts, & &1["phase"])
+    generation_phases = Enum.frequencies_by(generation_attempts, & &1["phase"])
 
     %{
       "files" => length(files),
@@ -244,6 +250,12 @@ defmodule Batata.Probe.Jason.Report do
         "total" => length(diagnostic_attempts),
         "outcomes" => diagnostic_outcomes,
         "phases" => diagnostic_phases
+      },
+      "generation_attempts" => %{
+        "total" => length(generation_attempts),
+        "expanded_definitions" =>
+          Enum.sum_by(generation_attempts, & &1["expanded_definition_count"]),
+        "phases" => generation_phases
       },
       "by_stage" => Map.new(@known_stages, &{&1, Map.get(counts, &1, 0)})
     }

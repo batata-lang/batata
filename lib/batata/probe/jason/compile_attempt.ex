@@ -131,6 +131,9 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   defp lift_reason_class("dynamic_apply_without_local_dispatch" <> _message),
     do: "dynamic_apply_without_local_dispatch"
 
+  defp lift_reason_class("multi-clause trailing arguments must be variables" <> _message),
+    do: "multi_clause_trailing_literal_pattern"
+
   defp lift_reason_class(message) do
     cond do
       map_pattern?(message) ->
