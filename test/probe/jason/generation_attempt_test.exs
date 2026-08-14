@@ -31,7 +31,7 @@ defmodule Batata.Probe.Jason.GenerationAttemptTest do
   end
 
   @tag :tmp_dir
-  test "exposes the next blocker after expanding Jason's module aliases", %{tmp_dir: tmp_dir} do
+  test "lowers generated Jason module-alias clauses", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "encode.ex"), """
     defmodule Fixture.Encode do
       for module <- [Date, Time, NaiveDateTime, DateTime] do
@@ -42,11 +42,12 @@ defmodule Batata.Probe.Jason.GenerationAttemptTest do
 
     assert [attempt] = tmp_dir |> Inventory.discover!() |> GenerationAttempt.run()
     assert attempt["expanded_definition_count"] == 4
-    assert attempt["compile_phase"] == "frontend_normalization_failure"
-    assert attempt["phase"] == "frontend_normalization_failure"
-    assert attempt["error"] == "Batata.Lift.Error"
-    assert attempt["reason_class"] == "multi_clause_trailing_literal_pattern"
-    assert byte_size(attempt["fingerprint"]) == 64
+    assert attempt["outcome"] == "reached_compile_pipeline"
+    assert attempt["compile_phase"] == "pass"
+    assert attempt["phase"] == "lowering_complete"
+    refute Map.has_key?(attempt, "error")
+    refute Map.has_key?(attempt, "reason_class")
+    refute Map.has_key?(attempt, "fingerprint")
   end
 
   @tag :tmp_dir
