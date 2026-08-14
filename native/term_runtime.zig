@@ -3911,6 +3911,116 @@ pub export fn ex_term_string_printable(binary: i64) i64 {
     return 1;
 }
 
+fn decimal_byte_width(value: u8) usize {
+    if (value >= 100) return 3;
+    if (value >= 10) return 2;
+    return 1;
+}
+
+fn write_decimal_byte(out: [*]u8, start: usize, value: u8) usize {
+    const width = decimal_byte_width(value);
+    var divisor: u16 = if (width == 3) 100 else if (width == 2) 10 else 1;
+    var i = start;
+    while (divisor > 0) : (divisor /= 10) {
+        out[i] = @intCast('0' + (@as(u16, value) / divisor) % 10);
+        i += 1;
+    }
+    return i;
+}
+
+fn inspect_escape(cp: i64) ?u8 {
+    return switch (cp) {
+        0x07 => 'a',
+        0x08 => 'b',
+        0x09 => 't',
+        0x0A => 'n',
+        0x0B => 'v',
+        0x0C => 'f',
+        0x0D => 'r',
+        0x1B => 'e',
+        0x22 => '"',
+        0x5C => '\\',
+        0x7F => 'd',
+        else => null,
+    };
+}
+
+/// Renders a binary using the bounded string/binary syntax needed by
+/// Kernel.inspect/1. Printable UTF-8 uses quoted string syntax; invalid or
+/// non-printable input uses decimal byte syntax (`<<1, 2>>`).
+pub export fn ex_term_binary_quote(binary: i64) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const bytes = binary_bytes(binary);
+    const len = binary_len(binary);
+
+    if (ex_term_string_printable(binary) == 0) {
+        var out_len: usize = 4;
+        for (bytes[0..len], 0..) |raw, index| {
+            out_len += decimal_byte_width(@intCast(raw & 0xFF));
+            if (index > 0) out_len += 2;
+        }
+        const words = alloc_binary(out_len) orelse return nil_word;
+        const result = word_from_ptr(words, tag_binary);
+        const out = binary_bytes(result);
+        out[0] = '<';
+        out[1] = '<';
+        var cursor: usize = 2;
+        for (bytes[0..len], 0..) |raw, index| {
+            if (index > 0) {
+                out[cursor] = ',';
+                out[cursor + 1] = ' ';
+                cursor += 2;
+            }
+            cursor = write_decimal_byte(out, cursor, @intCast(raw & 0xFF));
+        }
+        out[cursor] = '>';
+        out[cursor + 1] = '>';
+        return result;
+    }
+
+    var out_len: usize = 2;
+    var index: i64 = 0;
+    while (index < @as(i64, @intCast(len))) {
+        const decoded = utf8_at(binary, index).?;
+        if (inspect_escape(decoded.cp) != null) {
+            out_len += 2;
+        } else if (decoded.cp == 0xA0) {
+            out_len += 6;
+        } else {
+            out_len += @intCast(decoded.width);
+        }
+        index += decoded.width;
+    }
+
+    const words = alloc_binary(out_len) orelse return nil_word;
+    const result = word_from_ptr(words, tag_binary);
+    const out = binary_bytes(result);
+    out[0] = '"';
+    var cursor: usize = 1;
+    index = 0;
+    while (index < @as(i64, @intCast(len))) {
+        const decoded = utf8_at(binary, index).?;
+        if (inspect_escape(decoded.cp)) |escape| {
+            out[cursor] = '\\';
+            out[cursor + 1] = escape;
+            cursor += 2;
+        } else if (decoded.cp == 0xA0) {
+            const escaped = "\\u00A0";
+            for (escaped) |byte| {
+                out[cursor] = byte;
+                cursor += 1;
+            }
+        } else {
+            const width: usize = @intCast(decoded.width);
+            for (0..width) |offset| out[cursor + offset] = bytes[@as(usize, @intCast(index)) + offset];
+            cursor += width;
+        }
+        index += decoded.width;
+    }
+    out[cursor] = '"';
+    return result;
+}
+
 /// Encodes the bytes of a binary as an uppercase hexadecimal binary; nil for
 /// non-binaries.
 pub export fn ex_term_binary_encode16(binary: i64) i64 {
@@ -3985,6 +4095,46 @@ pub export fn ex_term_int_to_string(word: i64) i64 {
     var j: usize = 0;
     while (j < i) : (j += 1) {
         out[j] = digits[i - 1 - j];
+    }
+    return result;
+}
+
+/// Renders a tagged integer term as uppercase hexadecimal with an Elixir
+/// `0x` prefix; nil for non-integers.
+pub export fn ex_term_int_to_hex(word: i64) i64 {
+    if (!is_int(word)) return nil_word;
+    const value = word_payload(word);
+    const negative = value < 0;
+    var magnitude: u64 = @abs(value);
+    var digits: [16]u8 = undefined;
+    var count: usize = 0;
+    const alphabet = "0123456789ABCDEF";
+    if (magnitude == 0) {
+        digits[0] = '0';
+        count = 1;
+    } else {
+        while (magnitude > 0) : (magnitude /= 16) {
+            digits[count] = alphabet[magnitude & 0xF];
+            count += 1;
+        }
+    }
+    const out_len = count + 2 + @as(usize, if (negative) 1 else 0);
+    const words = alloc_binary(out_len) orelse return nil_word;
+    const result = word_from_ptr(words, tag_binary);
+    const out = binary_bytes(result);
+    var cursor: usize = 0;
+    if (negative) {
+        out[cursor] = '-';
+        cursor += 1;
+    }
+    out[cursor] = '0';
+    out[cursor + 1] = 'x';
+    cursor += 2;
+    var i = count;
+    while (i > 0) {
+        i -= 1;
+        out[cursor] = digits[i];
+        cursor += 1;
     }
     return result;
 }
@@ -4291,9 +4441,11 @@ comptime {
     @export(&ex_term_binary_utf8_width, .{ .name = "ex.term.binary_utf8_width" });
     @export(&ex_term_binary_utf8_length, .{ .name = "ex.term.binary_utf8_length" });
     @export(&ex_term_string_printable, .{ .name = "ex.term.string_printable" });
+    @export(&ex_term_binary_quote, .{ .name = "ex.term.binary_quote" });
     @export(&ex_term_binary_encode16, .{ .name = "ex.term.binary_encode16" });
     @export(&ex_term_binary_decode16, .{ .name = "ex.term.binary_decode16" });
     @export(&ex_term_int_to_string, .{ .name = "ex.term.int_to_string" });
+    @export(&ex_term_int_to_hex, .{ .name = "ex.term.int_to_hex" });
     @export(&ex_term_string_to_int, .{ .name = "ex.term.string_to_int" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
     @export(&ex_term_map_put, .{ .name = "ex.term.map_put" });
@@ -4670,6 +4822,31 @@ test "string printable follows Elixir UTF-8 and control character boundaries" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xED\xA0\x80")));
     try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(test_binary_from_string("\xF4\x90\x80\x80")));
     try std.testing.expectEqual(@as(i64, 0), ex_term_string_printable(@as(i64, 1) << @intCast(tag_shift)));
+}
+
+test "bounded inspect format primitives match Elixir syntax" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_hex(0 << @intCast(tag_shift)), test_binary_from_string("0x0")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_hex(255 << @intCast(tag_shift)), test_binary_from_string("0xFF")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_hex(-255 << @intCast(tag_shift)), test_binary_from_string("-0xFF")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_hex(test_binary_from_string("1"))));
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("ab")), test_binary_from_string("\"ab\"")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("a\"b")), test_binary_from_string("\"a\\\"b\"")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("a\\b")), test_binary_from_string("\"a\\\\b\"")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("a\nb")), test_binary_from_string("\"a\\nb\"")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("\xC3\xA9")), test_binary_from_string("\"\xC3\xA9\"")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("\xC2\xA0")), test_binary_from_string("\"\\u00A0\"")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("\x00")), test_binary_from_string("<<0>>")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("\xFF")), test_binary_from_string("<<255>>")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_binary_quote(test_binary_from_string("\x01\x02")), test_binary_from_string("<<1, 2>>")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_quote(1 << @intCast(tag_shift))));
 }
 
 test "iodata flatten handles nested lists and binary improper tails" {
