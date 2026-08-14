@@ -240,8 +240,8 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert jason["summary"]["categories"]["alias"] == nil
     assert decimal["summary"]["categories"]["alias"] == nil
-    assert jason["schema_version"] == 5
-    assert decimal["schema_version"] == 5
+    assert jason["schema_version"] == 6
+    assert decimal["schema_version"] == 6
     assert jason["summary"]["blockers"] == 72
     assert decimal["summary"]["blockers"] == 42
     assert jason["summary"]["ignored_metadata"] == 77
@@ -274,6 +274,31 @@ defmodule Batata.Probe.Jason.ReportTest do
              "doc_since/1" => 18,
              "if/2" => 3
            }
+
+    assert jason["summary"]["generation_attempts"] == %{
+             "expanded_definitions" => 4,
+             "phases" => %{"frontend_normalization_failure" => 1},
+             "total" => 1
+           }
+
+    assert [generation_attempt] = jason["generation_attempts"]
+    assert generation_attempt["path"] == "lib/encode.ex"
+    assert generation_attempt["module"] == "Jason.Encode"
+    assert generation_attempt["line"] == 233
+    assert generation_attempt["expanded_definition_count"] == 4
+    assert generation_attempt["compile_phase"] == "frontend_normalization_failure"
+    assert generation_attempt["phase"] == "frontend_normalization_failure"
+    assert generation_attempt["reason_class"] == "multi_clause_trailing_literal_pattern"
+
+    assert Enum.any?(jason["blockers"], &(&1["id"] == generation_attempt["blocker_id"]))
+
+    assert decimal["summary"]["generation_attempts"] == %{
+             "expanded_definitions" => 0,
+             "phases" => %{},
+             "total" => 0
+           }
+
+    assert decimal["generation_attempts"] == []
 
     assert Enum.all?(jason["blockers"], &generation_evidence?/1)
     assert Enum.all?(decimal["blockers"], &generation_evidence?/1)
