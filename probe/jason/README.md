@@ -54,6 +54,24 @@ compile frontier; fingerprint-only drift remains visible but informational.
 Diagnostic-only changes do not affect the blocker or compile-attempt regression
 gate.
 
+Schema v5 keeps `module_level_generation` as the stable blocker reason and
+adds structural evidence instead of treating every top-level form as one
+semantic capability. Each such blocker records a `generation_construct` and
+`generation_root`; neither field participates in blocker identity or the
+regression gate. On pinned Jason, the 28 generation blockers split into 19
+forms whose subtrees generate definitions, eight module matches, and one
+generator-control form. Their roots are twelve `Enum.map/2`, one
+`Enum.each/2`, two `for/2`, five `if/2`, and eight matches. The blocker IDs,
+module attempts, and diagnostic attempts are unchanged.
+
+This evidence does not justify lowering module-level generation yet. The
+definition-generating forms require compile-time code generation, while the
+matches depend on compile-time evaluation or earlier bindings. No narrow
+data-binding slice independently advances a diagnostic or module attempt.
+The next probe should therefore minimize literal `for`/`if` definition
+generation and measure whether a bounded macro-expansion rule can advance an
+attempt; raw blocker-count reduction alone is not an implementation gate.
+
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
 non-map fall-through. Non-exhaustive cases and function dispatch now use a
