@@ -78,11 +78,14 @@ executable BEAM-oracle gates covering declared defaults, validated overrides,
 exact `__struct__` matching, field validation, aliases, and nested atom-key map
 patterns. Generic exact map updates cover literal atom keys, left-to-right BEAM
 evaluation order, immutable replacement, `KeyError`, and `BadMapError`.
-`Jason.OrderedObject` now enters the diagnostic lane with its schema preserved
-and exposes the next lift error; it is not a module pass. `Jason.Fragment`
-retains its guarded-definition blocker and is deliberately not stripped into a
-shadow attempt. Cross-module schemas and complete exception semantics remain
-outside the claim, and module pass counts remain zero.
+`Jason.OrderedObject` enters the diagnostic lane with its schema preserved.
+Clause-local trailing argument names now let its recursive `delete_key/2`
+clauses pass frontend dispatch validation, including the repeated-key equality
+between the first pattern and trailing argument. The shadow now exposes the
+next precise blocker, unsupported `:lists.keyfind/3`; it is not a module pass.
+`Jason.Fragment` retains its guarded-definition blocker and is deliberately not
+stripped into a shadow attempt. Cross-module schemas and complete exception
+semantics remain outside the claim, and module pass counts remain zero.
 
 The next measured struct frontier is therefore no longer constructor, pattern,
 or generic map-update syntax. Decimal's full modules remain blocked earlier by

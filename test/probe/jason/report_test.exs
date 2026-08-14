@@ -213,7 +213,7 @@ defmodule Batata.Probe.Jason.ReportTest do
              attempt["module"] == "Jason.OrderedObject" and
                attempt["outcome"] == "reached_compile_pipeline" and
                attempt["phase"] == "frontend_normalization_failure" and
-               attempt["reason_class"] == "lift_error" and
+               attempt["reason_class"] == "unsupported_stdlib_call" and
                Enum.map(attempt["removed_blockers"], & &1["reason"]) == ["struct_semantics"]
            end)
 
