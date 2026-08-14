@@ -64,22 +64,23 @@ binary concatenation executes for binary operands and fails closed outside
 that domain. Body-level short-circuit `&&` now preserves Elixir's original
 operand values, treats only `false` and `nil` as falsy, and keeps the right-hand
 side lazy; assignments in that right-hand side remain outside the supported
-environment model. `String.printable?/1` now has an executable runtime and
+environment model. Body-level `if` follows the same truthiness rules, keeps
+unselected branches lazy, returns `nil` when `else` is omitted, and deliberately
+excludes assignments inside branches until branch-local SSA environments are
+modeled. `String.printable?/1` now has an executable runtime and
 BEAM-oracle gate, and bounded `Kernel.inspect/1,2` now covers the integer,
 binary, compile-known atom, nil, and boolean terms used by its error messages.
-The shadow `Jason.DecodeError` therefore advances again and now stops at an
-unresolved body-level `if` expression.
+The shadow `Jason.DecodeError` now reaches lowering completion.
 The shadow `Decimal.Error` still reaches lowering completion, while struct
 construction remains the separate `Jason.EncodeError` frontier. Module pass
 counts remain zero: deeper shadow diagnostics are evidence, not claims that
 the corpus modules compile.
 
-The remaining frontiers do not share a lowering primitive. Struct support
-requires a deliberate `defstruct`/`__struct__` representation and field
-validation contract, while body-level `if` requires a value-preserving lazy
-control-flow lowering before Jason's error-message path can advance again. The next stack should be
-chosen from their measured reuse across the existing fixtures, or a second
-fixture should be admitted if neither has enough cross-corpus leverage.
+The next measured Jason diagnostic frontier is struct support in
+`Jason.EncodeError`, which requires a deliberate `defstruct`/`__struct__`
+representation and field-validation contract. Decimal's full modules remain
+blocked earlier by compile-time and frontend forms, so lowering-complete shadow
+diagnostics do not change either corpus's module-pass count.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
