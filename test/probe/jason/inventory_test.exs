@@ -8,6 +8,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
     source = """
     defmodule Outer do
       @moduledoc false
+      @behaviour Access
       @compile {:inline, plain: 1}
       @dialyzer :no_improper_lists
       @impl Access
@@ -57,6 +58,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
              :ignored_metadata,
              :ignored_metadata,
              :ignored_metadata,
+             :ignored_metadata,
              :compile_annotation,
              :compile_annotation,
              :compile_annotation,
@@ -75,8 +77,9 @@ defmodule Batata.Probe.Jason.InventoryTest do
 
     assert hd(outer.unsupported).attribute == :moduledoc
 
-    assert Enum.map(Enum.take(outer.unsupported, 7), & &1.attribute) == [
+    assert Enum.map(Enum.take(outer.unsupported, 8), & &1.attribute) == [
              :moduledoc,
+             :behaviour,
              :compile,
              :dialyzer,
              :impl,
@@ -85,8 +88,8 @@ defmodule Batata.Probe.Jason.InventoryTest do
              :impl
            ]
 
-    assert Enum.at(outer.unsupported, 7).attribute == :semantic_key
-    assert Enum.at(outer.unsupported, 8).attribute == :digits
+    assert Enum.at(outer.unsupported, 8).attribute == :semantic_key
+    assert Enum.at(outer.unsupported, 9).attribute == :digits
 
     assert Enum.map(inner.unsupported, & &1.reason) == [:require]
   end
@@ -174,7 +177,6 @@ defmodule Batata.Probe.Jason.InventoryTest do
     end
 
     defmodule MetadataFixture do
-      @behaviour MetadataBehaviour
       def value, do: 42
     end
     IO.write(MetadataFixture.value())

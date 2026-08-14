@@ -149,8 +149,10 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert jason["summary"]["categories"]["alias"] == nil
     assert decimal["summary"]["categories"]["alias"] == nil
-    assert jason["summary"]["blockers"] == 73
+    assert jason["summary"]["blockers"] == 72
     assert decimal["summary"]["blockers"] == 42
+    assert jason["summary"]["ignored_metadata"] == 77
+    assert decimal["summary"]["ignored_metadata"] == 106
     assert jason["summary"]["definitions"] == 239
     assert decimal["summary"]["definitions"] == 243
 
@@ -206,6 +208,16 @@ defmodule Batata.Probe.Jason.ReportTest do
                attempt["phase"] == "lowering_complete" and
                not Map.has_key?(attempt, "reason_class")
            end)
+
+    assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
+             attempt["module"] == "Jason.OrderedObject" and
+               attempt["outcome"] == "reached_compile_pipeline" and
+               attempt["phase"] == "frontend_normalization_failure" and
+               attempt["reason_class"] == "lift_error" and
+               Enum.map(attempt["removed_blockers"], & &1["reason"]) == ["struct_semantics"]
+           end)
+
+    refute Enum.any?(jason["diagnostic_attempts"], &(&1["module"] == "Jason.Fragment"))
 
     assert Enum.all?(jason["diagnostic_attempts"], fn attempt ->
              attempt["diagnostic_only"] and not Map.has_key?(attempt, "status") and

@@ -9,12 +9,14 @@
     {"id": "decimal.normalization", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "pattern.map_subset", "status": "executable", "gate": "execute_test"},
     {"id": "pattern.map_parameter", "status": "executable", "gate": "execute_test"},
+    {"id": "pattern.struct", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with validated fields and exact __struct__ matching"},
+    {"id": "map.update_exact", "status": "executable", "gate": "execute_test", "scope": "literal atom keys, BEAM evaluation order, immutable replacement, typed KeyError and BadMapError"},
     {"id": "dispatch.non_exhaustive", "status": "executable", "gate": "execute_test"},
     {"id": "string.interpolation", "status": "executable", "gate": "execute_test", "scope": "integer, binary, and compile-known atom terms"},
     {"id": "string.concat", "status": "executable", "gate": "execute_test", "scope": "binary operands"},
     {"id": "control.short_circuit_and", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; returns original operand values; right-hand-side assignments excluded"},
     {"id": "control.if", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; missing else yields nil; branch assignments excluded"},
     {"id": "struct.constructor", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with runtime-representable literal defaults, validated atom-key overrides, and exception marker injection"},
-    {"id": "decimal.struct_surface", "status": "blocked", "owner": "lift", "reason": "struct patterns and updates remain unsupported; cross-module schemas remain unavailable"}
+    {"id": "decimal.struct_surface", "status": "blocked", "owner": "frontend", "reason": "cross-module schemas and broader module compile-time forms remain unavailable"}
   ]
 }

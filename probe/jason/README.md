@@ -55,8 +55,10 @@ non-map fall-through. Non-exhaustive cases and function dispatch now use a
 typed exception path: `CaseClauseError` and `FunctionClauseError` bypass user
 `catch` frames while retaining their reason through the host result handle.
 The diagnostic lane records the next blocker actually reached by
-`Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error`; it does not count
-that deeper diagnostic as a complete module pass.
+`Jason.DecodeError`, `Jason.EncodeError`, `Jason.OrderedObject`, and
+`Decimal.Error`; it does not count that deeper diagnostic as a complete module
+pass. `@behaviour` is ignored as compile metadata, which moves the pinned Jason
+inventory from 73 to 72 blockers and from 76 to 77 ignored metadata entries.
 
 String interpolation now executes for integer, binary, and compile-known atom
 terms. Binary reads execute for valid binaries with in-range integer indexes;
@@ -70,19 +72,24 @@ excludes assignments inside branches until branch-local SSA environments are
 modeled. `String.printable?/1` now has an executable runtime and
 BEAM-oracle gate, and bounded `Kernel.inspect/1,2` now covers the integer,
 binary, compile-known atom, nil, and boolean terms used by its error messages.
-The shadow `Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error` now
-reach lowering completion. Current-module struct constructors have an
-executable BEAM-oracle gate covering declared defaults, validated overrides,
-the `__struct__` marker, and exception marker injection. Struct patterns,
-updates, cross-module schemas, and complete exception semantics remain outside
-that claim. Module pass counts remain zero: deeper shadow diagnostics are
-evidence, not claims that the corpus modules compile.
+The shadow `Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error` reach
+lowering completion. Current-module struct constructors and patterns have
+executable BEAM-oracle gates covering declared defaults, validated overrides,
+exact `__struct__` matching, field validation, aliases, and nested atom-key map
+patterns. Generic exact map updates cover literal atom keys, left-to-right BEAM
+evaluation order, immutable replacement, `KeyError`, and `BadMapError`.
+`Jason.OrderedObject` now enters the diagnostic lane with its schema preserved
+and exposes the next lift error; it is not a module pass. `Jason.Fragment`
+retains its guarded-definition blocker and is deliberately not stripped into a
+shadow attempt. Cross-module schemas and complete exception semantics remain
+outside the claim, and module pass counts remain zero.
 
-The next measured struct frontier is therefore no longer constructor syntax.
-Decimal's full modules remain blocked earlier by compile-time forms plus struct
-patterns and updates, while Jason's full modules remain dominated by macro,
-attribute, generation, and protocol surfaces. Those blockers must be measured
-independently of the lowering-complete exception shadows.
+The next measured struct frontier is therefore no longer constructor, pattern,
+or generic map-update syntax. Decimal's full modules remain blocked earlier by
+compile-time forms and unavailable cross-module schemas, while Jason's full
+modules remain dominated by macro, attribute, generation, and protocol
+surfaces. Those blockers must be measured independently of the diagnostic
+shadows.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
