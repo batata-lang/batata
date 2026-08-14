@@ -10,6 +10,8 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Kernel, :hd, 1}) == :native_term
       assert Stdlib.class({Kernel, :elem, 2}) == :native_term
       assert Stdlib.class({Kernel, :map_size, 1}) == :native_term
+      assert Stdlib.class({Kernel, :inspect, 1}) == :native_term
+      assert Stdlib.class({Kernel, :inspect, 2}) == :native_term
       assert Stdlib.class({:erlang, :length, 1}) == :native_term
       assert Stdlib.class({IO, :iodata_to_binary, 1}) == :native_term
       assert Stdlib.class({:erlang, :iolist_to_binary, 1}) == :native_term
@@ -408,6 +410,48 @@ defmodule Batata.StdlibTest do
       assert 42 == execute("String.to_integer(\"42\")", ctx)
       assert -7 == execute("String.to_integer(\"-7\")", ctx)
       assert 42 == execute("String.to_integer(Integer.to_string(42))", ctx)
+    end
+
+    test "matches the bounded Kernel.inspect surface", %{ctx: ctx} do
+      expressions = [
+        "inspect(0)",
+        "inspect(65)",
+        "inspect(0, base: :hex)",
+        "inspect(10, base: :hex)",
+        "inspect(255, base: :hex)",
+        "inspect(0 - 255, base: :hex)",
+        ~S|inspect("ab")|,
+        ~S|inspect("a\"b")|,
+        ~S|inspect("a\\b")|,
+        ~S|inspect("a\nb")|,
+        "inspect(<<0>>)",
+        "inspect(<<255>>)",
+        "inspect(<<1, 2>>)",
+        "inspect(<<0xC3, 0xA9>>)",
+        "inspect(:atom)",
+        "inspect(nil)",
+        "inspect(true)",
+        "inspect(false)"
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx), expression
+      end)
+    end
+
+    test "rejects unsupported Kernel.inspect terms and options explicitly", %{ctx: ctx} do
+      for expression <- ["inspect([1])", "inspect(%{a: 1})", "inspect(1.5)"] do
+        error = assert_raise Batata.UnsupportedFeatureError, fn -> execute(expression, ctx) end
+        assert error.reason == :unsupported_type
+      end
+
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute("inspect(1, limit: 3)", ctx)
+        end
+
+      assert error.message =~ "supports only the literal option [base: :hex]"
     end
 
     test "matches String.printable?/1 non-binary FunctionClauseError", %{ctx: ctx} do
