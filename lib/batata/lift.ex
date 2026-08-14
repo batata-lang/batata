@@ -211,6 +211,10 @@ defmodule Batata.Lift do
       {:__enum_call__, _, [:map, pattern, _enumerable]} = node, acc ->
         {node, acc + if(cursor_loop_map?(pattern), do: 1, else: 0)}
 
+      {{:., _, [:lists, function]}, _, args} = node, acc
+      when function in [:keyfind, :reverse] and is_list(args) ->
+        {node, acc + 1}
+
       node, acc ->
         {node, acc}
     end)
@@ -4446,6 +4450,45 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_stdlib_call(:lists, :keyfind, [_, _, _] = args, ctx, block, env) do
+    {values, env} = lift_operands_boxed(args, ctx, block, env)
+    [key, position, list] = values
+
+    value =
+      lift_lists_keyfind(
+        key,
+        position,
+        list,
+        ctx,
+        block,
+        env[:__budget__],
+        env[:__batch_size__]
+      )
+
+    mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
+  end
+
+  defp lift_stdlib_call(:lists, :reverse, [list], ctx, block, env) do
+    lift_stdlib_call(:lists, :reverse, [list, []], ctx, block, env)
+  end
+
+  defp lift_stdlib_call(:lists, :reverse, [_, _] = args, ctx, block, env) do
+    {values, env} = lift_operands_boxed(args, ctx, block, env)
+    [list, tail] = values
+
+    value =
+      lift_lists_reverse(
+        list,
+        tail,
+        ctx,
+        block,
+        env[:__budget__],
+        env[:__batch_size__]
+      )
+
+    mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
+  end
+
   defp lift_stdlib_call(Map, :put, args, ctx, block, env) do
     {values, env} =
       Enum.map_reduce(args, env, fn arg, env ->
@@ -4501,6 +4544,252 @@ defmodule Batata.Lift do
 
   # Lowering for `:native_term` registry entries: operands arrive boxed as
   # `!ex.dyn` words, results are either scalar i64 or `!ex.dyn`.
+  defp lift_lists_keyfind(key, position, list, ctx, block, budget, batch_size) do
+    i64 = integer_type(ctx)
+    integer? = create_op("ex.is_integer", [position], [i64], ctx, block)
+    position_int = create_op("ex.to_int", [position], [i64], ctx, block)
+    positive? = cmp(position_int, lit(0, ctx, block), "sgt", ctx, block)
+    valid = create_op("arith.andi", [integer?, positive?], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          false_word = atom_term(false, ctx, b)
+
+          [
+            emit_lists_loop(
+              :keyfind,
+              list,
+              false_word,
+              {key, position_int},
+              ctx,
+              b,
+              budget,
+              batch_size
+            )
+          ]
+        end,
+        fn b ->
+          [raise_argument_error("invalid :lists.keyfind/3 arguments", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp lift_lists_reverse(list, tail, ctx, block, budget, batch_size) do
+    result = emit_lists_loop(:reverse, list, tail, nil, ctx, block, budget, batch_size)
+    create_op("ex.to_word", [result], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp emit_lists_loop(kind, list, initial_acc, match, ctx, block, budget, batch_size) do
+    i64 = integer_type(ctx)
+
+    fresh_init = fn b ->
+      {
+        create_op("ex.unbox", [list], [i64], ctx, b),
+        create_op("ex.unbox", [initial_acc], [i64], ctx, b),
+        lit(0, ctx, b)
+      }
+    end
+
+    # The tick lives in the while's before region. Start one step past the
+    # requested batch so a fresh/resumed slice executes `batch_size` body
+    # iterations before the next preemption check; initializing directly at
+    # `batch_size` would make a budget of one yield without any progress.
+    state_batch_size = if budget == nil, do: batch_size, else: batch_size + 1
+    state = resumable_loop_state(block, ctx, budget, fresh_init, state_batch_size)
+    state_count = if budget == nil, do: 3, else: 4
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), state_count)
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+    before_args = before_block |> Walker.arguments() |> Enum.to_list()
+    [b_current, b_acc, b_cursor | countdown] = before_args
+
+    current_word = create_op("ex.to_word", [b_current], [ex_type("dyn", ctx)], ctx, before_block)
+    nil_word = atom_term(nil, ctx, before_block)
+    false_word = atom_term(false, ctx, before_block)
+    is_list = create_op("ex.is_list", [current_word], [i64], ctx, before_block)
+    is_nil = create_op("ex.term_eq", [current_word, nil_word], [i64], ctx, before_block)
+    not_nil = cmp(is_nil, lit(0, ctx, before_block), "eq", ctx, before_block)
+    has_cons = create_op("arith.andi", [is_list, not_nil], [i64], ctx, before_block)
+
+    loop_cond =
+      case kind do
+        :keyfind ->
+          acc_word = create_op("ex.to_word", [b_acc], [ex_type("dyn", ctx)], ctx, before_block)
+          not_found = create_op("ex.term_eq", [acc_word, false_word], [i64], ctx, before_block)
+          create_op("arith.andi", [has_cons, not_found], [i64], ctx, before_block)
+
+        :reverse ->
+          has_cons
+      end
+
+    cond_i1 = create_op("arith.trunci", [loop_cond], [MLIR.Type.i1()], ctx, before_block)
+
+    {condition, condition_args} =
+      case countdown do
+        [] ->
+          {cond_i1, before_args}
+
+        [b_countdown] ->
+          {budget_cond, next_countdown} =
+            inject_reduction_tick(
+              before_block,
+              ctx,
+              cond_i1,
+              budget,
+              {b_current, b_acc, b_cursor, b_countdown},
+              false,
+              batch_size
+            )
+
+          {budget_cond, [b_current, b_acc, b_cursor, next_countdown]}
+      end
+
+    create_op("scf.condition", [condition | condition_args], [], ctx, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+    after_args = after_block |> Walker.arguments() |> Enum.to_list()
+    [a_current, a_acc, a_cursor | a_countdown] = after_args
+    a_word = create_op("ex.to_word", [a_current], [ex_type("dyn", ctx)], ctx, after_block)
+    head = create_op("ex.list_head", [a_word], [ex_type("dyn", ctx)], ctx, after_block)
+    tail = create_op("ex.list_tail", [a_word], [ex_type("dyn", ctx)], ctx, after_block)
+    next_current = create_op("ex.unbox", [tail], [i64], ctx, after_block)
+
+    next_acc =
+      case kind do
+        :keyfind ->
+          {key, position} = match
+          keyfind_accumulator(head, a_acc, key, position, ctx, after_block)
+
+        :reverse ->
+          reverse_accumulator(head, a_acc, ctx, after_block)
+      end
+
+    next_cursor =
+      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op(
+      "scf.yield",
+      [next_current, next_acc, next_cursor | a_countdown],
+      [],
+      ctx,
+      after_block
+    )
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: Tuple.to_list(state),
+        results: List.duplicate(i64, state_count),
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    [final_current, final_acc | _] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    finalize_lists_loop(kind, final_current, final_acc, ctx, block, budget)
+  end
+
+  defp keyfind_accumulator(tuple, acc, key, position, ctx, block) do
+    i64 = integer_type(ctx)
+    tuple? = create_op("ex.is_tuple", [tuple], [i64], ctx, block)
+    tuple_length = create_op("ex.tuple_length", [tuple], [i64], ctx, block)
+    enough = cmp(tuple_length, position, "sge", ctx, block)
+    index = create_op("ex.sub", [position, lit(1, ctx, block)], [i64], ctx, block)
+    candidate = create_op("ex.tuple_get", [tuple, index], [ex_type("dyn", ctx)], ctx, block)
+    equal = create_op("ex.term_eq_loose", [candidate, key], [i64], ctx, block)
+    tuple_and_size = create_op("arith.andi", [tuple?, enough], [i64], ctx, block)
+    matched = create_op("arith.andi", [tuple_and_size, equal], [i64], ctx, block)
+    matched_i1 = create_op("arith.trunci", [matched], [MLIR.Type.i1()], ctx, block)
+    tuple_i64 = create_op("ex.unbox", [tuple], [i64], ctx, block)
+    create_op("arith.select", [matched_i1, tuple_i64, acc], [i64], ctx, block)
+  end
+
+  defp reverse_accumulator(head, acc, ctx, block) do
+    acc_word = create_op("ex.to_word", [acc], [ex_type("dyn", ctx)], ctx, block)
+
+    create_op("ex.list_cons", [head, acc_word], [ex_type("dyn", ctx)], ctx, block)
+    |> unbox(ctx, block)
+  end
+
+  defp finalize_lists_loop(kind, current, acc, ctx, block, budget) do
+    if budget == nil do
+      finalize_completed_lists_loop(kind, current, acc, ctx, block)
+    else
+      pending = create_op("ex.cont_pending", [], [integer_type(ctx)], ctx, block)
+      pending_i1 = create_op("arith.trunci", [pending], [MLIR.Type.i1()], ctx, block)
+
+      build_scf_if(pending_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
+        [finalize_completed_lists_loop(kind, current, acc, ctx, b)]
+      end)
+      |> hd()
+    end
+  end
+
+  defp finalize_completed_lists_loop(kind, current, acc, ctx, block) do
+    current_word = create_op("ex.to_word", [current], [ex_type("dyn", ctx)], ctx, block)
+    nil_word = atom_term(nil, ctx, block)
+    proper = create_op("ex.term_eq", [current_word, nil_word], [integer_type(ctx)], ctx, block)
+    proper_i1 = create_op("arith.trunci", [proper], [MLIR.Type.i1()], ctx, block)
+
+    case kind do
+      :reverse ->
+        build_scf_if(proper_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
+          [raise_argument_error("invalid :lists.reverse/2 list", ctx, b) |> unbox(ctx, b)]
+        end)
+        |> hd()
+
+      :keyfind ->
+        acc_word = create_op("ex.to_word", [acc], [ex_type("dyn", ctx)], ctx, block)
+        false_word = atom_term(false, ctx, block)
+        false_i64 = create_op("ex.unbox", [false_word], [integer_type(ctx)], ctx, block)
+
+        not_found =
+          create_op("ex.term_eq", [acc_word, false_word], [integer_type(ctx)], ctx, block)
+
+        found = cmp(not_found, lit(0, ctx, block), "eq", ctx, block)
+        found_i1 = create_op("arith.trunci", [found], [MLIR.Type.i1()], ctx, block)
+
+        build_scf_if(found_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
+          build_scf_if(
+            proper_i1,
+            ctx,
+            b,
+            [integer_type(ctx)],
+            fn _ -> [false_i64] end,
+            fn eb ->
+              [raise_argument_error("invalid :lists.keyfind/3 list", ctx, eb) |> unbox(ctx, eb)]
+            end
+          )
+        end)
+        |> hd()
+    end
+  end
+
+  defp raise_argument_error(message, ctx, block) do
+    bytes =
+      message
+      |> :binary.bin_to_list()
+      |> Enum.map(fn byte -> box_term(lit(byte, ctx, block), ctx, block) end)
+
+    reason = create_term_op("ex.binary", bytes, ctx, block)
+    create_op("ex.raise", [reason, lit(6, ctx, block)], [ex_type("dyn", ctx)], ctx, block)
+  end
+
   defp native_term_call(module, :length, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block)
 

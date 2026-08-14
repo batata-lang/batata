@@ -64,7 +64,10 @@ defmodule Batata.Stdlib.List do
   """
 
   @class_map %{
-    {List, :first, 1} => :native_term
+    {List, :first, 1} => :native_term,
+    {:lists, :keyfind, 3} => :native_term,
+    {:lists, :reverse, 1} => :native_term,
+    {:lists, :reverse, 2} => :native_term
   }
 
   @doc "Returns list-domain stdlib replacement declarations."
@@ -314,7 +317,10 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 1},
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
-                  {String, :printable?, 1}
+                  {String, :printable?, 1},
+                  {:lists, :keyfind, 3},
+                  {:lists, :reverse, 1},
+                  {:lists, :reverse, 2}
                 ])
 
   @impure_mfas MapSet.new([
@@ -363,12 +369,17 @@ defmodule Batata.Stdlib do
                      {Base, :decode16, 1},
                      {Integer, :to_string, 1},
                      {Enum, :map, 2},
-                     {Enum, :to_list, 1}
+                     {Enum, :to_list, 1},
+                     {:lists, :reverse, 1},
+                     {:lists, :reverse, 2}
                    ])
 
   @resumable_mfas MapSet.new([
                     {Enum, :map, 2},
-                    {Enum, :reduce, 3}
+                    {Enum, :reduce, 3},
+                    {:lists, :keyfind, 3},
+                    {:lists, :reverse, 1},
+                    {:lists, :reverse, 2}
                   ])
 
   @blocking_mfas MapSet.new([
@@ -384,7 +395,10 @@ defmodule Batata.Stdlib do
                       {MapSet, :new, 1},
                       {HashSet, :new, 1},
                       {Stream, :take, 2},
-                      {Stream, :drop, 2}
+                      {Stream, :drop, 2},
+                      {:lists, :keyfind, 3},
+                      {:lists, :reverse, 1},
+                      {:lists, :reverse, 2}
                     ])
 
   @doc """

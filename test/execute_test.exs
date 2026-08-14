@@ -1799,6 +1799,65 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "executes :lists.keyfind/3 and :lists.reverse/1,2 with BEAM semantics", %{ctx: ctx} do
+    source = """
+    defmodule ListsOracle do
+      def main() do
+        {
+          :lists.keyfind(1, 1, [{1.0, :float}, :skip]),
+          :lists.keyfind(nil, 2, [{:short}, {:ok, nil}]),
+          :lists.keyfind(:missing, 1, [{:ok, 1}]),
+          :lists.reverse([1, 2, 3]),
+          :lists.reverse([1, 2, 3], []),
+          :erlang.tl(:erlang.tl(:lists.reverse([1, 2], :tail)))
+        }
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nListsOracle.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "raises ArgumentError for invalid :lists arguments", %{ctx: ctx} do
+    for expression <- [
+          ":lists.keyfind(:key, 0, [])",
+          ":lists.keyfind(:key, 1, :not_a_list)",
+          ":lists.keyfind(:key, 1, [{:ok, 1} | :tail])",
+          ":lists.reverse([1 | :tail], [])"
+        ] do
+      assert_raise ArgumentError, fn ->
+        Batata.execute(
+          """
+          defmodule InvalidLists do
+            def main(), do: #{expression}
+          end
+          """,
+          ctx
+        )
+      end
+    end
+  end
+
+  test "resumes budgeted :lists traversal without misclassifying a live cons", %{ctx: ctx} do
+    keyfind_source = """
+    defmodule BudgetedKeyfind do
+      def main(), do: :lists.keyfind(5, 1, [{1, :a}, {2, :b}, {3, :c}, {4, :d}, {5, :e}])
+    end
+    """
+
+    reverse_source = """
+    defmodule BudgetedReverse do
+      def main(), do: :lists.reverse([1, 2, 3, 4, 5], [])
+    end
+    """
+
+    for budget <- [1, 2] do
+      assert Batata.execute(keyfind_source, ctx, reduction_budget: budget) == {5, :e}
+      assert Batata.execute(reverse_source, ctx, reduction_budget: budget) == [5, 4, 3, 2, 1]
+    end
+  end
+
   test "preserves trailing arguments in multi-clause FunctionClauseError", %{ctx: ctx} do
     error =
       assert_raise FunctionClauseError, fn ->
