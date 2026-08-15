@@ -4898,6 +4898,110 @@ fn test_binary_from_string(s: []const u8) i64 {
     return ex_term_binary_from_list(list);
 }
 
+fn test_pattern_byte(index: usize) u8 {
+    return @intCast((index * 131 + 255) % 256);
+}
+
+fn test_pattern_byte_list(len: usize) i64 {
+    var list = nil_word;
+    var i = len;
+    while (i > 0) {
+        i -= 1;
+        list = ex_term_list_cons(
+            @as(i64, test_pattern_byte(i)) << @intCast(tag_shift),
+            list,
+        );
+    }
+    return list;
+}
+
+test "binary and list conversions preserve boundary sizes and high bytes" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const sizes = [_]usize{
+        0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1024, 4096, 65536,
+    };
+
+    for (sizes) |len| {
+        const list = test_pattern_byte_list(len);
+        const binary = ex_term_binary_from_list(list);
+        try std.testing.expectEqual(@as(i64, @intCast(len)), ex_term_binary_length(binary));
+
+        const materialized = ex_term_enumerable_to_list(binary);
+        try std.testing.expectEqual(@as(i64, @intCast(len)), ex_term_list_length(materialized));
+        try std.testing.expectEqual(@as(i64, 1), ex_term_eq(list, materialized));
+        try std.testing.expectEqual(
+            @as(i64, 1),
+            ex_term_eq(binary, ex_term_binary_from_list(materialized)),
+        );
+
+        const full_slice = ex_term_binary_slice(binary, 0);
+        try std.testing.expectEqual(@as(i64, 1), ex_term_eq(binary, full_slice));
+        const empty_slice = ex_term_binary_slice(binary, @intCast(len));
+        try std.testing.expectEqual(@as(i64, 0), ex_term_binary_length(empty_slice));
+
+        if (len > 0) {
+            const last_index: i64 = @intCast(len - 1);
+            try std.testing.expectEqual(
+                @as(i64, test_pattern_byte(0)) << @intCast(tag_shift),
+                ex_term_binary_get(binary, 0),
+            );
+            try std.testing.expectEqual(
+                @as(i64, test_pattern_byte(len - 1)) << @intCast(tag_shift),
+                ex_term_binary_get(binary, last_index),
+            );
+
+            const midpoint: i64 = @intCast(len / 2);
+            const suffix = ex_term_binary_slice(binary, midpoint);
+            try std.testing.expectEqual(
+                @as(i64, @intCast(len - len / 2)),
+                ex_term_binary_length(suffix),
+            );
+            try std.testing.expectEqual(
+                ex_term_binary_get(binary, midpoint),
+                ex_term_binary_get(suffix, 0),
+            );
+        }
+    }
+}
+
+test "iodata conversion preserves bounded nesting and binary improper tails" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    var nested = test_binary_from_string("tail");
+    var depth: usize = 0;
+    while (depth < 8) : (depth += 1) {
+        nested = ex_term_list_cons(
+            @as(i64, 'a' + @as(u8, @intCast(depth))) << @intCast(tag_shift),
+            ex_term_list_cons(nested, nil_word),
+        );
+    }
+
+    const flattened = ex_term_iodata_to_binary(nested);
+    try std.testing.expectEqual(@as(i64, 12), ex_term_binary_length(flattened));
+    try std.testing.expectEqual(@as(i64, 'h' << 3), ex_term_binary_get(flattened, 0));
+    try std.testing.expectEqual(@as(i64, 't' << 3), ex_term_binary_get(flattened, 8));
+
+    const improper = ex_term_list_cons(
+        @as(i64, 0) << @intCast(tag_shift),
+        test_binary_from_string("\x01\x7F\x80\xFF"),
+    );
+    const improper_flattened = ex_term_iodata_to_binary(improper);
+    try std.testing.expectEqual(@as(i64, 5), ex_term_binary_length(improper_flattened));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_binary_get(improper_flattened, 0));
+    try std.testing.expectEqual(@as(i64, 255 << 3), ex_term_binary_get(improper_flattened, 4));
+}
+
 test "string printable follows Elixir UTF-8 and control character boundaries" {
     const handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
