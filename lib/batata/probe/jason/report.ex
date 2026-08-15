@@ -19,6 +19,11 @@ defmodule Batata.Probe.Jason.Report do
 
   @schema_version 6
   @coverage_claim "eligible-module compile attempts; no per-definition coverage"
+  @harness_contract %{
+    "scope" => "target-module-body",
+    "original_forms" => true,
+    "harness" => "synthetic non-executing main/0 appended iff missing"
+  }
   @scope_limits [
     "top-level forms only",
     "macro calls inside definition bodies are not attributed",
@@ -57,6 +62,7 @@ defmodule Batata.Probe.Jason.Report do
         "otp" => System.otp_release()
       },
       "coverage_claim" => @coverage_claim,
+      "harness_contract" => @harness_contract,
       "scope_limits" => @scope_limits,
       "stages" => @known_stages,
       "summary" =>

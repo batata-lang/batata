@@ -53,6 +53,7 @@ defmodule Batata.Probe.Jason.Inventory do
           required(:definitions) => [map()],
           required(:unsupported) => [unsupported()],
           required(:dependency_forms) => [Macro.t()],
+          required(:compile_harness) => map(),
           required(:diagnostic_source) => String.t() | nil,
           required(:compile_source) => String.t() | nil
         }
@@ -146,6 +147,7 @@ defmodule Batata.Probe.Jason.Inventory do
       unsupported: unsupported,
       dependency_forms: dependency_forms(expanded_forms),
       diagnostic_source: diagnostic_source(module_name, expanded_forms, unsupported),
+      compile_harness: harness_details(expanded_forms),
       compile_source: compile_source(module_name, expanded_forms, unsupported)
     }
 
@@ -205,12 +207,21 @@ defmodule Batata.Probe.Jason.Inventory do
 
   defp compile_source(module_name, body_forms, unsupported) do
     if Enum.all?(unsupported, &(&1.reason == :ignored_metadata)) do
-      definitions = Enum.filter(body_forms, &simple_definition?/1)
-      definitions = ensure_main(definitions)
-
-      {:defmodule, [], [module_name, [do: {:__block__, [], definitions}]]}
-      |> Macro.to_string()
+      module_source(module_name, ensure_main(body_forms))
     end
+  end
+
+  defp module_source(module_name, body_forms) do
+    {:defmodule, [], [module_name, [do: {:__block__, [], body_forms}]]}
+    |> Macro.to_string()
+  end
+
+  defp harness_details(body_forms) do
+    %{
+      original_forms: true,
+      scope: "target-module-body",
+      synthetic_main: not Enum.any?(body_forms, &main_definition?/1)
+    }
   end
 
   defp diagnostic_source(module_name, body_forms, unsupported) do
