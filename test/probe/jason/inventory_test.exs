@@ -50,6 +50,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert outer.definitions == [
              %{kind: :def, name: :guarded, arity: 1, clauses: 1},
              %{kind: :def, name: :at_end, arity: 2, clauses: 1},
+             %{kind: :def, name: :unsupported, arity: 1, clauses: 1},
              %{kind: :def, name: :plain, arity: 1, clauses: 1}
            ]
 
@@ -71,7 +72,6 @@ defmodule Batata.Probe.Jason.InventoryTest do
              :macro_definition,
              :module_level_generation,
              :module_level_generation,
-             :guarded_definition,
              :nested_defmodule
            ]
 
@@ -233,6 +233,33 @@ defmodule Batata.Probe.Jason.InventoryTest do
 
     assert %{"status" => "pass"} =
              CompileAttempt.run_source("schemas.ex", accepted.module, accepted.compile_source)
+  end
+
+  test "requires complete canonical evidence for guarded-definition eligibility" do
+    supported = %{
+      reason: :guarded_definition,
+      frontend_reason: :accepted_as_definition,
+      form_ast: Code.string_to_quoted!("def new(encode) when is_function(encode, 1), do: encode")
+    }
+
+    assert Inventory.supported_guarded_definition?(supported)
+    refute Inventory.supported_guarded_definition?(%{supported | reason: :unknown_form})
+
+    refute Inventory.supported_guarded_definition?(%{
+             supported
+             | frontend_reason: :guarded_definition
+           })
+
+    refute Inventory.supported_guarded_definition?(%{
+             supported
+             | form_ast: Code.string_to_quoted!("def new(encode), do: encode")
+           })
+
+    refute Inventory.supported_guarded_definition?(%{
+             supported
+             | form_ast:
+                 Code.string_to_quoted!("def new(encode) when is_function(encode, 5), do: encode")
+           })
   end
 
   test "requires complete canonical evidence for probe schema eligibility" do

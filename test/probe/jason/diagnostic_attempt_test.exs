@@ -43,7 +43,7 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     File.write!(Path.join(tmp_dir, "fragment.ex"), """
     defmodule Fixture.Fragment do
       defstruct [:value]
-      def value(%__MODULE__{value: value}) when is_function(value, 1), do: value
+      def value(%__MODULE__{value: value}) when is_function(value, 5), do: value
     end
     """)
 

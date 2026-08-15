@@ -98,6 +98,16 @@ ignored as compile metadata, which moved the pinned Jason inventory from 73 to
 72 blockers and from 76 to 77 ignored metadata entries before the exception
 schema blockers were resolved.
 
+Arity-carrying module-local closures now give `is_function/1,2` an executable
+JIT gate while preserving the legacy closure layout. Probe eligibility remains
+separate from compiler acceptance and requires canonical guarded-definition
+evidence. This resolves the guarded forms in `Jason.Decoder` and
+`Jason.Fragment`, moving the pinned baseline from 68 to 66 blockers and from
+239 to 241 accepted source definitions. `Jason.Decoder` remains blocked by
+other module forms. `Jason.Fragment` now becomes the third target-module-body
+compile pass; this is non-executing compile evidence and does not claim that a
+host-supplied encoder closure can cross the runtime boundary.
+
 String interpolation now executes for integer, binary, and compile-known atom
 terms. Binary reads execute for valid binaries with in-range integer indexes;
 binary concatenation executes for binary operands and fails closed outside
@@ -131,9 +141,10 @@ module-local anonymous function from which Batata could build `__fn_dispatch`.
 Modules that pass locally-created closures through helper parameters retain
 their executable dispatch path. The host and AOT ABIs do not promise support
 for externally supplied closure terms. `Jason.OrderedObject` is therefore not
-a module pass or evidence for a Beaver runtime change. `Jason.Fragment`
-retains its guarded-definition blocker and does not enter a compile attempt.
-Cross-module schemas and complete exception semantics remain outside the claim.
+a module pass. `Jason.Fragment` passing does not change that conclusion:
+`OrderedObject` still applies a closure whose provenance is external to its
+target module. Cross-module schemas, external closure provenance, and complete
+exception semantics remain outside the claim.
 
 The next measured struct frontier is therefore no longer constructor, pattern,
 or generic map-update syntax. Decimal's full modules remain blocked earlier by
