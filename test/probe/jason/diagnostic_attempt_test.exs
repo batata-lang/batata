@@ -20,7 +20,7 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
   end
 
   @tag :tmp_dir
-  test "preserves current-module struct schemas in diagnostic attempts", %{tmp_dir: tmp_dir} do
+  test "does not shadow structs accepted by compile eligibility", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "ordered_object.ex"), """
     defmodule Fixture.OrderedObject do
       @behaviour Access
@@ -30,16 +30,12 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     end
     """)
 
-    assert [attempt] = tmp_dir |> Inventory.discover!() |> DiagnosticAttempt.run()
-    assert attempt["module"] == "Fixture.OrderedObject"
-    assert attempt["diagnostic_only"]
-    assert attempt["outcome"] == "reached_compile_pipeline"
-    assert attempt["phase"] == "lowering_complete"
-    assert [%{"reason" => "struct_semantics"}] = attempt["removed_blockers"]
+    assert [] = tmp_dir |> Inventory.discover!() |> DiagnosticAttempt.run()
 
     [module] = tmp_dir |> Inventory.discover!() |> hd() |> Map.fetch!(:modules)
-    assert module.diagnostic_source =~ "defstruct values: []"
-    refute module.diagnostic_source =~ "@behaviour"
+    assert module.compile_source =~ "defstruct values: []"
+    assert module.compile_source =~ "@behaviour Access"
+    assert module.unsupported |> Enum.map(& &1.reason) == [:ignored_metadata]
   end
 
   @tag :tmp_dir
@@ -53,10 +49,7 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
 
     assert [module] = tmp_dir |> Inventory.discover!() |> hd() |> Map.fetch!(:modules)
 
-    assert Enum.map(module.unsupported, & &1.reason) == [
-             :struct_semantics,
-             :guarded_definition
-           ]
+    assert Enum.map(module.unsupported, & &1.reason) == [:guarded_definition]
 
     assert module.diagnostic_source == nil
   end

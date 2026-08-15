@@ -72,4 +72,21 @@ defmodule Batata.Probe.Jason.DependencyFrontierTest do
              }
            ]
   end
+
+  @tag :tmp_dir
+  test "uses accepted current-module struct schemas for source eligibility", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "struct.ex"), """
+    defmodule StructCaller do
+      defstruct [:value]
+      def render(%__MODULE__{value: value}), do: Kernel.to_string(value)
+    end
+    """)
+
+    assert [call] = tmp_dir |> Inventory.discover!() |> DependencyFrontier.collect()
+    assert call["module"] == "StructCaller"
+    assert call["target"] == "Kernel"
+    assert call["function"] == "to_string"
+    assert call["source_eligibility"] == "compile_eligible"
+    assert call["blocker_categories"] == %{}
+  end
 end

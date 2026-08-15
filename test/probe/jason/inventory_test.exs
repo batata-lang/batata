@@ -194,7 +194,7 @@ defmodule Batata.Probe.Jason.InventoryTest do
   end
 
   @tag :tmp_dir
-  test "accepts only canonically normalized current-module exception schemas", %{tmp_dir: tmp_dir} do
+  test "accepts only canonically normalized current-module schemas", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "schemas.ex"), """
     defmodule AcceptedError do
       @moduledoc false
@@ -219,8 +219,8 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert [%{modules: [accepted, struct, invalid, duplicate]}] = Inventory.discover!(tmp_dir)
     assert accepted.unsupported |> Enum.map(& &1.reason) == [:ignored_metadata]
     assert accepted.compile_source =~ "defexception [:message]"
-    assert struct.unsupported |> Enum.map(& &1.reason) == [:struct_semantics]
-    assert struct.compile_source == nil
+    assert struct.unsupported == []
+    assert struct.compile_source =~ "defstruct [:value]"
     assert invalid.unsupported |> Enum.map(& &1.frontend_reason) == [:invalid_struct_schema]
     assert invalid.compile_source == nil
 

@@ -146,6 +146,12 @@ defmodule Batata.Probe.Jason.Inventory do
             source_snapshot,
             module_name,
             :exception
+          ) or
+          supported_current_module_schema?(
+            unsupported,
+            source_snapshot,
+            module_name,
+            :struct
           )
       end)
 
