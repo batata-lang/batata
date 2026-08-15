@@ -6666,7 +6666,7 @@ defmodule Batata.Lift do
     clause_args = if guard, do: [guard], else: []
     create_op("ex.clause", clause_args ++ clause_attrs, [], ctx, block)
 
-    {value, clause_env} = lift_block(List.wrap(clause.body), ctx, block, clause_env)
+    {value, clause_env} = lift_block(block_ast(clause.body), ctx, block, clause_env)
     value = lift_value(value, ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
