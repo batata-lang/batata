@@ -1138,7 +1138,8 @@ defmodule Batata.Lift do
   end
 
   defp block_ast(nil), do: [nil]
-  defp block_ast(ast), do: List.wrap(ast)
+  defp block_ast({:__block__, _, expressions}), do: expressions
+  defp block_ast(ast), do: [ast]
 
   defp uses_mailbox?(ast) do
     ast
