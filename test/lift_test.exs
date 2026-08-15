@@ -110,6 +110,41 @@ defmodule Batata.LiftTest do
     assert result_create < runtime_leave
   end
 
+  test "preserves the signed 61-bit integer literal boundaries", %{ctx: ctx} do
+    max = 1_152_921_504_606_846_975
+    min = -1_152_921_504_606_846_976
+
+    assert Batata.execute(integer_source("#{max}"), ctx) == max
+    assert Batata.execute(integer_source("[#{max}]"), ctx) == [max]
+    assert Batata.execute(integer_source("Integer.to_string(#{max})"), ctx) == to_string(max)
+
+    assert Batata.execute(integer_source("#{min}"), ctx) == min
+    assert Batata.execute(integer_source("[#{min}]"), ctx) == [min]
+    assert Batata.execute(integer_source("Integer.to_string(#{min})"), ctx) == to_string(min)
+    assert Batata.execute(integer_source("[0 - 1_152_921_504_606_846_976]"), ctx) == [min]
+  end
+
+  test "rejects integer literals outside the signed 61-bit term domain", %{ctx: ctx} do
+    for literal <- [
+          "1_152_921_504_606_846_976",
+          "-1_152_921_504_606_846_977",
+          "10_000_000_000_000_000_000",
+          "-9_223_372_036_854_775_808"
+        ] do
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          Batata.compile(integer_source("[#{literal}]"), ctx)
+        end
+
+      assert error.message =~ ~r/outside the signed (61-bit term|64-bit scalar) domain/
+    end
+  end
+
+  test "keeps the full i64 scalar path for packed runtime representations", %{ctx: ctx} do
+    packed = 6_311_074_175_999_999_996
+    assert Batata.execute(integer_source("#{packed}"), ctx) == packed
+  end
+
   test "lifts tuple and list literals plus predicates into ex IR", %{ctx: ctx} do
     module =
       lift!(
@@ -640,6 +675,14 @@ defmodule Batata.LiftTest do
     rendered = MLIR.to_string(module, generic: true)
     assert rendered =~ "__fn_"
     assert rendered =~ "__fn_dispatch"
+  end
+
+  defp integer_source(expression) do
+    """
+    defmodule IntegerLiteralBoundary do
+      def main(), do: #{expression}
+    end
+    """
   end
 
   defp first_index(string, pattern) do

@@ -91,6 +91,17 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
     assert details["reason_class"] == "multi_clause_trailing_literal_pattern"
   end
 
+  test "classifies integer literals outside the tagged term domain" do
+    details =
+      CompileAttempt.failure_details(%Batata.Lift.Error{
+        message:
+          "integer literal 1152921504606846976 is outside the signed 61-bit term domain " <>
+            "(-1152921504606846976..1152921504606846975)"
+      })
+
+    assert details["reason_class"] == "oversized_integer_literal"
+  end
+
   test "classifies unresolved calls reported by standard lowering passes" do
     short_circuit_and =
       CompileAttempt.failure_details(%Batata.Lower.Error{
