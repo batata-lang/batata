@@ -4484,6 +4484,25 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_stdlib_call(Time, :new, [hour, minute, second], ctx, block, env) do
+    lift_time_new(hour, minute, second, 0, 0, ctx, block, env)
+  end
+
+  defp lift_stdlib_call(
+         Time,
+         :new,
+         [hour, minute, second, {microsecond, precision}],
+         ctx,
+         block,
+         env
+       ) do
+    lift_time_new(hour, minute, second, microsecond, precision, ctx, block, env)
+  end
+
+  defp lift_stdlib_call(Time, :new, _args, _ctx, _block, _env) do
+    raise Error, "Time.new requires valid integer literal arguments in this slice"
+  end
+
   defp lift_stdlib_call(Date, :to_iso8601, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = lift_value(value, ctx, block, env)
@@ -4511,6 +4530,46 @@ defmodule Batata.Lift do
         fn b -> [lower_date_to_iso8601(days, ctx, b) |> unbox(ctx, b)] end,
         fn b ->
           [raise_argument_error("invalid Date.to_iso8601/1 date", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    {create_op("ex.to_word", [result_word], [ex_type("dyn", ctx)], ctx, block), env}
+  end
+
+  defp lift_stdlib_call(Time, :to_iso8601, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = lift_value(value, ctx, block, env)
+
+    {packed, integer?} =
+      if term_operand?(value) do
+        {create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block),
+         create_op("ex.is_integer", [value], [integer_type(ctx)], ctx, block)}
+      else
+        {value, lit(1, ctx, block)}
+      end
+
+    precision = date_rem(packed, 10, ctx, block)
+    lower = cmp(packed, 0, "sge", ctx, block)
+    upper = cmp(packed, 863_999_999_996, "sle", ctx, block)
+    precision_valid = cmp(precision, 6, "sle", ctx, block)
+    in_range = create_op("arith.andi", [lower, upper], [integer_type(ctx)], ctx, block)
+
+    valid_shape =
+      create_op("arith.andi", [in_range, precision_valid], [integer_type(ctx)], ctx, block)
+
+    valid = create_op("arith.andi", [integer?, valid_shape], [integer_type(ctx)], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result_word =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b -> [lower_time_to_iso8601(packed, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          [raise_argument_error("invalid Time.to_iso8601/1 time", ctx, b) |> unbox(ctx, b)]
         end
       )
       |> hd()
@@ -4880,6 +4939,79 @@ defmodule Batata.Lift do
       ctx,
       block
     )
+  end
+
+  # Times use a closed scalar representation in this slice:
+  # `((seconds_of_day * 1_000_000 + microsecond) * 10 + precision)`.
+  # It preserves the six stored microsecond digits and the independently
+  # meaningful display precision without requiring a host `%Time{}` term.
+  defp lift_time_new(hour, minute, second, microsecond, precision, ctx, block, env) do
+    values = [hour, minute, second, microsecond, precision]
+
+    if Enum.all?(values, &is_integer/1) and hour in 0..23 and minute in 0..59 and
+         second in 0..59 and microsecond in 0..999_999 and precision in 0..6 do
+      seconds = hour * 3_600 + minute * 60 + second
+      packed = (seconds * 1_000_000 + microsecond) * 10 + precision
+      {lit(packed, ctx, block), env}
+    else
+      raise Error, "Time.new requires valid integer literal arguments in this slice"
+    end
+  end
+
+  defp lower_time_to_iso8601(packed, ctx, block) do
+    precision = date_rem(packed, 10, ctx, block)
+    payload = date_div(packed, 10, ctx, block)
+    microsecond = date_rem(payload, 1_000_000, ctx, block)
+    seconds = date_div(payload, 1_000_000, ctx, block)
+    hour = date_div(seconds, 3_600, ctx, block)
+    minute = seconds |> date_div(60, ctx, block) |> date_rem(60, ctx, block)
+    second = date_rem(seconds, 60, ctx, block)
+
+    base_bytes =
+      two_digits(hour, ctx, block) ++
+        [lit(?:, ctx, block)] ++
+        two_digits(minute, ctx, block) ++
+        [lit(?:, ctx, block)] ++ two_digits(second, ctx, block)
+
+    fraction_digits = six_digits(microsecond, ctx, block)
+    word = lower_time_precision(precision, base_bytes, fraction_digits, 6, ctx, block)
+    create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp six_digits(value, ctx, block) do
+    [
+      date_div(value, 100_000, ctx, block),
+      value |> date_div(10_000, ctx, block) |> date_rem(10, ctx, block),
+      value |> date_div(1_000, ctx, block) |> date_rem(10, ctx, block),
+      value |> date_div(100, ctx, block) |> date_rem(10, ctx, block),
+      value |> date_div(10, ctx, block) |> date_rem(10, ctx, block),
+      date_rem(value, 10, ctx, block)
+    ]
+    |> Enum.map(&date_digit(&1, ctx, block))
+  end
+
+  defp lower_time_precision(_precision, base_bytes, _fraction_digits, 0, ctx, block) do
+    date_binary(base_bytes, ctx, block) |> unbox(ctx, block)
+  end
+
+  defp lower_time_precision(precision, base_bytes, fraction_digits, digits, ctx, block) do
+    matches = cmp(precision, digits, "eq", ctx, block)
+    matches_i1 = create_op("arith.trunci", [matches], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      matches_i1,
+      ctx,
+      block,
+      [integer_type(ctx)],
+      fn b ->
+        bytes = base_bytes ++ [lit(?., ctx, b)] ++ Enum.take(fraction_digits, digits)
+        [date_binary(bytes, ctx, b) |> unbox(ctx, b)]
+      end,
+      fn b ->
+        [lower_time_precision(precision, base_bytes, fraction_digits, digits - 1, ctx, b)]
+      end
+    )
+    |> hd()
   end
 
   defp monotonic_time_divisor(:native), do: 1

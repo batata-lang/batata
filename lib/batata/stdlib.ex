@@ -89,6 +89,21 @@ defmodule Batata.Stdlib.Date do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.Time do
+  @moduledoc """
+  Time-domain declarations. Times use a packed integer in the current slice;
+  the registry exposes only operations with a native replacement for that
+  representation.
+  """
+
+  @class_map %{
+    {Time, :to_iso8601, 1} => :native_term
+  }
+
+  @doc "Returns time-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Process do
   @moduledoc """
   Process supervision primitives backed by the native actor runtime.
@@ -320,6 +335,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.File.class_map(),
                Batata.Stdlib.IO.class_map(),
                Batata.Stdlib.String.class_map(),
+               Batata.Stdlib.Time.class_map(),
                Batata.Stdlib.Base.class_map(),
                Batata.Stdlib.Integer.class_map(),
                Batata.Stdlib.Tuple.class_map(),
@@ -334,6 +350,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
                   {Date, :to_iso8601, 1},
+                  {Time, :to_iso8601, 1},
                   {String, :printable?, 1},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
@@ -376,6 +393,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
                      {Date, :to_iso8601, 1},
+                     {Time, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
                      {:erlang, :iolist_to_binary, 1},
                      {HashSet, :new, 1},

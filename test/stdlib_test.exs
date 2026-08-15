@@ -17,6 +17,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:erlang, :iolist_to_binary, 1}) == :native_term
       assert Stdlib.class({:binary, :at, 2}) == :native_term
       assert Stdlib.class({Date, :to_iso8601, 1}) == :native_term
+      assert Stdlib.class({Time, :to_iso8601, 1}) == :native_term
     end
 
     test "classifies declared domain modules" do
@@ -43,6 +44,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Kernel, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
+      assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
     end
@@ -70,6 +72,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Date, :to_iso8601, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({Time, :to_iso8601, 1}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,
