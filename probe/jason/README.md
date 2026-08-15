@@ -66,13 +66,14 @@ regression gate.
 
 Pinned Jason has exactly one accepted candidate: the literal-list `for` at
 `lib/encode.ex:233`. It expands the Date, Time, NaiveDateTime, and DateTime
-clauses and now dispatches their compile-known atom literals. The generated
-Jason body next stops at the unsupported `Date.to_iso8601/1` standard-library
-call, while a smaller Batata-owned module-alias fixture reaches lowering
-completion. This lane still makes no execution claim: the next measured
-capability is the generated body's standard-library surface, not production
-module-level generation. The 72 blockers, their IDs, module attempts, and
-existing diagnostic attempts remain unchanged.
+clauses and now dispatches their compile-known atom literals. Batata's
+`Date.to_iso8601/1` replacement executes the full supported Date range against
+a BEAM oracle, including the generated clause's iodata-shaped body. The
+generated Jason body therefore next stops at the unsupported
+`Time.to_iso8601/1` standard-library call, while a smaller Batata-owned
+module-alias fixture reaches lowering completion. This lane still makes no
+execution claim for module-level generation. The 72 blockers, their IDs,
+module attempts, and existing diagnostic attempts remain unchanged.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and

@@ -290,6 +290,9 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert generation_attempt["phase"] == "frontend_normalization_failure"
     assert generation_attempt["reason_class"] == "unsupported_stdlib_call"
 
+    assert generation_attempt["fingerprint"] ==
+             "aab1a713567f37d45eea252472b68fb0a7ca83120981608c39c942f6b61cef70"
+
     assert Enum.any?(jason["blockers"], &(&1["id"] == generation_attempt["blocker_id"]))
 
     assert decimal["summary"]["generation_attempts"] == %{
