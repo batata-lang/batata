@@ -194,6 +194,36 @@ defmodule Batata.Probe.Jason.InventoryTest do
   end
 
   @tag :tmp_dir
+  test "accepts only canonically normalized current-module exception schemas", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "schemas.ex"), """
+    defmodule AcceptedError do
+      @moduledoc false
+      defexception [:message]
+      def message(%{message: message}), do: message
+    end
+
+    defmodule StructOnly do
+      defstruct [:value]
+    end
+
+    defmodule InvalidError do
+      defexception message: dynamic_default()
+    end
+    """)
+
+    assert [%{modules: [accepted, struct, invalid]}] = Inventory.discover!(tmp_dir)
+    assert accepted.unsupported |> Enum.map(& &1.reason) == [:ignored_metadata]
+    assert accepted.compile_source =~ "defexception [:message]"
+    assert struct.unsupported |> Enum.map(& &1.reason) == [:struct_semantics]
+    assert struct.compile_source == nil
+    assert invalid.unsupported |> Enum.map(& &1.frontend_reason) == [:invalid_struct_schema]
+    assert invalid.compile_source == nil
+
+    assert %{"status" => "pass"} =
+             CompileAttempt.run_source("schemas.ex", accepted.module, accepted.compile_source)
+  end
+
+  @tag :tmp_dir
   test "records parse errors without crashing the whole inventory", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "broken.ex"), "defmodule Broken do")
 

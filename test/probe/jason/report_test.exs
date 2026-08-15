@@ -253,8 +253,8 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal["summary"]["categories"]["alias"] == nil
     assert jason["schema_version"] == 6
     assert decimal["schema_version"] == 6
-    assert jason["summary"]["blockers"] == 72
-    assert decimal["summary"]["blockers"] == 42
+    assert jason["summary"]["blockers"] == 70
+    assert decimal["summary"]["blockers"] == 41
     assert jason["summary"]["ignored_metadata"] == 77
     assert decimal["summary"]["ignored_metadata"] == 106
     assert jason["summary"]["definitions"] == 239
@@ -334,18 +334,18 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert Enum.all?(decimal["blockers"], &generation_evidence?/1)
 
     assert jason["summary"]["dependency_frontier"] == %{
-             "blocked_calls" => 109,
+             "blocked_calls" => 97,
              "calls" => 120,
              "corpus_calls" => 18,
-             "eligible_calls" => 11,
+             "eligible_calls" => 23,
              "targets" => 24
            }
 
     assert decimal["summary"]["dependency_frontier"] == %{
-             "blocked_calls" => 70,
+             "blocked_calls" => 68,
              "calls" => 70,
              "corpus_calls" => 11,
-             "eligible_calls" => 0,
+             "eligible_calls" => 2,
              "targets" => 11
            }
 
@@ -367,24 +367,22 @@ defmodule Batata.Probe.Jason.ReportTest do
                &(&1["status"] == "frontend_normalization_failure")
              )
 
-    assert Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.DecodeError"))[
-             "phase"
-           ] == "lowering_complete"
+    assert Enum.map(
+             Enum.filter(jason["module_compile_attempts"], &(&1["status"] == "pass")),
+             &{&1["path"], &1["module"]}
+           ) == [
+             {"lib/decoder.ex", "Jason.DecodeError"},
+             {"lib/encode.ex", "Jason.EncodeError"}
+           ]
 
-    assert Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.EncodeError"))[
-             "phase"
-           ] == "lowering_complete"
+    assert [%{"path" => "lib/decimal/error.ex", "module" => "Decimal.Error"}] =
+             Enum.map(
+               Enum.filter(decimal["module_compile_attempts"], &(&1["status"] == "pass")),
+               &Map.take(&1, ["path", "module"])
+             )
 
-    refute Map.has_key?(
-             Enum.find(jason["diagnostic_attempts"], &(&1["module"] == "Jason.EncodeError")),
-             "reason_class"
-           )
-
-    assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
-             attempt["module"] == "Jason.DecodeError" and
-               attempt["phase"] == "lowering_complete" and
-               not Map.has_key?(attempt, "reason_class")
-           end)
+    refute Enum.any?(jason["blockers"], &(&1["reason"] == "exception_semantics"))
+    refute Enum.any?(decimal["blockers"], &(&1["reason"] == "exception_semantics"))
 
     assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Jason.OrderedObject" and
@@ -402,13 +400,6 @@ defmodule Batata.Probe.Jason.ReportTest do
                Enum.all?(attempt["removed_blockers"], fn removed ->
                  Enum.any?(jason["blockers"], &(&1["id"] == removed["id"]))
                end)
-           end)
-
-    assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
-             attempt["module"] == "Decimal.Error" and
-               attempt["outcome"] == "reached_compile_pipeline" and
-               attempt["phase"] == "lowering_complete" and
-               not Map.has_key?(attempt, "reason_class")
            end)
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->

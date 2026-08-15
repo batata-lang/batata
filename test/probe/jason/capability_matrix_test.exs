@@ -48,6 +48,11 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["struct.constructor"]["gate"] == "execute_test"
     assert capabilities["struct.constructor"]["scope"] =~ "current-module schemas"
 
+    assert capabilities["exception.schema_compile"]["status"] == "executable"
+    assert capabilities["exception.schema_compile"]["gate"] == "compile_probe"
+    assert capabilities["exception.execution"]["status"] == "blocked"
+    assert capabilities["exception.execution"]["reason"] =~ "raise/rescue"
+
     assert capabilities["guard.byte_size"]["status"] == "executable"
     assert capabilities["guard.byte_size"]["gate"] == "guard_byte_size_test"
     assert capabilities["jason.unmodified"]["owner"] == "frontend"
