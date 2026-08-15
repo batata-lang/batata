@@ -70,13 +70,19 @@ defmodule Batata.Probe.Jason.CompileAttempt do
       "path" => path,
       "module" => module.module,
       "status" => "blocked_by_module_forms",
-      "blocker_categories" => reasons
+      "blocker_categories" => reasons,
+      "harness" => stringify_harness(module.compile_harness)
     }
   end
 
   defp attempt(path, module) do
-    run_source(path, module.module, module.compile_source)
+    path
+    |> run_source(module.module, module.compile_source)
+    |> Map.put("harness", stringify_harness(module.compile_harness))
   end
+
+  defp stringify_harness(harness),
+    do: Map.new(harness, fn {key, value} -> {to_string(key), value} end)
 
   defp compile(source, ctx) do
     {:ok, Batata.compile(source, ctx)}

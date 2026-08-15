@@ -34,6 +34,12 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert first["coverage_claim"] ==
              "eligible-module compile attempts; no per-definition coverage"
 
+    assert first["harness_contract"] == %{
+             "harness" => "synthetic non-executing main/0 appended iff missing",
+             "original_forms" => true,
+             "scope" => "target-module-body"
+           }
+
     assert first["scope_limits"] == [
              "top-level forms only",
              "macro calls inside definition bodies are not attributed",
@@ -89,7 +95,12 @@ defmodule Batata.Probe.Jason.ReportTest do
                "blocker_categories" => %{"import" => 1},
                "module" => "Jason.Decoder",
                "path" => "lib/decoder.ex",
-               "status" => "blocked_by_module_forms"
+               "status" => "blocked_by_module_forms",
+               "harness" => %{
+                 "original_forms" => true,
+                 "scope" => "target-module-body",
+                 "synthetic_main" => true
+               }
              }
            ]
 
