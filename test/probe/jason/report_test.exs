@@ -296,12 +296,29 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert Enum.any?(jason["blockers"], &(&1["id"] == generation_attempt["blocker_id"]))
 
     assert decimal["summary"]["generation_attempts"] == %{
-             "expanded_definitions" => 0,
-             "phases" => %{},
-             "total" => 0
+             "expanded_definitions" => 1,
+             "phases" => %{"frontend_normalization_failure" => 1},
+             "total" => 1
            }
 
-    assert decimal["generation_attempts"] == []
+    assert [decimal_generation_attempt] = decimal["generation_attempts"]
+    assert decimal_generation_attempt["path"] == "lib/decimal.ex"
+    assert decimal_generation_attempt["module"] == "Decimal"
+    assert decimal_generation_attempt["line"] == 2080
+    assert decimal_generation_attempt["generation_root"] == "if/2"
+    assert decimal_generation_attempt["expanded_definition_count"] == 1
+    assert decimal_generation_attempt["outcome"] == "reached_compile_pipeline"
+    assert decimal_generation_attempt["compile_phase"] == "frontend_normalization_failure"
+    assert decimal_generation_attempt["phase"] == "frontend_normalization_failure"
+    assert decimal_generation_attempt["reason_class"] == "unsupported_stdlib_call"
+
+    assert decimal_generation_attempt["fingerprint"] ==
+             "b7635d40399942bf74109565a6f7d273692ff2eb6db0df9d95a6a49b805bdb12"
+
+    assert Enum.any?(
+             decimal["blockers"],
+             &(&1["id"] == decimal_generation_attempt["blocker_id"])
+           )
 
     assert Enum.all?(jason["blockers"], &generation_evidence?/1)
     assert Enum.all?(decimal["blockers"], &generation_evidence?/1)
