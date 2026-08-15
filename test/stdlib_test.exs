@@ -26,6 +26,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({String, :printable?, 1}) == :native_term
+      assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
       assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
       assert Stdlib.class({Process, :link, 1}) == :native_term
@@ -44,6 +45,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Kernel, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
+      assert Stdlib.may_raise?({Integer, :to_charlist, 1})
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
@@ -79,6 +81,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Time, :to_iso8601, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({Integer, :to_charlist, 1}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,
@@ -428,6 +437,46 @@ defmodule Batata.StdlibTest do
       assert 42 == execute("String.to_integer(\"42\")", ctx)
       assert -7 == execute("String.to_integer(\"-7\")", ctx)
       assert 42 == execute("String.to_integer(Integer.to_string(42))", ctx)
+    end
+
+    test "matches Integer.to_charlist/1 across the tagged integer domain", %{ctx: ctx} do
+      expressions = [
+        "Integer.to_charlist(0)",
+        "Integer.to_charlist(1)",
+        "Integer.to_charlist(0 - 1)",
+        "Integer.to_charlist(0 - 123)",
+        "Integer.to_charlist(1_152_921_504_606_846_975)",
+        "Integer.to_charlist(0 - 1_152_921_504_606_846_975 - 1)"
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx), expression
+      end)
+    end
+
+    test "keeps bounded Integer.to_charlist/1 results stable under low budgets", %{ctx: ctx} do
+      source = """
+      defmodule IntegerToCharlistBudget do
+        def main(), do: Integer.to_charlist(0 - 1_152_921_504_606_846_975 - 1)
+      end
+      """
+
+      expected = Integer.to_charlist(-1_152_921_504_606_846_976)
+      assert expected == Batata.execute(source, ctx, reduction_budget: 1)
+      assert expected == Batata.execute(source, ctx, reduction_budget: 2)
+    end
+
+    test "matches Integer.to_charlist/1 argument errors", %{ctx: ctx} do
+      message = "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n"
+
+      for expression <- [
+            "Integer.to_charlist(1.5)",
+            ~S|Integer.to_charlist("12")|,
+            "Integer.to_charlist(:integer)"
+          ] do
+        assert_raise ArgumentError, message, fn -> execute(expression, ctx) end
+      end
     end
 
     test "matches the bounded Kernel.inspect surface", %{ctx: ctx} do
