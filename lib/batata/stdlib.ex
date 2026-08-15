@@ -290,6 +290,7 @@ defmodule Batata.Stdlib.Integer do
   """
 
   @class_map %{
+    {Integer, :to_charlist, 1} => :native_term,
     {Integer, :to_string, 1} => :native_term
   }
 
@@ -366,6 +367,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
                   {Date, :to_iso8601, 1},
+                  {Integer, :to_charlist, 1},
                   {NaiveDateTime, :to_iso8601, 1},
                   {Time, :to_iso8601, 1},
                   {String, :printable?, 1},
@@ -421,6 +423,7 @@ defmodule Batata.Stdlib do
                      {File, :stream!, 1},
                      {Base, :encode16, 1},
                      {Base, :decode16, 1},
+                     {Integer, :to_charlist, 1},
                      {Integer, :to_string, 1},
                      {Enum, :map, 2},
                      {Enum, :to_list, 1},

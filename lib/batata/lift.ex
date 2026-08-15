@@ -5545,6 +5545,34 @@ defmodule Batata.Lift do
   defp native_term_call(Integer, :to_string, [value], ctx, block),
     do: create_op("ex.int_to_string", [value], [ex_type("dyn", ctx)], ctx, block)
 
+  defp native_term_call(Integer, :to_charlist, [value], ctx, block) do
+    i64 = integer_type(ctx)
+    integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
+    integer_i1 = create_op("arith.trunci", [integer?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        integer_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          binary = create_op("ex.int_to_string", [value], [ex_type("dyn", ctx)], ctx, b)
+          list = create_op("ex.enumerable_to_list", [binary], [ex_type("dyn", ctx)], ctx, b)
+          [unbox(list, ctx, b)]
+        end,
+        fn b ->
+          message =
+            "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n"
+
+          [raise_argument_error(message, ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("dyn", ctx)], ctx, block)
+  end
+
   defp native_term_call(MapSet, :new, [value], ctx, block),
     do: create_op("ex.mapset_from_list", [value], [ex_type("dyn", ctx)], ctx, block)
 
