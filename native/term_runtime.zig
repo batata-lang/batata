@@ -3187,7 +3187,7 @@ pub export fn ex_term_enumerable_to_list(enumerable: i64) i64 {
             while (i > 0) {
                 i -= 1;
                 result = ex_term_list_cons(
-                    binary_bytes(enumerable)[i] << @intCast(tag_shift),
+                    @as(i64, binary_bytes(enumerable)[i]) << @intCast(tag_shift),
                     result,
                 );
             }
@@ -3230,7 +3230,7 @@ pub export fn ex_term_enumerable_map_fun(
             switch (word_tag(enumerable)) {
                 tag_list => ex_term_list_get(enumerable, i),
                 tag_tuple => ex_term_tuple_get(enumerable, i),
-                tag_binary => (binary_bytes(enumerable)[@intCast(i)] << @intCast(tag_shift)),
+                tag_binary => (@as(i64, binary_bytes(enumerable)[@intCast(i)]) << @intCast(tag_shift)),
                 else => nil_word,
             };
         const mapped = mapper.?(word_value(item));
@@ -4842,6 +4842,16 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_binary_length(rest));
     try std.testing.expectEqual(two, ex_term_binary_get(rest, 0));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_slice(binary, 3)));
+
+    // Binary enumeration widens bytes before applying the three-bit term
+    // tag. Shifting as u8 truncated every value at or above 32.
+    const high_bytes = ex_term_list_cons(
+        @as(i64, 48 << 3),
+        ex_term_list_cons(@as(i64, 255 << 3), nil_word),
+    );
+    const high_binary = ex_term_binary_from_list(high_bytes);
+    const materialized_bytes = ex_term_enumerable_to_list(high_binary);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(high_bytes, materialized_bytes));
 
     // deep binary equality
     const bin_b = ex_term_binary_from_list(byte_list);
