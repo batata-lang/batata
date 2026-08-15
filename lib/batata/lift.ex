@@ -32,6 +32,10 @@ defmodule Batata.Lift do
   @known_atoms_key {__MODULE__, :known_atoms}
   @struct_schema_key {__MODULE__, :struct_schema}
   @arg_modes_key {__MODULE__, :arg_modes}
+  @min_scalar_integer -9_223_372_036_854_775_808
+  @max_scalar_integer 9_223_372_036_854_775_807
+  @min_term_integer -1_152_921_504_606_846_976
+  @max_term_integer 1_152_921_504_606_846_975
 
   defmodule Error do
     @moduledoc "Raised when the frontend encounters an unsupported AST form."
@@ -2909,6 +2913,8 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr(integer, ctx, block, env) when is_integer(integer) do
+    validate_scalar_integer_literal!(integer)
+
     {
       create_op(
         "ex.lit",
@@ -2941,6 +2947,20 @@ defmodule Batata.Lift do
 
   defp lift_expr({:+, _, [float]}, ctx, block, env) when is_float(float),
     do: lift_expr(float, ctx, block, env)
+
+  # Elixir keeps signed boundary literals as unary operator AST. Fold them
+  # before generic call lifting so the minimum tagged integer remains
+  # representable while values outside the term domain fail deterministically.
+  defp lift_expr({:-, _, [integer]}, ctx, block, env) when is_integer(integer),
+    do: lift_expr(validate_scalar_integer_literal!(-integer), ctx, block, env)
+
+  defp lift_expr({:+, _, [integer]}, ctx, block, env) when is_integer(integer),
+    do: lift_expr(validate_scalar_integer_literal!(integer), ctx, block, env)
+
+  # Preserve the established source spelling used to construct the minimum
+  # term integer without first materializing the positive out-of-domain value.
+  defp lift_expr({:-, _, [0, integer]}, ctx, block, env) when is_integer(integer),
+    do: lift_expr(validate_scalar_integer_literal!(-integer), ctx, block, env)
 
   # An atom literal in value position lifts to its tagged word: a
   # deterministic hash payload (above the runtime's nil (0) and process pid
@@ -3656,6 +3676,26 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp validate_term_integer_literal!(integer)
+       when integer >= @min_term_integer and integer <= @max_term_integer,
+       do: integer
+
+  defp validate_term_integer_literal!(integer) do
+    raise Error,
+          "integer literal #{integer} is outside the signed 61-bit term domain " <>
+            "(#{@min_term_integer}..#{@max_term_integer})"
+  end
+
+  defp validate_scalar_integer_literal!(integer)
+       when integer >= @min_scalar_integer and integer <= @max_scalar_integer,
+       do: integer
+
+  defp validate_scalar_integer_literal!(integer) do
+    raise Error,
+          "integer literal #{integer} is outside the signed 64-bit scalar domain " <>
+            "(#{@min_scalar_integer}..#{@max_scalar_integer})"
   end
 
   defp interpolation_segment?({:"::", _, [_, {:binary, _, nil}]}), do: true
@@ -7227,7 +7267,22 @@ defmodule Batata.Lift do
   end
 
   defp box_term(value, ctx, block) do
+    validate_boxed_integer_literal!(value)
     create_op("ex.box", [value], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp validate_boxed_integer_literal!(value) do
+    with false <- term_operand?(value),
+         {:ok, owner} <- MLIR.Value.owner(value),
+         "ex.lit" <- MLIR.Operation.name(owner),
+         attribute when not is_nil(attribute) <- Beaver.Walker.attributes(owner)[:value] do
+      attribute
+      |> MLIR.CAPI.mlirIntegerAttrGetValueInt()
+      |> Beaver.Native.to_term()
+      |> validate_term_integer_literal!()
+    else
+      _ -> :ok
+    end
   end
 
   defp lift_map_entries(entries, ctx, block, env) do
