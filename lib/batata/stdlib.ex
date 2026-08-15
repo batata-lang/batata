@@ -74,6 +74,21 @@ defmodule Batata.Stdlib.List do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.Date do
+  @moduledoc """
+  Date-domain declarations. Dates use Gregorian day counts in the current
+  slice; the registry exposes only operations with a native replacement for
+  that representation.
+  """
+
+  @class_map %{
+    {Date, :to_iso8601, 1} => :native_term
+  }
+
+  @doc "Returns date-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Process do
   @moduledoc """
   Process supervision primitives backed by the native actor runtime.
@@ -294,6 +309,7 @@ defmodule Batata.Stdlib do
   @classes Elixir.Enum.reduce(
              [
                Batata.Stdlib.Binary.class_map(),
+               Batata.Stdlib.Date.class_map(),
                Batata.Stdlib.Kernel.class_map(),
                Batata.Stdlib.List.class_map(),
                Batata.Stdlib.Map.class_map(),
@@ -317,6 +333,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 1},
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
+                  {Date, :to_iso8601, 1},
                   {String, :printable?, 1},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
@@ -358,6 +375,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :list_to_binary, 1},
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
+                     {Date, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
                      {:erlang, :iolist_to_binary, 1},
                      {HashSet, :new, 1},

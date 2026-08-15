@@ -4484,6 +4484,40 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_stdlib_call(Date, :to_iso8601, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = lift_value(value, ctx, block, env)
+
+    {days, integer?} =
+      if term_operand?(value) do
+        {create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block),
+         create_op("ex.is_integer", [value], [integer_type(ctx)], ctx, block)}
+      else
+        {value, lit(1, ctx, block)}
+      end
+
+    lower = cmp(days, -3_652_059, "sge", ctx, block)
+    upper = cmp(days, 3_652_424, "sle", ctx, block)
+    in_range = create_op("arith.andi", [lower, upper], [integer_type(ctx)], ctx, block)
+    valid = create_op("arith.andi", [integer?, in_range], [integer_type(ctx)], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result_word =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b -> [lower_date_to_iso8601(days, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          [raise_argument_error("invalid Date.to_iso8601/1 date", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    {create_op("ex.to_word", [result_word], [ex_type("dyn", ctx)], ctx, block), env}
+  end
+
   # Logical-clock mapping (#35 slice 8): `erlang.monotonic_time/0,1` reads the
   # runtime's native clock (nanoseconds) and converts to the requested unit;
   # `erlang.unique_integer/0,1` hands out fresh increasing (or, for
@@ -4667,6 +4701,185 @@ defmodule Batata.Lift do
         raise Error,
               "unsupported stdlib call: #{inspect(module)}.#{fun}/#{length(args)}"
     end
+  end
+
+  # Converts the slice's Gregorian day count to the proleptic Gregorian civil
+  # date. This is the constant-time civil-from-days decomposition with an
+  # epoch shift from Calendar.ISO day zero (0000-01-01). The adjusted era
+  # numerator preserves floor division for dates before the epoch even though
+  # `ex.div` truncates toward zero.
+  defp lower_date_to_iso8601(days, ctx, block) do
+    i64 = integer_type(ctx)
+    z = create_op("ex.sub", [days, lit(60, ctx, block)], [i64], ctx, block)
+    negative_z = cmp(z, 0, "slt", ctx, block)
+
+    era_numerator =
+      select_i64(
+        negative_z,
+        create_op("ex.sub", [z, lit(146_096, ctx, block)], [i64], ctx, block),
+        z,
+        ctx,
+        block
+      )
+
+    era = date_div(era_numerator, 146_097, ctx, block)
+    era_days = create_op("ex.mul", [era, lit(146_097, ctx, block)], [i64], ctx, block)
+    day_of_era = create_op("ex.sub", [z, era_days], [i64], ctx, block)
+
+    leap4 = date_div(day_of_era, 1_460, ctx, block)
+    leap100 = date_div(day_of_era, 36_524, ctx, block)
+    leap400 = date_div(day_of_era, 146_096, ctx, block)
+
+    year_numerator =
+      day_of_era
+      |> date_sub(leap4, ctx, block)
+      |> date_add(leap100, ctx, block)
+      |> date_sub(leap400, ctx, block)
+
+    year_of_era = date_div(year_numerator, 365, ctx, block)
+
+    base_year =
+      create_op(
+        "ex.add",
+        [year_of_era, create_op("ex.mul", [era, lit(400, ctx, block)], [i64], ctx, block)],
+        [i64],
+        ctx,
+        block
+      )
+
+    year_days =
+      create_op("ex.mul", [year_of_era, lit(365, ctx, block)], [i64], ctx, block)
+      |> date_add(date_div(year_of_era, 4, ctx, block), ctx, block)
+      |> date_sub(date_div(year_of_era, 100, ctx, block), ctx, block)
+
+    day_of_year = date_sub(day_of_era, year_days, ctx, block)
+
+    month_prime =
+      day_of_year
+      |> date_mul(5, ctx, block)
+      |> date_add(lit(2, ctx, block), ctx, block)
+      |> date_div(153, ctx, block)
+
+    month_days =
+      month_prime
+      |> date_mul(153, ctx, block)
+      |> date_add(lit(2, ctx, block), ctx, block)
+      |> date_div(5, ctx, block)
+
+    day =
+      day_of_year |> date_sub(month_days, ctx, block) |> date_add(lit(1, ctx, block), ctx, block)
+
+    month_before_march = cmp(month_prime, 10, "slt", ctx, block)
+
+    month =
+      select_i64(
+        month_before_march,
+        date_add(month_prime, lit(3, ctx, block), ctx, block),
+        date_sub(month_prime, lit(9, ctx, block), ctx, block),
+        ctx,
+        block
+      )
+
+    year =
+      select_i64(
+        cmp(month, 2, "sle", ctx, block),
+        date_add(base_year, lit(1, ctx, block), ctx, block),
+        base_year,
+        ctx,
+        block
+      )
+
+    negative_year = cmp(year, 0, "slt", ctx, block)
+
+    abs_year =
+      select_i64(
+        negative_year,
+        date_sub(lit(0, ctx, block), year, ctx, block),
+        year,
+        ctx,
+        block
+      )
+
+    common_bytes =
+      four_digits(abs_year, ctx, block) ++
+        [lit(?-, ctx, block)] ++
+        two_digits(month, ctx, block) ++
+        [lit(?-, ctx, block)] ++ two_digits(day, ctx, block)
+
+    negative_year_i1 =
+      create_op("arith.trunci", [negative_year], [MLIR.Type.i1()], ctx, block)
+
+    word =
+      build_scf_if(
+        negative_year_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b -> [date_binary([lit(?-, ctx, b) | common_bytes], ctx, b) |> unbox(ctx, b)] end,
+        fn b -> [date_binary(common_bytes, ctx, b) |> unbox(ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+  end
+
+  defp four_digits(value, ctx, block) do
+    [
+      date_div(value, 1_000, ctx, block),
+      value |> date_div(100, ctx, block) |> date_rem(10, ctx, block),
+      value |> date_div(10, ctx, block) |> date_rem(10, ctx, block),
+      date_rem(value, 10, ctx, block)
+    ]
+    |> Enum.map(&date_digit(&1, ctx, block))
+  end
+
+  defp two_digits(value, ctx, block) do
+    [date_div(value, 10, ctx, block), date_rem(value, 10, ctx, block)]
+    |> Enum.map(&date_digit(&1, ctx, block))
+  end
+
+  defp date_digit(value, ctx, block),
+    do: date_add(value, lit(?0, ctx, block), ctx, block)
+
+  defp date_binary(bytes, ctx, block) do
+    bytes = Enum.map(bytes, &box_term(&1, ctx, block))
+    create_term_op("ex.binary", bytes, ctx, block)
+  end
+
+  defp date_add(left, right, ctx, block),
+    do: create_op("ex.add", [left, right], [integer_type(ctx)], ctx, block)
+
+  defp date_sub(left, right, ctx, block),
+    do: create_op("ex.sub", [left, right], [integer_type(ctx)], ctx, block)
+
+  defp date_mul(left, right, ctx, block) when is_integer(right),
+    do: date_mul(left, lit(right, ctx, block), ctx, block)
+
+  defp date_mul(left, right, ctx, block),
+    do: create_op("ex.mul", [left, right], [integer_type(ctx)], ctx, block)
+
+  defp date_div(left, right, ctx, block) when is_integer(right),
+    do: date_div(left, lit(right, ctx, block), ctx, block)
+
+  defp date_div(left, right, ctx, block),
+    do: create_op("ex.div", [left, right], [integer_type(ctx)], ctx, block)
+
+  defp date_rem(left, right, ctx, block) when is_integer(right),
+    do: date_rem(left, lit(right, ctx, block), ctx, block)
+
+  defp date_rem(left, right, ctx, block),
+    do: create_op("ex.rem", [left, right], [integer_type(ctx)], ctx, block)
+
+  defp select_i64(condition, true_value, false_value, ctx, block) do
+    condition_i1 = create_op("arith.trunci", [condition], [MLIR.Type.i1()], ctx, block)
+
+    create_op(
+      "arith.select",
+      [condition_i1, true_value, false_value],
+      [integer_type(ctx)],
+      ctx,
+      block
+    )
   end
 
   defp monotonic_time_divisor(:native), do: 1
