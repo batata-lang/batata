@@ -33,6 +33,10 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
 
     assert capabilities["struct.constructor"]["status"] == "executable"
     assert capabilities["struct.constructor"]["gate"] == "execute_test"
+    assert capabilities["exception.schema_compile"]["status"] == "executable"
+    assert capabilities["exception.schema_compile"]["gate"] == "compile_probe"
+    assert capabilities["exception.execution"]["status"] == "blocked"
+    assert capabilities["exception.execution"]["reason"] =~ "Exception.message"
     assert capabilities["decimal.struct_surface"]["status"] == "blocked"
     assert capabilities["decimal.struct_surface"]["reason"] =~ "cross-module schemas"
 

@@ -9,8 +9,11 @@ The probe has two deliberately separate surfaces:
   parse/frontend boundary. It collects every blocker instead of stopping at
   the first unsupported form.
 - Structurally eligible modules also enter a non-executing compile-attempt
-  lane. The lane compiles and lowers a complete synthetic module, records the
-  first failing phase, and never treats its result as per-definition coverage.
+  lane. The lane preserves the frontend-normalized forms from the original
+  target-module body in order, excludes sibling modules and file-level forms,
+  and appends a synthetic non-executing `main/0` only when one is missing. It
+  records the first failing phase and never treats the result as per-definition
+  coverage or an unmodified whole-file compile.
 - The `dependency_frontier` records remote calls made by those eligible
   modules and distinguishes calls into the pinned corpus from external calls.
   It is measurement only; targets are not resolved or compiled together.
@@ -75,19 +78,23 @@ body. None of these replacements accepts host Date, Time, or NaiveDateTime
 structs. The generated Jason body therefore next stops at the unsupported
 `DateTime.to_iso8601/1` standard-library call, while a smaller Batata-owned
 module-alias fixture reaches lowering completion. This lane still makes no
-execution claim for module-level generation. The 72 blockers, their IDs,
-module attempts, and existing diagnostic attempts remain unchanged.
+execution claim for module-level generation and does not itself change blocker
+identity or module eligibility.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
 non-map fall-through. Non-exhaustive cases and function dispatch now use a
 typed exception path: `CaseClauseError` and `FunctionClauseError` bypass user
 `catch` frames while retaining their reason through the host result handle.
-The diagnostic lane records the next blocker actually reached by
-`Jason.DecodeError`, `Jason.EncodeError`, `Jason.OrderedObject`, and
-`Decimal.Error`; it does not count that deeper diagnostic as a complete module
-pass. `@behaviour` is ignored as compile metadata, which moves the pinned Jason
-inventory from 73 to 72 blockers and from 76 to 77 ignored metadata entries.
+Canonical frontend normalization now admits current-module `defexception`
+schemas to the compile-attempt lane. The original target-module bodies for
+`Jason.DecodeError` and `Jason.EncodeError` reach lowering completion, while
+`Jason.OrderedObject` remains in the diagnostic lane. This is
+`exception.schema_compile` evidence only: it does not claim execution support
+for `raise`, `rescue`, or `Exception.message/1` dispatch. `@behaviour` is
+ignored as compile metadata, which moved the pinned Jason inventory from 73 to
+72 blockers and from 76 to 77 ignored metadata entries before the exception
+schema blockers were resolved.
 
 String interpolation now executes for integer, binary, and compile-known atom
 terms. Binary reads execute for valid binaries with in-range integer indexes;
@@ -101,8 +108,9 @@ excludes assignments inside branches until branch-local SSA environments are
 modeled. `String.printable?/1` now has an executable runtime and
 BEAM-oracle gate, and bounded `Kernel.inspect/1,2` now covers the integer,
 binary, compile-known atom, nil, and boolean terms used by its error messages.
-The shadow `Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error` reach
-lowering completion. Current-module struct constructors and patterns have
+The original `Jason.DecodeError`, `Jason.EncodeError`, and `Decimal.Error`
+target-module bodies now reach lowering completion in compile attempts.
+Current-module struct constructors and patterns have
 executable BEAM-oracle gates covering declared defaults, validated overrides,
 exact `__struct__` matching, field validation, aliases, and nested atom-key map
 patterns. Generic exact map updates cover literal atom keys, left-to-right BEAM

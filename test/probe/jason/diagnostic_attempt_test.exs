@@ -4,7 +4,7 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
   alias Batata.Probe.Jason.{DiagnosticAttempt, Inventory}
 
   @tag :tmp_dir
-  test "marks blocker-stripped exception attempts as diagnostic-only", %{tmp_dir: tmp_dir} do
+  test "does not shadow exceptions accepted by compile eligibility", %{tmp_dir: tmp_dir} do
     File.write!(Path.join(tmp_dir, "error.ex"), """
     defmodule Fixture.Error do
       defexception [:message]
@@ -12,21 +12,11 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     end
     """)
 
-    assert [attempt] = tmp_dir |> Inventory.discover!() |> DiagnosticAttempt.run()
-    assert attempt["module"] == "Fixture.Error"
-    assert attempt["diagnostic_only"]
-    assert attempt["outcome"] == "reached_compile_pipeline"
-    assert attempt["phase"] == "lowering_complete"
-    refute Map.has_key?(attempt, "reason_class")
+    assert [] = tmp_dir |> Inventory.discover!() |> DiagnosticAttempt.run()
 
     [module] = tmp_dir |> Inventory.discover!() |> hd() |> Map.fetch!(:modules)
-    assert module.diagnostic_source =~ "defexception [:message]"
-    assert Enum.map(module.unsupported, & &1.reason) == [:exception_semantics]
-
-    assert [%{"id" => id, "reason" => "exception_semantics"}] =
-             attempt["removed_blockers"]
-
-    assert byte_size(id) == 64
+    assert module.compile_source =~ "defexception [:message]"
+    assert module.unsupported == []
   end
 
   @tag :tmp_dir

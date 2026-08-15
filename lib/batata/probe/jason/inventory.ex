@@ -139,7 +139,10 @@ defmodule Batata.Probe.Jason.Inventory do
     unsupported =
       source_forms
       |> unsupported_forms(source_snapshot.unsupported)
-      |> Enum.reject(&supported_alias?/1)
+      |> Enum.reject(fn unsupported ->
+        supported_alias?(unsupported) or
+          supported_exception_schema?(unsupported, source_snapshot, module_name)
+      end)
 
     current = %{
       module: inspect(module_name),
@@ -165,6 +168,21 @@ defmodule Batata.Probe.Jason.Inventory do
     do: AliasExpand.supported_declaration?(form)
 
   defp supported_alias?(_unsupported), do: false
+
+  defp supported_exception_schema?(
+         %{
+           reason: :exception_semantics,
+           frontend_reason: :accepted_as_definition,
+           form_ast: {:defexception, _, _}
+         },
+         %Frontend.Module{
+           struct_schema: %Frontend.StructSchema{module: module, kind: :exception}
+         },
+         module
+       ),
+       do: true
+
+  defp supported_exception_schema?(_unsupported, _snapshot, _module), do: false
 
   defp definition(%Frontend.Definition{} = definition) do
     %{

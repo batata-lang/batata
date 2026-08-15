@@ -25,6 +25,8 @@
     {"id": "control.short_circuit_and", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; returns original operand values; right-hand-side assignments excluded"},
     {"id": "control.if", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; missing else yields nil; branch assignments excluded"},
     {"id": "struct.constructor", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with runtime-representable literal defaults, validated atom-key overrides, and exception marker injection"},
+    {"id": "exception.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defexception schemas accepted by canonical frontend normalization"},
+    {"id": "exception.execution", "status": "blocked", "owner": "runtime", "reason": "raise/rescue and Exception.message dispatch are not covered by schema-only compile attempts"},
     {"id": "guard.byte_size", "status": "executable", "gate": "guard_byte_size_test"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
