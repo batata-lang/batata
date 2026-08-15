@@ -141,7 +141,12 @@ defmodule Batata.Probe.Jason.Inventory do
       |> unsupported_forms(source_snapshot.unsupported)
       |> Enum.reject(fn unsupported ->
         supported_alias?(unsupported) or
-          supported_exception_schema?(unsupported, source_snapshot, module_name)
+          supported_current_module_schema?(
+            unsupported,
+            source_snapshot,
+            module_name,
+            :exception
+          )
       end)
 
     current = %{
@@ -169,20 +174,33 @@ defmodule Batata.Probe.Jason.Inventory do
 
   defp supported_alias?(_unsupported), do: false
 
-  defp supported_exception_schema?(
-         %{
-           reason: :exception_semantics,
-           frontend_reason: :accepted_as_definition,
-           form_ast: {:defexception, _, _}
-         },
-         %Frontend.Module{
-           struct_schema: %Frontend.StructSchema{module: module, kind: :exception}
-         },
-         module
-       ),
-       do: true
+  # Probe-internal evidence predicate. Inventory owns the only eligibility
+  # call site; the production compiler does not consult probe classifications.
+  @doc false
+  @spec supported_current_module_schema?(
+          map(),
+          Frontend.Module.t(),
+          module(),
+          :struct | :exception
+        ) ::
+          boolean()
+  def supported_current_module_schema?(
+        %{reason: reason, frontend_reason: :accepted_as_definition, form_ast: {form_kind, _, _}},
+        %Frontend.Module{
+          struct_schema: %Frontend.StructSchema{module: module, kind: schema_kind}
+        },
+        module,
+        schema_kind
+      )
+      when schema_kind in [:struct, :exception] do
+    {reason, form_kind} == schema_evidence(schema_kind)
+  end
 
-  defp supported_exception_schema?(_unsupported, _snapshot, _module), do: false
+  def supported_current_module_schema?(_unsupported, _snapshot, _module, _schema_kind),
+    do: false
+
+  defp schema_evidence(:struct), do: {:struct_semantics, :defstruct}
+  defp schema_evidence(:exception), do: {:exception_semantics, :defexception}
 
   defp definition(%Frontend.Definition{} = definition) do
     %{
