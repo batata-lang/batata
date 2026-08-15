@@ -253,8 +253,8 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal["summary"]["categories"]["alias"] == nil
     assert jason["schema_version"] == 6
     assert decimal["schema_version"] == 6
-    assert jason["summary"]["blockers"] == 70
-    assert decimal["summary"]["blockers"] == 41
+    assert jason["summary"]["blockers"] == 68
+    assert decimal["summary"]["blockers"] == 39
     assert jason["summary"]["ignored_metadata"] == 77
     assert decimal["summary"]["ignored_metadata"] == 106
     assert jason["summary"]["definitions"] == 239
@@ -334,10 +334,10 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert Enum.all?(decimal["blockers"], &generation_evidence?/1)
 
     assert jason["summary"]["dependency_frontier"] == %{
-             "blocked_calls" => 97,
+             "blocked_calls" => 95,
              "calls" => 120,
              "corpus_calls" => 18,
-             "eligible_calls" => 23,
+             "eligible_calls" => 25,
              "targets" => 24
            }
 
@@ -361,11 +361,16 @@ defmodule Batata.Probe.Jason.ReportTest do
                call["blocker_categories"]["module_level_generation"] == 24
            end)
 
-    assert [%{"reason_class" => "remote_module_call", "module" => "Jason"}] =
+    assert Enum.map(
              Enum.filter(
                jason["module_compile_attempts"],
                &(&1["status"] == "frontend_normalization_failure")
-             )
+             ),
+             &{&1["module"], &1["reason_class"]}
+           ) == [
+             {"Jason", "remote_module_call"},
+             {"Jason.OrderedObject", "dynamic_apply_without_local_dispatch"}
+           ]
 
     assert Enum.map(
              Enum.filter(jason["module_compile_attempts"], &(&1["status"] == "pass")),
@@ -383,24 +388,32 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     refute Enum.any?(jason["blockers"], &(&1["reason"] == "exception_semantics"))
     refute Enum.any?(decimal["blockers"], &(&1["reason"] == "exception_semantics"))
+    refute Enum.any?(jason["blockers"], &(&1["reason"] == "struct_semantics"))
+    refute Enum.any?(decimal["blockers"], &(&1["reason"] == "struct_semantics"))
 
-    assert Enum.any?(jason["diagnostic_attempts"], fn attempt ->
-             attempt["module"] == "Jason.OrderedObject" and
-               attempt["outcome"] == "reached_compile_pipeline" and
-               attempt["error"] == "Batata.Lift.Error" and
-               attempt["phase"] == "frontend_normalization_failure" and
-               attempt["reason_class"] == "dynamic_apply_without_local_dispatch" and
-               Enum.map(attempt["removed_blockers"], & &1["reason"]) == ["struct_semantics"]
-           end)
+    assert jason["diagnostic_attempts"] == []
+
+    assert jason["summary"]["diagnostic_attempts"] == %{
+             "outcomes" => %{},
+             "phases" => %{},
+             "total" => 0
+           }
+
+    for id <- [
+          "f73fb2f7b7e3f4f66ec2e00cf2772eb5dc13410676d5019c657bf8818638fb31",
+          "1ff304413670448529762e11fd09a689acb100c9a5eb7f633009b439fd21cbce"
+        ] do
+      refute Enum.any?(jason["blockers"], &(&1["id"] == id))
+    end
+
+    for id <- [
+          "d48c365847ee06dedc63f04a5f373ae8b07df06ffe485b7ac9785a51206e5eae",
+          "5f2a898806d20436e3c01b11005056304eccbb2920ad9e3c9616eebb7af85e99"
+        ] do
+      refute Enum.any?(decimal["blockers"], &(&1["id"] == id))
+    end
 
     refute Enum.any?(jason["diagnostic_attempts"], &(&1["module"] == "Jason.Fragment"))
-
-    assert Enum.all?(jason["diagnostic_attempts"], fn attempt ->
-             attempt["diagnostic_only"] and not Map.has_key?(attempt, "status") and
-               Enum.all?(attempt["removed_blockers"], fn removed ->
-                 Enum.any?(jason["blockers"], &(&1["id"] == removed["id"]))
-               end)
-           end)
 
     assert Enum.any?(decimal["diagnostic_attempts"], fn attempt ->
              attempt["module"] == "Decimal.Macros" and

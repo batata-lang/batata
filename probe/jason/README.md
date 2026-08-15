@@ -88,8 +88,10 @@ typed exception path: `CaseClauseError` and `FunctionClauseError` bypass user
 `catch` frames while retaining their reason through the host result handle.
 Canonical frontend normalization now admits current-module `defexception`
 schemas to the compile-attempt lane. The original target-module bodies for
-`Jason.DecodeError` and `Jason.EncodeError` reach lowering completion, while
-`Jason.OrderedObject` remains in the diagnostic lane. This is
+`Jason.DecodeError` and `Jason.EncodeError` reach lowering completion. It also
+admits canonical current-module `defstruct` schemas: this removes the schema
+blockers from `Jason.Fragment` and `Jason.OrderedObject`, although only the
+latter becomes compile-eligible. This is `struct.schema_compile` and
 `exception.schema_compile` evidence only: it does not claim execution support
 for `raise`, `rescue`, or `Exception.message/1` dispatch. `@behaviour` is
 ignored as compile metadata, which moved the pinned Jason inventory from 73 to
@@ -115,30 +117,29 @@ executable BEAM-oracle gates covering declared defaults, validated overrides,
 exact `__struct__` matching, field validation, aliases, and nested atom-key map
 patterns. Generic exact map updates cover literal atom keys, left-to-right BEAM
 evaluation order, immutable replacement, `KeyError`, and `BadMapError`.
-`Jason.OrderedObject` enters the diagnostic lane with its schema preserved.
+`Jason.OrderedObject` enters the real module compile-attempt lane with its
+schema preserved.
 Clause-local trailing argument names now let its recursive `delete_key/2`
 clauses pass frontend dispatch validation, including the repeated-key equality
 between the first pattern and trailing argument. Native, resumable
 `:lists.keyfind/3` and `:lists.reverse/1,2` now execute with BEAM-oracle gates,
-including loose numeric key equality and invalid-argument paths. The shadow
+including loose numeric key equality and invalid-argument paths. The attempt
 crosses those calls, guarded `new/1`, and the duplicate symbols previously
-emitted for `get_and_update/3,4`. Its diagnostic-only shadow now fails closed
-at frontend normalization because dynamic `fun.(current)` application has no
+emitted for `get_and_update/3,4`. It fails closed at frontend normalization
+because dynamic `fun.(current)` application has no
 module-local anonymous function from which Batata could build `__fn_dispatch`.
 Modules that pass locally-created closures through helper parameters retain
 their executable dispatch path. The host and AOT ABIs do not promise support
-for externally supplied closure terms. The full module remains blocked by its
-struct form; this is not a module pass or evidence for a Beaver runtime change.
-`Jason.Fragment` retains its guarded-definition blocker and is deliberately not
-stripped into a shadow attempt. Cross-module schemas and complete exception
-semantics remain outside the claim, and module pass counts remain zero.
+for externally supplied closure terms. `Jason.OrderedObject` is therefore not
+a module pass or evidence for a Beaver runtime change. `Jason.Fragment`
+retains its guarded-definition blocker and does not enter a compile attempt.
+Cross-module schemas and complete exception semantics remain outside the claim.
 
 The next measured struct frontier is therefore no longer constructor, pattern,
 or generic map-update syntax. Decimal's full modules remain blocked earlier by
 compile-time forms and unavailable cross-module schemas, while Jason's full
 modules remain dominated by macro, attribute, generation, and protocol
-surfaces. Those blockers must be measured independently of the diagnostic
-shadows.
+surfaces. Those blockers must be measured independently of schema eligibility.
 
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
