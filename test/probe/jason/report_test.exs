@@ -291,7 +291,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert generation_attempt["reason_class"] == "unsupported_stdlib_call"
 
     assert generation_attempt["fingerprint"] ==
-             "aab1a713567f37d45eea252472b68fb0a7ca83120981608c39c942f6b61cef70"
+             "7f06a5f42144d83c4d8fd6a90584d0cd1eb0a1b12b3144fc84f471edcd3def1c"
 
     assert Enum.any?(jason["blockers"], &(&1["id"] == generation_attempt["blocker_id"]))
 
