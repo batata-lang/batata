@@ -24,4 +24,15 @@ defmodule Batata.ListLiteralBodyTest do
 
     assert Batata.execute(source, ctx) == 42
   end
+
+  test "preserves a list literal in a multi-argument function clause", %{ctx: ctx} do
+    source = """
+    defmodule MultiArgumentListLiteralBody do
+      defp wrapped(value, :tag), do: [?\", value, ?\"]
+      def main(), do: wrapped(98, :tag)
+    end
+    """
+
+    assert Batata.execute(source, ctx) == [?\", 98, ?\"]
+  end
 end
