@@ -209,9 +209,14 @@ defmodule Batata.Probe.Jason.InventoryTest do
     defmodule InvalidError do
       defexception message: dynamic_default()
     end
+
+    defmodule DuplicateSchema do
+      defexception [:message]
+      defstruct [:value]
+    end
     """)
 
-    assert [%{modules: [accepted, struct, invalid]}] = Inventory.discover!(tmp_dir)
+    assert [%{modules: [accepted, struct, invalid, duplicate]}] = Inventory.discover!(tmp_dir)
     assert accepted.unsupported |> Enum.map(& &1.reason) == [:ignored_metadata]
     assert accepted.compile_source =~ "defexception [:message]"
     assert struct.unsupported |> Enum.map(& &1.reason) == [:struct_semantics]
@@ -219,8 +224,71 @@ defmodule Batata.Probe.Jason.InventoryTest do
     assert invalid.unsupported |> Enum.map(& &1.frontend_reason) == [:invalid_struct_schema]
     assert invalid.compile_source == nil
 
+    assert duplicate.unsupported |> Enum.map(& &1.reason) == [
+             :exception_semantics,
+             :struct_semantics
+           ]
+
+    assert duplicate.compile_source == nil
+
     assert %{"status" => "pass"} =
              CompileAttempt.run_source("schemas.ex", accepted.module, accepted.compile_source)
+  end
+
+  test "requires complete canonical evidence for probe schema eligibility" do
+    exception = schema_unsupported(:exception)
+    struct = schema_unsupported(:struct)
+    exception_snapshot = schema_snapshot(Fixture.Error, :exception)
+    struct_snapshot = schema_snapshot(Fixture.Struct, :struct)
+
+    assert Inventory.supported_current_module_schema?(
+             exception,
+             exception_snapshot,
+             Fixture.Error,
+             :exception
+           )
+
+    assert Inventory.supported_current_module_schema?(
+             struct,
+             struct_snapshot,
+             Fixture.Struct,
+             :struct
+           )
+
+    refute Inventory.supported_current_module_schema?(
+             exception,
+             exception_snapshot,
+             Fixture.Other,
+             :exception
+           )
+
+    refute Inventory.supported_current_module_schema?(
+             exception,
+             struct_snapshot,
+             Fixture.Struct,
+             :struct
+           )
+
+    refute Inventory.supported_current_module_schema?(
+             %{exception | frontend_reason: :unknown_form},
+             exception_snapshot,
+             Fixture.Error,
+             :exception
+           )
+
+    refute Inventory.supported_current_module_schema?(
+             %{exception | reason: :struct_semantics},
+             exception_snapshot,
+             Fixture.Error,
+             :exception
+           )
+
+    refute Inventory.supported_current_module_schema?(
+             struct,
+             %Batata.Frontend.Module{struct_snapshot | struct_schema: nil},
+             Fixture.Struct,
+             :struct
+           )
   end
 
   @tag :tmp_dir
@@ -308,5 +376,29 @@ defmodule Batata.Probe.Jason.InventoryTest do
       form -> [form]
     end)
     |> Enum.map(&Macro.to_string/1)
+  end
+
+  defp schema_unsupported(:exception) do
+    %{
+      reason: :exception_semantics,
+      frontend_reason: :accepted_as_definition,
+      form_ast: quote(do: defexception([:message]))
+    }
+  end
+
+  defp schema_unsupported(:struct) do
+    %{
+      reason: :struct_semantics,
+      frontend_reason: :accepted_as_definition,
+      form_ast: quote(do: defstruct([:value]))
+    }
+  end
+
+  defp schema_snapshot(module, kind) do
+    %Batata.Frontend.Module{
+      name: module,
+      definitions: [],
+      struct_schema: %Batata.Frontend.StructSchema{module: module, kind: kind, fields: []}
+    }
   end
 end
