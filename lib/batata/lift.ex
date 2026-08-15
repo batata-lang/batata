@@ -4503,6 +4503,43 @@ defmodule Batata.Lift do
     raise Error, "Time.new requires valid integer literal arguments in this slice"
   end
 
+  defp lift_stdlib_call(
+         NaiveDateTime,
+         :new,
+         [year, month, day, hour, minute, second],
+         ctx,
+         block,
+         env
+       ) do
+    lift_naive_datetime_new(
+      [year, month, day, hour, minute, second],
+      ctx,
+      block,
+      env
+    )
+  end
+
+  defp lift_stdlib_call(
+         NaiveDateTime,
+         :new,
+         [year, month, day, hour, minute, second, {microsecond, precision}],
+         ctx,
+         block,
+         env
+       ) do
+    lift_naive_datetime_new(
+      [year, month, day, hour, minute, second, microsecond, precision],
+      ctx,
+      block,
+      env
+    )
+  end
+
+  defp lift_stdlib_call(NaiveDateTime, :new, _args, _ctx, _block, _env) do
+    raise Error,
+          "NaiveDateTime.new requires valid integer literal arguments in this slice"
+  end
+
   defp lift_stdlib_call(Date, :to_iso8601, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = lift_value(value, ctx, block, env)
@@ -4570,6 +4607,49 @@ defmodule Batata.Lift do
         fn b -> [lower_time_to_iso8601(packed, ctx, b) |> unbox(ctx, b)] end,
         fn b ->
           [raise_argument_error("invalid Time.to_iso8601/1 time", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    {create_op("ex.to_word", [result_word], [ex_type("dyn", ctx)], ctx, block), env}
+  end
+
+  defp lift_stdlib_call(NaiveDateTime, :to_iso8601, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = lift_value(value, ctx, block, env)
+
+    {packed, integer?} =
+      if term_operand?(value) do
+        {create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block),
+         create_op("ex.is_integer", [value], [integer_type(ctx)], ctx, block)}
+      else
+        {value, lit(1, ctx, block)}
+      end
+
+    precision = date_rem(packed, 10, ctx, block)
+    lower = cmp(packed, 0, "sge", ctx, block)
+    upper = cmp(packed, 6_311_074_175_999_999_996, "sle", ctx, block)
+    precision_valid = cmp(precision, 6, "sle", ctx, block)
+    in_range = create_op("arith.andi", [lower, upper], [integer_type(ctx)], ctx, block)
+
+    valid_shape =
+      create_op("arith.andi", [in_range, precision_valid], [integer_type(ctx)], ctx, block)
+
+    valid = create_op("arith.andi", [integer?, valid_shape], [integer_type(ctx)], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result_word =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b -> [lower_naive_datetime_to_iso8601(packed, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid NaiveDateTime.to_iso8601/1 datetime", ctx, b)
+            |> unbox(ctx, b)
+          ]
         end
       )
       |> hd()
@@ -4956,6 +5036,93 @@ defmodule Batata.Lift do
     else
       raise Error, "Time.new requires valid integer literal arguments in this slice"
     end
+  end
+
+  # Naive datetimes use a closed, non-negative scalar representation:
+  # `((biased_days * 86_400 + seconds_of_day) * 1_000_000 + microsecond) * 10 +
+  # precision`, where `biased_days = iso_days + 3_652_059`. The supported Date
+  # domain (-9999-01-01 through 9999-12-31) maps to
+  # 0..6_311_074_175_999_999_996, which fits in signed i64. Numeric values can
+  # overlap other closed slices (for example Time); the registered callee owns
+  # their interpretation, so this is not a general tagged-value representation.
+  defp lift_naive_datetime_new(args, ctx, block, env) do
+    result =
+      case normalize_integer_literals(args) do
+        {:ok, [year, month, day, hour, minute, second]} ->
+          NaiveDateTime.new(year, month, day, hour, minute, second)
+
+        {:ok, [year, month, day, hour, minute, second, microsecond, precision]} ->
+          NaiveDateTime.new(
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            {microsecond, precision}
+          )
+
+        _ ->
+          :invalid_literals
+      end
+
+    case result do
+      {:ok, %NaiveDateTime{year: year} = datetime} when year in -9999..9999 ->
+        days = Calendar.ISO.date_to_iso_days(datetime.year, datetime.month, datetime.day)
+        seconds = datetime.hour * 3_600 + datetime.minute * 60 + datetime.second
+        {microsecond, precision} = datetime.microsecond
+        biased_days = days + 3_652_059
+        packed = ((biased_days * 86_400 + seconds) * 1_000_000 + microsecond) * 10 + precision
+        {lit(packed, ctx, block), env}
+
+      _ ->
+        raise Error,
+              "NaiveDateTime.new requires valid integer literal arguments in this slice"
+    end
+  end
+
+  defp normalize_integer_literals(values) do
+    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
+      case normalize_integer_literal(value) do
+        {:ok, integer} -> {:cont, {:ok, [integer | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      :error -> :error
+    end
+  end
+
+  defp normalize_integer_literal(value) when is_integer(value), do: {:ok, value}
+  defp normalize_integer_literal({:-, _, [value]}) when is_integer(value), do: {:ok, -value}
+  defp normalize_integer_literal({:+, _, [value]}) when is_integer(value), do: {:ok, value}
+  defp normalize_integer_literal(_value), do: :error
+
+  defp lower_naive_datetime_to_iso8601(packed, ctx, block) do
+    precision = date_rem(packed, 10, ctx, block)
+    payload = date_div(packed, 10, ctx, block)
+    microsecond = date_rem(payload, 1_000_000, ctx, block)
+    day_seconds = date_div(payload, 1_000_000, ctx, block)
+    seconds = date_rem(day_seconds, 86_400, ctx, block)
+
+    days =
+      day_seconds
+      |> date_div(86_400, ctx, block)
+      |> date_sub(lit(3_652_059, ctx, block), ctx, block)
+
+    time_packed =
+      seconds
+      |> date_mul(1_000_000, ctx, block)
+      |> date_add(microsecond, ctx, block)
+      |> date_mul(10, ctx, block)
+      |> date_add(precision, ctx, block)
+
+    date = lower_date_to_iso8601(days, ctx, block)
+    separator = date_binary([lit(?T, ctx, block)], ctx, block)
+    time = lower_time_to_iso8601(time_packed, ctx, block)
+    iodata = create_term_op("ex.list", [date, separator, time], ctx, block)
+    create_op("ex.iodata_to_binary", [iodata], [ex_type("dyn", ctx)], ctx, block)
   end
 
   defp lower_time_to_iso8601(packed, ctx, block) do

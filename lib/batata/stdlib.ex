@@ -104,6 +104,21 @@ defmodule Batata.Stdlib.Time do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.NaiveDateTime do
+  @moduledoc """
+  NaiveDateTime-domain declarations. Naive datetimes use a packed integer in
+  the current slice; the registry exposes only operations with a native
+  replacement for that representation.
+  """
+
+  @class_map %{
+    {NaiveDateTime, :to_iso8601, 1} => :native_term
+  }
+
+  @doc "Returns naive-datetime-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Process do
   @moduledoc """
   Process supervision primitives backed by the native actor runtime.
@@ -329,6 +344,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.List.class_map(),
                Batata.Stdlib.Map.class_map(),
                Batata.Stdlib.MapSet.class_map(),
+               Batata.Stdlib.NaiveDateTime.class_map(),
                Batata.Stdlib.Process.class_map(),
                Batata.Stdlib.HashSet.class_map(),
                Batata.Stdlib.Stream.class_map(),
@@ -350,6 +366,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
                   {Date, :to_iso8601, 1},
+                  {NaiveDateTime, :to_iso8601, 1},
                   {Time, :to_iso8601, 1},
                   {String, :printable?, 1},
                   {:lists, :keyfind, 3},
@@ -393,6 +410,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
                      {Date, :to_iso8601, 1},
+                     {NaiveDateTime, :to_iso8601, 1},
                      {Time, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
                      {:erlang, :iolist_to_binary, 1},
