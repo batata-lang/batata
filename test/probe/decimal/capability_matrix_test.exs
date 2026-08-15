@@ -30,6 +30,9 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["control.if"]["gate"] == "execute_test"
     assert capabilities["control.if"]["scope"] =~ "missing else yields nil"
     assert capabilities["control.if"]["scope"] =~ "branch assignments excluded"
+    assert capabilities["guard.is_function"]["status"] == "executable"
+    assert capabilities["guard.is_function"]["gate"] == "execute_test"
+    assert capabilities["guard.is_function"]["scope"] =~ "module-local"
 
     assert capabilities["struct.constructor"]["status"] == "executable"
     assert capabilities["struct.constructor"]["gate"] == "execute_test"

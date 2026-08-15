@@ -995,22 +995,21 @@ defmodule Batata.ExecuteTest do
     assert 1 == Batata.execute(source, ctx)
   end
 
-  test "rejects unsupported guards on term patterns explicitly", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/unsupported guard on term pattern/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def main() do
-            case {1, 2} do
-              {a, b} when is_function(a, 1) -> 1
-              _ -> 0
-            end
-          end
-        end
-        """,
-        ctx
-      )
-    end
+  test "executes function arity guards on term patterns", %{ctx: ctx} do
+    assert :matched ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def main() do
+                   case {fn value -> value end, :ignored} do
+                     {fun, _result} when is_function(fun, 1) -> :matched
+                     _ -> :missed
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
   end
 
   test "rejects unrefined term-pattern integer arithmetic before verification", %{ctx: ctx} do
@@ -1594,18 +1593,36 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects unsupported single-clause guards explicitly", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/unsupported guard on term pattern/, fn ->
-      Batata.execute(
-        """
-        defmodule UnsupportedSingleGuard do
-          def call(fun) when is_function(fun, 1), do: fun
-          def main(), do: call(fn value -> value end)
-        end
-        """,
-        ctx
-      )
+  test "executes a function-arity single-clause guard", %{ctx: ctx} do
+    assert 3 ==
+             Batata.execute(
+               """
+               defmodule FunctionSingleGuard do
+                 def call(fun) when is_function(fun, 1), do: fun.(3)
+                 def main(), do: call(fn value -> value end)
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "distinguishes function values and their arities", %{ctx: ctx} do
+    source = """
+    defmodule FunctionGuards do
+      def function?(value) when is_function(value), do: 1
+      def function?(_value), do: 0
+      def binary?(value) when is_function(value, 2), do: 1
+      def binary?(_value), do: 0
+
+      def main() do
+        unary = fn value -> value end
+        binary = fn left, right -> left + right end
+        function?(unary) + function?(7) + binary?(binary) + binary?(unary)
+      end
     end
+    """
+
+    assert 2 == Batata.execute(source, ctx)
   end
 
   @tag :multi_clause

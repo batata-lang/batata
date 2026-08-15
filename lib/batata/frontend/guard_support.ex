@@ -10,28 +10,51 @@ defmodule Batata.Frontend.GuardSupport do
   @boolean_operators [:and, :andalso, :or, :orelse]
 
   @spec supported?(Macro.t()) :: boolean()
-  def supported?(guard_ast), do: do_supported?(guard_ast) and guard_bifs_protected?(guard_ast)
+  def supported?(guard_ast),
+    do: do_supported?(guard_ast, false) and guard_bifs_protected?(guard_ast)
 
-  defp do_supported?({predicate, _, [var_ast]}) when predicate in @predicates do
+  @doc "Returns whether the production compiler has an executable lowering for the guard."
+  @spec compiler_supported?(Macro.t()) :: boolean()
+  def compiler_supported?(guard_ast),
+    do: do_supported?(guard_ast, true) and guard_bifs_protected?(guard_ast)
+
+  defp do_supported?({predicate, _, [var_ast]}, _function_guards?)
+       when predicate in @predicates do
     match?(
       {name, _, context} when is_atom(name) and (is_atom(context) or is_nil(context)),
       var_ast
     )
   end
 
-  defp do_supported?({op, _, [left, right]}) when op in [:==, :!=, :===, :!==],
-    do: operand?(left) and operand?(right)
+  defp do_supported?({:is_function, _, [var_ast]}, true) do
+    match?(
+      {name, _, context} when is_atom(name) and (is_atom(context) or is_nil(context)),
+      var_ast
+    )
+  end
 
-  defp do_supported?({op, _, [left, right]}) when op in [:<, :<=, :>, :>=],
+  defp do_supported?({:is_function, _, [var_ast, arity]}, true)
+       when is_integer(arity) and arity >= 0 and arity <= 4 do
+    match?(
+      {name, _, context} when is_atom(name) and (is_atom(context) or is_nil(context)),
+      var_ast
+    )
+  end
+
+  defp do_supported?({op, _, [left, right]}, _function_guards?)
+       when op in [:==, :!=, :===, :!==],
+       do: operand?(left) and operand?(right)
+
+  defp do_supported?({op, _, [left, right]}, _function_guards?) when op in [:<, :<=, :>, :>=],
     do: integer_expression?(left) and integer_expression?(right)
 
-  defp do_supported?({:in, _, [{name, _, _}, members]}) when is_atom(name),
+  defp do_supported?({:in, _, [{name, _, _}, members]}, _function_guards?) when is_atom(name),
     do: term_members(members) != nil
 
-  defp do_supported?({op, _, [left, right]}) when op in @boolean_operators,
-    do: do_supported?(left) and do_supported?(right)
+  defp do_supported?({op, _, [left, right]}, function_guards?) when op in @boolean_operators,
+    do: do_supported?(left, function_guards?) and do_supported?(right, function_guards?)
 
-  defp do_supported?(_guard_ast), do: false
+  defp do_supported?(_guard_ast, _function_guards?), do: false
 
   @type term_members ::
           {:integer_range, integer(), integer()}

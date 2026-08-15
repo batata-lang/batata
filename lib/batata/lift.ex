@@ -1172,7 +1172,7 @@ defmodule Batata.Lift do
         :ok
 
       %Frontend.Clause{guard_ast: guard_ast} ->
-        unless GuardSupport.supported?(guard_ast) do
+        unless GuardSupport.compiler_supported?(guard_ast) do
           raise Error, "unsupported guard on term pattern: #{inspect(guard_ast)}"
         end
     end)
@@ -1188,8 +1188,7 @@ defmodule Batata.Lift do
        ) do
     if Enum.any?(clauses, &function_clause_requires_dispatch?/1) do
       validate_single_definition_guards!(clauses)
-      first_mode = name |> function_arg_modes(arity, module_env) |> List.first()
-      opts = [term_case?: first_mode == :term]
+      opts = term_case_opts(name, arity, module_env)
 
       case arity do
         0 -> raise Error, "guarded zero-arity definitions are unsupported: #{name}/0"
@@ -1213,18 +1212,19 @@ defmodule Batata.Lift do
     end
 
     clauses = Enum.flat_map(definitions, & &1.clauses)
+    opts = term_case_opts(name, arity, module_env)
 
     cond do
       arity == 1 ->
         case detect_scanner(name, clauses) do
           {:ok, scanner} -> lift_scanner_loop(name, scanner, ctx, ip, budget, batch_size)
-          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env)
+          :skip -> lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env, opts)
         end
 
       arity >= 2 ->
         case detect_accumulator_scanner(name, clauses) do
           {:ok, scanner} -> lift_reduce_loop(name, scanner, ctx, ip, budget, batch_size)
-          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env)
+          :skip -> lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts)
         end
 
       true ->
@@ -1232,7 +1232,7 @@ defmodule Batata.Lift do
     end
   end
 
-  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env, opts \\ []) do
+  defp lift_multi_clause_dispatch(name, clauses, ctx, ip, module_env, opts) do
     region = MLIR.CAPI.mlirRegionCreate()
 
     # The argument is a scalar word (like single-clause functions); the term
@@ -1289,7 +1289,7 @@ defmodule Batata.Lift do
   # clause-local aliases for the same positional function arguments. A
   # compile-known atom literal in a trailing position contributes an extra
   # clause condition over that argument.
-  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts \\ []) do
+  defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts) do
     clause_tail_patterns = validate_multi_arg_clauses!(arity, clauses)
 
     region = MLIR.CAPI.mlirRegionCreate()
@@ -6140,7 +6140,7 @@ defmodule Batata.Lift do
 
   # Materializes a compile-time function reference into a first-class closure
   # word; all other values pass through unchanged.
-  defp lift_value({:fn_ref, fn_idx, _name, _arity, captured}, ctx, block, env) do
+  defp lift_value({:fn_ref, fn_idx, _name, arity, captured}, ctx, block, env) do
     env_values = resolve_captured(captured, env)
 
     unless length(env_values) <= 4 do
@@ -6148,10 +6148,11 @@ defmodule Batata.Lift do
     end
 
     create_op(
-      "ex.make_fun",
+      "ex.make_fun_with_arity",
       env_values ++
         [
           fn_idx: MLIR.Attribute.integer(MLIR.Type.i64(), fn_idx),
+          arity: MLIR.Attribute.integer(MLIR.Type.i64(), arity),
           env_len: MLIR.Attribute.integer(MLIR.Type.i64(), length(captured)),
           operandSegmentSizes:
             segment_sizes(
@@ -6920,7 +6921,7 @@ defmodule Batata.Lift do
   # calls and explicitly supported integer expressions on bound or outer
   # variables. Other term operations are rejected explicitly.
   defp lift_term_guard(guard_ast, binds, env, ctx, block) do
-    unless GuardSupport.supported?(guard_ast) do
+    unless GuardSupport.compiler_supported?(guard_ast) do
       raise Error,
             "unsupported guard on term pattern (only is_* predicates on bound or outer variables): " <>
               inspect(guard_ast)
@@ -6937,6 +6938,20 @@ defmodule Batata.Lift do
     word = box_if_scalar(value, ctx, block)
 
     lower_term_membership(word, values, ctx, block)
+  end
+
+  defp lift_term_guard_expr({:is_function, _, [{name, _, _}]}, env, ctx, block)
+       when is_atom(name) do
+    word = env |> Map.fetch!(name) |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
+    arity = create_op("ex.fun_arity", [word], [MLIR.Type.i64()], ctx, block)
+    cmp(arity, 0, "sge", ctx, block)
+  end
+
+  defp lift_term_guard_expr({:is_function, _, [{name, _, _}, expected]}, env, ctx, block)
+       when is_atom(name) and is_integer(expected) and expected >= 0 and expected <= 4 do
+    word = env |> Map.fetch!(name) |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
+    arity = create_op("ex.fun_arity", [word], [MLIR.Type.i64()], ctx, block)
+    cmp(arity, expected, "eq", ctx, block)
   end
 
   defp lift_term_guard_expr({op, _, [left, right]}, env, ctx, block)
@@ -7208,7 +7223,7 @@ defmodule Batata.Lift do
   defp lift_guard(guard_ast, vars, scrutinee, env, ctx, block) do
     guard_env = Enum.reduce(vars, env, fn var, acc -> Map.put(acc, var, scrutinee) end)
 
-    if GuardSupport.supported?(guard_ast) or integer_guard_comparison?(guard_ast) do
+    if GuardSupport.compiler_supported?(guard_ast) or integer_guard_comparison?(guard_ast) do
       lift_term_guard_expr(guard_ast, guard_env, ctx, block)
     else
       {value, _env} = lift_expr(guard_ast, ctx, block, guard_env)
@@ -7381,6 +7396,12 @@ defmodule Batata.Lift do
     module_env
     |> Map.fetch!(@arg_modes_key)
     |> Map.get({name, arity}, List.duplicate(:scalar, arity))
+  end
+
+  defp term_case_opts(name, arity, module_env) do
+    if name |> function_arg_modes(arity, module_env) |> List.first() == :term,
+      do: [term_case?: true],
+      else: []
   end
 
   defp inbound_argument(value, :term, ctx, block),

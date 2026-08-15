@@ -22,6 +22,7 @@ const tag_list: usize = 3;
 const tag_map: usize = 4;
 const tag_binary: usize = 5;
 const tag_fun: usize = 6;
+const fun_arity_marker: u64 = @as(u64, 1) << 61;
 // Tag 7 is shared by arena-owned boxed floats and immediate runtime-local
 // words. The latter carry runtime_local_marker and are never arena pointers.
 const tag_float: usize = 7;
@@ -168,6 +169,19 @@ fn map_entries(map: i64) [*]i64 {
 
 fn fun_words(fun: i64) [*]i64 {
     return @ptrFromInt(@as(usize, @bitCast(fun)) & ~tag_mask);
+}
+
+fn fun_has_arity(fun: i64) bool {
+    return (@as(u64, @bitCast(fun_words(fun)[1])) & fun_arity_marker) != 0;
+}
+
+fn fun_env_len(fun: i64) usize {
+    const header: u64 = @bitCast(fun_words(fun)[1]);
+    return @intCast(header & ~fun_arity_marker);
+}
+
+fn fun_env_offset(fun: i64) usize {
+    return if (fun_has_arity(fun)) 3 else 2;
 }
 
 fn float_bits(float: i64) u64 {
@@ -1327,7 +1341,7 @@ pub export fn ex_term_result_term_length(handle: i64, word: i64) i64 {
         tag_list => @intCast(list_len(word)),
         tag_map => @intCast(map_len(word)),
         tag_binary => @intCast(binary_len(word)),
-        tag_fun => fun_words(word)[1],
+        tag_fun => @intCast(fun_env_len(word)),
         tag_float => 1,
         else => -1,
     };
@@ -1345,8 +1359,10 @@ pub export fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) i
         tag_map => if (index < map_len(word) * 2) map_entries(word)[index] else -1,
         tag_binary => if (index < binary_len(word)) binary_bytes(word)[index] else -1,
         tag_float => if (index == 0) @bitCast(float_bits(word)) else -1,
-        tag_fun => if (index < @as(usize, @intCast(fun_words(word)[1])) + 1)
-            fun_words(word)[index * 0 + index]
+        tag_fun => if (index == 0)
+            fun_words(word)[0]
+        else if (index <= fun_env_len(word))
+            fun_words(word)[fun_env_offset(word) + index - 1]
         else
             -1,
         tag_list => blk: {
@@ -3070,10 +3086,30 @@ pub export fn ex_term_make_fun(fn_idx: i64, env_len: i64, e0: i64, e1: i64, e2: 
     return word_from_ptr(words, tag_fun);
 }
 
+/// Constructs an arity-carrying closure while leaving the legacy closure
+/// layout readable for callers that still use `ex.term.make_fun`.
+pub export fn ex_term_make_fun_with_arity(fn_idx: i64, arity: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) i64 {
+    if (arity < 0 or arity > 4 or env_len < 0 or env_len > 4) return nil_word;
+    const words = alloc_words(7) orelse return nil_word;
+    words[0] = fn_idx;
+    words[1] = @bitCast(fun_arity_marker | @as(u64, @intCast(env_len)));
+    words[2] = arity;
+    const env = [4]i64{ e0, e1, e2, e3 };
+    for (0..@as(usize, @intCast(env_len))) |i| words[3 + i] = env[i];
+    return word_from_ptr(words, tag_fun);
+}
+
 /// Returns the function index of a closure word; 0 for non-functions.
 pub export fn ex_term_fun_idx(fun: i64) i64 {
     if (word_tag(fun) != tag_fun) return 0;
     return fun_words(fun)[0];
+}
+
+/// Returns a closure's declared arity; -1 for non-functions and legacy
+/// closures whose layout did not carry arity.
+pub export fn ex_term_fun_arity(fun: i64) i64 {
+    if (word_tag(fun) != tag_fun or !fun_has_arity(fun)) return -1;
+    return fun_words(fun)[2];
 }
 
 /// Returns the `index`-th captured env word of a closure; nil for
@@ -3081,9 +3117,9 @@ pub export fn ex_term_fun_idx(fun: i64) i64 {
 pub export fn ex_term_fun_env(fun: i64, index: i64) i64 {
     if (word_tag(fun) != tag_fun) return nil_word;
     const words = fun_words(fun);
-    const env_len: usize = @intCast(words[1]);
+    const env_len = fun_env_len(fun);
     if (index < 0 or index >= @as(i64, @intCast(env_len))) return nil_word;
-    return words[2 + @as(usize, @intCast(index))];
+    return words[fun_env_offset(fun) + @as(usize, @intCast(index))];
 }
 
 /// Conses a head word onto a list tail, returning a proper list word.
@@ -4483,7 +4519,9 @@ comptime {
     @export(&ex_term_raise, .{ .name = "ex.term.raise" });
     @export(&ex_term_catch_value, .{ .name = "ex.term.catch_value" });
     @export(&ex_term_make_fun, .{ .name = "ex.term.make_fun" });
+    @export(&ex_term_make_fun_with_arity, .{ .name = "ex.term.make_fun_with_arity" });
     @export(&ex_term_fun_idx, .{ .name = "ex.term.fun_idx" });
+    @export(&ex_term_fun_arity, .{ .name = "ex.term.fun_arity" });
     @export(&ex_term_fun_env, .{ .name = "ex.term.fun_env" });
     @export(&ex_term_list_cons, .{ .name = "ex.term.list_cons" });
     @export(&ex_term_tuple_from_list, .{ .name = "ex.term.tuple_from_list" });
@@ -4642,6 +4680,22 @@ test "term ABI construction and predicates" {
     const neg_str = ex_term_int_to_string(-1 << @intCast(tag_shift));
     try std.testing.expectEqual(@as(i64, 2), ex_term_binary_length(neg_str));
     try std.testing.expectEqual(@as(i64, -1), ex_term_string_to_int(neg_str));
+}
+
+test "closure ABI carries arity without breaking legacy env reads" {
+    const legacy = ex_term_make_fun(11, 2, 21, 22, 0, 0);
+    try std.testing.expectEqual(@as(i64, 11), ex_term_fun_idx(legacy));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_fun_arity(legacy));
+    try std.testing.expectEqual(@as(i64, 21), ex_term_fun_env(legacy, 0));
+    try std.testing.expectEqual(@as(i64, 22), ex_term_fun_env(legacy, 1));
+
+    const arity_carrying = ex_term_make_fun_with_arity(12, 1, 2, 31, 32, 0, 0);
+    try std.testing.expectEqual(@as(i64, 12), ex_term_fun_idx(arity_carrying));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_fun_arity(arity_carrying));
+    try std.testing.expectEqual(@as(i64, 31), ex_term_fun_env(arity_carrying, 0));
+    try std.testing.expectEqual(@as(i64, 32), ex_term_fun_env(arity_carrying, 1));
+    try std.testing.expectEqual(nil_word, ex_term_fun_env(arity_carrying, 2));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_fun_arity(nil_word));
 }
 
 test "term ABI reads" {
