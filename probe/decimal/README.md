@@ -33,13 +33,14 @@ The shared diagnostic generation lane accepts one of those forms: the exact
 `lib/decimal.ex:2080`. It validates both `defp` branches without evaluating
 arbitrary source, selects the branch for the running Elixir toolchain, and
 submits that single definition to Batata in an isolated synthetic module. On
-the recorded Elixir 1.20.3 / OTP 29 toolchain, the attempt reaches the compile
-pipeline and stops at `frontend_normalization_failure` with
-`unsupported_stdlib_call`.
+the recorded Elixir 1.20.3 / OTP 29 toolchain, the selected branch calls
+`Integer.to_charlist/1`. Batata's bounded production lowering for that call
+lets the isolated definition reach `lowering_complete`, with no subsequent
+compile blocker.
 
 This remains diagnostic-only evidence, not production Decimal semantics or
 per-definition coverage. The other definition-generating forms still require
 different compile-time expansion, and the repeated `doc_since/1` calls depend
 on imported macro semantics. No blocker, module attempt, or existing diagnostic
-attempt changes, and this compile-time frontier does not indicate a Beaver
-runtime change.
+attempt changes, and this compile-time frontier does not claim broader Decimal
+runtime semantics.

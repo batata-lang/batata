@@ -297,7 +297,7 @@ defmodule Batata.Probe.Jason.ReportTest do
 
     assert decimal["summary"]["generation_attempts"] == %{
              "expanded_definitions" => 1,
-             "phases" => %{"frontend_normalization_failure" => 1},
+             "phases" => %{"lowering_complete" => 1},
              "total" => 1
            }
 
@@ -308,12 +308,11 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal_generation_attempt["generation_root"] == "if/2"
     assert decimal_generation_attempt["expanded_definition_count"] == 1
     assert decimal_generation_attempt["outcome"] == "reached_compile_pipeline"
-    assert decimal_generation_attempt["compile_phase"] == "frontend_normalization_failure"
-    assert decimal_generation_attempt["phase"] == "frontend_normalization_failure"
-    assert decimal_generation_attempt["reason_class"] == "unsupported_stdlib_call"
-
-    assert decimal_generation_attempt["fingerprint"] ==
-             "b7635d40399942bf74109565a6f7d273692ff2eb6db0df9d95a6a49b805bdb12"
+    assert decimal_generation_attempt["compile_phase"] == "pass"
+    assert decimal_generation_attempt["phase"] == "lowering_complete"
+    refute Map.has_key?(decimal_generation_attempt, "error")
+    refute Map.has_key?(decimal_generation_attempt, "reason_class")
+    refute Map.has_key?(decimal_generation_attempt, "fingerprint")
 
     assert Enum.any?(
              decimal["blockers"],
