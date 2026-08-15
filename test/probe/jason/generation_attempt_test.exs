@@ -113,14 +113,143 @@ defmodule Batata.Probe.Jason.GenerationAttemptTest do
     end
   end
 
-  defp unsupported(source) do
+  test "selects only the bounded version-gated branch for the current toolchain" do
+    assert {:ok, low_literal} =
+             GenerationAttempt.expand_candidate(
+               version_if("0.0.0", "selected_else", "selected_then"),
+               "Fixture.LowLiteral"
+             )
+
+    assert low_literal.generation_root == "if/2"
+    assert low_literal.expanded_definition_count == 1
+    assert low_literal.source =~ "selected_else"
+    refute low_literal.source =~ "selected_then"
+
+    assert {:ok, high_literal} =
+             GenerationAttempt.expand_candidate(
+               version_if("9999.0.0", "selected_else", "selected_then"),
+               "Fixture.HighLiteral"
+             )
+
+    assert high_literal.generation_root == "if/2"
+    assert high_literal.expanded_definition_count == 1
+    assert high_literal.source =~ "selected_then"
+    refute high_literal.source =~ "selected_else"
+  end
+
+  test "accepts reversed do/else option order without changing selection" do
+    unsupported = version_if("0.0.0", "selected_else", "selected_then")
+    {:if, metadata, [condition, options]} = unsupported.form_ast
+    reversed = %{unsupported | form_ast: {:if, metadata, [condition, Enum.reverse(options)]}}
+
+    assert {:ok, expansion} =
+             GenerationAttempt.expand_candidate(reversed, "Fixture.ReversedOptions")
+
+    assert expansion.source =~ "selected_else"
+    refute expansion.source =~ "selected_then"
+  end
+
+  test "rejects malformed or broader version-gated conditions" do
+    module_name = "Fixture.RejectedVersionIf"
+
+    for source <- [
+          version_if_source("not-a-version"),
+          version_if_source("1.0"),
+          version_if_source("1.3.0", operator: "!="),
+          version_if_source("1.3.0", comparison: ":gt"),
+          version_if_source("1.3.0", swap_operands: true),
+          """
+          version = "1.3.0"
+          if Version.compare(System.version(), version) == :lt do
+            defp selected_then(), do: :then
+          else
+            defp selected_else(), do: :else
+          end
+          """,
+          """
+          if Version.compare(File.read!("version"), "1.3.0") == :lt do
+            defp selected_then(), do: :then
+          else
+            defp selected_else(), do: :else
+          end
+          """,
+          """
+          if Version.compare(System.version(), "1.3.0") == :lt do
+            defp selected_then(), do: :then
+          end
+          """,
+          """
+          if Version.compare(System.version(), "1.3.0") == :lt do
+            defmacro selected_then(), do: :then
+          else
+            defp selected_else(), do: :else
+          end
+          """,
+          """
+          if Version.compare(System.version(), "1.3.0") == :lt do
+            defp selected_then(), do: fn -> :then end
+          else
+            defp selected_else(), do: :else
+          end
+          """,
+          """
+          if Version.compare(System.version(), "1.3.0") == :lt do
+            defp selected_then(), do: :then
+          else
+            defp selected_else(), do: quote(do: :else)
+          end
+          """
+        ] do
+      assert source |> unsupported("if/2") |> GenerationAttempt.expand_candidate(module_name) ==
+               :error
+    end
+
+    valid = version_if("1.3.0", "selected_else", "selected_then")
+    {:if, metadata, [condition, options]} = valid.form_ast
+    duplicate = %{valid | form_ast: {:if, metadata, [condition, [hd(options) | options]]}}
+
+    extra =
+      %{valid | form_ast: {:if, metadata, [condition, options ++ [unexpected: true]]}}
+
+    assert GenerationAttempt.expand_candidate(duplicate, module_name) == :error
+    assert GenerationAttempt.expand_candidate(extra, module_name) == :error
+  end
+
+  defp unsupported(source, generation_root \\ "for/2") do
     form = Code.string_to_quoted!(source)
 
     %{
       reason: :module_level_generation,
       generation_construct: :definition_generation,
-      generation_root: "for/2",
+      generation_root: generation_root,
       form_ast: form
     }
+  end
+
+  defp version_if(version, else_name, then_name) do
+    version_if_source(version, else_name: else_name, then_name: then_name)
+    |> unsupported("if/2")
+  end
+
+  defp version_if_source(version, opts \\ []) do
+    operator = Keyword.get(opts, :operator, "==")
+    comparison = Keyword.get(opts, :comparison, ":lt")
+    else_name = Keyword.get(opts, :else_name, "selected_else")
+    then_name = Keyword.get(opts, :then_name, "selected_then")
+
+    {left, right} =
+      if Keyword.get(opts, :swap_operands, false) do
+        {comparison, "Version.compare(System.version(), \"#{version}\")"}
+      else
+        {"Version.compare(System.version(), \"#{version}\")", comparison}
+      end
+
+    """
+    if #{left} #{operator} #{right} do
+      defp #{then_name}(), do: :then
+    else
+      defp #{else_name}(), do: :else
+    end
+    """
   end
 end

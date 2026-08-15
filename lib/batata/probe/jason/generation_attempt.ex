@@ -3,15 +3,16 @@ defmodule Batata.Probe.Jason.GenerationAttempt do
   Runs isolated diagnostic attempts for bounded definition generation.
 
   The attempt deliberately does not change inventory eligibility. It selects a
-  single literal-list `for` blocker, expands only its generated `def`/`defp`
-  forms, and runs those definitions through Batata in a synthetic module. All
-  other module forms are reported as removed scope rather than silently counted
-  as coverage.
+  tightly bounded definition-generating blocker, expands only its generated
+  `def`/`defp` forms, and runs those definitions through Batata in a synthetic
+  module. All other module forms are reported as removed scope rather than
+  silently counted as coverage.
   """
 
   alias Batata.Probe.Jason.{BlockerIdentity, CompileAttempt}
 
   @for_root "for/2"
+  @if_root "if/2"
   @definition_kinds [:def, :defp]
   @forbidden_nested [:fn, :quote]
 
@@ -29,17 +30,12 @@ defmodule Batata.Probe.Jason.GenerationAttempt do
   @spec expand_candidate(map(), String.t()) :: {:ok, map()} | :error
   def expand_candidate(unsupported, module_name) do
     with true <- candidate?(unsupported),
-         {:ok, variable, values, definitions} <- bounded_for(unsupported.form_ast),
-         :ok <- validate_definitions(definitions, variable) do
-      expanded =
-        for value <- values,
-            definition <- definitions,
-            do: substitute(definition, variable, value)
-
+         {:ok, generation_root, expanded} <- expand_form(unsupported) do
       {:ok,
        %{
          source: synthetic_source(module_name, expanded),
-         expanded_definition_count: length(expanded)
+         expanded_definition_count: length(expanded),
+         generation_root: generation_root
        }}
     else
       _ -> :error
@@ -66,7 +62,7 @@ defmodule Batata.Probe.Jason.GenerationAttempt do
       "module" => module.module,
       "line" => unsupported.line,
       "blocker_id" => BlockerIdentity.id(path, module.module, unsupported),
-      "generation_root" => @for_root,
+      "generation_root" => expansion.generation_root,
       "diagnostic_only" => true,
       "outcome" => "reached_compile_pipeline",
       "compile_phase" => compile_phase(status),
@@ -82,8 +78,28 @@ defmodule Batata.Probe.Jason.GenerationAttempt do
   defp candidate?(unsupported) do
     unsupported.reason == :module_level_generation and
       Map.get(unsupported, :generation_construct) == :definition_generation and
-      Map.get(unsupported, :generation_root) == @for_root
+      Map.get(unsupported, :generation_root) in [@for_root, @if_root]
   end
+
+  defp expand_form(%{generation_root: @for_root, form_ast: form}) do
+    with {:ok, variable, values, definitions} <- bounded_for(form),
+         :ok <- validate_definitions(definitions, variable) do
+      expanded =
+        for value <- values,
+            definition <- definitions,
+            do: substitute(definition, variable, value)
+
+      {:ok, @for_root, expanded}
+    end
+  end
+
+  defp expand_form(%{generation_root: @if_root, form_ast: form}) do
+    with {:ok, definitions} <- bounded_version_if(form) do
+      {:ok, @if_root, definitions}
+    end
+  end
+
+  defp expand_form(_unsupported), do: :error
 
   defp bounded_for({:for, _, [{:<-, _, [{variable, _, context}, values]}, options]})
        when is_atom(variable) and (is_atom(context) or is_nil(context)) and is_list(values) and
@@ -100,6 +116,49 @@ defmodule Batata.Probe.Jason.GenerationAttempt do
   end
 
   defp bounded_for(_form), do: :error
+
+  defp bounded_version_if(
+         {:if, _,
+          [
+            {:==, _,
+             [
+               {{:., _, [{:__aliases__, _, [:Version]}, :compare]}, _,
+                [
+                  {{:., _, [{:__aliases__, _, [:System]}, :version]}, _, []},
+                  version_literal
+                ]},
+               :lt
+             ]},
+            options
+          ]}
+       )
+       when is_binary(version_literal) and is_list(options) do
+    system_version = System.version()
+
+    with true <- exact_if_options?(options),
+         {:ok, _system_version} <- Version.parse(system_version),
+         {:ok, _version_literal} <- Version.parse(version_literal),
+         {:ok, then_definitions} <- options |> Keyword.fetch!(:do) |> definition_forms(),
+         {:ok, else_definitions} <- options |> Keyword.fetch!(:else) |> definition_forms(),
+         :ok <- validate_definitions(then_definitions, nil),
+         :ok <- validate_definitions(else_definitions, nil) do
+      selected =
+        if Version.compare(system_version, version_literal) == :lt,
+          do: then_definitions,
+          else: else_definitions
+
+      {:ok, selected}
+    else
+      _ -> :error
+    end
+  end
+
+  defp bounded_version_if(_form), do: :error
+
+  defp exact_if_options?(options) do
+    Keyword.keyword?(options) and length(options) == 2 and
+      Enum.sort(Keyword.keys(options)) == Enum.sort([:do, :else])
+  end
 
   defp definition_forms({:__block__, _, forms}) when is_list(forms),
     do: definition_forms(forms)
@@ -122,14 +181,16 @@ defmodule Batata.Probe.Jason.GenerationAttempt do
   end
 
   defp valid_node?({:unquote, _, [{variable, _, context}]}, variable)
-       when is_atom(context) or is_nil(context),
+       when not is_nil(variable) and (is_atom(context) or is_nil(context)),
        do: true
 
+  defp valid_node?({:unquote, _, _args}, nil), do: false
   defp valid_node?({:unquote, _, _args}, _variable), do: false
   defp valid_node?({kind, _, _args}, _variable) when kind in @forbidden_nested, do: false
 
   defp valid_node?({variable, metadata, context}, variable)
-       when is_list(metadata) and (is_atom(context) or is_nil(context)),
+       when not is_nil(variable) and is_list(metadata) and
+              (is_atom(context) or is_nil(context)),
        do: false
 
   defp valid_node?(node, variable) when is_tuple(node) do
