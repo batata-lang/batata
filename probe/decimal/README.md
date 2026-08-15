@@ -28,10 +28,18 @@ functions, and two default-argument `def/1` forms rejected before default-arg
 expansion. The remaining 18 forms are top-level `doc_since/1` calls. Blocker
 IDs, module attempts, and diagnostic attempts are unchanged.
 
-This distribution does not provide a narrow Decimal lowering slice. Schema v6
-adds the shared bounded literal-list `for` generation attempt, but none of the
-Decimal forms satisfy that strict shape, so `generation_attempts` is empty.
-The definition-generating forms still require different compile-time expansion,
-and the repeated `doc_since/1` calls depend on imported macro semantics. No
-blocker, module attempt, or diagnostic attempt changes, and no Beaver runtime
-change is indicated by this compile-time evidence.
+The shared diagnostic generation lane accepts one of those forms: the exact
+`Version.compare(System.version(), "1.3.0") == :lt` gate at
+`lib/decimal.ex:2080`. It validates both `defp` branches without evaluating
+arbitrary source, selects the branch for the running Elixir toolchain, and
+submits that single definition to Batata in an isolated synthetic module. On
+the recorded Elixir 1.20.3 / OTP 29 toolchain, the attempt reaches the compile
+pipeline and stops at `frontend_normalization_failure` with
+`unsupported_stdlib_call`.
+
+This remains diagnostic-only evidence, not production Decimal semantics or
+per-definition coverage. The other definition-generating forms still require
+different compile-time expansion, and the repeated `doc_since/1` calls depend
+on imported macro semantics. No blocker, module attempt, or existing diagnostic
+attempt changes, and this compile-time frontier does not indicate a Beaver
+runtime change.
