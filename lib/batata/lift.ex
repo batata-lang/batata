@@ -4844,19 +4844,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_stdlib_call(Map, :put, args, ctx, block, env) do
-    {values, env} =
-      Enum.map_reduce(args, env, fn arg, env ->
-        {value, env} = lift_expr(arg, ctx, block, env)
-
-        {create_op(
-           "ex.to_word",
-           [lift_value(value, ctx, block, env)],
-           [ex_type("dyn", ctx)],
-           ctx,
-           block
-         ), env}
-      end)
-
+    {values, env} = lift_operands_boxed(args, ctx, block, env)
     {native_term_call(Map, :put, values, ctx, block), env}
   end
 
@@ -5643,8 +5631,7 @@ defmodule Batata.Lift do
 
   defp native_term_call(_module, :elem, [tuple, index], ctx, block) do
     index_int = create_op("ex.to_int", [index], [MLIR.Type.i64()], ctx, block)
-    index0 = create_op("ex.sub", [index_int, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)
-    create_op("ex.tuple_get", [tuple, index0], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.tuple_get", [tuple, index_int], [ex_type("dyn", ctx)], ctx, block)
   end
 
   defp native_term_call(module, :is_atom, [value], ctx, block) when module in [Kernel, :erlang],

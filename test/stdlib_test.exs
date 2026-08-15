@@ -114,8 +114,11 @@ defmodule Batata.StdlibTest do
 
     test "reads term sizes and elements", %{ctx: ctx} do
       assert 2 == execute("tuple_size({10, 20})", ctx)
-      assert 80 == execute("elem({10, 20}, 1)", ctx)
-      assert 160 == execute("elem({10, 20}, 2)", ctx)
+      # A dynamic term returned as the scalar root exposes its tagged word;
+      # embedding the values below verifies the zero-based term semantics.
+      assert 80 == execute("elem({10, 20}, 0)", ctx)
+      assert 160 == execute("elem({10, 20}, 1)", ctx)
+      assert {10, 20} == execute("{elem({10, 20}, 0), elem({10, 20}, 1)}", ctx)
       assert 3 == execute("byte_size(<<1, 2, 3>>)", ctx)
       assert 1 == execute("map_size(%{1 => 2})", ctx)
       assert 2 == execute("Map.size(%{1 => 2, 3 => 4})", ctx)
@@ -124,6 +127,12 @@ defmodule Batata.StdlibTest do
       assert 2 == execute("Enum.count({1, 2})", ctx)
       assert 2 == execute("Enum.count(%{1 => 2, 3 => 4})", ctx)
       assert 4 == execute("Enum.count(<<1, 2, 3, 4>>)", ctx)
+    end
+
+    test "boxes static Map.put keys and values with BEAM semantics", %{ctx: ctx} do
+      expression = "Map.put(%{8 => {8, <<23>>}}, 64, {64, <<63>>})"
+      {expected, _binding} = Code.eval_string(expression)
+      assert execute(expression, ctx) == expected
     end
 
     test "executes recognized Enum.map/2 and Enum.reduce/3 patterns", %{ctx: ctx} do
