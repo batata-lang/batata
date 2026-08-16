@@ -204,7 +204,9 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.yield_count` | `() -> i64` | number of preemptive yields so far |
 | `ex.term.to_int` | `(word: i64) -> i64` | untag an integer term to its scalar value; 0 for non-integers |
 | `ex.term.make_fun` | `(fn_idx: i64, env_len: i64, e0..e3: i64) -> i64` | closure word referencing `__fn_*` by index with up to four captured env words |
+| `ex.term.make_fun_with_arity` | `(fn_idx: i64, arity: i64, env_len: i64, e0..e3: i64) -> i64` | arity-carrying closure word referencing `__fn_*`; legacy closures remain readable |
 | `ex.term.fun_idx` | `(fun: i64) -> i64` | function index of a closure; 0 for non-functions |
+| `ex.term.fun_arity` | `(fun: i64) -> i64` | declared closure arity; -1 for non-functions and legacy closures |
 | `ex.term.fun_env` | `(fun: i64, index: i64) -> i64` | captured env word at index; nil for non-functions / out-of-range |
 | `ex.term.tuple_from_list` | `(list: i64) -> i64` | proper list -> tuple |
 | `ex.term.tuple_get` | `(tuple: i64, index: i64) -> i64` | element at index; nil when out of range or not a tuple |
