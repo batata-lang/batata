@@ -24,3 +24,8 @@ batata-*.tar
 
 # Built Zig term runtime artifacts.
 /priv/term_runtime/
+
+# Worktree-local native dependency state.
+/.batata/
+/scripts/native_deps/_build/
+/scripts/native_deps/deps/
