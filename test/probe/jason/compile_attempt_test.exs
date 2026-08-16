@@ -2,6 +2,36 @@ defmodule Batata.Probe.Jason.CompileAttemptTest do
   use ExUnit.Case, async: true
 
   alias Batata.Probe.Jason.CompileAttempt
+  alias Batata.Probe.Jason.Inventory
+
+  @tag :tmp_dir
+  test "attaches canonical closure evidence without changing the failure", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "external.ex"), """
+    defmodule External do
+      def apply(fun, value), do: fun.(value)
+    end
+    """)
+
+    attempts = tmp_dir |> Inventory.discover!() |> CompileAttempt.run()
+
+    assert [attempt] = attempts
+    assert attempt["status"] == "frontend_normalization_failure"
+    assert attempt["reason_class"] == "dynamic_apply_without_local_dispatch"
+    assert byte_size(attempt["fingerprint"]) == 64
+
+    assert attempt["closure_frontier"] == %{
+             "kind" => "external_closure",
+             "local_fn_count" => 0,
+             "sites" => [
+               %{
+                 "arity" => 2,
+                 "function" => "apply",
+                 "line" => 2,
+                 "provenance" => "caller_parameter"
+               }
+             ]
+           }
+  end
 
   test "fingerprints equivalent Lift failures deterministically" do
     first =

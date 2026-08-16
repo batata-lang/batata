@@ -108,6 +108,16 @@ other module forms. `Jason.Fragment` now becomes the third target-module-body
 compile pass; this is non-executing compile evidence and does not claim that a
 host-supplied encoder closure can cross the runtime boundary.
 
+Schema v6 also records a diagnostic-only `closure_frontier`. It classifies
+dynamic applications by the callable expression visible in each original
+definition: module-local closure syntax, caller parameters, direct
+cross-module captures, or other external expressions. The same canonical
+classification is attached to a compile-attempt failure when the module has
+no local closure dispatch. In the pinned corpus, `Jason.OrderedObject` still
+fails with `dynamic_apply_without_local_dispatch`; its two sites consume
+caller-supplied functions. This is static provenance evidence, not a compile
+pass or an execution claim for captures created by another Jason module.
+
 String interpolation now executes for integer, binary, and compile-known atom
 terms. Binary reads execute for valid binaries with in-range integer indexes;
 binary concatenation executes for binary operands and fails closed outside

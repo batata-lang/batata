@@ -430,6 +430,24 @@ defmodule Batata.Probe.Jason.ReportTest do
              {"Jason.OrderedObject", "dynamic_apply_without_local_dispatch"}
            ]
 
+    ordered_object_attempt =
+      Enum.find(
+        jason["module_compile_attempts"],
+        &(&1["module"] == "Jason.OrderedObject")
+      )
+
+    assert ordered_object_attempt["status"] == "frontend_normalization_failure"
+    assert ordered_object_attempt["reason_class"] == "dynamic_apply_without_local_dispatch"
+
+    assert ordered_object_attempt["fingerprint"] ==
+             "ae45518fe86ed6cab852d958626829b9a3c470fdffffe70443ef11c61573a913"
+
+    assert ordered_object_attempt["closure_frontier"] == %{
+             "kind" => "external_closure",
+             "local_fn_count" => 0,
+             "sites" => ordered_object_frontier["sites"]
+           }
+
     assert Enum.map(
              Enum.filter(jason["module_compile_attempts"], &(&1["status"] == "pass")),
              &{&1["path"], &1["module"]}
