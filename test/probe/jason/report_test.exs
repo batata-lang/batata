@@ -67,6 +67,7 @@ defmodule Batata.Probe.Jason.ReportTest do
            }
 
     assert first["dependency_frontier"] == []
+    assert first["closure_frontier"] == []
     assert first["diagnostic_attempts"] == []
     assert first["generation_attempts"] == []
 
@@ -80,6 +81,17 @@ defmodule Batata.Probe.Jason.ReportTest do
              "expanded_definitions" => 0,
              "phases" => %{},
              "total" => 0
+           }
+
+    assert first["summary"]["closure_frontier"] == %{
+             "by_provenance" => %{
+               "caller_parameter" => 0,
+               "cross_module_capture" => 0,
+               "module_local" => 0,
+               "other_external" => 0
+             },
+             "modules" => 0,
+             "sites" => 0
            }
 
     assert first["summary"]["module_compile_attempts"] == %{
@@ -348,6 +360,52 @@ defmodule Batata.Probe.Jason.ReportTest do
              "eligible_calls" => 2,
              "targets" => 11
            }
+
+    assert jason["summary"]["closure_frontier"] == %{
+             "by_provenance" => %{
+               "caller_parameter" => 13,
+               "cross_module_capture" => 0,
+               "module_local" => 0,
+               "other_external" => 10
+             },
+             "modules" => 4,
+             "sites" => 23
+           }
+
+    assert decimal["summary"]["closure_frontier"] == %{
+             "by_provenance" => %{
+               "caller_parameter" => 2,
+               "cross_module_capture" => 0,
+               "module_local" => 0,
+               "other_external" => 0
+             },
+             "modules" => 1,
+             "sites" => 2
+           }
+
+    ordered_object_frontier =
+      Enum.find(jason["closure_frontier"], &(&1["module"] == "Jason.OrderedObject"))
+
+    assert ordered_object_frontier["local_fn_count"] == 0
+
+    assert Enum.map(
+             ordered_object_frontier["sites"],
+             &{&1["function"], &1["arity"], &1["line"], &1["provenance"]}
+           ) == [
+             {"get_and_update", 4, 57, "caller_parameter"},
+             {"get_and_update", 4, 72, "caller_parameter"}
+           ]
+
+    assert [%{"module" => "Decimal.Context", "sites" => decimal_context_sites}] =
+             decimal["closure_frontier"]
+
+    assert Enum.map(
+             decimal_context_sites,
+             &{&1["function"], &1["arity"], &1["line"], &1["provenance"]}
+           ) == [
+             {"with", 2, 92, "caller_parameter"},
+             {"update", 1, 123, "caller_parameter"}
+           ]
 
     assert Enum.any?(jason["dependency_frontier"], fn call ->
              call["module"] == "Jason" and call["target"] == "Jason.Decoder" and
