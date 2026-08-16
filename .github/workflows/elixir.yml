@@ -6,9 +6,8 @@ on:
     branches: [main]
 
 env:
-  # The beaver ref to test against; set BEAVER_REF as a repository variable
-  # while a stacked beaver PR is in flight, then unset it after merging. The
-  # ref is resolved at runtime and falls back to main if it no longer exists.
+  # Set this repository variable before opening a Batata PR that depends on an
+  # unmerged Beaver branch. Delete it after Beaver merges.
   BEAVER_REF: ${{ vars.BEAVER_REF || 'main' }}
 
 permissions:
@@ -24,32 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve beaver ref
-        id: beaver_ref
+      - name: Resolve Beaver ref
         run: |
-          candidate="${{ env.BEAVER_REF }}"
-          if git ls-remote --exit-code --heads \
-            https://github.com/beaver-lodge/beaver.git "refs/heads/${candidate}" \
-            >/dev/null 2>&1; then
-            echo "beaver_ref=${candidate}" >> "$GITHUB_OUTPUT"
-          else
-            echo "warning: beaver branch ${candidate} not found, falling back to main" >> "$GITHUB_STEP_SUMMARY"
-            echo "beaver_ref=main" >> "$GITHUB_OUTPUT"
-          fi
+          git ls-remote --exit-code --heads \
+            https://github.com/beaver-lodge/beaver.git \
+            "refs/heads/${BEAVER_REF}" >/dev/null
 
-      - name: Checkout beaver
+      - name: Checkout selected Beaver
         run: |
-          git clone --depth 1 --branch "${{ steps.beaver_ref.outputs.beaver_ref }}" https://github.com/beaver-lodge/beaver.git
-
-      - name: Checkout kinda
-        run: |
-          git clone https://github.com/beaver-lodge/kinda.git
-          ref="$(awk 'NF && $1 !~ /^#/ {print $1; exit}' beaver/kinda.ref 2>/dev/null || true)"
-          if [ -n "$ref" ] && git -C kinda cat-file -e "$ref^{commit}" 2>/dev/null; then
-            git -C kinda checkout -q "$ref"
-          elif [ -n "$ref" ]; then
-            echo "warning: paired kinda ref $ref unavailable, using main" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          git clone --depth 1 --branch "${BEAVER_REF}" \
+            https://github.com/beaver-lodge/beaver.git beaver
+          test -f beaver/native-deps.json
 
       - uses: erlef/setup-beam@v1
         with:
@@ -60,44 +44,43 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Install prebuilt LLVM/MLIR
-        run: bash beaver/scripts/install-prebuilt-llvm.sh llvm-prebuilt
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          LLVM_EUDSL_ASSET_REVISION: latest
-
-      - name: Install dependencies
+      - name: Install Mix package managers
         run: |
           mix local.hex --force
           mix local.rebar --force
-          mix deps.get
+
+      - name: Test native dependency bootstrap
+        working-directory: scripts/native_deps
+        run: |
+          mix format --check-formatted
+          mix test --warnings-as-errors
+          mix compile --warnings-as-errors
+
+      - name: Configure pinned native dependencies
+        working-directory: scripts/native_deps
+        run: mix batata.native setup --beaver-path "${{ github.workspace }}/beaver"
         env:
-          BEAVER_PATH: ${{ github.workspace }}/beaver
-          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Report native dependency identity
+        working-directory: scripts/native_deps
+        run: mix batata.native doctor
 
       - name: Check formatting
-        run: mix format --check-formatted
+        working-directory: scripts/native_deps
+        run: mix batata.native run -- format --check-formatted
 
       - name: Compile without warnings
-        run: mix compile --warnings-as-errors
-        env:
-          BEAVER_PATH: ${{ github.workspace }}/beaver
-          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
-          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
+        working-directory: scripts/native_deps
+        run: mix batata.native compile --warnings-as-errors
 
       - name: Run Credo
-        run: mix credo --strict
-        env:
-          BEAVER_PATH: ${{ github.workspace }}/beaver
-          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
-          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
+        working-directory: scripts/native_deps
+        run: mix batata.native run -- credo --strict
 
       - name: Run tests
-        run: mix test --warnings-as-errors --max-cases 1 --timeout 120000
-        env:
-          BEAVER_PATH: ${{ github.workspace }}/beaver
-          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
-          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
+        working-directory: scripts/native_deps
+        run: mix batata.native test --warnings-as-errors --max-cases 1 --timeout 120000
 
       - name: Upload concurrent runtime traces
         if: always()
@@ -108,7 +91,8 @@ jobs:
           if-no-files-found: warn
 
       - name: Run fixed runtime soak gate
-        run: bash scripts/runtime-soak.sh _build/runtime_soak 1 0x6101
+        working-directory: scripts/native_deps
+        run: mix batata.native exec -- bash scripts/runtime-soak.sh _build/runtime_soak 1 0x6101
 
       - name: Upload runtime soak report
         if: always()
@@ -126,16 +110,13 @@ jobs:
           path: jason-probe-source
 
       - name: Run Jason compile probe
+        working-directory: scripts/native_deps
         run: |
-          mix batata.jason_probe \
+          mix batata.native run -- batata.jason_probe \
             --source jason-probe-source \
             --output _build/jason_probe/report.json \
             --baseline probe/jason/baseline.json \
             --fail-on-regression
-        env:
-          BEAVER_PATH: ${{ github.workspace }}/beaver
-          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
-          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
       - name: Upload Jason probe report
         if: always()
@@ -153,15 +134,12 @@ jobs:
           path: decimal-probe-source
 
       - name: Run Decimal compile probe
+        working-directory: scripts/native_deps
         run: |
-          mix batata.decimal_probe \
+          mix batata.native run -- batata.decimal_probe \
             --source decimal-probe-source \
             --output _build/decimal_probe/report.json \
             --baseline probe/decimal/baseline.json
-        env:
-          BEAVER_PATH: ${{ github.workspace }}/beaver
-          BEAVER_KINDA_PATH: ${{ github.workspace }}/kinda
-          LLVM_CONFIG_PATH: ${{ github.workspace }}/llvm-prebuilt/bin/llvm-config
 
       - name: Upload Decimal probe report
         if: always()
@@ -172,20 +150,29 @@ jobs:
           if-no-files-found: error
 
       - name: Run process-reuse benchmark
-        # The slot-recycling benchmark (#50 stage 1) must keep producing a
-        # full-success result under the small table and a failing baseline
-        # without recycling; the JSON assertions guard against regressions.
+        working-directory: scripts/native_deps
         run: |
-          output="$(zig run -O ReleaseFast --dep runtime \
-            -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc 2>&1)"
-          echo "$output"
-          echo "$output" | grep -q '"reuse_success": 1000000'
-          echo "$output" | grep -q '"reuse_last_index": [0-9]'
-          echo "$output" | grep -q '"no_reuse_last_index": 1000000'
+          mix batata.native exec -- bash -c '
+            output="$(zig run -O ReleaseFast --dep runtime \
+              -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc 2>&1)"
+            echo "$output"
+            echo "$output" | grep -q "\"reuse_success\": 1000000"
+            echo "$output" | grep -q "\"reuse_last_index\": [0-9]"
+            echo "$output" | grep -q "\"no_reuse_last_index\": 1000000"
+          '
 
-      - name: Build Hex package
-        # Simulate publishing: declare deps as Hex constraints (no path
-        # overrides) and reuse the test-env build so the tarball is produced
-        # without another native build.
+  package:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - name: Build Hex package without native overrides
         run: |
-          env -u BEAVER_PATH -u BEAVER_KINDA_PATH MIX_ENV=test mix hex.build
+          mix local.hex --force
+          mix deps.get
+          env -u BEAVER_PATH -u BEAVER_KINDA_PATH -u LLVM_CONFIG_PATH mix hex.build
