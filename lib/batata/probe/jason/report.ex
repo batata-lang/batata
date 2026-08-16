@@ -8,6 +8,8 @@ defmodule Batata.Probe.Jason.Report do
   from later semantic, lowering, and runtime failures.
   """
 
+  alias Batata.Probe.ClosureFrontier
+
   alias Batata.Probe.Jason.{
     BlockerIdentity,
     CompileAttempt,
@@ -53,6 +55,7 @@ defmodule Batata.Probe.Jason.Report do
     diagnostic_attempts = DiagnosticAttempt.run(files)
     generation_attempts = GenerationAttempt.run(files)
     dependency_frontier = DependencyFrontier.collect(files)
+    closure_frontier = ClosureFrontier.collect(files)
 
     %{
       "schema_version" => @schema_version,
@@ -73,13 +76,15 @@ defmodule Batata.Probe.Jason.Report do
           compile_attempts,
           diagnostic_attempts,
           generation_attempts,
-          dependency_frontier
+          dependency_frontier,
+          closure_frontier
         ),
       "ignored_metadata" => ignored_metadata,
       "module_compile_attempts" => compile_attempts,
       "diagnostic_attempts" => diagnostic_attempts,
       "generation_attempts" => generation_attempts,
       "dependency_frontier" => dependency_frontier,
+      "closure_frontier" => closure_frontier,
       "blockers" => blockers
     }
   end
@@ -208,7 +213,8 @@ defmodule Batata.Probe.Jason.Report do
          compile_attempts,
          diagnostic_attempts,
          generation_attempts,
-         dependency_frontier
+         dependency_frontier,
+         closure_frontier
        ) do
     modules = Enum.sum(Enum.map(files, &length(&1.modules)))
 
@@ -222,6 +228,8 @@ defmodule Batata.Probe.Jason.Report do
     diagnostic_outcomes = Enum.frequencies_by(diagnostic_attempts, & &1["outcome"])
     diagnostic_phases = Enum.frequencies_by(diagnostic_attempts, & &1["phase"])
     generation_phases = Enum.frequencies_by(generation_attempts, & &1["phase"])
+    closure_sites = Enum.flat_map(closure_frontier, & &1["sites"])
+    closure_provenances = Enum.frequencies_by(closure_sites, & &1["provenance"])
 
     %{
       "files" => length(files),
@@ -249,6 +257,15 @@ defmodule Batata.Probe.Jason.Report do
           |> Enum.filter(&(&1["target_kind"] == "corpus"))
           |> Enum.sum_by(& &1["count"]),
         "targets" => dependency_frontier |> Enum.map(& &1["target"]) |> Enum.uniq() |> length()
+      },
+      "closure_frontier" => %{
+        "modules" => length(closure_frontier),
+        "sites" => length(closure_sites),
+        "by_provenance" =>
+          Map.new(
+            ClosureFrontier.provenances(),
+            &{&1, Map.get(closure_provenances, &1, 0)}
+          )
       },
       "module_compile_attempts" =>
         Map.new(CompileAttempt.statuses(), &{&1, Map.get(attempt_counts, &1, 0)}),
