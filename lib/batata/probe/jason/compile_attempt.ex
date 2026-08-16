@@ -9,6 +9,7 @@ defmodule Batata.Probe.Jason.CompileAttempt do
   """
 
   alias Batata.Lower
+  alias Batata.Probe.ClosureFrontier
   alias Beaver.MLIR
 
   @statuses ~w(
@@ -21,9 +22,18 @@ defmodule Batata.Probe.Jason.CompileAttempt do
 
   @spec run([map()]) :: [map()]
   def run(files) do
+    closure_frontiers =
+      files
+      |> ClosureFrontier.collect()
+      |> Map.new(&{{&1["path"], &1["module"]}, &1})
+
     files
     |> Enum.flat_map(fn file ->
-      Enum.map(file.modules, &attempt(file.path, &1))
+      Enum.map(file.modules, fn module ->
+        file.path
+        |> attempt(module)
+        |> put_closure_frontier(closure_frontiers[{file.path, module.module}])
+      end)
     end)
     |> Enum.sort_by(&{&1["path"], &1["module"]})
   end
@@ -83,6 +93,19 @@ defmodule Batata.Probe.Jason.CompileAttempt do
 
   defp stringify_harness(harness),
     do: Map.new(harness, fn {key, value} -> {to_string(key), value} end)
+
+  defp put_closure_frontier(
+         %{"reason_class" => "dynamic_apply_without_local_dispatch"} = attempt,
+         %{} = frontier
+       ) do
+    Map.put(attempt, "closure_frontier", %{
+      "kind" => "external_closure",
+      "local_fn_count" => frontier["local_fn_count"],
+      "sites" => frontier["sites"]
+    })
+  end
+
+  defp put_closure_frontier(attempt, _frontier), do: attempt
 
   defp compile(source, ctx) do
     {:ok, Batata.compile(source, ctx)}

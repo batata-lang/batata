@@ -33,6 +33,11 @@ neither enters a compile attempt, and the dependency frontier remains at two
 eligible calls.
 `Decimal.Macros` remains diagnostic-only and synthetic-only.
 
+The shared schema-v6 `closure_frontier` additionally records the caller-
+supplied functions applied by `Decimal.Context.with/2` and `update/1`. Because
+the module remains blocked by its top-level forms, no structured closure field
+is added to a module compile attempt and no execution capability is claimed.
+
 The 24 `module_level_generation` blockers retain their original reason and
 stable identity while gaining structural evidence. Six forms contain
 definition generation: three `if/2` roots, one match whose subtree generates
