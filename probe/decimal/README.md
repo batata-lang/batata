@@ -16,8 +16,8 @@ mix batata.decimal_probe \
   --baseline probe/decimal/baseline.json
 ```
 
-The schema-v6 baseline inventories four modules, 243 source definitions, and
-39 blockers.
+The schema-v6 baseline inventories four modules, 245 source definitions, and
+37 blockers.
 Canonical frontend normalization admits the current-module `defexception`
 schema in `Decimal.Error`, so its original target-module body reaches lowering
 completion in the non-executing compile-attempt lane. The lane excludes sibling
@@ -25,9 +25,12 @@ and file-level forms and appends a synthetic non-executing `main/0` only when
 missing. This is schema compilation evidence, not an unmodified whole-file
 compile or execution support for `raise`, `rescue`, or `Exception.message/1`.
 The same canonical evidence removes the current-module `defstruct` blockers
-from `Decimal` and `Decimal.Context`, but both modules remain blocked by imports,
-guards, attributes, and module-level generation; neither enters a compile
-attempt, and the dependency frontier is unchanged.
+from `Decimal` and `Decimal.Context`. Arity-carrying module-local closures and
+the executable `is_function/1,2` gate additionally resolve `Decimal.Context`'s
+`with/2` and `update/1` guarded-definition blockers. Both modules still remain
+blocked by imports, attributes, module-level generation, and other guards;
+neither enters a compile attempt, and the dependency frontier remains at two
+eligible calls.
 `Decimal.Macros` remains diagnostic-only and synthetic-only.
 
 The 24 `module_level_generation` blockers retain their original reason and

@@ -141,6 +141,7 @@ defmodule Batata.Probe.Jason.Inventory do
       |> unsupported_forms(source_snapshot.unsupported)
       |> Enum.reject(fn unsupported ->
         supported_alias?(unsupported) or
+          supported_guarded_definition?(unsupported) or
           supported_current_module_schema?(
             unsupported,
             source_snapshot,
@@ -179,6 +180,22 @@ defmodule Batata.Probe.Jason.Inventory do
     do: AliasExpand.supported_declaration?(form)
 
   defp supported_alias?(_unsupported), do: false
+
+  # Probe-internal evidence predicate. A compiler lowering alone does not make
+  # an inventory blocker eligible: require the canonical frontend acceptance
+  # and exact guarded-definition source shape as well.
+  @doc false
+  @spec supported_guarded_definition?(map()) :: boolean()
+  def supported_guarded_definition?(%{
+        reason: :guarded_definition,
+        frontend_reason: :accepted_as_definition,
+        form_ast: {kind, _, [{:when, _, [{name, _, args}, guard_ast]}, [do: _body]]}
+      })
+      when kind in [:def, :defp] and is_atom(name) and is_list(args) do
+    GuardSupport.compiler_supported?(guard_ast)
+  end
+
+  def supported_guarded_definition?(_unsupported), do: false
 
   # Probe-internal evidence predicate. Inventory owns the only eligibility
   # call site; the production compiler does not consult probe classifications.
@@ -221,7 +238,7 @@ defmodule Batata.Probe.Jason.Inventory do
     snapshot.definitions
     |> Enum.reject(fn definition ->
       Enum.any?(definition.clauses, fn clause ->
-        clause.guard_ast != nil and not GuardSupport.supported?(clause.guard_ast)
+        clause.guard_ast != nil and not GuardSupport.compiler_supported?(clause.guard_ast)
       end)
     end)
     |> Enum.map(&definition/1)

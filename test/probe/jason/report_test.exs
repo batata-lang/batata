@@ -253,12 +253,12 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal["summary"]["categories"]["alias"] == nil
     assert jason["schema_version"] == 6
     assert decimal["schema_version"] == 6
-    assert jason["summary"]["blockers"] == 68
-    assert decimal["summary"]["blockers"] == 39
+    assert jason["summary"]["blockers"] == 66
+    assert decimal["summary"]["blockers"] == 37
     assert jason["summary"]["ignored_metadata"] == 77
     assert decimal["summary"]["ignored_metadata"] == 106
-    assert jason["summary"]["definitions"] == 239
-    assert decimal["summary"]["definitions"] == 243
+    assert jason["summary"]["definitions"] == 241
+    assert decimal["summary"]["definitions"] == 245
 
     assert jason["summary"]["generation_constructs"] == %{
              "definition_generation" => 19,
@@ -377,8 +377,17 @@ defmodule Batata.Probe.Jason.ReportTest do
              &{&1["path"], &1["module"]}
            ) == [
              {"lib/decoder.ex", "Jason.DecodeError"},
-             {"lib/encode.ex", "Jason.EncodeError"}
+             {"lib/encode.ex", "Jason.EncodeError"},
+             {"lib/fragment.ex", "Jason.Fragment"}
            ]
+
+    fragment_attempt =
+      Enum.find(jason["module_compile_attempts"], &(&1["module"] == "Jason.Fragment"))
+
+    assert fragment_attempt["status"] == "pass"
+    refute Map.has_key?(fragment_attempt, "error")
+    refute Map.has_key?(fragment_attempt, "reason_class")
+    refute Map.has_key?(fragment_attempt, "fingerprint")
 
     assert [%{"path" => "lib/decimal/error.ex", "module" => "Decimal.Error"}] =
              Enum.map(
