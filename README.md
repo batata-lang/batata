@@ -4,6 +4,42 @@ An Elixir-to-native compiler built on
 [Beaver](https://github.com/beaver-lodge/beaver) and the Slang-defined `ex`
 dialect.
 
+## Native dependency setup
+
+Batata pins Beaver in `native-deps.lock`; Beaver's machine-readable metadata
+then selects the matching Kinda revision and LLVM prebuilt. The bootstrap is a
+small dependency-free Mix project, so it works before Batata's dependencies or
+Beaver NIF have been built:
+
+```sh
+cd scripts/native_deps
+mix batata.native setup
+mix batata.native doctor
+mix batata.native compile
+mix batata.native test
+```
+
+`setup` stores immutable source checkouts and LLVM artifacts in the operating
+system user cache. Each Batata worktree gets its own `.batata/deps` and an
+identity-keyed `.batata/build`; only LLVM artifacts and Zig's global cache are
+shared. This prevents one worktree's dependency or native build state from
+leaking into another.
+
+Local development checkouts may be selected explicitly:
+
+```sh
+mix batata.native setup \
+  --beaver-path ../beaver \
+  --kinda-path ../kinda \
+  --llvm-config ../llvm-prebuilt/bin/llvm-config
+```
+
+`doctor` labels path overrides and external LLVM as unverified and reports the
+exact source, toolchain, build, and cache identities. Use `run -- TASK ...` for
+arbitrary root Mix tasks and `exec -- COMMAND ...` for commands that need the
+same isolated environment. The root `mix.exs` remains unchanged, so ordinary
+Hex consumers and `mix hex.build` do not depend on this developer bootstrap.
+
 ## Scope
 
 The first milestone wires a minimal closed loop (see
