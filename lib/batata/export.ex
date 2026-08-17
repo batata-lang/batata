@@ -152,6 +152,7 @@ defmodule Batata.Export do
       |> String.split("\n")
       |> Enum.map(fn line -> line |> String.split() |> List.last() end)
       |> Enum.reject(&is_nil/1)
+      |> Enum.flat_map(fn sym -> [sym, String.replace_prefix(sym, "_", "")] end)
       |> MapSet.new()
 
     missing =

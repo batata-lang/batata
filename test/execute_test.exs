@@ -3025,4 +3025,22 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "executes nested composite terms under abstract !ex.term representation", %{ctx: ctx} do
+    assert {1, [2, 3], %{foo: "bar"}, <<4, 5, 6>>} ==
+             Batata.execute(
+               """
+               defmodule AbstractTermDemo do
+                 def build_nested() do
+                   {1, [2, 3], %{foo: "bar"}, <<4, 5, 6>>}
+                 end
+
+                 def main() do
+                   build_nested()
+                 end
+               end
+               """,
+               ctx
+             )
+  end
 end
