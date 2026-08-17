@@ -1092,7 +1092,7 @@ defmodule Batata.Lift do
     # a resumed slice keeps messages that arrived while it was suspended.
     if name in [:__batata_entry, :main] and uses_mailbox?(body_ast) do
       if budget == nil do
-        create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, block)
+        create_op("ex.mailbox_clear", [], [ex_type("term", ctx)], ctx, block)
       else
         active = create_op("ex.cont_active", [], [integer_type(ctx)], ctx, block)
 
@@ -1107,7 +1107,7 @@ defmodule Batata.Lift do
         fresh_region = MLIR.CAPI.mlirRegionCreate()
         fresh_block = MLIR.Block.create([], [])
         MLIR.CAPI.mlirRegionAppendOwnedBlock(fresh_region, fresh_block)
-        create_op("ex.mailbox_clear", [], [ex_type("dyn", ctx)], ctx, fresh_block)
+        create_op("ex.mailbox_clear", [], [ex_type("term", ctx)], ctx, fresh_block)
         create_op("scf.yield", [], [], ctx, fresh_block)
 
         %Beaver.SSA{
@@ -1710,7 +1710,7 @@ defmodule Batata.Lift do
   # current process entry from Runtime.
   defp lift_actor_step(ctx, ip, has_dispatch) do
     i64 = integer_type(ctx)
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     i1 = MLIR.Type.i1()
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([i64], [MLIR.Location.unknown(ctx: ctx)])
@@ -1859,7 +1859,7 @@ defmodule Batata.Lift do
   # result. The driver returns the entry's final result.
   defp lift_driver(entry_name, ctx, ip, _budget, has_dispatch, process_cap) do
     i64 = integer_type(ctx)
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     i1 = MLIR.Type.i1()
 
     region = MLIR.CAPI.mlirRegionCreate()
@@ -2065,7 +2065,7 @@ defmodule Batata.Lift do
         arity: MLIR.Attribute.integer(MLIR.Type.i64(), 0),
         operandSegmentSizes: segment_sizes(arg_segment_sizes(0))
       ],
-      [ex_type("dyn", ctx)],
+      [ex_type("term", ctx)],
       ctx,
       block
     )
@@ -2124,7 +2124,7 @@ defmodule Batata.Lift do
       MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
       [b_arg, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
-      word = create_op("ex.to_word", [b_arg], [ex_type("dyn", ctx)], ctx, before_block)
+      word = create_op("ex.to_word", [b_arg], [ex_type("term", ctx)], ctx, before_block)
       len = create_op("ex.binary_length", [word], [i64], ctx, before_block)
 
       next_cursor =
@@ -2184,7 +2184,7 @@ defmodule Batata.Lift do
       [b_arg, b_acc, b_cursor, b_countdown] =
         before_block |> Walker.arguments() |> Enum.to_list()
 
-      word = create_op("ex.to_word", [b_arg], [ex_type("dyn", ctx)], ctx, before_block)
+      word = create_op("ex.to_word", [b_arg], [ex_type("term", ctx)], ctx, before_block)
       len = create_op("ex.binary_length", [word], [i64], ctx, before_block)
 
       next_cursor =
@@ -2466,17 +2466,17 @@ defmodule Batata.Lift do
       MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
 
       [b_list, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
-      b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
+      b_word = create_op("ex.to_word", [b_list], [ex_type("term", ctx)], ctx, before_block)
       len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
       cond = cmp(b_cursor, len, "slt", ctx, before_block)
       cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
       create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
 
       [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+      a_word = create_op("ex.to_word", [a_list], [ex_type("term", ctx)], ctx, after_block)
 
       item =
-        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("term", ctx)], ctx, after_block)
 
       item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
 
@@ -2530,7 +2530,7 @@ defmodule Batata.Lift do
       [b_list, b_acc, b_cursor, b_countdown] =
         before_block |> Walker.arguments() |> Enum.to_list()
 
-      b_word = create_op("ex.to_word", [b_list], [ex_type("dyn", ctx)], ctx, before_block)
+      b_word = create_op("ex.to_word", [b_list], [ex_type("term", ctx)], ctx, before_block)
       len = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
       cond = cmp(b_cursor, len, "slt", ctx, before_block)
       cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
@@ -2557,10 +2557,10 @@ defmodule Batata.Lift do
       [a_list, a_acc, a_cursor, a_countdown] =
         after_block |> Walker.arguments() |> Enum.to_list()
 
-      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+      a_word = create_op("ex.to_word", [a_list], [ex_type("term", ctx)], ctx, after_block)
 
       item =
-        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("term", ctx)], ctx, after_block)
 
       item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
 
@@ -2721,18 +2721,24 @@ defmodule Batata.Lift do
       create_op("scf.condition", [cond_i1, b_list, b_acc, b_cursor], [], ctx, before_block)
 
       [a_list, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
-      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+      a_word = create_op("ex.to_word", [a_list], [ex_type("term", ctx)], ctx, after_block)
 
       item =
-        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("term", ctx)], ctx, after_block)
 
       item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
       mapped = mapper_fun.(item_i64, after_block)
       mapped_term = box_term(mapped, ctx, after_block)
-      acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("dyn", ctx)], ctx, after_block)
+      acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("term", ctx)], ctx, after_block)
 
       acc_next_dyn =
-        create_op("ex.list_cons", [mapped_term, acc_dyn], [ex_type("dyn", ctx)], ctx, after_block)
+        create_op(
+          "ex.list_cons",
+          [mapped_term, acc_dyn],
+          [ex_type("term", ctx)],
+          ctx,
+          after_block
+        )
 
       acc_next = create_op("ex.unbox", [acc_next_dyn], [i64], ctx, after_block)
 
@@ -2754,7 +2760,7 @@ defmodule Batata.Lift do
         |> MLIR.Operation.create()
 
       acc_i64 = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
-      create_op("ex.to_word", [acc_i64], [ex_type("dyn", ctx)], ctx, block)
+      create_op("ex.to_word", [acc_i64], [ex_type("term", ctx)], ctx, block)
     else
       {state_list, state_acc, state_cursor, state_countdown} =
         resumable_loop_state(
@@ -2809,18 +2815,24 @@ defmodule Batata.Lift do
       [a_list, a_acc, a_cursor, a_countdown] =
         after_block |> Walker.arguments() |> Enum.to_list()
 
-      a_word = create_op("ex.to_word", [a_list], [ex_type("dyn", ctx)], ctx, after_block)
+      a_word = create_op("ex.to_word", [a_list], [ex_type("term", ctx)], ctx, after_block)
 
       item =
-        create_op("ex.list_get", [a_word, a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+        create_op("ex.list_get", [a_word, a_cursor], [ex_type("term", ctx)], ctx, after_block)
 
       item_i64 = create_op("ex.to_int", [item], [i64], ctx, after_block)
       mapped = mapper_fun.(item_i64, after_block)
       mapped_term = box_term(mapped, ctx, after_block)
-      acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("dyn", ctx)], ctx, after_block)
+      acc_dyn = create_op("ex.to_word", [a_acc], [ex_type("term", ctx)], ctx, after_block)
 
       acc_next_dyn =
-        create_op("ex.list_cons", [mapped_term, acc_dyn], [ex_type("dyn", ctx)], ctx, after_block)
+        create_op(
+          "ex.list_cons",
+          [mapped_term, acc_dyn],
+          [ex_type("term", ctx)],
+          ctx,
+          after_block
+        )
 
       acc_next = create_op("ex.unbox", [acc_next_dyn], [i64], ctx, after_block)
 
@@ -2842,7 +2854,7 @@ defmodule Batata.Lift do
         |> MLIR.Operation.create()
 
       acc_i64 = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
-      create_op("ex.to_word", [acc_i64], [ex_type("dyn", ctx)], ctx, block)
+      create_op("ex.to_word", [acc_i64], [ex_type("term", ctx)], ctx, block)
     end
   end
 
@@ -2934,7 +2946,7 @@ defmodule Batata.Lift do
       create_op(
         "ex.float_lit",
         [lit(bits, ctx, block)],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       ),
@@ -2973,7 +2985,7 @@ defmodule Batata.Lift do
       create_op(
         "ex.to_word",
         [lit(word, ctx, block)],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       ),
@@ -3038,19 +3050,19 @@ defmodule Batata.Lift do
           create_op(
             "ex.to_word",
             [lift_value(head, ctx, block, env)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           ),
           create_op(
             "ex.to_word",
             [lift_value(tail, ctx, block, env)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           )
         ],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       )
@@ -3109,7 +3121,7 @@ defmodule Batata.Lift do
     if Enum.any?(segments, &interpolation_segment?/1) do
       {values, env} = lift_interpolation_segments(segments, ctx, block, env)
       iodata = create_term_op("ex.list", values, ctx, block)
-      {create_op("ex.iodata_to_binary", [iodata], [ex_type("dyn", ctx)], ctx, block), env}
+      {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
     else
       {values, env} = lift_operands_boxed(segments, ctx, block, env)
       {create_term_op("ex.binary", values, ctx, block), env}
@@ -3226,7 +3238,7 @@ defmodule Batata.Lift do
     {reason, env} = lift_expr(reason_ast, ctx, block, env)
     reason = box_term(reason, ctx, block)
 
-    {create_op("ex.raise", [reason, lit(kind, ctx, block)], [ex_type("dyn", ctx)], ctx, block),
+    {create_op("ex.raise", [reason, lit(kind, ctx, block)], [ex_type("term", ctx)], ctx, block),
      env}
   end
 
@@ -3309,7 +3321,7 @@ defmodule Batata.Lift do
             create_op(
               "ex.enumerable_map_fun",
               [enumerable_word, addr],
-              [ex_type("dyn", ctx)],
+              [ex_type("term", ctx)],
               ctx,
               block
             ),
@@ -3396,7 +3408,7 @@ defmodule Batata.Lift do
       create_op(
         "ex.stream_filter",
         [enumerable_word, addr],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       ),
@@ -3438,7 +3450,7 @@ defmodule Batata.Lift do
                 arity: MLIR.Attribute.integer(MLIR.Type.i64(), 8),
                 operandSegmentSizes: segment_sizes(arg_segment_sizes(8))
               ],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           ),
@@ -3456,7 +3468,7 @@ defmodule Batata.Lift do
             lift_expr(arg, ctx, block, env)
           end)
 
-        closure_word = create_op("ex.to_word", [closure], [ex_type("dyn", ctx)], ctx, block)
+        closure_word = create_op("ex.to_word", [closure], [ex_type("term", ctx)], ctx, block)
 
         {
           create_op(
@@ -3471,7 +3483,7 @@ defmodule Batata.Lift do
                       List.duplicate(0, 4 - length(args))
                   )
               ],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           ),
@@ -3500,7 +3512,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:self, _, []}, ctx, block, env) do
-    {create_op("ex.self", [], [ex_type("dyn", ctx)], ctx, block), env}
+    {create_op("ex.self", [], [ex_type("term", ctx)], ctx, block), env}
   end
 
   defp lift_expr({:send, _, [pid_ast, msg_ast]}, ctx, block, env) do
@@ -3514,7 +3526,7 @@ defmodule Batata.Lift do
       create_op(
         "ex.to_word",
         [lift_value(pid_value, ctx, block, env)],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       )
@@ -3522,7 +3534,7 @@ defmodule Batata.Lift do
     msg_word = box_term(lift_value(msg_value, ctx, block, env), ctx, block)
 
     {
-      create_op("ex.send", [pid_word, msg_word], [ex_type("dyn", ctx)], ctx, block),
+      create_op("ex.send", [pid_word, msg_word], [ex_type("term", ctx)], ctx, block),
       env
     }
   end
@@ -3545,7 +3557,7 @@ defmodule Batata.Lift do
     if catch_all_clause?(List.last(clauses)) do
       if after_clause == nil do
         clauses = ensure_receive_catch_all(clauses)
-        msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, block)
+        msg = create_op("ex.receive", [], [ex_type("term", ctx)], ctx, block)
         {lift_term_case(clauses, msg, env, ctx, block, untag_int_binds: true), env}
       else
         lift_receive_after_fifo(clauses, after_clause, ctx, block, env)
@@ -3558,7 +3570,7 @@ defmodule Batata.Lift do
   defp lift_expr({:throw, _, [value_ast]}, ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = box_term(lift_value(value, ctx, block, env), ctx, block)
-    {create_op("ex.throw", [value], [ex_type("dyn", ctx)], ctx, block), env}
+    {create_op("ex.throw", [value], [ex_type("term", ctx)], ctx, block), env}
   end
 
   # `try do body catch pattern -> handler end`: the body region runs normally;
@@ -3590,7 +3602,7 @@ defmodule Batata.Lift do
     catch_block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(catch_region, catch_block)
 
-    thrown = create_op("ex.catch_value", [], [ex_type("dyn", ctx)], ctx, catch_block)
+    thrown = create_op("ex.catch_value", [], [ex_type("term", ctx)], ctx, catch_block)
 
     catch_value =
       lift_term_case(catch_clauses, thrown, env, ctx, catch_block, untag_int_binds: true)
@@ -3608,7 +3620,7 @@ defmodule Batata.Lift do
         op: "ex.try",
         ip: block,
         ctx: ctx,
-        results: [ex_type("dyn", ctx)],
+        results: [ex_type("term", ctx)],
         loc: MLIR.Location.unknown(),
         filler: fn -> [body_region, catch_region] end
       }
@@ -3647,7 +3659,7 @@ defmodule Batata.Lift do
               arity: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
               operandSegmentSizes: segment_sizes(arg_segment_sizes(length(args)))
             ],
-          [ex_type("dyn", ctx)],
+          [ex_type("term", ctx)],
           ctx,
           block
         ),
@@ -3836,7 +3848,7 @@ defmodule Batata.Lift do
 
     {n_found, n_result, n_cursor} =
       if blocking? do
-        msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, after_block)
+        msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("term", ctx)], ctx, after_block)
         receive_match_try(parsed, msg, a_cursor, env, ctx, after_block, i64)
       else
         [f, r, c] =
@@ -3846,7 +3858,7 @@ defmodule Batata.Lift do
             after_block,
             [i64, i64, i64],
             fn b ->
-              msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("dyn", ctx)], ctx, b)
+              msg = create_op("ex.mailbox_peek", [a_cursor], [ex_type("term", ctx)], ctx, b)
               {f, r, c} = receive_match_try(parsed, msg, a_cursor, env, ctx, b, i64)
               [f, r, c]
             end,
@@ -3886,7 +3898,7 @@ defmodule Batata.Lift do
 
     [found, result, cursor | _rest] = while_op |> MLIR.Operation.results() |> Enum.to_list()
     found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
-    nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
+    nil_dyn = create_op("ex.nil_word", [], [ex_type("term", ctx)], ctx, block)
     nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
 
     final =
@@ -4135,8 +4147,8 @@ defmodule Batata.Lift do
     )
 
     [a_found, a_result, a_cursor | a_rest] = after_block |> Walker.arguments() |> Enum.to_list()
-    msg = create_op("ex.receive", [], [ex_type("dyn", ctx)], ctx, after_block)
-    nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, after_block)
+    msg = create_op("ex.receive", [], [ex_type("term", ctx)], ctx, after_block)
+    nil_dyn = create_op("ex.nil_word", [], [ex_type("term", ctx)], ctx, after_block)
     is_empty = create_op("ex.term_eq", [msg, nil_dyn], [i64], ctx, after_block)
     is_empty_i1 = create_op("arith.trunci", [is_empty], [i1], ctx, after_block)
 
@@ -4183,7 +4195,7 @@ defmodule Batata.Lift do
 
     [found, result, _cursor | _rest] = while_op |> MLIR.Operation.results() |> Enum.to_list()
     found_i1 = create_op("arith.trunci", [cmp(found, 0, "ne", ctx, block)], [i1], ctx, block)
-    nil_dyn = create_op("ex.nil_word", [], [ex_type("dyn", ctx)], ctx, block)
+    nil_dyn = create_op("ex.nil_word", [], [ex_type("term", ctx)], ctx, block)
     nil_i64 = create_op("ex.unbox", [nil_dyn], [i64], ctx, block)
 
     final =
@@ -4237,7 +4249,7 @@ defmodule Batata.Lift do
     create_op(
       "ex.to_word",
       [lit(atom_word(atom), ctx, block)],
-      [ex_type("dyn", ctx)],
+      [ex_type("term", ctx)],
       ctx,
       block
     )
@@ -4261,7 +4273,7 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.to_word", [word], [ex_type("term", ctx)], ctx, block)
   end
 
   defp ensure_receive_catch_all(clauses) do
@@ -4611,7 +4623,7 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    {create_op("ex.to_word", [result_word], [ex_type("dyn", ctx)], ctx, block), env}
+    {create_op("ex.to_word", [result_word], [ex_type("term", ctx)], ctx, block), env}
   end
 
   defp lift_stdlib_call(Time, :to_iso8601, [value_ast], ctx, block, env) do
@@ -4651,7 +4663,7 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    {create_op("ex.to_word", [result_word], [ex_type("dyn", ctx)], ctx, block), env}
+    {create_op("ex.to_word", [result_word], [ex_type("term", ctx)], ctx, block), env}
   end
 
   defp lift_stdlib_call(NaiveDateTime, :to_iso8601, [value_ast], ctx, block, env) do
@@ -4694,7 +4706,7 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    {create_op("ex.to_word", [result_word], [ex_type("dyn", ctx)], ctx, block), env}
+    {create_op("ex.to_word", [result_word], [ex_type("term", ctx)], ctx, block), env}
   end
 
   # Logical-clock mapping (#35 slice 8): `erlang.monotonic_time/0,1` reads the
@@ -4796,7 +4808,7 @@ defmodule Batata.Lift do
       create_op(
         "ex.enumerable_to_list_range",
         [start, stop],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       ),
@@ -4987,7 +4999,7 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.to_word", [word], [ex_type("term", ctx)], ctx, block)
   end
 
   defp four_digits(value, ctx, block) do
@@ -5150,7 +5162,7 @@ defmodule Batata.Lift do
     separator = date_binary([lit(?T, ctx, block)], ctx, block)
     time = lower_time_to_iso8601(time_packed, ctx, block)
     iodata = create_term_op("ex.list", [date, separator, time], ctx, block)
-    create_op("ex.iodata_to_binary", [iodata], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block)
   end
 
   defp lower_time_to_iso8601(packed, ctx, block) do
@@ -5170,7 +5182,7 @@ defmodule Batata.Lift do
 
     fraction_digits = six_digits(microsecond, ctx, block)
     word = lower_time_precision(precision, base_bytes, fraction_digits, 6, ctx, block)
-    create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.to_word", [word], [ex_type("term", ctx)], ctx, block)
   end
 
   defp six_digits(value, ctx, block) do
@@ -5261,12 +5273,12 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    create_op("ex.to_word", [result], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
   defp lift_lists_reverse(list, tail, ctx, block, budget, batch_size) do
     result = emit_lists_loop(:reverse, list, tail, nil, ctx, block, budget, batch_size)
-    create_op("ex.to_word", [result], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
   defp emit_lists_loop(kind, list, initial_acc, match, ctx, block, budget, batch_size) do
@@ -5295,7 +5307,7 @@ defmodule Batata.Lift do
     before_args = before_block |> Walker.arguments() |> Enum.to_list()
     [b_current, b_acc, b_cursor | countdown] = before_args
 
-    current_word = create_op("ex.to_word", [b_current], [ex_type("dyn", ctx)], ctx, before_block)
+    current_word = create_op("ex.to_word", [b_current], [ex_type("term", ctx)], ctx, before_block)
     nil_word = atom_term(nil, ctx, before_block)
     false_word = atom_term(false, ctx, before_block)
     is_list = create_op("ex.is_list", [current_word], [i64], ctx, before_block)
@@ -5306,7 +5318,7 @@ defmodule Batata.Lift do
     loop_cond =
       case kind do
         :keyfind ->
-          acc_word = create_op("ex.to_word", [b_acc], [ex_type("dyn", ctx)], ctx, before_block)
+          acc_word = create_op("ex.to_word", [b_acc], [ex_type("term", ctx)], ctx, before_block)
           not_found = create_op("ex.term_eq", [acc_word, false_word], [i64], ctx, before_block)
           create_op("arith.andi", [has_cons, not_found], [i64], ctx, before_block)
 
@@ -5343,9 +5355,9 @@ defmodule Batata.Lift do
     MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
     after_args = after_block |> Walker.arguments() |> Enum.to_list()
     [a_current, a_acc, a_cursor | a_countdown] = after_args
-    a_word = create_op("ex.to_word", [a_current], [ex_type("dyn", ctx)], ctx, after_block)
-    head = create_op("ex.list_head", [a_word], [ex_type("dyn", ctx)], ctx, after_block)
-    tail = create_op("ex.list_tail", [a_word], [ex_type("dyn", ctx)], ctx, after_block)
+    a_word = create_op("ex.to_word", [a_current], [ex_type("term", ctx)], ctx, after_block)
+    head = create_op("ex.list_head", [a_word], [ex_type("term", ctx)], ctx, after_block)
+    tail = create_op("ex.list_tail", [a_word], [ex_type("term", ctx)], ctx, after_block)
     next_current = create_op("ex.unbox", [tail], [i64], ctx, after_block)
 
     next_acc =
@@ -5391,7 +5403,7 @@ defmodule Batata.Lift do
     tuple_length = create_op("ex.tuple_length", [tuple], [i64], ctx, block)
     enough = cmp(tuple_length, position, "sge", ctx, block)
     index = create_op("ex.sub", [position, lit(1, ctx, block)], [i64], ctx, block)
-    candidate = create_op("ex.tuple_get", [tuple, index], [ex_type("dyn", ctx)], ctx, block)
+    candidate = create_op("ex.tuple_get", [tuple, index], [ex_type("term", ctx)], ctx, block)
     equal = create_op("ex.term_eq_loose", [candidate, key], [i64], ctx, block)
     tuple_and_size = create_op("arith.andi", [tuple?, enough], [i64], ctx, block)
     matched = create_op("arith.andi", [tuple_and_size, equal], [i64], ctx, block)
@@ -5401,9 +5413,9 @@ defmodule Batata.Lift do
   end
 
   defp reverse_accumulator(head, acc, ctx, block) do
-    acc_word = create_op("ex.to_word", [acc], [ex_type("dyn", ctx)], ctx, block)
+    acc_word = create_op("ex.to_word", [acc], [ex_type("term", ctx)], ctx, block)
 
-    create_op("ex.list_cons", [head, acc_word], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.list_cons", [head, acc_word], [ex_type("term", ctx)], ctx, block)
     |> unbox(ctx, block)
   end
 
@@ -5422,7 +5434,7 @@ defmodule Batata.Lift do
   end
 
   defp finalize_completed_lists_loop(kind, current, acc, ctx, block) do
-    current_word = create_op("ex.to_word", [current], [ex_type("dyn", ctx)], ctx, block)
+    current_word = create_op("ex.to_word", [current], [ex_type("term", ctx)], ctx, block)
     nil_word = atom_term(nil, ctx, block)
     proper = create_op("ex.term_eq", [current_word, nil_word], [integer_type(ctx)], ctx, block)
     proper_i1 = create_op("arith.trunci", [proper], [MLIR.Type.i1()], ctx, block)
@@ -5435,7 +5447,7 @@ defmodule Batata.Lift do
         |> hd()
 
       :keyfind ->
-        acc_word = create_op("ex.to_word", [acc], [ex_type("dyn", ctx)], ctx, block)
+        acc_word = create_op("ex.to_word", [acc], [ex_type("term", ctx)], ctx, block)
         false_word = atom_term(false, ctx, block)
         false_i64 = create_op("ex.unbox", [false_word], [integer_type(ctx)], ctx, block)
 
@@ -5468,17 +5480,17 @@ defmodule Batata.Lift do
       |> Enum.map(fn byte -> box_term(lit(byte, ctx, block), ctx, block) end)
 
     reason = create_term_op("ex.binary", bytes, ctx, block)
-    create_op("ex.raise", [reason, lit(6, ctx, block)], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.raise", [reason, lit(6, ctx, block)], [ex_type("term", ctx)], ctx, block)
   end
 
   defp native_term_call(module, :length, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(module, :hd, [value], ctx, block) when module in [Kernel, :erlang],
-    do: create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(module, :tl, [value], ctx, block) when module in [Kernel, :erlang],
-    do: create_op("ex.list_tail", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.list_tail", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(module, :tuple_size, [value], ctx, block)
        when module in [Kernel, :erlang],
@@ -5488,7 +5500,7 @@ defmodule Batata.Lift do
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(Map, :put, [map, key, value], ctx, block),
-    do: create_op("ex.map_put", [map, key, value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.map_put", [map, key, value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Tuple, :size, [value], ctx, block),
     do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)
@@ -5501,24 +5513,24 @@ defmodule Batata.Lift do
 
   defp native_term_call(:binary, :at, [binary, index], ctx, block) do
     index = create_op("ex.to_int", [index], [integer_type(ctx)], ctx, block)
-    create_op("ex.binary_get", [binary, index], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.binary_get", [binary, index], [ex_type("term", ctx)], ctx, block)
   end
 
   defp native_term_call(module, :list_to_binary, [value], ctx, block)
        when module in [Kernel, :erlang],
-       do: create_op("ex.binary_from_list", [value], [ex_type("dyn", ctx)], ctx, block)
+       do: create_op("ex.binary_from_list", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(IO, :iodata_to_binary, [value], ctx, block),
-    do: create_op("ex.iodata_to_binary", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.iodata_to_binary", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(:erlang, :iolist_to_binary, [value], ctx, block),
-    do: create_op("ex.iodata_to_binary", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.iodata_to_binary", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Enum, :count, [value], ctx, block),
     do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(Enum, :to_list, [value], ctx, block),
-    do: create_op("ex.enumerable_to_list", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.enumerable_to_list", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(String, :length, [value], ctx, block),
     do: create_op("ex.binary_utf8_length", [value], [MLIR.Type.i64()], ctx, block)
@@ -5526,7 +5538,7 @@ defmodule Batata.Lift do
   defp native_term_call(String, :printable?, [value], ctx, block) do
     binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
     condition = create_op("arith.trunci", [binary?], [MLIR.Type.i1()], ctx, block)
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
 
     build_scf_if(
       condition,
@@ -5562,16 +5574,16 @@ defmodule Batata.Lift do
     do: create_op("ex.string_to_int", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(String, :to_float, [value], ctx, block),
-    do: create_op("ex.string_to_float", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.string_to_float", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Base, :encode16, [value], ctx, block),
-    do: create_op("ex.binary_encode16", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.binary_encode16", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Base, :decode16, [value], ctx, block),
-    do: create_op("ex.binary_decode16", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.binary_decode16", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Integer, :to_string, [value], ctx, block),
-    do: create_op("ex.int_to_string", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.int_to_string", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Integer, :to_charlist, [value], ctx, block) do
     i64 = integer_type(ctx)
@@ -5585,8 +5597,8 @@ defmodule Batata.Lift do
         block,
         [i64],
         fn b ->
-          binary = create_op("ex.int_to_string", [value], [ex_type("dyn", ctx)], ctx, b)
-          list = create_op("ex.enumerable_to_list", [binary], [ex_type("dyn", ctx)], ctx, b)
+          binary = create_op("ex.int_to_string", [value], [ex_type("term", ctx)], ctx, b)
+          list = create_op("ex.enumerable_to_list", [binary], [ex_type("term", ctx)], ctx, b)
           [unbox(list, ctx, b)]
         end,
         fn b ->
@@ -5598,40 +5610,40 @@ defmodule Batata.Lift do
       )
       |> hd()
 
-    create_op("ex.to_word", [result], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
   defp native_term_call(MapSet, :new, [value], ctx, block),
-    do: create_op("ex.mapset_from_list", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.mapset_from_list", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(HashSet, :new, [value], ctx, block),
-    do: create_op("ex.mapset_from_list", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.mapset_from_list", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(MapSet, :member?, [set, member], ctx, block),
     do: create_op("ex.mapset_member", [set, member], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(MapSet, :put, [set, member], ctx, block),
-    do: create_op("ex.mapset_put", [set, member], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.mapset_put", [set, member], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(Stream, :take, [list, n], ctx, block) do
     n_int = create_op("ex.to_int", [n], [integer_type(ctx)], ctx, block)
-    create_op("ex.stream_take", [list, n_int], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.stream_take", [list, n_int], [ex_type("term", ctx)], ctx, block)
   end
 
   defp native_term_call(Stream, :drop, [list, n], ctx, block) do
     n_int = create_op("ex.to_int", [n], [integer_type(ctx)], ctx, block)
-    create_op("ex.stream_drop", [list, n_int], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.stream_drop", [list, n_int], [ex_type("term", ctx)], ctx, block)
   end
 
   defp native_term_call(File, :read!, [path], ctx, block),
-    do: create_op("ex.file_read", [path], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.file_read", [path], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(File, :stream!, [path], ctx, block),
-    do: create_op("ex.file_read_lines", [path], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.file_read_lines", [path], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(_module, :elem, [tuple, index], ctx, block) do
     index_int = create_op("ex.to_int", [index], [MLIR.Type.i64()], ctx, block)
-    create_op("ex.tuple_get", [tuple, index_int], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.tuple_get", [tuple, index_int], [ex_type("term", ctx)], ctx, block)
   end
 
   defp native_term_call(module, :is_atom, [value], ctx, block) when module in [Kernel, :erlang],
@@ -5658,23 +5670,23 @@ defmodule Batata.Lift do
     do: create_op("ex.is_tuple", [value], [MLIR.Type.i64()], ctx, block)
 
   defp native_term_call(_module, :first, [value], ctx, block),
-    do: create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(_module, :self, [], ctx, block),
-    do: create_op("ex.self", [], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.self", [], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(_module, :send, [pid, msg], ctx, block),
-    do: create_op("ex.send", [pid, msg], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.send", [pid, msg], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(_module, :spawn, [fun], ctx, block),
-    do: create_op("ex.spawn", [fun], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.spawn", [fun], [ex_type("term", ctx)], ctx, block)
 
   defp native_term_call(module, :link, [pid], ctx, block) when module in [Process, :erlang] do
     _ =
       create_op(
         "ex.link",
         [pid, atom_term(:EXIT, ctx, block), atom_term(:normal, ctx, block)],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       )
@@ -5693,7 +5705,7 @@ defmodule Batata.Lift do
       create_op(
         "ex.exit",
         [pid, reason, atom_term(:EXIT, ctx, block), atom_term(:normal, ctx, block)],
-        [ex_type("dyn", ctx)],
+        [ex_type("term", ctx)],
         ctx,
         block
       )
@@ -5710,7 +5722,7 @@ defmodule Batata.Lift do
         atom_term(:process, ctx, block),
         atom_term(:normal, ctx, block)
       ],
-      [ex_type("dyn", ctx)],
+      [ex_type("term", ctx)],
       ctx,
       block
     )
@@ -5727,7 +5739,7 @@ defmodule Batata.Lift do
   end
 
   defp lower_kernel_to_string(value, known_atoms, ctx, block) do
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     integer? = create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
     binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
     atom? = create_op("ex.is_atom", [value], [MLIR.Type.i64()], ctx, block)
@@ -5790,7 +5802,7 @@ defmodule Batata.Lift do
   end
 
   defp lower_kernel_inspect(value, mode, known_atoms, ctx, block) do
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     integer? = create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
     binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
     atom? = create_op("ex.is_atom", [value], [MLIR.Type.i64()], ctx, block)
@@ -5857,7 +5869,7 @@ defmodule Batata.Lift do
   end
 
   defp lower_binary_concat(left, right, both_binary, ctx, block) do
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     region = MLIR.CAPI.mlirRegionCreate()
 
     valid_block = MLIR.Block.create([], [])
@@ -5899,7 +5911,7 @@ defmodule Batata.Lift do
   end
 
   defp lower_exact_map_update(base, updates, ctx, block) do
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     region = MLIR.CAPI.mlirRegionCreate()
     is_map = create_op("ex.is_map", [base], [MLIR.Type.i64()], ctx, block)
     not_map = cmp(is_map, 0, "eq", ctx, block)
@@ -5971,7 +5983,7 @@ defmodule Batata.Lift do
     create_op("ex.clause", [condition, patterns: pattern_attr([])], [], ctx, block)
 
     raised =
-      create_op("ex.raise", [reason, lit(kind, ctx, block)], [ex_type("dyn", ctx)], ctx, block)
+      create_op("ex.raise", [reason, lit(kind, ctx, block)], [ex_type("term", ctx)], ctx, block)
 
     create_op(
       "ex.yield",
@@ -5983,7 +5995,7 @@ defmodule Batata.Lift do
   end
 
   defp lower_short_circuit_and(left, right_ast, falsy, env, ctx, block) do
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     region = MLIR.CAPI.mlirRegionCreate()
 
     falsy_block = MLIR.Block.create([], [])
@@ -6021,7 +6033,7 @@ defmodule Batata.Lift do
   end
 
   defp lower_body_if(condition, then_ast, else_ast, falsy, env, ctx, block) do
-    dyn = ex_type("dyn", ctx)
+    dyn = ex_type("term", ctx)
     region = MLIR.CAPI.mlirRegionCreate()
 
     falsy_block = MLIR.Block.create([], [])
@@ -6083,7 +6095,7 @@ defmodule Batata.Lift do
         if term_operand?(condition) do
           condition
         else
-          create_op("ex.to_word", [condition], [ex_type("dyn", ctx)], ctx, block)
+          create_op("ex.to_word", [condition], [ex_type("term", ctx)], ctx, block)
         end
 
       {condition, term_falsy_condition(condition, ctx, block)}
@@ -6111,7 +6123,7 @@ defmodule Batata.Lift do
         block
       )
 
-    create_op("ex.raise", [payload, lit(3, ctx, block)], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.raise", [payload, lit(3, ctx, block)], [ex_type("term", ctx)], ctx, block)
   end
 
   defp resolve_fun_ref({name, _, nil}, env) when is_atom(name) do
@@ -6159,7 +6171,7 @@ defmodule Batata.Lift do
               List.duplicate(1, length(captured)) ++ List.duplicate(0, 4 - length(captured))
             )
         ],
-      [ex_type("dyn", ctx)],
+      [ex_type("term", ctx)],
       ctx,
       block
     )
@@ -6306,7 +6318,7 @@ defmodule Batata.Lift do
       if Keyword.get(opts, :box_scrutinee, true) do
         box_term(scrutinee, ctx, block)
       else
-        create_op("ex.to_word", [scrutinee], [ex_type("dyn", ctx)], ctx, block)
+        create_op("ex.to_word", [scrutinee], [ex_type("term", ctx)], ctx, block)
       end
 
     {guards, bindss} =
@@ -6427,7 +6439,7 @@ defmodule Batata.Lift do
         {conds, [{name, value} | binds], Map.put(seen, name, value)}
 
       {:ok, bound} ->
-        bound = create_op("ex.to_word", [bound], [ex_type("dyn", ctx)], ctx, block)
+        bound = create_op("ex.to_word", [bound], [ex_type("term", ctx)], ctx, block)
 
         equality =
           create_op(
@@ -6561,7 +6573,7 @@ defmodule Batata.Lift do
   # scrutinee word against the atom's deterministic hash word.
   defp do_build_match(atom, value, ctx, block) when is_atom(atom) do
     word = lit(atom_word(atom), ctx, block)
-    word_dyn = create_op("ex.to_word", [word], [ex_type("dyn", ctx)], ctx, block)
+    word_dyn = create_op("ex.to_word", [word], [ex_type("term", ctx)], ctx, block)
 
     cond =
       create_op(
@@ -6639,8 +6651,8 @@ defmodule Batata.Lift do
         block
       )
 
-    head_value = create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
-    tail_value = create_op("ex.list_tail", [value], [ex_type("dyn", ctx)], ctx, block)
+    head_value = create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
+    tail_value = create_op("ex.list_tail", [value], [ex_type("term", ctx)], ctx, block)
     {head_cond, head_binds} = do_build_match(head, head_value, ctx, block)
     {tail_cond, tail_binds} = do_build_match(tail, tail_value, ctx, block)
 
@@ -6690,7 +6702,7 @@ defmodule Batata.Lift do
           create_op(
             "ex.tuple_get",
             [value, lit(index, ctx, block)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           )
@@ -6716,18 +6728,18 @@ defmodule Batata.Lift do
           create_op(
             "ex.to_word",
             [lit(atom_word(key), ctx, block)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           )
 
-        fetched = create_op("ex.map_fetch", [value, key_word], [ex_type("dyn", ctx)], ctx, block)
+        fetched = create_op("ex.map_fetch", [value, key_word], [ex_type("term", ctx)], ctx, block)
 
         found =
           create_op(
             "ex.tuple_get",
             [fetched, lit(0, ctx, block)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           )
@@ -6736,7 +6748,7 @@ defmodule Batata.Lift do
           create_op(
             "ex.tuple_get",
             [fetched, lit(1, ctx, block)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           )
@@ -6772,8 +6784,8 @@ defmodule Batata.Lift do
   defp list_elements_match([], _value, _ctx, _block, binds), do: {[], binds}
 
   defp list_elements_match([element | rest], value, ctx, block, binds) do
-    head_value = create_op("ex.list_head", [value], [ex_type("dyn", ctx)], ctx, block)
-    tail_value = create_op("ex.list_tail", [value], [ex_type("dyn", ctx)], ctx, block)
+    head_value = create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
+    tail_value = create_op("ex.list_tail", [value], [ex_type("term", ctx)], ctx, block)
     {head_cond, head_binds} = do_build_match(element, head_value, ctx, block)
     {tail_conds, tail_binds} = list_elements_match(rest, tail_value, ctx, block, binds)
     {[head_cond | tail_conds], head_binds ++ tail_binds}
@@ -6793,7 +6805,7 @@ defmodule Batata.Lift do
               create_op(
                 "ex.binary_get",
                 [value, offset],
-                [ex_type("dyn", ctx)],
+                [ex_type("term", ctx)],
                 ctx,
                 block
               )
@@ -6810,7 +6822,7 @@ defmodule Batata.Lift do
               create_op("ex.binary_utf8_width", [value, offset], [MLIR.Type.i64()], ctx, block)
 
             codepoint =
-              create_op("ex.binary_utf8_get", [value, offset], [ex_type("dyn", ctx)], ctx, block)
+              create_op("ex.binary_utf8_get", [value, offset], [ex_type("term", ctx)], ctx, block)
 
             cond_w = cmp(width, 0, "ne", ctx, block)
             {pat_cond, pat_binds} = do_build_match(pat, codepoint, ctx, block)
@@ -6839,7 +6851,7 @@ defmodule Batata.Lift do
   defp build_rest_bind({name, _, nil}, value, offset, ctx, _block, true)
        when is_atom(name) and name != :_ do
     slice = fn clause_block ->
-      create_op("ex.binary_slice", [value, offset], [ex_type("dyn", ctx)], ctx, clause_block)
+      create_op("ex.binary_slice", [value, offset], [ex_type("term", ctx)], ctx, clause_block)
     end
 
     {nil, [{name, {:deferred, slice}}]}
@@ -6847,7 +6859,7 @@ defmodule Batata.Lift do
 
   defp build_rest_bind(rest_pat, value, offset, ctx, block, _defer_rest?) do
     rest_value =
-      create_op("ex.binary_slice", [value, offset], [ex_type("dyn", ctx)], ctx, block)
+      create_op("ex.binary_slice", [value, offset], [ex_type("term", ctx)], ctx, block)
 
     do_build_match(rest_pat, rest_value, ctx, block)
   end
@@ -7011,7 +7023,7 @@ defmodule Batata.Lift do
           create_op(
             "ex.to_word",
             [lit(atom_word(member), ctx, block)],
-            [ex_type("dyn", ctx)],
+            [ex_type("term", ctx)],
             ctx,
             block
           )
@@ -7129,11 +7141,11 @@ defmodule Batata.Lift do
     value
     |> MLIR.Value.type()
     |> MLIR.to_string()
-    |> then(&(&1 in ["!ex.dyn", "!ex.bound", "!ex.unbound"]))
+    |> then(&(&1 in ["!ex.term", "!ex.dyn", "!ex.bound", "!ex.unbound"]))
   end
 
   defp ensure_refined_integer_operands!(values) do
-    if Enum.any?(values, &(MLIR.Value.type(&1) |> MLIR.to_string() == "!ex.dyn")) do
+    if Enum.any?(values, fn v -> MLIR.to_string(MLIR.Value.type(v)) in ["!ex.term", "!ex.dyn"] end) do
       raise Error,
             "integer arithmetic on a term-pattern binding requires an is_integer/1 guard"
     end
@@ -7270,7 +7282,7 @@ defmodule Batata.Lift do
 
   defp box_term(value, ctx, block) do
     validate_boxed_integer_literal!(value)
-    create_op("ex.box", [value], [ex_type("dyn", ctx)], ctx, block)
+    create_op("ex.box", [value], [ex_type("term", ctx)], ctx, block)
   end
 
   defp validate_boxed_integer_literal!(value) do
@@ -7353,7 +7365,7 @@ defmodule Batata.Lift do
     create_op(
       op_name,
       args ++ [operandSegmentSizes: segment_sizes([length(args)])],
-      [ex_type("dyn", ctx)],
+      [ex_type("term", ctx)],
       ctx,
       block
     )
@@ -7405,7 +7417,7 @@ defmodule Batata.Lift do
   end
 
   defp inbound_argument(value, :term, ctx, block),
-    do: create_op("ex.to_word", [value], [ex_type("dyn", ctx)], ctx, block)
+    do: create_op("ex.to_word", [value], [ex_type("term", ctx)], ctx, block)
 
   defp inbound_argument(value, :scalar, _ctx, _block), do: value
 
