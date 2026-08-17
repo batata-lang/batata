@@ -5236,7 +5236,7 @@ defmodule Batata.Lift do
   end
 
   # Lowering for `:native_term` registry entries: operands arrive boxed as
-  # `!ex.dyn` words, results are either scalar i64 or `!ex.dyn`.
+  # `!ex.term` words, results are either scalar i64 or `!ex.term`.
   defp lift_lists_keyfind(key, position, list, ctx, block, budget, batch_size) do
     i64 = integer_type(ctx)
     integer? = create_op("ex.is_integer", [position], [i64], ctx, block)
@@ -7141,11 +7141,11 @@ defmodule Batata.Lift do
     value
     |> MLIR.Value.type()
     |> MLIR.to_string()
-    |> then(&(&1 in ["!ex.term", "!ex.dyn", "!ex.bound", "!ex.unbound"]))
+    |> then(&(&1 in ["!ex.term", "!ex.bound", "!ex.unbound"]))
   end
 
   defp ensure_refined_integer_operands!(values) do
-    if Enum.any?(values, fn v -> MLIR.to_string(MLIR.Value.type(v)) in ["!ex.term", "!ex.dyn"] end) do
+    if Enum.any?(values, fn v -> MLIR.to_string(MLIR.Value.type(v)) == "!ex.term" end) do
       raise Error,
             "integer arithmetic on a term-pattern binding requires an is_integer/1 guard"
     end

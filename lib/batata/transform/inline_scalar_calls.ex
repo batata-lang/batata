@@ -2,7 +2,7 @@ defmodule Batata.Transform.InlineScalarCalls do
   @moduledoc """
   Inlines local calls whose callee stays inside the scalar slice.
 
-  `ex.call` results are typed `!ex.dyn`, which cannot feed `ex.add`/`ex.sub`/
+  `ex.call` results are typed `!ex.term`, which cannot feed `ex.add`/`ex.sub`/
   `ex.mul`. When a callee's parameters and return value are all `i64`, the
   call is replaced by a clone of the callee body with arguments substituted,
   so the result participates in arithmetic (e.g. `add(1, 2) + 3`). Calls that
@@ -11,7 +11,7 @@ defmodule Batata.Transform.InlineScalarCalls do
 
   The pass runs to a fixpoint so nested scalar calls are inlined
   innermost-first. Term-returning callees, unknown callees and arity
-  mismatches are left untouched (`ex.call` stays `!ex.dyn`).
+  mismatches are left untouched (`ex.call` stays `!ex.term`).
   """
 
   alias Beaver.Changeset
@@ -69,7 +69,7 @@ defmodule Batata.Transform.InlineScalarCalls do
   # which is a scalar i64 in the current slice, so the result can be retyped
   # to participate in arithmetic. Applies whose result only feeds an scf
   # terminator (the scheduler driver's closure dispatch inside `scf.if`) keep
-  # their `!ex.dyn` type so the enclosing select stays type-consistent.
+  # their `!ex.term` type so the enclosing select stays type-consistent.
   defp retype_apply_action(apply) do
     cond do
       scalar_typed?(apply) -> :skip
