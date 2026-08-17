@@ -70,9 +70,14 @@ defmodule Batata.Lift do
         |> ensure_dynamic_apply_dispatch!()
         |> append_dispatch()
 
+      schemas = Keyword.get(opts, :struct_schemas, Map.get(mod, :struct_schemas, %{}))
+
+      schemas =
+        if mod.struct_schema, do: Map.put(schemas, mod.name, mod.struct_schema), else: schemas
+
       module_env = %{
         @known_atoms_key => known_atoms,
-        @struct_schema_key => mod.struct_schema,
+        @struct_schema_key => schemas,
         @arg_modes_key => Batata.Signature.infer(definitions)
       }
 
@@ -3105,12 +3110,17 @@ defmodule Batata.Lift do
          env
        ) do
     module = Elixir.Module.concat(module_parts)
-    schema = Map.get(env, @struct_schema_key)
+    schemas = Map.get(env, @struct_schema_key)
 
-    unless match?(%Frontend.StructSchema{module: ^module}, schema) do
-      raise Error,
-            "struct constructor requires the current-module schema, got: #{inspect(module)}"
-    end
+    schema =
+      case resolve_struct_schema(module, schemas) do
+        {:ok, schema} ->
+          schema
+
+        :error ->
+          raise Error,
+                "struct constructor requires the current-module schema or registered schema, got: #{inspect(module)}"
+      end
 
     entries = struct_constructor_entries(schema, provided_fields)
     {values, env} = lift_map_entries(entries, ctx, block, env)
@@ -6520,21 +6530,26 @@ defmodule Batata.Lift do
     end
   end
 
-  defp normalize_struct_patterns(pattern, struct_schema) do
+  defp normalize_struct_patterns(pattern, struct_schemas) do
     Macro.prewalk(pattern, fn
       {:%, _, [{:__aliases__, _, module_parts}, {:%{}, map_meta, fields}]} = struct_pattern ->
         module = Elixir.Module.concat(module_parts)
 
-        unless match?(%Frontend.StructSchema{module: ^module}, struct_schema) do
-          raise Error,
-                "struct pattern requires the current-module schema, got: #{inspect(module)}"
-        end
+        schema =
+          case resolve_struct_schema(module, struct_schemas) do
+            {:ok, schema} ->
+              schema
+
+            :error ->
+              raise Error,
+                    "struct pattern requires the current-module schema or registered schema, got: #{inspect(module)}"
+          end
 
         unless is_list(fields) and Enum.all?(fields, &match?({key, _} when is_atom(key), &1)) do
           raise Error, "struct patterns require literal atom fields: #{inspect(struct_pattern)}"
         end
 
-        declared = MapSet.new(struct_schema.fields, &elem(&1, 0))
+        declared = MapSet.new(schema.fields, &elem(&1, 0))
 
         case fields |> Keyword.keys() |> Enum.reject(&MapSet.member?(declared, &1)) do
           [] -> {:%{}, map_meta, [__struct__: module] ++ fields}
@@ -6545,6 +6560,13 @@ defmodule Batata.Lift do
         other
     end)
   end
+
+  defp resolve_struct_schema(module, %Frontend.StructSchema{module: mod} = schema)
+       when module == mod,
+       do: {:ok, schema}
+
+  defp resolve_struct_schema(module, %{} = schemas), do: Map.fetch(schemas, module)
+  defp resolve_struct_schema(_module, _), do: :error
 
   defp do_build_match({name, _, nil}, value, _ctx, _block) when is_atom(name) do
     if name == :_ do
