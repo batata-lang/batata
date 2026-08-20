@@ -54,6 +54,26 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert Enum.map(snapshot.definitions, & &1.name) == [:modern]
   end
 
+  test "selects deterministic optional-module and function capability branches" do
+    source = """
+    defmodule CapabilityDemo do
+      if Code.ensure_loaded?(Optional.Dependency) do
+        def optional(), do: :present
+      else
+        def optional(), do: :absent
+      end
+
+      if function_exported?(Application, :compile_env, 3) do
+        def compile_env(), do: :supported
+      end
+    end
+    """
+
+    snapshot = Frontend.from_source(source)
+    assert snapshot.unsupported == []
+    assert Enum.map(snapshot.definitions, & &1.name) == [:optional, :compile_env]
+  end
+
   test "end-to-end executes function generated from top-level for loop" do
     source = """
     defmodule Calc do
@@ -70,6 +90,34 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     """
 
     assert 30 == Batata.execute(source, Context.create())
+  end
+
+  test "expands a literal range without host evaluation" do
+    source = """
+    defmodule RangeDemo do
+      for depth <- 1..3 do
+        def depth(unquote(depth)), do: unquote(depth)
+      end
+    end
+    """
+
+    snapshot = Frontend.from_source(source)
+    assert snapshot.unsupported == []
+    assert Enum.map(snapshot.definitions, & &1.name) == [:depth, :depth, :depth]
+  end
+
+  test "structurally decodes tuple and map collection literals" do
+    source = """
+    defmodule LiteralDataDemo do
+      for item <- [{:tuple, 1}, %{kind: :map}] do
+        def item(unquote(Macro.escape(item))), do: :ok
+      end
+    end
+    """
+
+    snapshot = Frontend.from_source(source)
+    assert snapshot.unsupported == []
+    assert length(snapshot.definitions) == 2
   end
 
   test "leaves unsupported generators unchanged, including metadata" do
