@@ -58,6 +58,7 @@ defmodule Batata.Frontend do
     ModuleEnvironment,
     RecordExpand,
     RuntimeMacroExpand,
+    SigilMacroExpand,
     StaticMapMacroExpand
   }
 
@@ -87,6 +88,7 @@ defmodule Batata.Frontend do
     table_generators = MetaprogrammingExpand.discover_table_generators(sources)
     bytecase_macros = BytecaseExpand.discover(sources)
     static_map_macros = StaticMapMacroExpand.discover(sources)
+    sigil_macros = SigilMacroExpand.discover(sources)
 
     modules =
       Enum.flat_map(sources, fn source ->
@@ -94,7 +96,8 @@ defmodule Batata.Frontend do
                metadata_macros: metadata_macros,
                table_generators: table_generators,
                bytecase_macros: bytecase_macros,
-               static_map_macros: static_map_macros
+               static_map_macros: static_map_macros,
+               sigil_macros: sigil_macros
              ) do
           %Module{} = mod -> [mod]
           mods when is_list(mods) -> mods
@@ -139,6 +142,7 @@ defmodule Batata.Frontend do
       |> MetaprogrammingExpand.expand(table_generators(opts))
       |> AliasExpand.expand()
       |> StaticMapMacroExpand.expand(static_map_macros(opts))
+      |> SigilMacroExpand.expand(sigil_macros(opts))
       |> BytecaseExpand.expand(bytecase_macros(opts))
       |> RecordExpand.expand()
       |> MetadataMacroExpand.expand(metadata_macros(opts))
@@ -155,6 +159,7 @@ defmodule Batata.Frontend do
     |> MetaprogrammingExpand.expand(table_generators(opts))
     |> AliasExpand.expand()
     |> StaticMapMacroExpand.expand(static_map_macros(opts))
+    |> SigilMacroExpand.expand(sigil_macros(opts))
     |> BytecaseExpand.expand(bytecase_macros(opts))
     |> RecordExpand.expand()
     |> MetadataMacroExpand.expand(metadata_macros(opts))
@@ -169,6 +174,7 @@ defmodule Batata.Frontend do
   defp table_generators(opts), do: Keyword.get(opts, :table_generators, MapSet.new())
   defp bytecase_macros(opts), do: Keyword.get(opts, :bytecase_macros, %{})
   defp static_map_macros(opts), do: Keyword.get(opts, :static_map_macros, %{})
+  defp sigil_macros(opts), do: Keyword.get(opts, :sigil_macros, %{})
 
   defp module_form?({kind, _, _}) when kind in [:defmodule, :defimpl, :defprotocol], do: true
   defp module_form?(_form), do: false

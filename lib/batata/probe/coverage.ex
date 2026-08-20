@@ -10,6 +10,7 @@ defmodule Batata.Probe.Coverage do
   alias Batata.Frontend
   alias Batata.Frontend.BytecaseExpand
   alias Batata.Frontend.MetadataMacroExpand
+  alias Batata.Frontend.SigilMacroExpand
   alias Batata.Frontend.StaticMapMacroExpand
   alias Batata.Probe.CapabilityMatrix
   alias Batata.Probe.Jason.{Diff, Report}
@@ -169,6 +170,7 @@ defmodule Batata.Probe.Coverage do
     table_generators = Frontend.MetaprogrammingExpand.discover_table_generators(sources)
     bytecase_macros = BytecaseExpand.discover(sources)
     static_map_macros = StaticMapMacroExpand.discover(sources)
+    sigil_macros = SigilMacroExpand.discover(sources)
 
     results =
       files
@@ -181,7 +183,8 @@ defmodule Batata.Probe.Coverage do
           metadata_macros,
           table_generators,
           bytecase_macros,
-          static_map_macros
+          static_map_macros,
+          sigil_macros
         )
       end)
 
@@ -206,7 +209,8 @@ defmodule Batata.Probe.Coverage do
          metadata_macros,
          table_generators,
          bytecase_macros,
-         static_map_macros
+         static_map_macros,
+         sigil_macros
        ) do
     relative = Path.relative_to(path, source)
 
@@ -217,7 +221,8 @@ defmodule Batata.Probe.Coverage do
           metadata_macros: metadata_macros,
           table_generators: table_generators,
           bytecase_macros: bytecase_macros,
-          static_map_macros: static_map_macros
+          static_map_macros: static_map_macros,
+          sigil_macros: sigil_macros
         )
         |> List.wrap()
 
