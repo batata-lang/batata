@@ -49,6 +49,7 @@ defmodule Batata.Probe.Coverage do
     baseline = config |> Map.fetch!(:baseline) |> read_json!()
     metadata = config |> Map.fetch!(:metadata) |> Report.read_metadata!()
     capabilities = config |> Map.fetch!(:capabilities) |> CapabilityMatrix.load!()
+    canonical_baseline = read_optional_json(config[:canonical_baseline])
 
     raw =
       case Map.get(config, :raw_report) do
@@ -57,11 +58,12 @@ defmodule Batata.Probe.Coverage do
       end
 
     verify_source_identity!(raw, metadata)
+    verify_canonical_identity!(canonical_baseline, metadata)
     diff = Diff.compare(raw, baseline)
     canonical = canonical_acceptance(source)
     semantic = semantic_execution(capabilities)
 
-    regressions = raw_regressions(diff)
+    regressions = raw_regressions(diff) ++ canonical_regressions(canonical, canonical_baseline)
 
     %{
       "name" => name,
@@ -81,7 +83,7 @@ defmodule Batata.Probe.Coverage do
       },
       "canonical_acceptance" => %{
         "status" => if(canonical["unsupported_forms"] == 0, do: "pass", else: "blocked"),
-        "baseline" => nil,
+        "baseline" => canonical_baseline,
         "current" => canonical,
         "target" => %{"failed_files" => 0, "unsupported_forms" => 0}
       },
@@ -115,6 +117,43 @@ defmodule Batata.Probe.Coverage do
     |> maybe_regression(diff["added"] != [], "raw blocker IDs added")
     |> maybe_regression(diff["resolved"] != [], "raw blocker IDs disappeared")
     |> maybe_regression(diff["compile_attempt_regression"], "module compile attempt regressed")
+  end
+
+  defp canonical_regressions(_canonical, nil), do: []
+
+  defp canonical_regressions(canonical, baseline) do
+    []
+    |> maybe_regression(
+      canonical["failed_files"] > baseline["failed_files"],
+      "canonical failed files increased"
+    )
+    |> maybe_regression(
+      canonical["unsupported_forms"] > baseline["unsupported_forms"],
+      "canonical unsupported forms increased"
+    )
+    |> Kernel.++(canonical_file_regressions(canonical["results"], baseline["results"]))
+  end
+
+  defp canonical_file_regressions(results, baseline_results) do
+    baseline_by_path = Map.new(baseline_results, &{&1["path"], &1})
+
+    Enum.flat_map(results, fn result ->
+      baseline = Map.get(baseline_by_path, result["path"], %{"reasons" => %{}})
+
+      Enum.flat_map(result["reasons"] || %{}, fn {reason, count} ->
+        canonical_reason_regression(result["path"], reason, count, baseline)
+      end)
+    end)
+  end
+
+  defp canonical_reason_regression(path, reason, count, baseline) do
+    baseline_count = get_in(baseline, ["reasons", reason]) || 0
+
+    if count > baseline_count do
+      ["#{path}: canonical #{reason} increased from #{baseline_count} to #{count}"]
+    else
+      []
+    end
   end
 
   defp maybe_regression(regressions, true, message), do: regressions ++ [message]
@@ -187,12 +226,26 @@ defmodule Batata.Probe.Coverage do
 
   defp read_json!(path), do: path |> File.read!() |> JSON.decode!()
 
+  defp read_optional_json(nil), do: nil
+  defp read_optional_json(path), do: read_json!(path)
+
   defp verify_source_identity!(report, metadata) do
     corpus = report["corpus"]
 
     if corpus["commit"] != metadata["commit"] or corpus["ref"] != metadata["ref"] do
       raise ArgumentError,
             "raw report corpus identity does not match #{metadata["name"]} metadata"
+    end
+  end
+
+  defp verify_canonical_identity!(nil, _metadata), do: :ok
+
+  defp verify_canonical_identity!(baseline, metadata) do
+    corpus = baseline["corpus"]
+
+    if corpus["commit"] != metadata["commit"] or corpus["ref"] != metadata["ref"] do
+      raise ArgumentError,
+            "canonical baseline corpus identity does not match #{metadata["name"]} metadata"
     end
   end
 

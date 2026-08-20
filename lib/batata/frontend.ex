@@ -42,7 +42,12 @@ defmodule Batata.Frontend do
     defstruct [:form, :reason]
   end
 
-  alias Batata.Frontend.{AliasExpand, DefaultArgExpand, MetaprogrammingExpand}
+  alias Batata.Frontend.{
+    AliasExpand,
+    DefaultArgExpand,
+    MetaprogrammingExpand,
+    ModuleEnvironment
+  }
 
   @doc """
   Parses source text and normalizes the resulting module AST.
@@ -101,6 +106,8 @@ defmodule Batata.Frontend do
       block
       |> MetaprogrammingExpand.expand()
       |> AliasExpand.expand()
+      |> ModuleEnvironment.expand()
+      |> MetaprogrammingExpand.expand()
       |> DefaultArgExpand.expand()
       |> from_expanded_ast()
     end
@@ -110,6 +117,8 @@ defmodule Batata.Frontend do
     ast
     |> MetaprogrammingExpand.expand()
     |> AliasExpand.expand()
+    |> ModuleEnvironment.expand()
+    |> MetaprogrammingExpand.expand()
     |> DefaultArgExpand.expand()
     |> from_expanded_ast()
   end
