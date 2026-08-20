@@ -72,6 +72,34 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert 30 == Batata.execute(source, Context.create())
   end
 
+  test "expands a literal range without host evaluation" do
+    source = """
+    defmodule RangeDemo do
+      for depth <- 1..3 do
+        def depth(unquote(depth)), do: unquote(depth)
+      end
+    end
+    """
+
+    snapshot = Frontend.from_source(source)
+    assert snapshot.unsupported == []
+    assert Enum.map(snapshot.definitions, & &1.name) == [:depth, :depth, :depth]
+  end
+
+  test "structurally decodes tuple and map collection literals" do
+    source = """
+    defmodule LiteralDataDemo do
+      for item <- [{:tuple, 1}, %{kind: :map}] do
+        def item(unquote(Macro.escape(item))), do: :ok
+      end
+    end
+    """
+
+    snapshot = Frontend.from_source(source)
+    assert snapshot.unsupported == []
+    assert length(snapshot.definitions) == 2
+  end
+
   test "leaves unsupported generators unchanged, including metadata" do
     ast =
       {:defmodule, [line: 1],
