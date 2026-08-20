@@ -143,6 +143,48 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert [%Frontend.Clause{body_ast: 1000}] = maximum.clauses
   end
 
+  test "carries bounded structural bindings into later generators" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule BindingDemo do
+        zipped = Enum.zip(~c"ab", [:one, :two])
+        entries = [{0, :zero} | zipped]
+
+        for entry <- entries do
+          def entry(unquote(Macro.escape(entry))), do: :ok
+        end
+      end
+      """)
+
+    assert snapshot.unsupported == []
+    assert Enum.count(snapshot.definitions, &(&1.name == :entry)) == 3
+  end
+
+  test "selects the successful branch of an allowlisted capability probe" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule ProbeDemo do
+        available =
+          try do
+            :erlang.float_to_binary(1.0, [:short])
+          catch
+            _, _ -> false
+          else
+            _ -> true
+          end
+
+        if available do
+          def selected(), do: :supported
+        else
+          def selected(), do: :fallback
+        end
+      end
+      """)
+
+    assert snapshot.unsupported == []
+    assert [%Frontend.Clause{body_ast: :supported}] = hd(snapshot.definitions).clauses
+  end
+
   test "keeps reduce generators outside the structural allowlist visible" do
     snapshot =
       Frontend.from_source("""

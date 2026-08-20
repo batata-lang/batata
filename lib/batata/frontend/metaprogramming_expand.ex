@@ -9,7 +9,8 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   @available_optional_modules MapSet.new()
   @available_functions MapSet.new([
                          {Application, :compile_env, 3},
-                         {:erlang, :is_map_key, 2}
+                         {:erlang, :is_map_key, 2},
+                         {:erlang, :float_to_binary, 2}
                        ])
   @max_generated_iterations 512
   @max_generated_integer_bits 4096
@@ -59,21 +60,24 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
       Enum.map_reduce(forms, %{}, fn form, bindings ->
         form = substitute_unquotes(form, bindings)
 
-        case expand_reduce_assignment(form) do
+        case expand_assignment(form, bindings) do
           {:ok, generated, name, value} ->
             {generated, Map.put(bindings, name, value)}
 
           :error ->
-            {expand_form(form), bindings}
+            {expand_form(form, bindings), bindings}
         end
       end)
 
     List.flatten(expanded)
   end
 
-  defp expand_form({:for, _meta, [{:<-, _, [{var_name, _, nil}, collection]}, [do: body]]} = form)
+  defp expand_form(
+         {:for, _meta, [{:<-, _, [{var_name, _, nil}, collection]}, [do: body]]} = form,
+         bindings
+       )
        when is_atom(var_name) do
-    case eval_collection(collection) do
+    case eval_collection(collection, bindings) do
       {:ok, items} when is_list(items) and items != [] ->
         Enum.flat_map(items, fn item ->
           body
@@ -87,11 +91,12 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp expand_form({:if, _meta, [condition, branches]} = form) when is_list(branches) do
+  defp expand_form({:if, _meta, [condition, branches]} = form, bindings)
+       when is_list(branches) do
     do_branch = Keyword.get(branches, :do)
     else_branch = Keyword.get(branches, :else)
 
-    case eval_condition(condition) do
+    case eval_condition(condition, bindings) do
       {:ok, true} ->
         if do_branch != nil do
           do_branch |> body_forms() |> expand_forms()
@@ -111,7 +116,23 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp expand_form(form), do: [form]
+  defp expand_form(form, _bindings), do: [form]
+
+  defp expand_assignment({:=, _meta, [{name, _, nil}, expression]} = form, bindings)
+       when is_atom(name) do
+    case expand_reduce_assignment(form, bindings) do
+      {:ok, generated, value} ->
+        {:ok, generated, name, value}
+
+      :error ->
+        case eval_compile_expr(expression, bindings) do
+          {:ok, value} -> {:ok, [], name, value}
+          :error -> :error
+        end
+    end
+  end
+
+  defp expand_assignment(_form, _bindings), do: :error
 
   defp expand_reduce_assignment(
          {:=, _meta,
@@ -123,10 +144,11 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
                initial,
                {:fn, _, [{:->, _, [[{item_name, _, nil}, {acc_name, _, nil}], body]}]}
              ]}
-          ]}
+          ]},
+         bindings
        )
        when is_atom(binding_name) and is_atom(item_name) and is_atom(acc_name) do
-    with {:ok, items} when items != [] <- eval_collection(collection),
+    with {:ok, items} when items != [] <- eval_collection(collection, bindings),
          true <- length(items) <= @max_generated_iterations,
          {:ok, initial} when is_integer(initial) <- Literal.eval(initial),
          true <- generated_integer_in_bounds?(initial),
@@ -135,13 +157,13 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
          true <- Enum.all?(templates, &definition_form?/1),
          {:ok, generated, final_acc} <-
            expand_reduce_iterations(items, initial, item_name, acc_name, templates, next_acc) do
-      {:ok, generated, binding_name, final_acc}
+      {:ok, generated, final_acc}
     else
       _ -> :error
     end
   end
 
-  defp expand_reduce_assignment(_form), do: :error
+  defp expand_reduce_assignment(_form, _bindings), do: :error
 
   defp expand_reduce_iterations(items, initial, item_name, acc_name, templates, next_acc) do
     items
@@ -196,8 +218,8 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     value |> abs() |> Integer.digits(2) |> length() <= @max_generated_integer_bits
   end
 
-  defp eval_collection(collection) do
-    case Literal.eval(collection) do
+  defp eval_collection(collection, bindings) do
+    case eval_compile_expr(collection, bindings) do
       {:ok, %Range{} = range} -> {:ok, Enum.to_list(range)}
       {:ok, value} when is_list(value) -> {:ok, value}
       {:ok, value} when is_atom(value) -> {:ok, [value]}
@@ -205,41 +227,45 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp eval_condition(true), do: {:ok, true}
-  defp eval_condition(false), do: {:ok, false}
-  defp eval_condition(nil), do: {:ok, false}
+  defp eval_condition(condition, bindings)
+  defp eval_condition(true, _bindings), do: {:ok, true}
+  defp eval_condition(false, _bindings), do: {:ok, false}
+  defp eval_condition(nil, _bindings), do: {:ok, false}
 
-  defp eval_condition({:==, _, [left, right]}) do
-    with {:ok, left_val} <- eval_simple_expr(left),
-         {:ok, right_val} <- eval_simple_expr(right) do
+  defp eval_condition({:==, _, [left, right]}, bindings) do
+    with {:ok, left_val} <- eval_simple_expr(left, bindings),
+         {:ok, right_val} <- eval_simple_expr(right, bindings) do
       {:ok, left_val == right_val}
     else
       _ -> :error
     end
   end
 
-  defp eval_condition({:!=, _, [left, right]}) do
-    with {:ok, left_val} <- eval_simple_expr(left),
-         {:ok, right_val} <- eval_simple_expr(right) do
+  defp eval_condition({:!=, _, [left, right]}, bindings) do
+    with {:ok, left_val} <- eval_simple_expr(left, bindings),
+         {:ok, right_val} <- eval_simple_expr(right, bindings) do
       {:ok, left_val != right_val}
     else
       _ -> :error
     end
   end
 
-  defp eval_condition({:and, _, [left, right]}) do
-    with {:ok, left} <- eval_condition(left) do
-      if left, do: eval_condition(right), else: {:ok, false}
+  defp eval_condition({:and, _, [left, right]}, bindings) do
+    with {:ok, left} <- eval_condition(left, bindings) do
+      if left, do: eval_condition(right, bindings), else: {:ok, false}
     end
   end
 
-  defp eval_condition({:or, _, [left, right]}) do
-    with {:ok, left} <- eval_condition(left) do
-      if left, do: {:ok, true}, else: eval_condition(right)
+  defp eval_condition({:or, _, [left, right]}, bindings) do
+    with {:ok, left} <- eval_condition(left, bindings) do
+      if left, do: {:ok, true}, else: eval_condition(right, bindings)
     end
   end
 
-  defp eval_condition({{:., _, [{:__aliases__, _, [:Code]}, :ensure_loaded?]}, _, [module_ast]}) do
+  defp eval_condition(
+         {{:., _, [{:__aliases__, _, [:Code]}, :ensure_loaded?]}, _, [module_ast]},
+         _bindings
+       ) do
     case Literal.eval(module_ast) do
       {:ok, module} when is_atom(module) ->
         {:ok, MapSet.member?(@available_optional_modules, module)}
@@ -249,7 +275,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp eval_condition({:function_exported?, _, [module_ast, function, arity]})
+  defp eval_condition({:function_exported?, _, [module_ast, function, arity]}, _bindings)
        when is_atom(function) and is_integer(arity) do
     case Literal.eval(module_ast) do
       {:ok, module} when is_atom(module) ->
@@ -260,16 +286,19 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp eval_condition(other) do
-    case Literal.eval(other) do
+  defp eval_condition(other, bindings) do
+    case eval_compile_expr(other, bindings) do
       {:ok, value} -> {:ok, value not in [false, nil]}
       :error -> :error
     end
   end
 
-  defp eval_simple_expr({{:., _, [{:__aliases__, _, [:Version]}, :compare]}, _, [v1, v2]}) do
-    with {:ok, s1} <- eval_simple_expr(v1),
-         {:ok, s2} <- eval_simple_expr(v2),
+  defp eval_simple_expr(
+         {{:., _, [{:__aliases__, _, [:Version]}, :compare]}, _, [v1, v2]},
+         bindings
+       ) do
+    with {:ok, s1} <- eval_simple_expr(v1, bindings),
+         {:ok, s2} <- eval_simple_expr(v2, bindings),
          true <- is_binary(s1) and is_binary(s2) do
       {:ok, Version.compare(s1, s2)}
     else
@@ -277,14 +306,83 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp eval_simple_expr({{:., _, [{:__aliases__, _, [:System]}, :version]}, _, []}) do
+  defp eval_simple_expr(
+         {{:., _, [{:__aliases__, _, [:System]}, :version]}, _, []},
+         _bindings
+       ) do
     {:ok, System.version()}
   end
 
-  defp eval_simple_expr(atom) when is_atom(atom), do: {:ok, atom}
-  defp eval_simple_expr(number) when is_number(number), do: {:ok, number}
-  defp eval_simple_expr(binary) when is_binary(binary), do: {:ok, binary}
-  defp eval_simple_expr(other), do: Literal.eval(other)
+  defp eval_simple_expr(other, bindings), do: eval_compile_expr(other, bindings)
+
+  defp eval_compile_expr({name, _, nil}, bindings) when is_atom(name),
+    do: Map.fetch(bindings, name)
+
+  defp eval_compile_expr(
+         {{:., _, [{:__aliases__, _, [:Enum]}, :zip]}, _, [left, right]},
+         bindings
+       ) do
+    with {:ok, left} when is_list(left) <- eval_compile_expr(left, bindings),
+         {:ok, right} when is_list(right) <- eval_compile_expr(right, bindings),
+         true <- max(length(left), length(right)) <= @max_generated_iterations do
+      {:ok, Enum.zip(left, right)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_compile_expr({:sigil_c, _, [{:<<>>, _, [contents]}, []]}, _bindings)
+       when is_binary(contents),
+       do: {:ok, String.to_charlist(contents)}
+
+  defp eval_compile_expr([{:|, _, [head, tail]}], bindings) do
+    with {:ok, head} <- eval_compile_expr(head, bindings),
+         {:ok, tail} when is_list(tail) <- eval_compile_expr(tail, bindings),
+         true <- length(tail) < @max_generated_iterations do
+      {:ok, [head | tail]}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_compile_expr(values, bindings) when is_list(values) do
+    values
+    |> Enum.reduce_while({:ok, []}, fn value, {:ok, acc} ->
+      case eval_compile_expr(value, bindings) do
+        {:ok, evaluated} -> {:cont, {:ok, [evaluated | acc]}}
+        :error -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, evaluated} -> {:ok, Enum.reverse(evaluated)}
+      :error -> :error
+    end
+  end
+
+  defp eval_compile_expr(
+         {:try, _,
+          [[do: call, catch: _catch_clauses, else: [{:->, _, [[{:_, _, nil}], value]}]]]},
+         bindings
+       ) do
+    with {:ok, signature} <- call_signature(call),
+         true <- MapSet.member?(@available_functions, signature) do
+      eval_compile_expr(value, bindings)
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_compile_expr(expression, _bindings), do: Literal.eval(expression)
+
+  defp call_signature({{:., _, [module_ast, function]}, _, arguments})
+       when is_atom(function) and is_list(arguments) do
+    case Literal.eval(module_ast) do
+      {:ok, module} when is_atom(module) -> {:ok, {module, function, length(arguments)}}
+      _ -> :error
+    end
+  end
+
+  defp call_signature(_call), do: :error
 
   defp substitute_unquotes(ast, bindings) do
     Macro.prewalk(ast, fn
