@@ -20,24 +20,13 @@ Rules for AI agents working in this repository.
 - All tests use `use ExUnit.Case, async: true` where possible and never mutate
   process-global or VM-global state.
 
-## Stacked PRs against beaver
+## Stacked PRs against Beaver
 
-CI clones beaver at `vars.BEAVER_REF` (default `main`). When a batata change
-depends on an unmerged beaver branch, set the variable **before** opening the
-PR: the ref is resolved when the workflow run starts, so a variable set after
-`gh pr create` races with the first run and silently tests against `main`.
+Batata's `native-deps.lock` is the versioned source of truth for the Beaver
+revision used locally and in CI. A Batata change that depends on an unmerged
+Beaver branch must commit a fetchable ref and its expected full SHA to that
+lock. Never coordinate stacks through a repository-wide GitHub variable.
 
-```sh
-gh variable set BEAVER_REF --repo conformal-elixir/batata --body <beaver-branch>
-gh pr create ...
-```
-
-Merge order is beaver first, then batata; delete the variable afterwards:
-
-```sh
-gh variable delete BEAVER_REF --repo conformal-elixir/batata
-```
-
-If a run already started with the wrong ref (logs show `BEAVER_REF: main`),
-push an empty commit to the PR branch to trigger a fresh run instead of
-rerunning the old job.
+Merge Beaver first. Then update both `BEAVER_GIT_REF` and `BEAVER_GIT_SHA` to
+the final squash-merge commit before merging Batata. The native dependency
+resolver rejects a ref that no longer resolves to the committed SHA.
