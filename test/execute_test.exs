@@ -518,6 +518,51 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx, reduction_budget: 2) == expected
   end
 
+  test "reads struct and map fields with typed failures", %{ctx: ctx} do
+    source = """
+    defmodule StructFieldAccess do
+      defstruct sign: 1, coef: 0
+
+      def read(number), do: {number.sign, number.coef}
+      def main(), do: {read(%__MODULE__{sign: -1, coef: 42}), read(%{sign: 1, coef: 7})}
+    end
+    """
+
+    expected = source |> Kernel.<>("\nStructFieldAccess.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+
+    key_error =
+      assert_raise KeyError, fn ->
+        Batata.execute(
+          """
+          defmodule MissingFieldAccess do
+            def read(value), do: value.missing
+            def main(), do: read(%{present: 1})
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert key_error.key == :missing
+    assert key_error.term == %{present: 1}
+
+    bad_map_error =
+      assert_raise BadMapError, fn ->
+        Batata.execute(
+          """
+          defmodule InvalidFieldAccess do
+            def read(value), do: value.missing
+            def main(), do: read(1)
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert bad_map_error.term == 1
+  end
+
   test "raises typed errors for invalid exact map updates", %{ctx: ctx} do
     key_error =
       assert_raise KeyError, fn ->

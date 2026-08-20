@@ -284,6 +284,9 @@ defmodule Batata.Lift do
         {:%{}, _, [{:|, _, [_base, _updates]}]} = node, false ->
           {node, true}
 
+        {{:., _, [{_name, _, nil}, field]}, _, []} = node, false when is_atom(field) ->
+          {node, true}
+
         {name, _, args} = node, false when is_atom(name) and is_list(args) ->
           {node, Batata.Stdlib.may_raise?({Kernel, name, length(args)})}
 
@@ -3545,6 +3548,18 @@ defmodule Batata.Lift do
   # Remote stdlib call: `Kernel.length(x)` / `List.first(x)` / `Enum.count(x)`.
   # Module-qualified calls resolve through the stdlib domain registry; anything
   # outside the declared surface raises explicitly.
+  defp lift_expr({{:., _, [{name, _, nil} = base_ast, field]}, _, []}, ctx, block, env)
+       when is_atom(name) and is_atom(field) do
+    case Map.fetch(env, name) do
+      {:ok, _value} ->
+        {base, env} = lift_expr(base_ast, ctx, block, env)
+        {lower_map_field_access(box_term(base, ctx, block), field, ctx, block), env}
+
+      :error ->
+        lift_stdlib_call(name, field, [], ctx, block, env)
+    end
+  end
+
   defp lift_expr({{:., _, [mod_ast, fun]}, _, args}, ctx, block, env)
        when is_atom(fun) and is_list(args) do
     case module_ref(mod_ast) do
@@ -6056,6 +6071,50 @@ defmodule Batata.Lift do
     create_op(
       "ex.yield",
       [updated, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      success_block
+    )
+
+    %Beaver.SSA{
+      op: "ex.case",
+      ip: block,
+      ctx: ctx,
+      arguments: [base, operandSegmentSizes: segment_sizes([1])],
+      results: [dyn],
+      loc: MLIR.Location.unknown(),
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+    |> MLIR.Operation.results()
+    |> Enum.to_list()
+    |> hd()
+  end
+
+  defp lower_map_field_access(base, field, ctx, block) do
+    dyn = ex_type("term", ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+    key = atom_term(field, ctx, block)
+    fetched = create_op("ex.map_fetch", [base, key], [dyn], ctx, block)
+
+    is_map = create_op("ex.is_map", [base], [MLIR.Type.i64()], ctx, block)
+    add_map_update_failure_clause(cmp(is_map, 0, "eq", ctx, block), base, 5, ctx, region)
+
+    found = create_op("ex.tuple_get", [fetched, lit(0, ctx, block)], [dyn], ctx, block)
+    found = create_op("ex.to_int", [found], [MLIR.Type.i64()], ctx, block)
+    reason = create_term_op("ex.tuple", [key, base], ctx, block)
+    add_map_update_failure_clause(cmp(found, 0, "eq", ctx, block), reason, 4, ctx, region)
+
+    success_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, success_block)
+    create_op("ex.clause", [patterns: pattern_attr([])], [], ctx, success_block)
+
+    value =
+      create_op("ex.tuple_get", [fetched, lit(1, ctx, success_block)], [dyn], ctx, success_block)
+
+    create_op(
+      "ex.yield",
+      [value, operandSegmentSizes: segment_sizes([1])],
       [],
       ctx,
       success_block
