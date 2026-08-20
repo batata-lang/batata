@@ -54,6 +54,15 @@ defmodule Batata.Signature do
   end
 
   defp infer_node(
+         {{:., _, [{name, _, nil}, field]}, _, []} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_atom(name) and is_atom(field),
+       do: {node, mark_name(modes, names, name)}
+
+  defp infer_node(
          {:case, _, [{name, _, nil}, [do: clauses]]} = node,
          modes,
          names,
