@@ -66,6 +66,25 @@ defmodule Batata.LiftTest do
     Enum.reverse(ops)
   end
 
+  test "emits function groups in deterministic symbol order", %{ctx: ctx} do
+    rendered =
+      lift!(
+        """
+        defmodule StableFunctionOrder do
+          def zeta(value), do: value
+          def alpha(value), do: value
+        end
+        """,
+        ctx
+      )
+      |> MLIR.to_string(generic: true)
+
+    alpha = Batata.Symbol.function(:alpha, 1)
+    zeta = Batata.Symbol.function(:zeta, 1)
+
+    assert :binary.match(rendered, alpha) < :binary.match(rendered, zeta)
+  end
+
   test "lifts literals, bindings and addition into ex IR", %{ctx: ctx} do
     module =
       lift!(
