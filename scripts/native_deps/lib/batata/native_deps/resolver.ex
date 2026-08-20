@@ -3,6 +3,7 @@ defmodule Batata.NativeDeps.Resolver do
 
   alias Batata.NativeDeps
   alias Batata.NativeDeps.Command
+  alias Batata.NativeDeps.Receipt
 
   @cleared_env [
     {"BEAVER_PATH", nil},
@@ -16,6 +17,7 @@ defmodule Batata.NativeDeps.Resolver do
   ]
 
   def setup!(opts \\ []) do
+    NativeDeps.remove_receipt!(opts)
     lock = NativeDeps.lock!(opts)
 
     beaver =
@@ -45,9 +47,13 @@ defmodule Batata.NativeDeps.Resolver do
     llvm = llvm!(opts[:llvm_config], beaver.path, Map.fetch!(metadata, "llvm"), opts)
 
     config = [
+      schema: 1,
+      mode: :pinned,
+      lock_sha256: NativeDeps.file_sha256!(NativeDeps.lock_path(opts)),
       beaver_path: beaver.path,
       beaver_source: beaver.source,
       beaver_ref: beaver.ref,
+      beaver_metadata_sha256: NativeDeps.file_sha256!(Path.join(beaver.path, "native-deps.json")),
       kinda_path: kinda.path,
       kinda_source: kinda.source,
       kinda_ref: kinda.ref,
@@ -58,6 +64,7 @@ defmodule Batata.NativeDeps.Resolver do
     ]
 
     NativeDeps.write_config!(config, opts)
+    Receipt.write!(config, opts)
 
     if Keyword.get(opts, :fetch_deps, true) do
       Batata.NativeDeps.Runner.run_mix!(["deps.get"], opts)
@@ -86,9 +93,30 @@ defmodule Batata.NativeDeps.Resolver do
     end
   end
 
-  def validate_config!(config) do
+  def validate_config!(config, opts \\ []) do
+    unless Keyword.get(config, :schema) == 1,
+      do: Mix.raise("native dependency configuration has an unsupported schema")
+
+    unless Keyword.get(config, :mode) == :pinned,
+      do: Mix.raise("native dependency configuration has an unsupported mode")
+
+    validate_digest!(
+      NativeDeps.lock_path(opts),
+      Keyword.fetch!(config, :lock_sha256),
+      "native dependency lock"
+    )
+
     validate_directory!(Keyword.fetch!(config, :beaver_path), "Beaver checkout")
     validate_directory!(Keyword.fetch!(config, :kinda_path), "Kinda checkout")
+    validate_source!(config, :beaver)
+    validate_source!(config, :kinda)
+
+    validate_digest!(
+      Path.join(Keyword.fetch!(config, :beaver_path), "native-deps.json"),
+      Keyword.fetch!(config, :beaver_metadata_sha256),
+      "Beaver native dependency metadata"
+    )
+
     validate_llvm!(Keyword.fetch!(config, :llvm_config_path))
     config
   end
@@ -194,6 +222,36 @@ defmodule Batata.NativeDeps.Resolver do
 
   defp validate_directory!(path, label) do
     unless File.dir?(path), do: Mix.raise("#{label} not found: #{path}")
+  end
+
+  defp validate_digest!(path, expected, label) do
+    actual = NativeDeps.file_sha256!(path)
+
+    unless actual == expected,
+      do: Mix.raise("#{label} changed since setup; run 'mix batata.native setup'")
+  end
+
+  defp validate_source!(config, name) do
+    path = Keyword.fetch!(config, String.to_existing_atom("#{name}_path"))
+    source = Keyword.fetch!(config, String.to_existing_atom("#{name}_source"))
+    expected = Keyword.fetch!(config, String.to_existing_atom("#{name}_ref"))
+
+    if source == :pinned do
+      unless git_revision(path) == expected,
+        do: Mix.raise("pinned #{name} checkout does not match #{expected}")
+
+      dirty =
+        Command.run!("git", [
+          "-C",
+          path,
+          "status",
+          "--porcelain",
+          "--untracked-files=normal"
+        ])
+
+      unless String.trim(dirty) == "",
+        do: Mix.raise("pinned #{name} checkout is dirty: #{path}")
+    end
   end
 
   defp validate_llvm!(path) do

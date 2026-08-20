@@ -25,6 +25,12 @@ defmodule Mix.Tasks.Batata.Native do
   end
 
   def run(["doctor"]), do: Runner.doctor!()
+
+  def run(["verify"]) do
+    Runner.verify!()
+    Mix.shell().info("Native dependency receipt is valid")
+  end
+
   def run(["compile" | args]), do: Runner.run_mix!(["compile" | args])
   def run(["test" | args]), do: Runner.run_mix!(["test" | args])
   def run(["run", "--" | args]) when args != [], do: Runner.run_mix!(args)
@@ -39,6 +45,7 @@ defmodule Mix.Tasks.Batata.Native do
     usage:
       mix batata.native setup [--beaver-path PATH] [--kinda-path PATH] [--llvm-config PATH]
       mix batata.native doctor
+      mix batata.native verify
       mix batata.native compile
       mix batata.native test [ARGS...]
       mix batata.native run -- TASK [ARGS...]
