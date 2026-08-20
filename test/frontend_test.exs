@@ -28,7 +28,7 @@ defmodule Batata.FrontendTest do
              }
            ] = snapshot.definitions
 
-    assert [%Frontend.UnsupportedForm{reason: :module_attribute}] = snapshot.unsupported
+    assert snapshot.unsupported == []
   end
 
   test "records module-body forms outside the boundary" do
