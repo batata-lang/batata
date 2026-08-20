@@ -124,6 +124,25 @@ jobs:
             --output _build/decimal_probe/report.json \
             --baseline probe/decimal/baseline.json
 
+      - name: Run Jason and Decimal coverage dashboard
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native run -- batata.coverage \
+            --jason-source jason-probe-source \
+            --decimal-source decimal-probe-source \
+            --jason-raw-report _build/jason_probe/report.json \
+            --decimal-raw-report _build/decimal_probe/report.json \
+            --output _build/coverage/report.json \
+            --fail-on-regression
+
+      - name: Upload coverage dashboard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-coverage-dashboard
+          path: _build/coverage/report.json
+          if-no-files-found: error
+
       - name: Upload Decimal probe report
         if: always()
         uses: actions/upload-artifact@v4
