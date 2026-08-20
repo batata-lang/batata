@@ -1319,7 +1319,7 @@ defmodule Batata.Lift do
       tail_modes
       |> Enum.with_index()
       |> Enum.map(fn {mode, index} ->
-        if Enum.any?(clause_tail_patterns, &match?({:literal, _}, Enum.at(&1, index))),
+        if Enum.any?(clause_tail_patterns, &tail_term_pattern?(Enum.at(&1, index))),
           do: :term,
           else: mode
       end)
@@ -1327,18 +1327,10 @@ defmodule Batata.Lift do
     tail_args =
       Enum.zip_with(tail_args, tail_modes, &inbound_argument(&1, &2, ctx, block))
 
-    clause_tail_names =
-      Enum.map(clause_tail_patterns, fn patterns ->
-        Enum.map(patterns, fn
-          {:variable, name} -> name
-          {:literal, _atom} -> nil
-        end)
-      end)
-
-    clause_bindss = Enum.map(clause_tail_names, &tail_bindings(&1, tail_args))
-
-    extra_clause_conds =
-      Enum.map(clause_tail_patterns, &tail_match_condition(&1, tail_args, ctx, block, module_env))
+    {extra_clause_conds, clause_bindss} =
+      clause_tail_patterns
+      |> Enum.map(&tail_match(&1, tail_args, ctx, block, module_env))
+      |> Enum.unzip()
 
     failure_tail_names =
       Enum.map(1..(arity - 1), &String.to_atom("__batata_tail_arg_#{&1}"))
@@ -1417,6 +1409,14 @@ defmodule Batata.Lift do
   defp multi_arg_tail_pattern!({name, _, nil}) when is_atom(name),
     do: {:variable, name}
 
+  defp multi_arg_tail_pattern!({:%, _, _} = pattern), do: {:term_pattern, pattern}
+
+  defp multi_arg_tail_pattern!({:=, _, [left, right]} = pattern) do
+    if struct_tail_pattern?(left) or struct_tail_pattern?(right),
+      do: {:term_pattern, pattern},
+      else: unsupported_multi_arg_tail_pattern!(pattern)
+  end
+
   defp multi_arg_tail_pattern!({:__aliases__, _, parts} = pattern) when is_list(parts) do
     if parts != [] and Enum.all?(parts, &is_atom/1) do
       {:literal, Elixir.Module.concat(parts)}
@@ -1431,23 +1431,40 @@ defmodule Batata.Lift do
   defp unsupported_multi_arg_tail_pattern!(pattern) do
     raise Error,
           "multi-clause trailing arguments must be variables, wildcards, or " <>
-            "compile-known atom literals: #{inspect(pattern)}"
+            "compile-known atom literals or validated struct patterns: #{inspect(pattern)}"
   end
 
-  defp tail_match_condition(patterns, arguments, ctx, block, module_env) do
-    patterns
-    |> Enum.zip(arguments)
-    |> Enum.flat_map(fn
-      {{:variable, _name}, _argument} ->
-        []
+  defp tail_term_pattern?({kind, _}) when kind in [:literal, :term_pattern], do: true
+  defp tail_term_pattern?(_pattern), do: false
 
-      {{:literal, atom}, argument} ->
-        {condition, []} =
-          build_match(atom, argument, ctx, block, false, Map.get(module_env, @struct_schema_key))
+  defp struct_tail_pattern?({:%, _, _}), do: true
+  defp struct_tail_pattern?(_pattern), do: false
 
-        [condition]
-    end)
-    |> combine(ctx, block)
+  defp tail_match(patterns, arguments, ctx, block, module_env) do
+    schema = Map.get(module_env, @struct_schema_key)
+
+    {conditions, bindings} =
+      patterns
+      |> Enum.zip(arguments)
+      |> Enum.map_reduce([], fn
+        {{:variable, nil}, _argument}, bindings ->
+          {nil, bindings}
+
+        {{:variable, name}, argument}, bindings ->
+          {nil, [{name, argument} | bindings]}
+
+        {{:literal, atom}, argument}, bindings ->
+          {condition, []} = build_match(atom, argument, ctx, block, false, schema)
+          {condition, bindings}
+
+        {{:term_pattern, pattern}, argument}, bindings ->
+          {condition, pattern_bindings} =
+            build_match(pattern, argument, ctx, block, false, schema)
+
+          {condition, Enum.reverse(pattern_bindings, bindings)}
+      end)
+
+    {combine(conditions, ctx, block), Enum.reverse(bindings)}
   end
 
   defp multi_arg_catch_all?(clauses, clause_tail_patterns) do
