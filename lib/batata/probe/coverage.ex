@@ -8,6 +8,7 @@ defmodule Batata.Probe.Coverage do
   """
 
   alias Batata.Frontend
+  alias Batata.Frontend.BytecaseExpand
   alias Batata.Frontend.MetadataMacroExpand
   alias Batata.Probe.CapabilityMatrix
   alias Batata.Probe.Jason.{Diff, Report}
@@ -165,12 +166,20 @@ defmodule Batata.Probe.Coverage do
     sources = Enum.map(files, &File.read!/1)
     metadata_macros = MetadataMacroExpand.discover(sources)
     table_generators = Frontend.MetaprogrammingExpand.discover_table_generators(sources)
+    bytecase_macros = BytecaseExpand.discover(sources)
 
     results =
       files
       |> Enum.zip(sources)
       |> Enum.map(fn {path, source_text} ->
-        canonical_file(path, source, source_text, metadata_macros, table_generators)
+        canonical_file(
+          path,
+          source,
+          source_text,
+          metadata_macros,
+          table_generators,
+          bytecase_macros
+        )
       end)
 
     %{
@@ -187,7 +196,14 @@ defmodule Batata.Probe.Coverage do
     root |> Path.join("**/*.ex") |> Path.wildcard() |> Enum.sort()
   end
 
-  defp canonical_file(path, source, source_text, metadata_macros, table_generators) do
+  defp canonical_file(
+         path,
+         source,
+         source_text,
+         metadata_macros,
+         table_generators,
+         bytecase_macros
+       ) do
     relative = Path.relative_to(path, source)
 
     try do
@@ -195,7 +211,8 @@ defmodule Batata.Probe.Coverage do
         source_text
         |> Frontend.from_source(
           metadata_macros: metadata_macros,
-          table_generators: table_generators
+          table_generators: table_generators,
+          bytecase_macros: bytecase_macros
         )
         |> List.wrap()
 

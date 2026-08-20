@@ -44,6 +44,7 @@ defmodule Batata.Frontend do
 
   alias Batata.Frontend.{
     AliasExpand,
+    BytecaseExpand,
     DefaultArgExpand,
     MetadataMacroExpand,
     MetaprogrammingExpand,
@@ -76,12 +77,14 @@ defmodule Batata.Frontend do
   def from_sources(sources) when is_list(sources) do
     metadata_macros = MetadataMacroExpand.discover(sources)
     table_generators = MetaprogrammingExpand.discover_table_generators(sources)
+    bytecase_macros = BytecaseExpand.discover(sources)
 
     modules =
       Enum.flat_map(sources, fn source ->
         case from_source(source,
                metadata_macros: metadata_macros,
-               table_generators: table_generators
+               table_generators: table_generators,
+               bytecase_macros: bytecase_macros
              ) do
           %Module{} = mod -> [mod]
           mods when is_list(mods) -> mods
@@ -125,6 +128,7 @@ defmodule Batata.Frontend do
       block
       |> MetaprogrammingExpand.expand(table_generators(opts))
       |> AliasExpand.expand()
+      |> BytecaseExpand.expand(bytecase_macros(opts))
       |> RecordExpand.expand()
       |> MetadataMacroExpand.expand(metadata_macros(opts))
       |> ModuleEnvironment.expand()
@@ -139,6 +143,7 @@ defmodule Batata.Frontend do
     ast
     |> MetaprogrammingExpand.expand(table_generators(opts))
     |> AliasExpand.expand()
+    |> BytecaseExpand.expand(bytecase_macros(opts))
     |> RecordExpand.expand()
     |> MetadataMacroExpand.expand(metadata_macros(opts))
     |> ModuleEnvironment.expand()
@@ -150,6 +155,7 @@ defmodule Batata.Frontend do
 
   defp metadata_macros(opts), do: Keyword.get(opts, :metadata_macros, %{})
   defp table_generators(opts), do: Keyword.get(opts, :table_generators, MapSet.new())
+  defp bytecase_macros(opts), do: Keyword.get(opts, :bytecase_macros, %{})
 
   defp module_form?({kind, _, _}) when kind in [:defmodule, :defimpl, :defprotocol], do: true
   defp module_form?(_form), do: false
