@@ -10,6 +10,10 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   Expands module-level `for` and `if` constructs within a `defmodule` AST.
   """
   @spec expand(Macro.t()) :: Macro.t()
+  def expand({:__block__, meta, forms}) do
+    {:__block__, meta, expand_forms(forms)}
+  end
+
   def expand({:defmodule, meta, [name, [do: body]]}) do
     expanded_body =
       body
@@ -18,6 +22,18 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
       |> wrap_body()
 
     {:defmodule, meta, [name, [do: expanded_body]]}
+  end
+
+  def expand({:defimpl, meta, arguments}) do
+    {prefix, [[do: body]]} = Enum.split(arguments, length(arguments) - 1)
+
+    expanded_body =
+      body
+      |> body_forms()
+      |> expand_forms()
+      |> wrap_body()
+
+    {:defimpl, meta, prefix ++ [[do: expanded_body]]}
   end
 
   def expand(other), do: other
