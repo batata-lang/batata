@@ -12,6 +12,7 @@ defmodule Batata.CompilationUnit do
 
   @spec build([Frontend.Module.t()]) :: Frontend.Module.t()
   def build(modules) when is_list(modules) and modules != [] do
+    modules = Enum.map(modules, &prune_unreachable_private_definitions/1)
     symbols = symbol_table(modules)
 
     definitions =
@@ -24,6 +25,98 @@ defmodule Batata.CompilationUnit do
       definitions: definitions,
       struct_schemas: shared_schemas(modules)
     }
+  end
+
+  defp prune_unreachable_private_definitions(module) do
+    grouped = Enum.group_by(module.definitions, &{&1.name, &1.arity})
+
+    roots =
+      grouped
+      |> Enum.filter(fn {_signature, definitions} ->
+        Enum.any?(definitions, &(&1.kind == :def))
+      end)
+      |> Enum.map(&elem(&1, 0))
+      |> MapSet.new()
+
+    reachable = reachable_signatures(roots, grouped, module.name)
+
+    definitions =
+      Enum.filter(module.definitions, fn definition ->
+        MapSet.member?(reachable, {definition.name, definition.arity})
+      end)
+
+    %{module | definitions: definitions}
+  end
+
+  defp reachable_signatures(roots, grouped, module) do
+    visit_signatures(MapSet.to_list(roots), roots, grouped, module)
+  end
+
+  defp visit_signatures([], reachable, _grouped, _module), do: reachable
+
+  defp visit_signatures([signature | pending], reachable, grouped, module) do
+    references =
+      grouped
+      |> Map.get(signature, [])
+      |> Enum.flat_map(&definition_references(&1, grouped, module))
+      |> MapSet.new()
+      |> MapSet.difference(reachable)
+
+    visit_signatures(
+      pending ++ MapSet.to_list(references),
+      MapSet.union(reachable, references),
+      grouped,
+      module
+    )
+  end
+
+  defp definition_references(definition, grouped, module) do
+    definition.clauses
+    |> Enum.flat_map(fn clause ->
+      [clause.patterns, clause.guard_ast, clause.body_ast]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.flat_map(&ast_references(&1, grouped, module))
+    end)
+  end
+
+  defp ast_references(ast, grouped, module) do
+    {_ast, references} =
+      Macro.prewalk(ast, [], fn
+        {:&, _, [{:/, _, [{name, _, _context}, arity]}]} = node, references
+        when is_atom(name) and is_integer(arity) ->
+          {node, maybe_reference(references, {name, arity}, grouped)}
+
+        {:&, _, [{:/, _, [{{:., _, [module_ast, name]}, _, []}, arity]}]} = node, references
+        when is_atom(name) and is_integer(arity) ->
+          reference =
+            if resolve_module(module_ast) == {:ok, module},
+              do: maybe_reference(references, {name, arity}, grouped),
+              else: references
+
+          {node, reference}
+
+        {name, _, arguments} = node, references
+        when is_atom(name) and is_list(arguments) ->
+          {node, maybe_reference(references, {name, length(arguments)}, grouped)}
+
+        {{:., _, [module_ast, name]}, _, arguments} = node, references
+        when is_atom(name) and is_list(arguments) ->
+          reference =
+            if resolve_module(module_ast) == {:ok, module},
+              do: maybe_reference(references, {name, length(arguments)}, grouped),
+              else: references
+
+          {node, reference}
+
+        node, references ->
+          {node, references}
+      end)
+
+    references
+  end
+
+  defp maybe_reference(references, signature, grouped) do
+    if Map.has_key?(grouped, signature), do: [signature | references], else: references
   end
 
   defp symbol_table(modules) do
