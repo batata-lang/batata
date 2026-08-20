@@ -2967,6 +2967,10 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_expr({:|>, _, [left, right]}, ctx, block, env) do
+    lift_expr(Macro.pipe(left, right, 0), ctx, block, env)
+  end
+
   defp lift_expr(integer, ctx, block, env) when is_integer(integer) do
     validate_scalar_integer_literal!(integer)
 

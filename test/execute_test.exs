@@ -289,6 +289,28 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "normalizes local and remote pipeline stages", %{ctx: ctx} do
+    source = """
+    defmodule PipelineDispatch do
+      def add(left, right), do: left + right
+      def double(value), do: value * 2
+
+      def main() do
+        value =
+          4
+          |> add(3)
+          |> double()
+
+        length = [:first, :second] |> Kernel.length()
+        {value, length}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nPipelineDispatch.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "typed case failures bypass user catch frames", %{ctx: ctx} do
     error =
       assert_raise CaseClauseError, fn ->
