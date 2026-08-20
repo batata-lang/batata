@@ -22,6 +22,8 @@ defmodule Batata.StdlibTest do
 
     test "classifies declared domain modules" do
       assert Stdlib.class({List, :first, 1}) == :native_term
+      assert Stdlib.class({Keyword, :get, 2}) == :native_term
+      assert Stdlib.class({Keyword, :get, 3}) == :native_term
       assert Stdlib.class({Map, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
@@ -46,6 +48,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
+      assert Stdlib.may_raise?({Keyword, :get, 3})
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
@@ -60,6 +63,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Enum, :reduce, 3}) == %{
+               purity: :pure,
+               allocation: :none,
+               preemption: :resumable,
+               reductions: :per_element
+             }
+
+      assert Stdlib.metadata({Keyword, :get, 3}) == %{
                purity: :pure,
                allocation: :none,
                preemption: :resumable,

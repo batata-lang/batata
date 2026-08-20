@@ -74,6 +74,18 @@ defmodule Batata.Stdlib.List do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.Keyword do
+  @moduledoc "Keyword-list lookup declarations."
+
+  @class_map %{
+    {Keyword, :get, 2} => :native_term,
+    {Keyword, :get, 3} => :native_term
+  }
+
+  @doc "Returns keyword-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Date do
   @moduledoc """
   Date-domain declarations. Dates use Gregorian day counts in the current
@@ -342,6 +354,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.Binary.class_map(),
                Batata.Stdlib.Date.class_map(),
                Batata.Stdlib.Kernel.class_map(),
+               Batata.Stdlib.Keyword.class_map(),
                Batata.Stdlib.List.class_map(),
                Batata.Stdlib.Map.class_map(),
                Batata.Stdlib.MapSet.class_map(),
@@ -371,6 +384,8 @@ defmodule Batata.Stdlib do
                   {NaiveDateTime, :to_iso8601, 1},
                   {Time, :to_iso8601, 1},
                   {String, :printable?, 1},
+                  {Keyword, :get, 2},
+                  {Keyword, :get, 3},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
                   {:lists, :reverse, 2}
@@ -434,6 +449,8 @@ defmodule Batata.Stdlib do
   @resumable_mfas MapSet.new([
                     {Enum, :map, 2},
                     {Enum, :reduce, 3},
+                    {Keyword, :get, 2},
+                    {Keyword, :get, 3},
                     {:lists, :keyfind, 3},
                     {:lists, :reverse, 1},
                     {:lists, :reverse, 2}
@@ -451,6 +468,8 @@ defmodule Batata.Stdlib do
                       {Enum, :to_list, 1},
                       {MapSet, :new, 1},
                       {HashSet, :new, 1},
+                      {Keyword, :get, 2},
+                      {Keyword, :get, 3},
                       {Stream, :take, 2},
                       {Stream, :drop, 2},
                       {:lists, :keyfind, 3},

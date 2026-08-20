@@ -226,6 +226,9 @@ defmodule Batata.Lift do
       when function in [:keyfind, :reverse] and is_list(args) ->
         {node, acc + 1}
 
+      {{:., _, [module_ast, :get]}, _, args} = node, acc when length(args) in [2, 3] ->
+        {node, acc + if(module_ref(module_ast) == {:ok, Keyword}, do: 1, else: 0)}
+
       node, acc ->
         {node, acc}
     end)
@@ -4826,6 +4829,30 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_stdlib_call(Keyword, :get, [keywords, key], ctx, block, env) do
+    lift_stdlib_call(Keyword, :get, [keywords, key, nil], ctx, block, env)
+  end
+
+  defp lift_stdlib_call(Keyword, :get, [keywords, key, default], ctx, block, env) do
+    {values, env} = lift_operands_boxed([keywords, key, default], ctx, block, env)
+    [keywords, key, default] = values
+    position = box_term(lit(1, ctx, block), ctx, block)
+
+    found =
+      lift_lists_keyfind(
+        key,
+        position,
+        keywords,
+        ctx,
+        block,
+        env[:__budget__],
+        env[:__batch_size__]
+      )
+
+    value = lift_keyword_value(found, default, ctx, block)
+    mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
+  end
+
   defp lift_stdlib_call(:lists, :keyfind, [_, _, _] = args, ctx, block, env) do
     {values, env} = lift_operands_boxed(args, ctx, block, env)
     [key, position, list] = values
@@ -5280,6 +5307,36 @@ defmodule Batata.Lift do
         fn b ->
           [raise_argument_error("invalid :lists.keyfind/3 arguments", ctx, b) |> unbox(ctx, b)]
         end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lift_keyword_value(found, default, ctx, block) do
+    i64 = integer_type(ctx)
+    tuple? = create_op("ex.is_tuple", [found], [i64], ctx, block)
+    tuple_i1 = create_op("arith.trunci", [tuple?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        tuple_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          value =
+            create_op(
+              "ex.tuple_get",
+              [found, lit(1, ctx, b)],
+              [ex_type("term", ctx)],
+              ctx,
+              b
+            )
+
+          [unbox(value, ctx, b)]
+        end,
+        fn b -> [unbox(default, ctx, b)] end
       )
       |> hd()
 

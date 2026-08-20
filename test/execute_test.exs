@@ -1947,6 +1947,39 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "executes Keyword.get/2,3 with first-key and default semantics", %{ctx: ctx} do
+    source = """
+    defmodule KeywordOracle do
+      def main() do
+        {
+          Keyword.get([mode: :first, mode: :second], :mode),
+          Keyword.get([mode: false], :mode, :fallback),
+          Keyword.get([mode: nil], :mode, :fallback),
+          Keyword.get([mode: :first], :missing, :fallback),
+          Keyword.get([], :missing)
+        }
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nKeywordOracle.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "resumes budgeted Keyword.get/3 traversal", %{ctx: ctx} do
+    source = """
+    defmodule BudgetedKeyword do
+      def main(), do: Keyword.get([a: 1, b: 2, c: 3, d: :found], :d, :missing)
+    end
+    """
+
+    assert Batata.execute(source, ctx) == :found
+
+    for budget <- [1, 2] do
+      assert Batata.execute(source, ctx, reduction_budget: budget) == :found
+    end
+  end
+
   test "raises ArgumentError for invalid :lists arguments", %{ctx: ctx} do
     for expression <- [
           ":lists.keyfind(:key, 0, [])",
