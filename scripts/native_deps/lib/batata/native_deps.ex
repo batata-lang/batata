@@ -8,6 +8,9 @@ defmodule Batata.NativeDeps do
   def config_path(opts \\ []),
     do: opts[:config_path] || Path.join([root(opts), ".batata", "native.config"])
 
+  def receipt_path(opts \\ []),
+    do: opts[:receipt_path] || Path.join([root(opts), ".batata", "native-receipt.json"])
+
   def lock_path(opts \\ []), do: opts[:lock_path] || Path.join(root(opts), "native-deps.lock")
 
   def lock!(opts \\ []) do
@@ -44,6 +47,26 @@ defmodule Batata.NativeDeps do
     File.mkdir_p!(Path.dirname(path))
     content = :io_lib.format(~c"~tp.~n", [config]) |> IO.iodata_to_binary()
     File.write!(path, content)
+  end
+
+  def remove_receipt!(opts \\ []) do
+    case File.rm(receipt_path(opts)) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        Mix.raise("cannot remove stale native dependency receipt: #{inspect(reason)}")
+    end
+  end
+
+  def file_sha256!(path) do
+    path
+    |> File.read!()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   def cache_root(opts \\ []) do

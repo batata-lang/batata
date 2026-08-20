@@ -3,6 +3,7 @@ defmodule Batata.NativeDeps.Runner do
 
   alias Batata.NativeDeps
   alias Batata.NativeDeps.Command
+  alias Batata.NativeDeps.Receipt
   alias Batata.NativeDeps.Resolver
 
   def doctor!(opts \\ []) do
@@ -11,6 +12,15 @@ defmodule Batata.NativeDeps.Runner do
     for {key, value} <- context.report do
       Mix.shell().info("#{key}=#{value}")
     end
+  end
+
+  def verify!(opts \\ []) do
+    opts
+    |> NativeDeps.config!()
+    |> Resolver.validate_config!(opts)
+    |> Receipt.verify!(opts)
+
+    :ok
   end
 
   def run_mix!(args, opts \\ []) do
@@ -33,7 +43,8 @@ defmodule Batata.NativeDeps.Runner do
 
   def context!(opts \\ []) do
     root = NativeDeps.root(opts)
-    config = NativeDeps.config!(opts) |> Resolver.validate_config!()
+    config = NativeDeps.config!(opts) |> Resolver.validate_config!(opts)
+    Receipt.verify!(config, opts)
     llvm_config = Keyword.fetch!(config, :llvm_config_path)
     llvm_libdir = command!(llvm_config, ["--libdir"])
     llvm_includedir = command!(llvm_config, ["--includedir"])

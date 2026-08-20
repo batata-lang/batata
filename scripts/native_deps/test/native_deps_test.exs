@@ -26,6 +26,7 @@ defmodule Batata.NativeDepsTest do
     beaver = Path.join(root, "beaver")
     kinda = Path.join(root, "kinda")
     llvm = fake_llvm!(root)
+    zig = fake_zig!(root)
     File.mkdir_p!(kinda)
     File.mkdir_p!(beaver)
 
@@ -45,6 +46,7 @@ defmodule Batata.NativeDepsTest do
           beaver_path: beaver,
           kinda_path: kinda,
           llvm_config: llvm,
+          zig_path: zig,
           fetch_deps: false
         )
       )
@@ -68,20 +70,24 @@ defmodule Batata.NativeDepsTest do
     llvm = fake_llvm!(root)
     zig = fake_zig!(root)
 
-    NativeDeps.write_config!(
-      [
+    File.write!(
+      Path.join(root, "native-deps.lock"),
+      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n" <>
+        "BEAVER_GIT_SHA=#{String.duplicate("a", 40)}\n"
+    )
+
+    File.write!(Path.join(beaver, "native-deps.json"), """
+    {"schema_version":1,"kinda":{"git_url":"unused","ref":"#{String.duplicate("b", 40)}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}}
+    """)
+
+    Resolver.setup!(
+      Keyword.merge(opts,
         beaver_path: beaver,
-        beaver_source: :override,
-        beaver_ref: "unversioned",
         kinda_path: kinda,
-        kinda_source: :override,
-        kinda_ref: "unversioned",
-        llvm_config_path: llvm,
-        llvm_source: :override,
-        llvm_revision: "external-unverified",
-        metadata_schema: 1
-      ],
-      opts
+        llvm_config: llvm,
+        zig_path: zig,
+        fetch_deps: false
+      )
     )
 
     context = Runner.context!(Keyword.put(opts, :zig_path, zig))
@@ -116,10 +122,13 @@ defmodule Batata.NativeDepsTest do
         "BEAVER_GIT_SHA=#{beaver_ref}\n"
     )
 
+    zig = fake_zig!(root)
+
     config =
       Resolver.setup!(
         Keyword.merge(opts,
           llvm_config: fake_llvm!(root),
+          zig_path: zig,
           fetch_deps: false
         )
       )
@@ -130,6 +139,53 @@ defmodule Batata.NativeDepsTest do
     assert config[:kinda_ref] == kinda_ref
     assert String.starts_with?(config[:beaver_path], Path.join(cache, "sources/beaver/"))
     assert String.starts_with?(config[:kinda_path], Path.join(cache, "sources/kinda/"))
+    assert File.regular?(NativeDeps.receipt_path(opts))
+    assert :ok == Runner.verify!(Keyword.put(opts, :zig_path, zig))
+  end
+
+  test "fails closed when the receipt is missing or the lock changes", %{
+    root: root,
+    opts: opts
+  } do
+    beaver = Path.join(root, "beaver")
+    kinda = Path.join(root, "kinda")
+    File.mkdir_p!(beaver)
+    File.mkdir_p!(kinda)
+    llvm = fake_llvm!(root)
+    zig = fake_zig!(root)
+
+    File.write!(
+      Path.join(root, "native-deps.lock"),
+      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n" <>
+        "BEAVER_GIT_SHA=#{String.duplicate("a", 40)}\n"
+    )
+
+    File.write!(Path.join(beaver, "native-deps.json"), """
+    {"schema_version":1,"kinda":{"git_url":"unused","ref":"#{String.duplicate("b", 40)}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}}
+    """)
+
+    setup_opts =
+      Keyword.merge(opts,
+        beaver_path: beaver,
+        kinda_path: kinda,
+        llvm_config: llvm,
+        zig_path: zig,
+        fetch_deps: false
+      )
+
+    Resolver.setup!(setup_opts)
+    File.rm!(NativeDeps.receipt_path(opts))
+
+    assert_raise Mix.Error, ~r/native dependency receipt is missing/, fn ->
+      Runner.verify!(Keyword.put(opts, :zig_path, zig))
+    end
+
+    Resolver.setup!(setup_opts)
+    File.write!(Path.join(root, "native-deps.lock"), "# changed\n", [:append])
+
+    assert_raise Mix.Error, ~r/native dependency lock changed since setup/, fn ->
+      Runner.verify!(Keyword.put(opts, :zig_path, zig))
+    end
   end
 
   test "rejects a fetch ref that does not match its expected SHA", %{
@@ -151,6 +207,40 @@ defmodule Batata.NativeDepsTest do
                  fn ->
                    Resolver.setup!(Keyword.merge(opts, fetch_deps: false))
                  end
+  end
+
+  test "rejects dirty pinned source caches", %{root: root, opts: opts} do
+    kinda_repo = Path.join(root, "kinda-origin")
+    kinda_ref = make_repo!(kinda_repo, %{"README.md" => "kinda"})
+    beaver_repo = Path.join(root, "beaver-origin")
+
+    metadata =
+      ~s({"schema_version":1,"kinda":{"git_url":"#{kinda_repo}","ref":"#{kinda_ref}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}})
+
+    beaver_ref = make_repo!(beaver_repo, %{"native-deps.json" => metadata})
+
+    File.write!(
+      Path.join(root, "native-deps.lock"),
+      "BEAVER_GIT_URL=#{beaver_repo}\nBEAVER_GIT_REF=#{beaver_ref}\n" <>
+        "BEAVER_GIT_SHA=#{beaver_ref}\n"
+    )
+
+    zig = fake_zig!(root)
+
+    config =
+      Resolver.setup!(
+        Keyword.merge(opts,
+          llvm_config: fake_llvm!(root),
+          zig_path: zig,
+          fetch_deps: false
+        )
+      )
+
+    File.write!(Path.join(config[:beaver_path], "untracked"), "dirty")
+
+    assert_raise Mix.Error, ~r/pinned beaver checkout is dirty/, fn ->
+      Runner.verify!(Keyword.put(opts, :zig_path, zig))
+    end
   end
 
   test "source identity distinguishes paths and diagnoses dirty repositories", %{root: root} do
