@@ -6,22 +6,12 @@
     "commit": "592d59ac4474933f91cdc3e8e037f137f7e008b0"
   },
   "failed_files": 0,
-  "unsupported_forms": 24,
+  "unsupported_forms": 3,
   "results": [
     {
       "path": "lib/decimal.ex",
-      "unsupported_forms": 18,
-      "reasons": {"import": 1, "unknown_form": 17}
-    },
-    {
-      "path": "lib/decimal/context.ex",
-      "unsupported_forms": 5,
-      "reasons": {"import": 1, "unknown_form": 4}
-    },
-    {
-      "path": "lib/decimal/macros.ex",
-      "unsupported_forms": 1,
-      "reasons": {"unknown_form": 1}
+      "unsupported_forms": 3,
+      "reasons": {"unknown_form": 3}
     }
   ]
 }

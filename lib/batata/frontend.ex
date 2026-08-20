@@ -45,6 +45,7 @@ defmodule Batata.Frontend do
   alias Batata.Frontend.{
     AliasExpand,
     DefaultArgExpand,
+    MetadataMacroExpand,
     MetaprogrammingExpand,
     ModuleEnvironment
   }
@@ -56,8 +57,14 @@ defmodule Batata.Frontend do
   """
   @spec from_source(String.t()) :: Module.t() | [Module.t()]
   def from_source(source) when is_binary(source) do
+    from_source(source, [])
+  end
+
+  @doc false
+  @spec from_source(String.t(), keyword()) :: Module.t() | [Module.t()]
+  def from_source(source, opts) when is_binary(source) and is_list(opts) do
     {:ok, ast} = Code.string_to_quoted(source)
-    from_ast(ast)
+    from_ast(ast, opts)
   end
 
   @doc """
@@ -65,9 +72,11 @@ defmodule Batata.Frontend do
   """
   @spec from_sources([String.t()]) :: [Module.t()]
   def from_sources(sources) when is_list(sources) do
+    metadata_macros = MetadataMacroExpand.discover(sources)
+
     modules =
       Enum.flat_map(sources, fn source ->
-        case from_source(source) do
+        case from_source(source, metadata_macros: metadata_macros) do
           %Module{} = mod -> [mod]
           mods when is_list(mods) -> mods
         end
@@ -87,12 +96,16 @@ defmodule Batata.Frontend do
   Normalizes an already-parsed `defmodule` or module-block AST.
   """
   @spec from_ast(Macro.t()) :: Module.t() | [Module.t()]
-  def from_ast({:__block__, _, _forms} = block) do
+  def from_ast(ast), do: from_ast(ast, [])
+
+  @doc false
+  @spec from_ast(Macro.t(), keyword()) :: Module.t() | [Module.t()]
+  def from_ast({:__block__, _, _forms} = block, opts) do
     expanded = MetaprogrammingExpand.expand(block)
     {:__block__, _, expanded_forms} = expanded
 
     if Enum.all?(expanded_forms, &module_form?/1) do
-      modules = Enum.flat_map(expanded_forms, &List.wrap(from_ast(&1)))
+      modules = Enum.flat_map(expanded_forms, &List.wrap(from_ast(&1, opts)))
 
       schemas =
         modules
@@ -106,6 +119,7 @@ defmodule Batata.Frontend do
       block
       |> MetaprogrammingExpand.expand()
       |> AliasExpand.expand()
+      |> MetadataMacroExpand.expand(metadata_macros(opts))
       |> ModuleEnvironment.expand()
       |> MetaprogrammingExpand.expand()
       |> DefaultArgExpand.expand()
@@ -113,15 +127,18 @@ defmodule Batata.Frontend do
     end
   end
 
-  def from_ast(ast) do
+  def from_ast(ast, opts) do
     ast
     |> MetaprogrammingExpand.expand()
     |> AliasExpand.expand()
+    |> MetadataMacroExpand.expand(metadata_macros(opts))
     |> ModuleEnvironment.expand()
     |> MetaprogrammingExpand.expand()
     |> DefaultArgExpand.expand()
     |> from_expanded_ast()
   end
+
+  defp metadata_macros(opts), do: Keyword.get(opts, :metadata_macros, %{})
 
   defp module_form?({kind, _, _}) when kind in [:defmodule, :defimpl, :defprotocol], do: true
   defp module_form?(_form), do: false

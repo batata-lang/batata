@@ -8,6 +8,7 @@ defmodule Batata.Probe.Coverage do
   """
 
   alias Batata.Frontend
+  alias Batata.Frontend.MetadataMacroExpand
   alias Batata.Probe.CapabilityMatrix
   alias Batata.Probe.Jason.{Diff, Report}
 
@@ -161,7 +162,15 @@ defmodule Batata.Probe.Coverage do
 
   defp canonical_acceptance(source) do
     files = source_files(source)
-    results = Enum.map(files, &canonical_file(&1, source))
+    sources = Enum.map(files, &File.read!/1)
+    metadata_macros = MetadataMacroExpand.discover(sources)
+
+    results =
+      files
+      |> Enum.zip(sources)
+      |> Enum.map(fn {path, source_text} ->
+        canonical_file(path, source, source_text, metadata_macros)
+      end)
 
     %{
       "files" => length(results),
@@ -177,11 +186,15 @@ defmodule Batata.Probe.Coverage do
     root |> Path.join("**/*.ex") |> Path.wildcard() |> Enum.sort()
   end
 
-  defp canonical_file(path, source) do
+  defp canonical_file(path, source, source_text, metadata_macros) do
     relative = Path.relative_to(path, source)
 
     try do
-      modules = path |> File.read!() |> Frontend.from_source() |> List.wrap()
+      modules =
+        source_text
+        |> Frontend.from_source(metadata_macros: metadata_macros)
+        |> List.wrap()
+
       unsupported = Enum.flat_map(modules, & &1.unsupported)
 
       %{
