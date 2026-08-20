@@ -56,8 +56,22 @@ defmodule Batata.Frontend.ProtocolAndClosureTest do
     [protocol, implementation] = Frontend.from_source(source)
     assert protocol.name == Printable
     assert Enum.map(protocol.definitions, &{&1.name, &1.arity}) == [print: 1]
-    assert [%Frontend.UnsupportedForm{reason: :module_attribute}] = protocol.unsupported
+    assert protocol.protocol_options == %{fallback_to_any: true}
+    assert protocol.unsupported == []
     assert implementation.name == Printable.Integer
+  end
+
+  test "keeps invalid protocol fallback metadata visible" do
+    protocol =
+      Frontend.from_source("""
+      defprotocol InvalidFallback do
+        @fallback_to_any :sometimes
+        def value(term)
+      end
+      """)
+
+    assert protocol.protocol_options == %{}
+    assert [%Frontend.UnsupportedForm{reason: :module_attribute}] = protocol.unsupported
   end
 
   test "drops documentation and compiler metadata at the canonical boundary" do
