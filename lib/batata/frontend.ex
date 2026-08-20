@@ -11,7 +11,14 @@ defmodule Batata.Frontend do
     @moduledoc "A normalized module snapshot at the expanded-module boundary."
     @enforce_keys [:name, :definitions]
     @type t() :: %__MODULE__{}
-    defstruct [:name, :struct_schema, definitions: [], unsupported: [], struct_schemas: %{}]
+    defstruct [
+      :name,
+      :struct_schema,
+      definitions: [],
+      unsupported: [],
+      struct_schemas: %{},
+      protocol_options: %{}
+    ]
   end
 
   defmodule StructSchema do
@@ -193,10 +200,10 @@ defmodule Batata.Frontend do
 
   def from_expanded_ast({:defprotocol, _, [{:__aliases__, _, name_parts}, [do: body]]}) do
     module = Elixir.Module.concat(name_parts)
+    {protocol_options, forms} = body |> body_forms() |> extract_protocol_options()
 
     {definitions, unsupported, _schema} =
-      body
-      |> body_forms()
+      forms
       |> Enum.reject(&metadata_attribute?/1)
       |> normalize_protocol_body(module)
 
@@ -204,7 +211,8 @@ defmodule Batata.Frontend do
       name: module,
       definitions: definitions,
       unsupported: unsupported,
-      struct_schemas: %{}
+      struct_schemas: %{},
+      protocol_options: protocol_options
     }
   end
 
@@ -226,6 +234,16 @@ defmodule Batata.Frontend do
       struct_schema: struct_schema,
       struct_schemas: struct_schemas
     }
+  end
+
+  defp extract_protocol_options(forms) do
+    Enum.reduce(forms, {%{}, []}, fn
+      {:@, _, [{:fallback_to_any, _, [value]}]}, {options, kept} when is_boolean(value) ->
+        {Map.put(options, :fallback_to_any, value), kept}
+
+      form, {options, kept} ->
+        {options, kept ++ [form]}
+    end)
   end
 
   defp normalize_defimpl_target!({:__aliases__, _, target_parts}) do
