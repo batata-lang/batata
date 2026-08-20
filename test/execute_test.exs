@@ -1271,6 +1271,26 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "matches Jason-shaped wildcard bitstring tails", %{ctx: ctx} do
+    source = """
+    defmodule WildcardBitstringTail do
+      def classify(data) do
+        case data do
+          <<first::8, _::bits>> -> {:nonempty, first}
+          <<_::bits>> -> :empty
+        end
+      end
+
+      def main(), do: {classify(<<>>), classify(<<1>>), classify(<<2, 3, 4>>)}
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nWildcardBitstringTail.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "rejects unsupported binary segments explicitly", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/unsupported binary segment/, fn ->
       Batata.execute(
