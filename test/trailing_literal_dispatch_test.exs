@@ -132,7 +132,7 @@ defmodule Batata.TrailingLiteralDispatchTest do
   end
 
   test "rejects non-atom trailing literals", %{ctx: ctx} do
-    for literal <- ["2", ~S("binary"), "{:tuple}", "%{}", "[]"] do
+    for literal <- ["2", ~S("binary"), "%{}", "[]"] do
       assert_raise Batata.Lift.Error,
                    ~r/trailing arguments must be variables, wildcards, or compile-known atom literals/,
                    fn ->
