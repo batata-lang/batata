@@ -11,7 +11,7 @@ defmodule Batata.Frontend do
     @moduledoc "A normalized module snapshot at the expanded-module boundary."
     @enforce_keys [:name, :definitions]
     @type t() :: %__MODULE__{}
-    defstruct [:name, :struct_schema, definitions: [], unsupported: []]
+    defstruct [:name, :struct_schema, definitions: [], unsupported: [], struct_schemas: %{}]
   end
 
   defmodule StructSchema do
@@ -49,16 +49,60 @@ defmodule Batata.Frontend do
 
   This parses only. It does not call `Macro.expand/2` or the Elixir compiler.
   """
-  @spec from_source(String.t()) :: Module.t()
+  @spec from_source(String.t()) :: Module.t() | [Module.t()]
   def from_source(source) when is_binary(source) do
     {:ok, ast} = Code.string_to_quoted(source)
     from_ast(ast)
   end
 
   @doc """
-  Normalizes an already-parsed `defmodule` AST.
+  Normalizes multiple sources and shares their struct schemas across the compilation unit.
   """
-  @spec from_ast(Macro.t()) :: Module.t()
+  @spec from_sources([String.t()]) :: [Module.t()]
+  def from_sources(sources) when is_list(sources) do
+    modules =
+      Enum.flat_map(sources, fn source ->
+        case from_source(source) do
+          %Module{} = mod -> [mod]
+          mods when is_list(mods) -> mods
+        end
+      end)
+
+    schemas =
+      modules
+      |> Enum.reject(&is_nil(&1.struct_schema))
+      |> Map.new(&{&1.name, &1.struct_schema})
+
+    Enum.map(modules, fn mod ->
+      %{mod | struct_schemas: Map.merge(schemas, mod.struct_schemas || %{})}
+    end)
+  end
+
+  @doc """
+  Normalizes an already-parsed `defmodule` or module-block AST.
+  """
+  @spec from_ast(Macro.t()) :: Module.t() | [Module.t()]
+  def from_ast({:__block__, _, forms} = block) do
+    if Enum.all?(forms, &match?({:defmodule, _, _}, &1)) do
+      modules = Enum.map(forms, &from_ast/1)
+
+      schemas =
+        modules
+        |> Enum.reject(&is_nil(&1.struct_schema))
+        |> Map.new(&{&1.name, &1.struct_schema})
+
+      Enum.map(modules, fn mod ->
+        %{mod | struct_schemas: Map.merge(schemas, mod.struct_schemas || %{})}
+      end)
+    else
+      block
+      |> MetaprogrammingExpand.expand()
+      |> AliasExpand.expand()
+      |> DefaultArgExpand.expand()
+      |> from_expanded_ast()
+    end
+  end
+
   def from_ast(ast) do
     ast
     |> MetaprogrammingExpand.expand()
@@ -73,11 +117,19 @@ defmodule Batata.Frontend do
     module = Elixir.Module.concat(name_parts)
     {definitions, unsupported, struct_schema} = body |> body_forms() |> normalize_body(module)
 
+    struct_schemas =
+      if struct_schema != nil do
+        %{module => struct_schema}
+      else
+        %{}
+      end
+
     %Module{
       name: module,
       definitions: definitions,
       unsupported: unsupported,
-      struct_schema: struct_schema
+      struct_schema: struct_schema,
+      struct_schemas: struct_schemas
     }
   end
 

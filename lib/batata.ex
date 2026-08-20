@@ -29,21 +29,33 @@ defmodule Batata do
   Parses and lowers Elixir source into a verified `builtin.module` of `ex`
   operations.
   """
-  @spec compile(String.t(), MLIR.Context.t()) :: MLIR.Module.t()
+  @spec compile(String.t() | Batata.Frontend.Module.t(), MLIR.Context.t(), keyword()) ::
+          MLIR.Module.t()
   def compile(source, ctx, opts \\ []) do
     validate_reduction_budget!(opts[:reduction_budget])
-    validate_parallel_receive_sites!(source, Keyword.get(opts, :workers, 1))
+
+    {snapshot, atom_table} =
+      case source do
+        %Batata.Frontend.Module{} = mod ->
+          validate_parallel_receive_sites!(mod, Keyword.get(opts, :workers, 1))
+          {mod, Keyword.get(opts, :atom_table, literal_atom_table(mod))}
+
+        source when is_binary(source) ->
+          validate_parallel_receive_sites!(source, Keyword.get(opts, :workers, 1))
+          {Batata.Frontend.from_source(source), literal_atom_table(source)}
+      end
 
     module =
-      source
-      |> Batata.Frontend.from_source()
+      snapshot
       |> Batata.Lift.module_to_ir(
-        ctx: ctx,
-        atom_table: literal_atom_table(source),
-        reduction_budget: opts[:reduction_budget],
-        reduction_batching: opts[:reduction_batching],
-        workers: Keyword.get(opts, :workers, 1),
-        process_cap: opts[:process_cap]
+        [
+          ctx: ctx,
+          atom_table: atom_table,
+          reduction_budget: opts[:reduction_budget],
+          reduction_batching: opts[:reduction_batching],
+          workers: Keyword.get(opts, :workers, 1),
+          process_cap: opts[:process_cap]
+        ] ++ opts
       )
       |> Beaver.Deferred.resolve(ctx)
 
@@ -75,20 +87,46 @@ defmodule Batata do
   defp validate_parallel_receive_sites!(_source, workers) when workers <= 1, do: :ok
 
   defp validate_parallel_receive_sites!(source, workers) do
-    receive_sites =
-      source
-      |> Code.string_to_quoted!()
-      |> Macro.prewalk(0, fn
-        {:receive, _, _} = node, count -> {node, count + 1}
-        node, count -> {node, count}
-      end)
-      |> elem(1)
+    receive_sites = count_receive_sites(source)
 
     if receive_sites > 1 do
       raise ArgumentError,
             "parallel workers currently support at most one receive site per module; " <>
               "got #{receive_sites} with workers: #{workers}"
     end
+  end
+
+  defp count_receive_sites(source) when is_binary(source) do
+    source
+    |> Code.string_to_quoted!()
+    |> count_receive_sites_in_ast()
+  end
+
+  defp count_receive_sites(%Batata.Frontend.Module{definitions: definitions}) do
+    Enum.reduce(definitions, 0, fn definition, count ->
+      count + count_definition_receive_sites(definition)
+    end)
+  end
+
+  defp count_definition_receive_sites(definition) do
+    Enum.reduce(definition.clauses, 0, fn clause, count ->
+      count + count_clause_receive_sites(clause)
+    end)
+  end
+
+  defp count_clause_receive_sites(clause) do
+    [clause.patterns, clause.guard_ast, clause.body_ast]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce(0, fn ast, count -> count + count_receive_sites_in_ast(ast) end)
+  end
+
+  defp count_receive_sites_in_ast(ast) do
+    ast
+    |> Macro.prewalk(0, fn
+      {:receive, _, _} = node, count -> {node, count + 1}
+      node, count -> {node, count}
+    end)
+    |> elem(1)
   end
 
   @doc """
@@ -290,7 +328,27 @@ defmodule Batata do
     end
   end
 
-  defp literal_atom_table(source) do
+  defp literal_atom_table(%Batata.Frontend.Module{} = snapshot) do
+    atoms =
+      snapshot
+      |> Map.fetch!(:definitions)
+      |> Enum.reduce(%{}, fn definition, acc ->
+        definition.clauses
+        |> Enum.reduce(Map.put(acc, atom_word(definition.name), definition.name), fn clause,
+                                                                                     clause_atoms ->
+          ([clause.patterns, clause.body_ast] ++ List.wrap(clause.guard_ast))
+          |> Enum.reduce(clause_atoms, &collect_literal_atoms/2)
+        end)
+      end)
+
+    atoms = add_struct_schema_atoms(atoms, snapshot.struct_schema)
+
+    snapshot.struct_schemas
+    |> Enum.reduce(atoms, fn {_mod, schema}, acc -> add_struct_schema_atoms(acc, schema) end)
+    |> add_common_atoms()
+  end
+
+  defp literal_atom_table(source) when is_binary(source) do
     snapshot = Batata.Frontend.from_source(source)
 
     atoms =
@@ -319,6 +377,31 @@ defmodule Batata do
     # otherwise an unboxed scalar result of 1 must remain the integer 1.
     atoms = if Regex.match?(~r/\bnil\b/, source), do: Map.put(atoms, 1, nil), else: atoms
 
+    add_common_atoms(atoms)
+  end
+
+  defp collect_literal_atoms({name, metadata, arguments}, atoms)
+       when is_atom(name) and is_list(metadata) and is_list(arguments) do
+    Enum.reduce(arguments, atoms, &collect_literal_atoms/2)
+  end
+
+  defp collect_literal_atoms(atom, atoms) when is_atom(atom) do
+    Map.put(atoms, atom_word(atom), atom)
+  end
+
+  defp collect_literal_atoms(list, atoms) when is_list(list) do
+    Enum.reduce(list, atoms, &collect_literal_atoms/2)
+  end
+
+  defp collect_literal_atoms(tuple, atoms) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.reduce(atoms, &collect_literal_atoms/2)
+  end
+
+  defp collect_literal_atoms(_other, atoms), do: atoms
+
+  defp add_common_atoms(atoms) do
     atoms
     |> Map.put(atom_word(true), true)
     |> Map.put(atom_word(false), false)
