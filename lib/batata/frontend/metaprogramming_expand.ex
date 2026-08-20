@@ -140,19 +140,23 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   end
 
   defp eval_condition({{:., _, [{:__aliases__, _, [:Code]}, :ensure_loaded?]}, _, [module_ast]}) do
-    with {:ok, module} when is_atom(module) <- eval_literal(module_ast) do
-      {:ok, MapSet.member?(@available_optional_modules, module)}
-    else
-      _ -> :error
+    case eval_literal(module_ast) do
+      {:ok, module} when is_atom(module) ->
+        {:ok, MapSet.member?(@available_optional_modules, module)}
+
+      _ ->
+        :error
     end
   end
 
   defp eval_condition({:function_exported?, _, [module_ast, function, arity]})
        when is_atom(function) and is_integer(arity) do
-    with {:ok, module} when is_atom(module) <- eval_literal(module_ast) do
-      {:ok, MapSet.member?(@available_functions, {module, function, arity})}
-    else
-      _ -> :error
+    case eval_literal(module_ast) do
+      {:ok, module} when is_atom(module) ->
+        {:ok, MapSet.member?(@available_functions, {module, function, arity})}
+
+      _ ->
+        :error
     end
   end
 

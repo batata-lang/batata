@@ -200,37 +200,51 @@ defmodule Batata.Frontend do
 
   defp normalize_body(forms, module) do
     forms
-    |> Enum.reduce({[], [], nil}, fn form, {definitions, unsupported, schema} ->
-      if metadata_attribute?(form) do
-        {definitions, unsupported, schema}
-      else
-        case normalize_form(form, module) do
-          {:ok, definition} ->
-            {[definition | definitions], unsupported, schema}
-
-          {:schema, new_schema} when schema == nil ->
-            {definitions, unsupported, new_schema}
-
-          {:schema, _new_schema} ->
-            unsupported = [
-              %UnsupportedForm{form: form, reason: :duplicate_struct_schema} | unsupported
-            ]
-
-            {definitions, unsupported, :invalid}
-
-          {:unsupported, :invalid_struct_schema = reason} ->
-            {definitions, [%UnsupportedForm{form: form, reason: reason} | unsupported], :invalid}
-
-          {:unsupported, reason} ->
-            {definitions, [%UnsupportedForm{form: form, reason: reason} | unsupported], schema}
-        end
-      end
-    end)
+    |> Enum.reduce({[], [], nil}, &normalize_body_form(&1, &2, module))
     |> then(fn {definitions, unsupported, schema} ->
       schema = if schema == :invalid, do: nil, else: schema
       {Enum.reverse(definitions), Enum.reverse(unsupported), schema}
     end)
   end
+
+  defp normalize_body_form(form, accumulator, module) do
+    if metadata_attribute?(form),
+      do: accumulator,
+      else: normalize_body_form(form, accumulator, module, normalize_form(form, module))
+  end
+
+  defp normalize_body_form(_form, {definitions, unsupported, schema}, _module, {:ok, definition}),
+    do: {[definition | definitions], unsupported, schema}
+
+  defp normalize_body_form(_form, {definitions, unsupported, nil}, _module, {:schema, schema}),
+    do: {definitions, unsupported, schema}
+
+  defp normalize_body_form(
+         form,
+         {definitions, unsupported, _existing_schema},
+         _module,
+         {:schema, _new_schema}
+       ),
+       do:
+         {definitions,
+          [%UnsupportedForm{form: form, reason: :duplicate_struct_schema} | unsupported],
+          :invalid}
+
+  defp normalize_body_form(
+         form,
+         {definitions, unsupported, _schema},
+         _module,
+         {:unsupported, :invalid_struct_schema = reason}
+       ),
+       do: {definitions, [%UnsupportedForm{form: form, reason: reason} | unsupported], :invalid}
+
+  defp normalize_body_form(
+         form,
+         {definitions, unsupported, schema},
+         _module,
+         {:unsupported, reason}
+       ),
+       do: {definitions, [%UnsupportedForm{form: form, reason: reason} | unsupported], schema}
 
   defp normalize_protocol_body(forms, module) do
     forms
