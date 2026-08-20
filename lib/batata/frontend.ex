@@ -83,7 +83,7 @@ defmodule Batata.Frontend do
   """
   @spec from_ast(Macro.t()) :: Module.t() | [Module.t()]
   def from_ast({:__block__, _, forms} = block) do
-    if Enum.all?(forms, &match?({:defmodule, _, _}, &1)) do
+    if Enum.all?(forms, &match?({kind, _, _} when kind in [:defmodule, :defimpl], &1)) do
       modules = Enum.map(forms, &from_ast/1)
 
       schemas =
@@ -113,6 +113,26 @@ defmodule Batata.Frontend do
 
   @doc false
   @spec from_expanded_ast(Macro.t()) :: Module.t()
+  def from_expanded_ast(
+        {:defimpl, _, [{:__aliases__, _, protocol_parts}, [for: target_ast], [do: body]]}
+      ) do
+    protocol = Elixir.Module.concat(protocol_parts)
+    target = normalize_defimpl_target!(target_ast)
+
+    impl_module = Elixir.Module.concat(protocol, target)
+
+    {definitions, unsupported, struct_schema} =
+      body |> body_forms() |> normalize_body(impl_module)
+
+    %Module{
+      name: impl_module,
+      definitions: definitions,
+      unsupported: unsupported,
+      struct_schema: struct_schema,
+      struct_schemas: %{}
+    }
+  end
+
   def from_expanded_ast({:defmodule, _, [{:__aliases__, _, name_parts}, [do: body]]}) do
     module = Elixir.Module.concat(name_parts)
     {definitions, unsupported, struct_schema} = body |> body_forms() |> normalize_body(module)
@@ -131,6 +151,16 @@ defmodule Batata.Frontend do
       struct_schema: struct_schema,
       struct_schemas: struct_schemas
     }
+  end
+
+  defp normalize_defimpl_target!({:__aliases__, _, target_parts}) do
+    Elixir.Module.concat(target_parts)
+  end
+
+  defp normalize_defimpl_target!(target) when is_atom(target), do: target
+
+  defp normalize_defimpl_target!(target) do
+    raise ArgumentError, "unsupported defimpl target: #{Macro.to_string(target)}"
   end
 
   defp body_forms({:__block__, _, forms}), do: forms
