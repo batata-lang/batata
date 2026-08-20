@@ -6,7 +6,7 @@
     "commit": "4ede42858eb19f80ec9e863aab52df466eab8608"
   },
   "failed_files": 0,
-  "unsupported_forms": 39,
+  "unsupported_forms": 35,
   "results": [
     {
       "path": "lib/codegen.ex",
@@ -15,8 +15,8 @@
     },
     {
       "path": "lib/decoder.ex",
-      "unsupported_forms": 4,
-      "reasons": {"import": 2, "nested_defmodule": 1, "unknown_form": 1}
+      "unsupported_forms": 2,
+      "reasons": {"import": 1, "nested_defmodule": 1}
     },
     {
       "path": "lib/encode.ex",
@@ -27,11 +27,6 @@
       "path": "lib/encoder.ex",
       "unsupported_forms": 2,
       "reasons": {"module_attribute": 1, "unknown_form": 1}
-    },
-    {
-      "path": "lib/formatter.ex",
-      "unsupported_forms": 2,
-      "reasons": {"import": 1, "unknown_form": 1}
     },
     {
       "path": "lib/helpers.ex",
