@@ -54,6 +54,26 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert Enum.map(snapshot.definitions, & &1.name) == [:modern]
   end
 
+  test "selects deterministic optional-module and function capability branches" do
+    source = """
+    defmodule CapabilityDemo do
+      if Code.ensure_loaded?(Optional.Dependency) do
+        def optional(), do: :present
+      else
+        def optional(), do: :absent
+      end
+
+      if function_exported?(Application, :compile_env, 3) do
+        def compile_env(), do: :supported
+      end
+    end
+    """
+
+    snapshot = Frontend.from_source(source)
+    assert snapshot.unsupported == []
+    assert Enum.map(snapshot.definitions, & &1.name) == [:optional, :compile_env]
+  end
+
   test "end-to-end executes function generated from top-level for loop" do
     source = """
     defmodule Calc do

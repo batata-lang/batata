@@ -6,6 +6,12 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   admitted to the canonical frontend boundary without losing clause structure.
   """
 
+  @available_optional_modules MapSet.new()
+  @available_functions MapSet.new([
+                         {Application, :compile_env, 3},
+                         {:erlang, :is_map_key, 2}
+                       ])
+
   @doc """
   Expands module-level `for` and `if` constructs within a `defmodule` AST.
   """
@@ -116,6 +122,35 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     with {:ok, left_val} <- eval_simple_expr(left),
          {:ok, right_val} <- eval_simple_expr(right) do
       {:ok, left_val != right_val}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_condition({:and, _, [left, right]}) do
+    with {:ok, left} <- eval_condition(left) do
+      if left, do: eval_condition(right), else: {:ok, false}
+    end
+  end
+
+  defp eval_condition({:or, _, [left, right]}) do
+    with {:ok, left} <- eval_condition(left) do
+      if left, do: {:ok, true}, else: eval_condition(right)
+    end
+  end
+
+  defp eval_condition({{:., _, [{:__aliases__, _, [:Code]}, :ensure_loaded?]}, _, [module_ast]}) do
+    with {:ok, module} when is_atom(module) <- eval_literal(module_ast) do
+      {:ok, MapSet.member?(@available_optional_modules, module)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_condition({:function_exported?, _, [module_ast, function, arity]})
+       when is_atom(function) and is_integer(arity) do
+    with {:ok, module} when is_atom(module) <- eval_literal(module_ast) do
+      {:ok, MapSet.member?(@available_functions, {module, function, arity})}
     else
       _ -> :error
     end
