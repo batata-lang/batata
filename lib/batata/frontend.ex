@@ -47,7 +47,8 @@ defmodule Batata.Frontend do
     DefaultArgExpand,
     MetadataMacroExpand,
     MetaprogrammingExpand,
-    ModuleEnvironment
+    ModuleEnvironment,
+    RuntimeMacroExpand
   }
 
   @doc """
@@ -122,6 +123,7 @@ defmodule Batata.Frontend do
       |> MetadataMacroExpand.expand(metadata_macros(opts))
       |> ModuleEnvironment.expand()
       |> MetaprogrammingExpand.expand()
+      |> RuntimeMacroExpand.expand()
       |> DefaultArgExpand.expand()
       |> from_expanded_ast()
     end
@@ -134,6 +136,7 @@ defmodule Batata.Frontend do
     |> MetadataMacroExpand.expand(metadata_macros(opts))
     |> ModuleEnvironment.expand()
     |> MetaprogrammingExpand.expand()
+    |> RuntimeMacroExpand.expand()
     |> DefaultArgExpand.expand()
     |> from_expanded_ast()
   end

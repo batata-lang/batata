@@ -6,12 +6,6 @@
     "commit": "592d59ac4474933f91cdc3e8e037f137f7e008b0"
   },
   "failed_files": 0,
-  "unsupported_forms": 3,
-  "results": [
-    {
-      "path": "lib/decimal.ex",
-      "unsupported_forms": 3,
-      "reasons": {"unknown_form": 3}
-    }
-  ]
+  "unsupported_forms": 0,
+  "results": []
 }
