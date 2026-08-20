@@ -202,7 +202,10 @@ defmodule Batata.Frontend do
     impl_module = Elixir.Module.concat(protocol, target)
 
     {definitions, unsupported, struct_schema} =
-      body |> body_forms() |> normalize_body(impl_module)
+      body
+      |> expand_defimpl_attributes(target)
+      |> body_forms()
+      |> normalize_body(impl_module)
 
     %Module{
       name: impl_module,
@@ -270,6 +273,25 @@ defmodule Batata.Frontend do
   defp normalize_defimpl_target!(target) do
     raise ArgumentError, "unsupported defimpl target: #{Macro.to_string(target)}"
   end
+
+  defp expand_defimpl_attributes({kind, _, _} = ast, _target)
+       when kind in [:defmodule, :defprotocol, :defimpl],
+       do: ast
+
+  defp expand_defimpl_attributes({:@, _, [{:for, _, nil}]}, target),
+    do: Macro.escape(target)
+
+  defp expand_defimpl_attributes(tuple, target) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&expand_defimpl_attributes(&1, target))
+    |> List.to_tuple()
+  end
+
+  defp expand_defimpl_attributes(values, target) when is_list(values),
+    do: Enum.map(values, &expand_defimpl_attributes(&1, target))
+
+  defp expand_defimpl_attributes(other, _target), do: other
 
   defp body_forms({:__block__, _, forms}), do: forms
   defp body_forms(form), do: List.wrap(form)
