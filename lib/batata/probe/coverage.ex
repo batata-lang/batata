@@ -13,6 +13,7 @@ defmodule Batata.Probe.Coverage do
   alias Batata.Frontend.SigilMacroExpand
   alias Batata.Frontend.StaticMapMacroExpand
   alias Batata.Probe.CapabilityMatrix
+  alias Batata.Probe.CorpusCompileLink
   alias Batata.Probe.Jason.{Diff, Report}
 
   @schema_version 1
@@ -65,6 +66,7 @@ defmodule Batata.Probe.Coverage do
     verify_canonical_identity!(canonical_baseline, metadata)
     diff = Diff.compare(raw, baseline)
     canonical = canonical_acceptance(source)
+    compile_link = CorpusCompileLink.run(source)
     semantic = semantic_execution(capabilities)
 
     regressions = raw_regressions(diff) ++ canonical_regressions(canonical, canonical_baseline)
@@ -72,7 +74,7 @@ defmodule Batata.Probe.Coverage do
     %{
       "name" => name,
       "source" => raw["corpus"],
-      "claim" => claim(canonical, semantic),
+      "claim" => claim(canonical, compile_link, semantic),
       "regressions" => regressions,
       "raw_inventory" => %{
         "status" => if(regressions == [], do: "preserved", else: "changed"),
@@ -92,11 +94,9 @@ defmodule Batata.Probe.Coverage do
         "target" => %{"failed_files" => 0, "unsupported_forms" => 0}
       },
       "corpus_compile_link" => %{
-        "status" => "blocked",
+        "status" => compile_link["status"],
         "baseline" => nil,
-        "current" => %{
-          "reason" => "dependency-aware whole-corpus compile/link runner is not implemented"
-        },
+        "current" => compile_link,
         "target" => %{"status" => "pass", "unresolved_internal_dependencies" => 0}
       },
       "semantic_execution" => %{
@@ -263,10 +263,14 @@ defmodule Batata.Probe.Coverage do
     }
   end
 
-  defp claim(%{"unsupported_forms" => 0}, %{"blocked" => 0}),
+  defp claim(%{"unsupported_forms" => 0}, %{"status" => "pass"}, %{"blocked" => 0}),
+    do: "complete compile/link and semantic coverage"
+
+  defp claim(%{"unsupported_forms" => 0}, _compile_link, %{"blocked" => 0}),
     do: "compile coverage; whole-corpus link is still required"
 
-  defp claim(_canonical, _semantic), do: "inventory and partial semantic coverage only"
+  defp claim(_canonical, _compile_link, _semantic),
+    do: "inventory and partial semantic coverage only"
 
   defp read_json!(path), do: path |> File.read!() |> JSON.decode!()
 
