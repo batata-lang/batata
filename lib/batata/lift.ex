@@ -7040,19 +7040,24 @@ defmodule Batata.Lift do
 
   defp parse_binary_segments(segments) do
     {segs, rest} =
-      Enum.split_while(segments, &(not match?({:"::", _, [_, {:binary, _, nil}]}, &1)))
+      Enum.split_while(segments, &(not binary_rest_segment?(&1)))
 
     case rest do
       [] ->
         {Enum.map(segs, &binary_segment!/1), nil}
 
-      [{:"::", _, [rest_pat, {:binary, _, nil}]}] ->
+      [{:"::", _, [rest_pat, {kind, _, nil}]}] when kind in [:binary, :bits] ->
         {Enum.map(segs, &binary_segment!/1), rest_pat}
 
       _ ->
         raise Error, "binary rest segment must be the last segment: #{inspect(segments)}"
     end
   end
+
+  defp binary_rest_segment?({:"::", _, [_, {kind, _, nil}]}) when kind in [:binary, :bits],
+    do: true
+
+  defp binary_rest_segment?(_segment), do: false
 
   defp binary_segment!({:"::", _, [pat, 8]}), do: {:byte, pat}
   defp binary_segment!({:"::", _, [pat, {:utf8, _, nil}]}), do: {:utf8, pat}
