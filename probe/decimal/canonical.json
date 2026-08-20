@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "name": "decimal",
+    "ref": "v2.3.0",
+    "commit": "592d59ac4474933f91cdc3e8e037f137f7e008b0"
+  },
+  "failed_files": 0,
+  "unsupported_forms": 25,
+  "results": [
+    {
+      "path": "lib/decimal.ex",
+      "unsupported_forms": 19,
+      "reasons": {"import": 1, "unknown_form": 18}
+    },
+    {
+      "path": "lib/decimal/context.ex",
+      "unsupported_forms": 5,
+      "reasons": {"import": 1, "unknown_form": 4}
+    },
+    {
+      "path": "lib/decimal/macros.ex",
+      "unsupported_forms": 1,
+      "reasons": {"unknown_form": 1}
+    }
+  ]
+}

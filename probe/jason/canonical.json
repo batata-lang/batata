@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "name": "jason",
+    "ref": "v1.4.5",
+    "commit": "4ede42858eb19f80ec9e863aab52df466eab8608"
+  },
+  "failed_files": 0,
+  "unsupported_forms": 39,
+  "results": [
+    {
+      "path": "lib/codegen.ex",
+      "unsupported_forms": 2,
+      "reasons": {"unknown_form": 2}
+    },
+    {
+      "path": "lib/decoder.ex",
+      "unsupported_forms": 4,
+      "reasons": {"import": 2, "nested_defmodule": 1, "unknown_form": 1}
+    },
+    {
+      "path": "lib/encode.ex",
+      "unsupported_forms": 22,
+      "reasons": {"unknown_form": 22}
+    },
+    {
+      "path": "lib/encoder.ex",
+      "unsupported_forms": 2,
+      "reasons": {"module_attribute": 1, "unknown_form": 1}
+    },
+    {
+      "path": "lib/formatter.ex",
+      "unsupported_forms": 2,
+      "reasons": {"import": 1, "unknown_form": 1}
+    },
+    {
+      "path": "lib/helpers.ex",
+      "unsupported_forms": 2,
+      "reasons": {"unknown_form": 2}
+    },
+    {
+      "path": "lib/sigil.ex",
+      "unsupported_forms": 5,
+      "reasons": {"unknown_form": 5}
+    }
+  ]
+}

@@ -12,6 +12,8 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
                          {:erlang, :is_map_key, 2}
                        ])
 
+  alias Batata.Frontend.Literal
+
   @doc """
   Expands module-level `for` and `if` constructs within a `defmodule` AST.
   """
@@ -97,7 +99,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   defp expand_form(form), do: [form]
 
   defp eval_collection(collection) do
-    case eval_literal(collection) do
+    case Literal.eval(collection) do
       {:ok, %Range{} = range} -> {:ok, Enum.to_list(range)}
       {:ok, value} when is_list(value) -> {:ok, value}
       {:ok, value} when is_atom(value) -> {:ok, [value]}
@@ -140,7 +142,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   end
 
   defp eval_condition({{:., _, [{:__aliases__, _, [:Code]}, :ensure_loaded?]}, _, [module_ast]}) do
-    case eval_literal(module_ast) do
+    case Literal.eval(module_ast) do
       {:ok, module} when is_atom(module) ->
         {:ok, MapSet.member?(@available_optional_modules, module)}
 
@@ -151,7 +153,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
 
   defp eval_condition({:function_exported?, _, [module_ast, function, arity]})
        when is_atom(function) and is_integer(arity) do
-    case eval_literal(module_ast) do
+    case Literal.eval(module_ast) do
       {:ok, module} when is_atom(module) ->
         {:ok, MapSet.member?(@available_functions, {module, function, arity})}
 
@@ -161,7 +163,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   end
 
   defp eval_condition(other) do
-    case eval_literal(other) do
+    case Literal.eval(other) do
       {:ok, value} -> {:ok, value not in [false, nil]}
       :error -> :error
     end
@@ -184,59 +186,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   defp eval_simple_expr(atom) when is_atom(atom), do: {:ok, atom}
   defp eval_simple_expr(number) when is_number(number), do: {:ok, number}
   defp eval_simple_expr(binary) when is_binary(binary), do: {:ok, binary}
-  defp eval_simple_expr(other), do: eval_literal(other)
-
-  # This evaluator intentionally supports only data constructors needed by
-  # bounded module generation. It never invokes quoted code or host macros.
-  defp eval_literal(value)
-       when is_atom(value) or is_number(value) or is_binary(value),
-       do: {:ok, value}
-
-  defp eval_literal({:__aliases__, _, parts}) when is_list(parts) do
-    if Enum.all?(parts, &is_atom/1), do: {:ok, Module.concat(parts)}, else: :error
-  end
-
-  defp eval_literal({:.., _, [first, last]}) do
-    with {:ok, first} when is_integer(first) <- eval_literal(first),
-         {:ok, last} when is_integer(last) <- eval_literal(last) do
-      {:ok, first..last}
-    else
-      _ -> :error
-    end
-  end
-
-  defp eval_literal({:{}, _, items}) when is_list(items) do
-    with {:ok, values} <- eval_literals(items), do: {:ok, List.to_tuple(values)}
-  end
-
-  defp eval_literal({left, right}) do
-    with {:ok, left} <- eval_literal(left),
-         {:ok, right} <- eval_literal(right) do
-      {:ok, {left, right}}
-    else
-      _ -> :error
-    end
-  end
-
-  defp eval_literal({:%{}, _, pairs}) when is_list(pairs) do
-    with {:ok, values} <- eval_literals(pairs), do: {:ok, Map.new(values)}
-  end
-
-  defp eval_literal(values) when is_list(values), do: eval_literals(values)
-  defp eval_literal(_other), do: :error
-
-  defp eval_literals(values) do
-    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-      case eval_literal(value) do
-        {:ok, evaluated} -> {:cont, {:ok, [evaluated | acc]}}
-        :error -> {:halt, :error}
-      end
-    end)
-    |> case do
-      {:ok, evaluated} -> {:ok, Enum.reverse(evaluated)}
-      :error -> :error
-    end
-  end
+  defp eval_simple_expr(other), do: Literal.eval(other)
 
   defp substitute_unquote(ast, var_name, replacement_value) do
     replacement_ast = Macro.escape(replacement_value)
