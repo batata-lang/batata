@@ -266,6 +266,29 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "returns and invokes module-local function captures", %{ctx: ctx} do
+    source = """
+    defmodule LocalFunctionCapture do
+      def choose(:json), do: &escape_json/1
+      def choose(:unicode), do: &escape_unicode/1
+
+      def escape_json(value), do: value + 1
+      def escape_unicode(value), do: value + 2
+
+      def main() do
+        json = choose(:json)
+        unicode = choose(:unicode)
+        {json.(4), unicode.(4)}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nLocalFunctionCapture.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "typed case failures bypass user catch frames", %{ctx: ctx} do
     error =
       assert_raise CaseClauseError, fn ->
