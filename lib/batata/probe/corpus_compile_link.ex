@@ -2,18 +2,18 @@ defmodule Batata.Probe.CorpusCompileLink do
   @moduledoc """
   Diagnoses a corpus after shared, multi-source frontend normalization.
 
-  The initial runner deliberately lowers modules independently. It therefore
-  reports a multi-module corpus as blocked even when every isolated module
-  lowers: isolated success is useful frontier evidence, but is not a
-  dependency-aware whole-corpus link.
+  Isolated module attempts remain diagnostic evidence, but the reported status
+  comes only from a qualified, dependency-aware compilation unit containing
+  every normalized module. Isolated success can never produce a corpus pass.
   """
 
+  alias Batata.CompilationUnit
   alias Batata.Frontend
   alias Batata.Lower
   alias Batata.Probe.Jason.CompileAttempt
   alias Beaver.MLIR
 
-  @mode "shared_frontend_isolated_lowering"
+  @mode "qualified_multi_module_unit"
 
   @spec run(Path.t()) :: map()
   def run(source) do
@@ -23,11 +23,8 @@ defmodule Batata.Probe.CorpusCompileLink do
     dependencies = internal_dependencies(modules, module_names)
     attempts = Enum.map(modules, &attempt/1)
     isolated_passes = Enum.count(attempts, &(&1["status"] == "pass"))
-
-    status =
-      if length(modules) == 1 and isolated_passes == 1,
-        do: "pass",
-        else: "blocked"
+    unit_attempt = attempt_unit(modules)
+    status = if unit_attempt["status"] == "pass", do: "pass", else: "blocked"
 
     %{
       "status" => status,
@@ -35,9 +32,11 @@ defmodule Batata.Probe.CorpusCompileLink do
       "modules" => length(modules),
       "isolated_passes" => isolated_passes,
       "internal_dependencies" => dependencies,
-      "unresolved_internal_dependencies" => length(dependencies),
+      "unresolved_internal_dependencies" =>
+        if(status == "pass", do: 0, else: length(dependencies)),
       "attempts" => attempts,
-      "reason" => reason(status, modules)
+      "unit_attempt" => unit_attempt,
+      "reason" => reason(unit_attempt)
     }
   rescue
     error ->
@@ -77,16 +76,38 @@ defmodule Batata.Probe.CorpusCompileLink do
       error ->
         Map.merge(
           %{"module" => inspect(module.name), "status" => failure_status(error)},
-          CompileAttempt.failure_details(error)
+          error_details(error)
         )
     after
       MLIR.Context.destroy(ctx)
     end
   end
 
+  defp attempt_unit(modules) do
+    modules
+    |> CompilationUnit.build()
+    |> attempt()
+    |> Map.delete("module")
+  end
+
   defp failure_status(%Batata.Lift.Error{}), do: "frontend_normalization_failure"
   defp failure_status(%Batata.Lower.Error{}), do: "lowering_failure"
   defp failure_status(_error), do: "ir_verification_failure"
+
+  defp error_details(error) do
+    error
+    |> CompileAttempt.failure_details()
+    |> Map.put("diagnostic", normalize_diagnostic(Exception.message(error)))
+  end
+
+  defp normalize_diagnostic(message) do
+    message
+    |> String.replace(~r/(?<![\w.])(?:[A-Za-z]:)?\/(?:[\w.\-]+\/)+[\w.\-]+/, "<path>")
+    |> String.replace(~r/:(?:line\s*)?\d+(?::\d+)?/i, ":<location>")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, 512)
+  end
 
   defp internal_dependencies(modules, module_names) do
     modules
@@ -141,7 +162,7 @@ defmodule Batata.Probe.CorpusCompileLink do
 
   defp module_name(_ast), do: nil
 
-  defp reason("pass", _modules), do: nil
-  defp reason("blocked", [_single]), do: "isolated_module_failed"
-  defp reason("blocked", _modules), do: "dependency_aware_multi_module_unit_not_implemented"
+  defp reason(%{"status" => "pass"}), do: nil
+  defp reason(%{"reason_class" => reason}), do: reason
+  defp reason(_attempt), do: "compile_link_failed"
 end
