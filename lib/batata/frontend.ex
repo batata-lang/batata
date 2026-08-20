@@ -57,7 +57,8 @@ defmodule Batata.Frontend do
     MetaprogrammingExpand,
     ModuleEnvironment,
     RecordExpand,
-    RuntimeMacroExpand
+    RuntimeMacroExpand,
+    StaticMapMacroExpand
   }
 
   @doc """
@@ -85,13 +86,15 @@ defmodule Batata.Frontend do
     metadata_macros = MetadataMacroExpand.discover(sources)
     table_generators = MetaprogrammingExpand.discover_table_generators(sources)
     bytecase_macros = BytecaseExpand.discover(sources)
+    static_map_macros = StaticMapMacroExpand.discover(sources)
 
     modules =
       Enum.flat_map(sources, fn source ->
         case from_source(source,
                metadata_macros: metadata_macros,
                table_generators: table_generators,
-               bytecase_macros: bytecase_macros
+               bytecase_macros: bytecase_macros,
+               static_map_macros: static_map_macros
              ) do
           %Module{} = mod -> [mod]
           mods when is_list(mods) -> mods
@@ -135,6 +138,7 @@ defmodule Batata.Frontend do
       block
       |> MetaprogrammingExpand.expand(table_generators(opts))
       |> AliasExpand.expand()
+      |> StaticMapMacroExpand.expand(static_map_macros(opts))
       |> BytecaseExpand.expand(bytecase_macros(opts))
       |> RecordExpand.expand()
       |> MetadataMacroExpand.expand(metadata_macros(opts))
@@ -150,6 +154,7 @@ defmodule Batata.Frontend do
     ast
     |> MetaprogrammingExpand.expand(table_generators(opts))
     |> AliasExpand.expand()
+    |> StaticMapMacroExpand.expand(static_map_macros(opts))
     |> BytecaseExpand.expand(bytecase_macros(opts))
     |> RecordExpand.expand()
     |> MetadataMacroExpand.expand(metadata_macros(opts))
@@ -163,6 +168,7 @@ defmodule Batata.Frontend do
   defp metadata_macros(opts), do: Keyword.get(opts, :metadata_macros, %{})
   defp table_generators(opts), do: Keyword.get(opts, :table_generators, MapSet.new())
   defp bytecase_macros(opts), do: Keyword.get(opts, :bytecase_macros, %{})
+  defp static_map_macros(opts), do: Keyword.get(opts, :static_map_macros, %{})
 
   defp module_form?({kind, _, _}) when kind in [:defmodule, :defimpl, :defprotocol], do: true
   defp module_form?(_form), do: false
