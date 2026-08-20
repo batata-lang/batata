@@ -14,6 +14,7 @@ Beaver NIF have been built:
 ```sh
 cd scripts/native_deps
 mix batata.native setup
+mix batata.native verify
 mix batata.native doctor
 mix batata.native compile
 mix batata.native test
@@ -25,6 +26,18 @@ identity-keyed `.batata/build`; only LLVM artifacts and Zig's global cache are
 shared. This prevents one worktree's dependency or native build state from
 leaking into another.
 
+Create a new Batata worktree and its verified pinned environment with:
+
+```sh
+script/worktree-add ../batata-my-task agent/my-task
+```
+
+The wrapper creates only the Batata worktree. It reuses the shared immutable
+Beaver, Kinda, and LLVM caches, runs the existing native setup, and writes a
+schema-versioned receipt under `.batata`. If bootstrap fails, it removes only
+the worktree and branch it just created and prints the retry command. An
+existing target path is never modified.
+
 Local development checkouts may be selected explicitly:
 
 ```sh
@@ -34,11 +47,14 @@ mix batata.native setup \
   --llvm-config ../llvm-prebuilt/bin/llvm-config
 ```
 
-`doctor` labels path overrides and external LLVM as unverified and reports the
-exact source, toolchain, build, and cache identities. Use `run -- TASK ...` for
-arbitrary root Mix tasks and `exec -- COMMAND ...` for commands that need the
-same isolated environment. The root `mix.exs` remains unchanged, so ordinary
-Hex consumers and `mix hex.build` do not depend on this developer bootstrap.
+`verify` rejects a missing or stale receipt, changed manifests, mismatched
+revisions, and dirty pinned source caches. `doctor`, `compile`, `test`,
+`run`, and `exec` verify automatically. `doctor` also labels path
+overrides and external LLVM as unverified and reports the exact source,
+toolchain, build, and cache identities. Use `run -- TASK ...` for arbitrary
+root Mix tasks and `exec -- COMMAND ...` for commands that need the same
+isolated environment. The root `mix.exs` remains unchanged, so ordinary Hex
+consumers and `mix hex.build` do not depend on this developer bootstrap.
 
 ## Scope
 
