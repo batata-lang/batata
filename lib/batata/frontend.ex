@@ -59,7 +59,8 @@ defmodule Batata.Frontend do
     RecordExpand,
     RuntimeMacroExpand,
     SigilMacroExpand,
-    StaticMapMacroExpand
+    StaticMapMacroExpand,
+    UnicodeEscapeMacroExpand
   }
 
   @doc """
@@ -141,6 +142,7 @@ defmodule Batata.Frontend do
       block
       |> MetaprogrammingExpand.expand(table_generators(opts))
       |> AliasExpand.expand()
+      |> UnicodeEscapeMacroExpand.expand()
       |> StaticMapMacroExpand.expand(static_map_macros(opts))
       |> SigilMacroExpand.expand(sigil_macros(opts))
       |> BytecaseExpand.expand(bytecase_macros(opts))
@@ -158,6 +160,7 @@ defmodule Batata.Frontend do
     ast
     |> MetaprogrammingExpand.expand(table_generators(opts))
     |> AliasExpand.expand()
+    |> UnicodeEscapeMacroExpand.expand()
     |> StaticMapMacroExpand.expand(static_map_macros(opts))
     |> SigilMacroExpand.expand(sigil_macros(opts))
     |> BytecaseExpand.expand(bytecase_macros(opts))
