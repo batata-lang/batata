@@ -120,6 +120,46 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert length(snapshot.definitions) == 2
   end
 
+  test "expands a bounded reduce definition generator and its final binding" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule ReduceDemo do
+        maximum =
+          Enum.reduce(0..2, 1, fn index, acc ->
+            def power(unquote(index)), do: unquote(acc)
+            def base?(unquote(acc)), do: true
+            acc * 10
+          end)
+
+        def maximum(), do: unquote(maximum)
+      end
+      """)
+
+    assert snapshot.unsupported == []
+    assert Enum.count(snapshot.definitions, &(&1.name == :power)) == 3
+    assert Enum.count(snapshot.definitions, &(&1.name == :base?)) == 3
+
+    maximum = Enum.find(snapshot.definitions, &(&1.name == :maximum))
+    assert [%Frontend.Clause{body_ast: 1000}] = maximum.clauses
+  end
+
+  test "keeps reduce generators outside the structural allowlist visible" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule ReduceDemo do
+        result =
+          Enum.reduce(1..3, 0, fn item, acc ->
+            def generated(unquote(item)), do: unquote(acc)
+            IO.puts(item)
+          end)
+
+        def result(), do: unquote(result)
+      end
+      """)
+
+    assert [%Frontend.UnsupportedForm{form: {:=, _, _}}] = snapshot.unsupported
+  end
+
   test "leaves unsupported generators unchanged, including metadata" do
     ast =
       {:defmodule, [line: 1],
