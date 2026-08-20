@@ -99,6 +99,7 @@ defmodule Batata.NativeDeps.Receipt do
     %{
       "path" => Keyword.fetch!(config, key(name, :path)),
       "commit" => Keyword.fetch!(config, key(name, :ref)),
+      "base_commit" => Keyword.fetch!(config, key(name, :base_ref)),
       "source" => Keyword.fetch!(config, key(name, :source)) |> to_string()
     }
   end

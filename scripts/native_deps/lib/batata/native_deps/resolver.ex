@@ -4,6 +4,7 @@ defmodule Batata.NativeDeps.Resolver do
   alias Batata.NativeDeps
   alias Batata.NativeDeps.Command
   alias Batata.NativeDeps.Receipt
+  alias Batata.NativeDeps.Workspace
 
   @cleared_env [
     {"BEAVER_PATH", nil},
@@ -19,11 +20,13 @@ defmodule Batata.NativeDeps.Resolver do
   def setup!(opts \\ []) do
     NativeDeps.remove_receipt!(opts)
     lock = NativeDeps.lock!(opts)
+    workspace = Workspace.load!(opts)
+    beaver_path = Workspace.select_path!(workspace, opts, :beaver_path)
 
     beaver =
       source!(
         "beaver",
-        opts[:beaver_path],
+        beaver_path,
         Map.fetch!(lock, "BEAVER_GIT_URL"),
         Map.fetch!(lock, "BEAVER_GIT_REF"),
         Map.fetch!(lock, "BEAVER_GIT_SHA"),
@@ -33,11 +36,12 @@ defmodule Batata.NativeDeps.Resolver do
     metadata = metadata!(beaver.path)
 
     kinda_meta = Map.fetch!(metadata, "kinda")
+    kinda_path = Workspace.select_path!(workspace, opts, :kinda_path)
 
     kinda =
       source!(
         "kinda",
-        opts[:kinda_path],
+        kinda_path,
         Map.fetch!(kinda_meta, "git_url"),
         Map.fetch!(kinda_meta, "ref"),
         Map.fetch!(kinda_meta, "ref"),
@@ -46,17 +50,24 @@ defmodule Batata.NativeDeps.Resolver do
 
     llvm = llvm!(opts[:llvm_config], beaver.path, Map.fetch!(metadata, "llvm"), opts)
 
+    mode =
+      if Enum.any?([beaver.source, kinda.source, llvm.source], &(&1 == :editable)),
+        do: :editable,
+        else: :pinned
+
     config = [
       schema: 1,
-      mode: :pinned,
+      mode: mode,
       lock_sha256: NativeDeps.file_sha256!(NativeDeps.lock_path(opts)),
       beaver_path: beaver.path,
       beaver_source: beaver.source,
       beaver_ref: beaver.ref,
+      beaver_base_ref: beaver.base_ref,
       beaver_metadata_sha256: NativeDeps.file_sha256!(Path.join(beaver.path, "native-deps.json")),
       kinda_path: kinda.path,
       kinda_source: kinda.source,
       kinda_ref: kinda.ref,
+      kinda_base_ref: kinda.base_ref,
       llvm_config_path: llvm.path,
       llvm_source: llvm.source,
       llvm_revision: llvm.revision,
@@ -97,7 +108,7 @@ defmodule Batata.NativeDeps.Resolver do
     unless Keyword.get(config, :schema) == 1,
       do: Mix.raise("native dependency configuration has an unsupported schema")
 
-    unless Keyword.get(config, :mode) == :pinned,
+    unless Keyword.get(config, :mode) in [:pinned, :editable],
       do: Mix.raise("native dependency configuration has an unsupported mode")
 
     validate_digest!(
@@ -123,9 +134,16 @@ defmodule Batata.NativeDeps.Resolver do
 
   defp source!(name, explicit, url, ref, expected_sha, opts) do
     if explicit do
-      path = Path.expand(explicit)
+      path = Path.expand(explicit, NativeDeps.root(opts))
       validate_directory!(path, String.capitalize(name) <> " checkout")
-      %{path: path, source: :override, ref: git_revision(path) || "unversioned"}
+      validate_editable_base!(path, expected_sha, name)
+
+      %{
+        path: path,
+        source: :editable,
+        ref: git_revision(path),
+        base_ref: expected_sha
+      }
     else
       path =
         Path.join([
@@ -136,7 +154,7 @@ defmodule Batata.NativeDeps.Resolver do
         ])
 
       checkout!(path, url, ref, expected_sha)
-      %{path: path, source: :pinned, ref: expected_sha}
+      %{path: path, source: :pinned, ref: expected_sha, base_ref: expected_sha}
     end
   end
 
@@ -171,7 +189,7 @@ defmodule Batata.NativeDeps.Resolver do
   defp llvm!(explicit, _beaver_path, _metadata, _opts) when is_binary(explicit) do
     path = Path.expand(explicit)
     validate_llvm!(path)
-    %{path: path, source: :override, revision: "external-unverified"}
+    %{path: path, source: :editable, revision: "external-unverified"}
   end
 
   defp llvm!(nil, beaver_path, metadata, opts) do
@@ -235,22 +253,45 @@ defmodule Batata.NativeDeps.Resolver do
     path = Keyword.fetch!(config, String.to_existing_atom("#{name}_path"))
     source = Keyword.fetch!(config, String.to_existing_atom("#{name}_source"))
     expected = Keyword.fetch!(config, String.to_existing_atom("#{name}_ref"))
+    base_ref = Keyword.fetch!(config, String.to_existing_atom("#{name}_base_ref"))
 
-    if source == :pinned do
-      unless git_revision(path) == expected,
-        do: Mix.raise("pinned #{name} checkout does not match #{expected}")
+    case source do
+      :pinned ->
+        unless git_revision(path) == expected,
+          do: Mix.raise("pinned #{name} checkout does not match #{expected}")
 
-      dirty =
-        Command.run!("git", [
-          "-C",
-          path,
-          "status",
-          "--porcelain",
-          "--untracked-files=normal"
-        ])
+        dirty =
+          Command.run!("git", [
+            "-C",
+            path,
+            "status",
+            "--porcelain",
+            "--untracked-files=normal"
+          ])
 
-      unless String.trim(dirty) == "",
-        do: Mix.raise("pinned #{name} checkout is dirty: #{path}")
+        unless String.trim(dirty) == "",
+          do: Mix.raise("pinned #{name} checkout is dirty: #{path}")
+
+      :editable ->
+        validate_editable_base!(path, base_ref, name)
+
+      other ->
+        Mix.raise("unsupported #{name} source mode: #{inspect(other)}")
+    end
+  end
+
+  defp validate_editable_base!(path, base_ref, name) do
+    unless git_revision(path) do
+      Mix.raise("editable #{name} path is not a Git checkout: #{path}")
+    end
+
+    case System.cmd(
+           "git",
+           ["-C", path, "merge-base", "--is-ancestor", base_ref, "HEAD"],
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      _ -> Mix.raise("editable #{name} checkout does not descend from #{base_ref}: #{path}")
     end
   end
 

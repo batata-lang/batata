@@ -9,13 +9,20 @@ defmodule Mix.Tasks.Batata.Native do
   @setup_switches [
     llvm_config: :string,
     beaver_path: :string,
-    kinda_path: :string
+    kinda_path: :string,
+    workspace: :string
   ]
 
   @impl Mix.Task
   def run(["setup" | args]) do
     {opts, positional} = OptionParser.parse!(args, strict: @setup_switches)
     if positional != [], do: Mix.raise("unexpected setup arguments: #{inspect(positional)}")
+
+    opts =
+      case Keyword.pop(opts, :workspace) do
+        {nil, opts} -> opts
+        {path, opts} -> Keyword.put(opts, :workspace_path, path)
+      end
 
     config = Resolver.setup!(opts)
     Mix.shell().info("Wrote #{Batata.NativeDeps.config_path()}")
@@ -43,7 +50,7 @@ defmodule Mix.Tasks.Batata.Native do
   def run(_args) do
     Mix.raise("""
     usage:
-      mix batata.native setup [--beaver-path PATH] [--kinda-path PATH] [--llvm-config PATH]
+      mix batata.native setup [--workspace FILE] [--beaver-path PATH] [--kinda-path PATH] [--llvm-config PATH]
       mix batata.native doctor
       mix batata.native verify
       mix batata.native compile

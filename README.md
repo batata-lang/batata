@@ -47,6 +47,23 @@ mix batata.native setup \
   --llvm-config ../llvm-prebuilt/bin/llvm-config
 ```
 
+For repeatable cross-repository work, prefer an ignored
+`.batata/workspace.json`:
+
+```json
+{
+  "schema": 1,
+  "mode": "editable",
+  "beaver_path": "/absolute/path/to/beaver-task",
+  "kinda_path": "/absolute/path/to/kinda-task"
+}
+```
+
+Either source path may be omitted to keep that dependency pinned. Editable
+checkouts must descend from the commits selected by the versioned manifests;
+normal commits and dirty edits after setup remain valid. Command-line paths
+and workspace paths cannot both select the same dependency.
+
 `verify` rejects a missing or stale receipt, changed manifests, mismatched
 revisions, and dirty pinned source caches. `doctor`, `compile`, `test`,
 `run`, and `exec` verify automatically. `doctor` also labels path
