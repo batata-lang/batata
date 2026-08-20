@@ -246,6 +246,26 @@ defmodule Batata.ExecuteTest do
     assert error.term == 2
   end
 
+  test "dispatches case clauses with atom literal patterns", %{ctx: ctx} do
+    source = """
+    defmodule AtomCaseDispatch do
+      def choose(value) do
+        case value do
+          :json -> :escaped
+          :unicode_safe -> :unicode
+          nil -> :missing
+          _ -> :other
+        end
+      end
+
+      def main(), do: {choose(:json), choose(:unicode_safe), choose(nil), choose(:unknown)}
+    end
+    """
+
+    expected = source |> Kernel.<>("\nAtomCaseDispatch.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "typed case failures bypass user catch frames", %{ctx: ctx} do
     error =
       assert_raise CaseClauseError, fn ->

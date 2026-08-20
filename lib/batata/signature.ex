@@ -48,40 +48,58 @@ defmodule Batata.Signature do
 
   defp infer_ast(ast, names, signatures, modes) do
     {_ast, modes} =
-      Macro.prewalk(ast, modes, fn
-        {{:., _, [module]}, _, args} = node, acc when is_atom(module) and is_list(args) ->
-          call_modes =
-            builtin_modes(module, call_name(node), length(args)) ||
-              if(Batata.Stdlib.class({module, call_name(node), length(args)}) == :native_term,
-                do: List.duplicate(:term, length(args))
-              )
-
-          {node, mark_arguments(acc, names, args, call_modes)}
-
-        {name, _, args} = node, acc when is_atom(name) and is_list(args) ->
-          call_modes =
-            cond do
-              name == :is_integer ->
-                [:scalar]
-
-              name in @term_guards ->
-                [:term]
-
-              Batata.Stdlib.class({Kernel, name, length(args)}) == :native_term ->
-                List.duplicate(:term, length(args))
-
-              true ->
-                Map.get(signatures, {name, length(args)})
-            end
-
-          {node, mark_arguments(acc, names, args, call_modes)}
-
-        node, acc ->
-          {node, acc}
-      end)
+      Macro.prewalk(ast, modes, &infer_node(&1, &2, names, signatures))
 
     modes
   end
+
+  defp infer_node(
+         {:case, _, [{name, _, nil}, [do: clauses]]} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_atom(name) and is_list(clauses) do
+    modes =
+      if Enum.any?(clauses, &term_case_clause?/1),
+        do: mark_name(modes, names, name),
+        else: modes
+
+    {node, modes}
+  end
+
+  defp infer_node({{:., _, [module]}, _, args} = node, modes, names, _signatures)
+       when is_atom(module) and is_list(args) do
+    call_modes =
+      builtin_modes(module, call_name(node), length(args)) ||
+        if(Batata.Stdlib.class({module, call_name(node), length(args)}) == :native_term,
+          do: List.duplicate(:term, length(args))
+        )
+
+    {node, mark_arguments(modes, names, args, call_modes)}
+  end
+
+  defp infer_node({name, _, args} = node, modes, names, signatures)
+       when is_atom(name) and is_list(args) do
+    call_modes =
+      cond do
+        name == :is_integer ->
+          [:scalar]
+
+        name in @term_guards ->
+          [:term]
+
+        Batata.Stdlib.class({Kernel, name, length(args)}) == :native_term ->
+          List.duplicate(:term, length(args))
+
+        true ->
+          Map.get(signatures, {name, length(args)})
+      end
+
+    {node, mark_arguments(modes, names, args, call_modes)}
+  end
+
+  defp infer_node(node, modes, _names, _signatures), do: {node, modes}
 
   defp call_name({{:., _, [_module, function]}, _, _args}), do: function
 
@@ -117,6 +135,19 @@ defmodule Batata.Signature do
 
   defp plain_variable({name, _, nil}) when is_atom(name), do: name
   defp plain_variable(_pattern), do: nil
+
+  defp term_case_clause?({:->, _, [args, _body]}) do
+    case args do
+      [{:when, _, [pattern, _guard]}] -> term_case_pattern?(pattern)
+      [pattern] -> term_case_pattern?(pattern)
+      _ -> false
+    end
+  end
+
+  defp term_case_clause?(_clause), do: false
+
+  defp term_case_pattern?(pattern),
+    do: not (is_integer(pattern) or plain_variable(pattern) != nil)
 
   defp scalar_pattern?(pattern), do: is_integer(pattern) or plain_variable(pattern) != nil
 

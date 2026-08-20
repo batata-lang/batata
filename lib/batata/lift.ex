@@ -7298,6 +7298,7 @@ defmodule Batata.Lift do
 
   defp term_pattern?({:=, _, [left, right]}), do: term_pattern?(left) or term_pattern?(right)
   defp term_pattern?({:%, _, _}), do: true
+  defp term_pattern?(pattern) when is_atom(pattern), do: true
 
   defp term_pattern?(pattern) do
     match?({:%{}, _, _}, pattern) or
