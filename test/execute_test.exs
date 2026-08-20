@@ -2195,6 +2195,31 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "matches and binds Jason-shaped tuple patterns in trailing arguments", %{ctx: ctx} do
+    source = """
+    defmodule JasonTupleTailPatterns do
+      def encode(:atom, {escape, encode_map}), do: {:atom, escape, encode_map}
+      def encode(:list, {escape, encode_map, depth}), do: {:list, escape, encode_map, depth}
+      def encode(_, {_escape, _encode_map}), do: :pair
+      def encode(_, _options), do: :other
+
+      def main() do
+        {
+          encode(:atom, {:unicode, :strict}),
+          encode(:list, {:json, :maps, 2}),
+          encode(:unknown, {:unicode, :strict}),
+          encode(:unknown, :invalid)
+        }
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nJasonTupleTailPatterns.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "rejects multi-clause functions with non-atom trailing literals", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables, wildcards/, fn ->
       Batata.execute(

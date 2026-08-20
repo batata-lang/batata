@@ -1425,6 +1425,12 @@ defmodule Batata.Lift do
 
   defp multi_arg_tail_pattern!({:%, _, _} = pattern), do: {:term_pattern, pattern}
 
+  defp multi_arg_tail_pattern!({:{}, _, elements} = pattern) when is_list(elements),
+    do: {:term_pattern, pattern}
+
+  defp multi_arg_tail_pattern!(pattern) when is_tuple(pattern) and tuple_size(pattern) != 3,
+    do: {:term_pattern, pattern}
+
   defp multi_arg_tail_pattern!({:=, _, [left, right]} = pattern) do
     if struct_tail_pattern?(left) or struct_tail_pattern?(right),
       do: {:term_pattern, pattern},
