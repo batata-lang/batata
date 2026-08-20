@@ -23,22 +23,9 @@ defmodule Batata.NativeDepsTest do
   end
 
   test "resolves explicit sources and records unverified overrides", %{root: root, opts: opts} do
-    beaver = Path.join(root, "beaver")
-    kinda = Path.join(root, "kinda")
+    {beaver, kinda, _beaver_ref, _kinda_ref} = editable_repos!(root)
     llvm = fake_llvm!(root)
     zig = fake_zig!(root)
-    File.mkdir_p!(kinda)
-    File.mkdir_p!(beaver)
-
-    File.write!(
-      Path.join(root, "native-deps.lock"),
-      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n" <>
-        "BEAVER_GIT_SHA=#{String.duplicate("a", 40)}\n"
-    )
-
-    File.write!(Path.join(beaver, "native-deps.json"), """
-    {"schema_version":1,"kinda":{"git_url":"unused","ref":"#{String.duplicate("b", 40)}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}}
-    """)
 
     config =
       Resolver.setup!(
@@ -51,9 +38,10 @@ defmodule Batata.NativeDepsTest do
         )
       )
 
-    assert config[:beaver_source] == :override
-    assert config[:kinda_source] == :override
-    assert config[:llvm_source] == :override
+    assert config[:mode] == :editable
+    assert config[:beaver_source] == :editable
+    assert config[:kinda_source] == :editable
+    assert config[:llvm_source] == :editable
     assert config[:llvm_revision] == "external-unverified"
     assert NativeDeps.config!(opts) == config
   end
@@ -63,22 +51,9 @@ defmodule Batata.NativeDepsTest do
     cache: cache,
     opts: opts
   } do
-    beaver = Path.join(root, "beaver")
-    kinda = Path.join(root, "kinda")
-    File.mkdir_p!(beaver)
-    File.mkdir_p!(kinda)
+    {beaver, kinda, _beaver_ref, _kinda_ref} = editable_repos!(root)
     llvm = fake_llvm!(root)
     zig = fake_zig!(root)
-
-    File.write!(
-      Path.join(root, "native-deps.lock"),
-      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n" <>
-        "BEAVER_GIT_SHA=#{String.duplicate("a", 40)}\n"
-    )
-
-    File.write!(Path.join(beaver, "native-deps.json"), """
-    {"schema_version":1,"kinda":{"git_url":"unused","ref":"#{String.duplicate("b", 40)}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}}
-    """)
 
     Resolver.setup!(
       Keyword.merge(opts,
@@ -147,22 +122,9 @@ defmodule Batata.NativeDepsTest do
     root: root,
     opts: opts
   } do
-    beaver = Path.join(root, "beaver")
-    kinda = Path.join(root, "kinda")
-    File.mkdir_p!(beaver)
-    File.mkdir_p!(kinda)
+    {beaver, kinda, _beaver_ref, _kinda_ref} = editable_repos!(root)
     llvm = fake_llvm!(root)
     zig = fake_zig!(root)
-
-    File.write!(
-      Path.join(root, "native-deps.lock"),
-      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n" <>
-        "BEAVER_GIT_SHA=#{String.duplicate("a", 40)}\n"
-    )
-
-    File.write!(Path.join(beaver, "native-deps.json"), """
-    {"schema_version":1,"kinda":{"git_url":"unused","ref":"#{String.duplicate("b", 40)}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}}
-    """)
 
     setup_opts =
       Keyword.merge(opts,
@@ -243,6 +205,73 @@ defmodule Batata.NativeDepsTest do
     end
   end
 
+  test "uses an explicit editable workspace and tolerates normal dirty edits", %{
+    root: root,
+    opts: opts
+  } do
+    {beaver, kinda, beaver_ref, kinda_ref} = editable_repos!(root)
+    workspace = Path.join([root, ".batata", "workspace.json"])
+    File.mkdir_p!(Path.dirname(workspace))
+
+    File.write!(
+      workspace,
+      :json.encode(%{
+        "schema" => 1,
+        "mode" => "editable",
+        "beaver_path" => beaver,
+        "kinda_path" => kinda
+      })
+    )
+
+    zig = fake_zig!(root)
+
+    config =
+      Resolver.setup!(
+        Keyword.merge(opts,
+          llvm_config: fake_llvm!(root),
+          zig_path: zig,
+          fetch_deps: false
+        )
+      )
+
+    assert config[:mode] == :editable
+    assert config[:beaver_source] == :editable
+    assert config[:beaver_base_ref] == beaver_ref
+    assert config[:kinda_source] == :editable
+    assert config[:kinda_base_ref] == kinda_ref
+
+    File.write!(Path.join(beaver, "README.md"), "dirty")
+    assert :ok == Runner.verify!(Keyword.put(opts, :zig_path, zig))
+  end
+
+  test "rejects an editable checkout outside the pinned ancestry", %{root: root, opts: opts} do
+    {_beaver, kinda, _beaver_ref, _kinda_ref} = editable_repos!(root)
+    unrelated = Path.join(root, "unrelated-beaver")
+    make_repo!(unrelated, %{"native-deps.json" => "{}"})
+    workspace = Path.join([root, ".batata", "workspace.json"])
+    File.mkdir_p!(Path.dirname(workspace))
+
+    File.write!(
+      workspace,
+      :json.encode(%{
+        "schema" => 1,
+        "mode" => "editable",
+        "beaver_path" => unrelated,
+        "kinda_path" => kinda
+      })
+    )
+
+    assert_raise Mix.Error, ~r/editable beaver checkout does not descend from/, fn ->
+      Resolver.setup!(
+        Keyword.merge(opts,
+          llvm_config: fake_llvm!(root),
+          zig_path: fake_zig!(root),
+          fetch_deps: false
+        )
+      )
+    end
+  end
+
   test "source identity distinguishes paths and diagnoses dirty repositories", %{root: root} do
     repo = Path.join(root, "repo")
     File.mkdir_p!(repo)
@@ -283,6 +312,25 @@ defmodule Batata.NativeDepsTest do
     File.write!(path, "#!/bin/sh\necho '0.15.1'\n")
     File.chmod!(path, 0o755)
     path
+  end
+
+  defp editable_repos!(root) do
+    kinda = Path.join(root, "kinda")
+    kinda_ref = make_repo!(kinda, %{"README.md" => "kinda"})
+    beaver = Path.join(root, "beaver")
+
+    metadata =
+      ~s({"schema_version":1,"kinda":{"git_url":"#{kinda}","ref":"#{kinda_ref}"},"llvm":{"repo":"llvm/eudsl","tag":"llvm","default_revision":"revision"}})
+
+    beaver_ref = make_repo!(beaver, %{"native-deps.json" => metadata})
+
+    File.write!(
+      Path.join(root, "native-deps.lock"),
+      "BEAVER_GIT_URL=#{beaver}\nBEAVER_GIT_REF=#{beaver_ref}\n" <>
+        "BEAVER_GIT_SHA=#{beaver_ref}\n"
+    )
+
+    {beaver, kinda, beaver_ref, kinda_ref}
   end
 
   defp git!(repo, args) do
