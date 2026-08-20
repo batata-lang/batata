@@ -10,7 +10,7 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
 
   alias Batata.Frontend.{AliasExpand, Literal}
 
-  @type macro_kind :: :literal_map | :map_take
+  @type macro_kind :: :literal_map | :map_take | :deriving
   @type macro_spec :: %{
           required(:kind) => macro_kind(),
           optional(:fragment_module) => module(),
@@ -55,13 +55,57 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
     {:defmodule, metadata, [module_ast, [do: block(forms)]]}
   end
 
+  def expand({:defimpl, metadata, arguments}, registry) do
+    {prefix, [[do: body]]} = Enum.split(arguments, length(arguments) - 1)
+    module = impl_module(prefix)
+    declared = Map.get(registry, module, %{})
+
+    forms =
+      body
+      |> body_forms()
+      |> Enum.map(&consume_declared_macro(&1, declared))
+      |> Enum.reject(&is_nil/1)
+
+    {:defimpl, metadata, prefix ++ [[do: block(forms)]]}
+  end
+
   def expand(ast, _registry), do: ast
+
+  defp consume_declared_macro(form, declared) do
+    case macro_definition_signature(form) do
+      {:ok, signature} -> keep_unless_declared(form, signature, declared)
+      :error -> form
+    end
+  end
+
+  defp keep_unless_declared(form, signature, declared) do
+    if Map.has_key?(declared, signature), do: nil, else: form
+  end
 
   defp discover_ast({:__block__, _, forms}, registry),
     do: Enum.reduce(forms, registry, &discover_ast/2)
 
   defp discover_ast({:defmodule, _, [module_ast, [do: body]]}, registry) do
     module = literal_module(module_ast)
+
+    macros =
+      body
+      |> body_forms()
+      |> Enum.reduce(%{}, fn form, acc ->
+        case macro_kind(form) do
+          {:ok, signature, spec} -> Map.put(acc, signature, spec)
+          :error -> acc
+        end
+      end)
+
+    if module != nil and map_size(macros) > 0,
+      do: Map.put(registry, module, macros),
+      else: registry
+  end
+
+  defp discover_ast({:defimpl, _, arguments}, registry) do
+    {prefix, [[do: body]]} = Enum.split(arguments, length(arguments) - 1)
+    module = impl_module(prefix)
 
     macros =
       body
@@ -109,6 +153,12 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
     else
       _ -> :error
     end
+  end
+
+  defp map_macro_kind(:__deriving__, 3, body) do
+    if contains?(body, &match?({:defimpl, _, _}, &1)),
+      do: {:ok, %{kind: :deriving}},
+      else: :error
   end
 
   defp map_macro_kind(_name, _arity, _body), do: :error
@@ -410,6 +460,18 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
     parts = module |> Module.split() |> Enum.map(&String.to_atom/1)
     {:__aliases__, metadata, parts}
   end
+
+  defp impl_module([protocol_ast, [for: target_ast]]) do
+    with protocol when is_atom(protocol) <- literal_module(protocol_ast),
+         target when is_atom(target) <- literal_module(target_ast),
+         false <- is_nil(protocol) or is_nil(target) do
+      Module.concat(protocol, target)
+    else
+      _ -> nil
+    end
+  end
+
+  defp impl_module(_prefix), do: nil
 
   defp body_forms({:__block__, _, forms}), do: forms
   defp body_forms(form), do: [form]

@@ -88,4 +88,30 @@ defmodule Batata.Frontend.StaticMapMacroExpandTest do
     snapshot = Frontend.from_source(provider)
     assert [%Frontend.UnsupportedForm{reason: :unknown_form}] = snapshot.unsupported
   end
+
+  test "accepts a bounded deriving provider that emits a defimpl" do
+    source = """
+    defimpl Sample.Encoder, for: Any do
+      defmacro __deriving__(module, struct, opts) do
+        fields = fields_to_encode(struct, opts)
+        kv = Enum.map(fields, &{&1, generated_var(&1)})
+        iodata = Sample.Codegen.build_kv_iodata(kv, [])
+
+        quote do
+          defimpl Sample.Encoder, for: unquote(module) do
+            def encode(%{unquote_splicing(kv)}, opts), do: {opts, unquote(iodata)}
+          end
+        end
+      end
+
+      def encode(value, opts), do: {value, opts}
+    end
+    """
+
+    snapshot = Frontend.from_sources([source]) |> List.first()
+
+    assert snapshot.name == Sample.Encoder.Any
+    assert snapshot.unsupported == []
+    assert Enum.map(snapshot.definitions, & &1.name) == [:encode]
+  end
 end
