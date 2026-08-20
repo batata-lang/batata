@@ -3651,7 +3651,12 @@ defmodule Batata.Lift do
     end
 
     body = Keyword.fetch!(options, :do)
-    catch_clauses = Keyword.fetch!(options, :catch) |> ensure_receive_catch_all()
+
+    catch_clauses =
+      options
+      |> Keyword.fetch!(:catch)
+      |> normalize_catch_clauses()
+      |> ensure_catch_fallback()
 
     body_region = MLIR.CAPI.mlirRegionCreate()
     body_block = MLIR.Block.create([], [])
@@ -4352,6 +4357,31 @@ defmodule Batata.Lift do
     else
       clauses ++ [{:->, [], [[{:_, [], nil}], 0]}]
     end
+  end
+
+  defp ensure_catch_fallback(clauses) do
+    if catch_all_clause?(List.last(clauses)) do
+      clauses
+    else
+      unmatched = {:__batata_uncaught_throw__, [], nil}
+      clauses ++ [{:->, [], [[unmatched], {:__batata_rethrow__, [], [unmatched]}]}]
+    end
+  end
+
+  defp normalize_catch_clauses(clauses) do
+    Enum.flat_map(clauses, fn
+      {:->, meta, [[:throw, pattern], body]} ->
+        [{:->, meta, [[pattern], body]}]
+
+      {:->, _, [[kind, _pattern], _body]} when kind in [:error, :exit] ->
+        []
+
+      {:->, _, [[_kind, _pattern], _body]} = clause ->
+        raise Error, "unsupported catch kind pattern: #{inspect(clause)}"
+
+      clause ->
+        [clause]
+    end)
   end
 
   defp lift_reduce_pattern(
@@ -6527,12 +6557,13 @@ defmodule Batata.Lift do
 
     region = MLIR.CAPI.mlirRegionCreate()
 
-    yield_types =
+    {yield_types, _first_type} =
       parsed
       |> Enum.zip(guards)
       |> Enum.zip(bindss)
-      |> Enum.map(fn {{clause, guard}, binds} ->
-        add_term_clause_block(clause, guard, binds, env, ctx, region)
+      |> Enum.map_reduce(nil, fn {{clause, guard}, binds}, first_type ->
+        type = add_term_clause_block(clause, guard, binds, env, ctx, region, first_type)
+        {type, first_type || type}
       end)
 
     [first_type | rest_types] = yield_types
@@ -7074,7 +7105,7 @@ defmodule Batata.Lift do
     raise Error, "unsupported binary segment: #{inspect(segment)}"
   end
 
-  defp add_term_clause_block(clause, guard, binds, env, ctx, region) do
+  defp add_term_clause_block(clause, guard, binds, env, ctx, region, expected_type) do
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
@@ -7087,13 +7118,36 @@ defmodule Batata.Lift do
         {var, value}, acc -> Map.put(acc, var, value)
       end)
 
-    # A clause body is one AST expression even when that expression is [] or
-    # a non-empty list literal. List.wrap/1 erases [] and expands list literals
-    # into multiple block expressions, so keep the AST in a singleton block.
-    {value, clause_env} = lift_block([clause.body], ctx, block, clause_env)
+    {value, clause_env} =
+      case clause.body do
+        {:__batata_rethrow__, _, [value_ast]} ->
+          {value, clause_env} = lift_expr({:throw, [], [value_ast]}, ctx, block, clause_env)
+          {coerce_rethrow_result(value, expected_type, ctx, block), clause_env}
+
+        body ->
+          # A clause body is one AST expression even when that expression is [] or
+          # a non-empty list literal. List.wrap/1 erases [] and expands list literals
+          # into multiple block expressions, so keep the AST in a singleton block.
+          lift_block([body], ctx, block, clause_env)
+      end
+
     value = lift_value(value, ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
+  end
+
+  defp coerce_rethrow_result(value, nil, _ctx, _block), do: value
+
+  defp coerce_rethrow_result(value, expected_type, ctx, block) do
+    if MLIR.equal?(MLIR.Value.type(value), expected_type) do
+      value
+    else
+      unless MLIR.equal?(expected_type, integer_type(ctx)) do
+        raise Error, "catch handlers must return scalar integers or terms"
+      end
+
+      create_op("ex.to_int", [value], [expected_type], ctx, block)
+    end
   end
 
   defp combine(conds, ctx, block) do
