@@ -66,7 +66,7 @@ defmodule Batata.Probe.CoverageTest do
     sample = dashboard["corpora"]["sample"]
     assert sample["raw_inventory"]["status"] == "preserved"
     assert sample["canonical_acceptance"]["status"] == "pass"
-    assert sample["corpus_compile_link"]["status"] == "blocked"
+    assert sample["corpus_compile_link"]["status"] == "pass"
     assert sample["semantic_execution"]["status"] == "blocked"
     assert sample["semantic_execution"]["current"]["blocked_ids"] == ["later"]
     assert sample["claim"] == "inventory and partial semantic coverage only"
