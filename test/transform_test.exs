@@ -125,4 +125,25 @@ defmodule Batata.TransformTest do
     # the recursive call is retyped to i64 and stays a call (not inlined)
     assert rendered =~ ~s{"ex.call"}
   end
+
+  test "preserves abstract !ex.term types across transform passes", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule TermTransform do
+          def make_tuple(a, b), do: {a, b}
+
+          def main() do
+            t = make_tuple(1, 2)
+            elem(t, 0)
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ "!ex.term"
+    assert rendered =~ "ex.tuple"
+  end
 end
