@@ -69,7 +69,9 @@ defmodule Batata.Probe.CoverageTest do
     assert sample["corpus_compile_link"]["status"] == "pass"
     assert sample["semantic_execution"]["status"] == "blocked"
     assert sample["semantic_execution"]["current"]["blocked_ids"] == ["later"]
-    assert sample["claim"] == "inventory and partial semantic coverage only"
+
+    assert sample["claim"] ==
+             "whole-corpus compile/link coverage; semantic execution is still required"
   end
 
   @tag :tmp_dir

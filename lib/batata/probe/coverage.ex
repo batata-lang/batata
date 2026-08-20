@@ -16,7 +16,7 @@ defmodule Batata.Probe.Coverage do
   alias Batata.Probe.CorpusCompileLink
   alias Batata.Probe.Jason.{Diff, Report}
 
-  @schema_version 1
+  @schema_version 2
   @levels ~w(raw_inventory canonical_acceptance corpus_compile_link semantic_execution)
 
   @spec run!([map()], Path.t(), keyword()) :: map()
@@ -265,6 +265,9 @@ defmodule Batata.Probe.Coverage do
 
   defp claim(%{"unsupported_forms" => 0}, %{"status" => "pass"}, %{"blocked" => 0}),
     do: "complete compile/link and semantic coverage"
+
+  defp claim(%{"unsupported_forms" => 0}, %{"status" => "pass"}, _semantic),
+    do: "whole-corpus compile/link coverage; semantic execution is still required"
 
   defp claim(%{"unsupported_forms" => 0}, _compile_link, %{"blocked" => 0}),
     do: "compile coverage; whole-corpus link is still required"

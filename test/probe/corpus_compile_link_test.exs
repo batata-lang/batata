@@ -13,7 +13,7 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
 
     assert %{
              "status" => "pass",
-             "mode" => "shared_frontend_isolated_lowering",
+             "mode" => "qualified_multi_module_unit",
              "modules" => 1,
              "isolated_passes" => 1,
              "unresolved_internal_dependencies" => 0,
@@ -23,7 +23,7 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
-  test "keeps a multi-module dependency blocked until it shares one IR unit", %{tmp_dir: tmp_dir} do
+  test "resolves a cross-module call inside one qualified IR unit", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "callee.ex", """
     defmodule Callee do
       def double(value), do: value * 2
@@ -38,8 +38,8 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
 
     result = CorpusCompileLink.run(tmp_dir)
 
-    assert result["status"] == "blocked"
-    assert result["reason"] == "dependency_aware_multi_module_unit_not_implemented"
+    assert result["status"] == "pass"
+    assert result["reason"] == nil
     assert result["modules"] == 2
 
     assert result["internal_dependencies"] == [
@@ -51,8 +51,47 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
              }
            ]
 
-    assert result["unresolved_internal_dependencies"] == 1
+    assert result["unresolved_internal_dependencies"] == 0
     assert Enum.any?(result["attempts"], &(&1["status"] == "frontend_normalization_failure"))
+    assert result["unit_attempt"]["status"] == "pass"
+  end
+
+  @tag :tmp_dir
+  test "shares a schema across modules in the same unit", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "point.ex", """
+    defmodule Point do
+      defstruct x: 0
+    end
+    """)
+
+    write_source(tmp_dir, "reader.ex", """
+    defmodule Reader do
+      def x(%Point{x: value}), do: value
+    end
+    """)
+
+    result = CorpusCompileLink.run(tmp_dir)
+
+    assert result["status"] == "pass"
+    assert result["modules"] == 2
+    assert result["unit_attempt"]["status"] == "pass"
+  end
+
+  @tag :tmp_dir
+  test "reports a failed unit as blocked with a bounded diagnostic", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "unsupported.ex", """
+    defmodule Unsupported do
+      def zip(left, right), do: Enum.zip(left, right)
+    end
+    """)
+
+    result = CorpusCompileLink.run(tmp_dir)
+
+    assert result["status"] == "blocked"
+    assert result["unit_attempt"]["status"] == "frontend_normalization_failure"
+    assert result["reason"] == "unsupported_stdlib_call"
+    assert result["unit_attempt"]["diagnostic"] =~ "Enum.zip"
+    assert byte_size(result["unit_attempt"]["diagnostic"]) <= 512
   end
 
   defp write_source(root, name, contents) do
