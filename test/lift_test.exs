@@ -767,6 +767,26 @@ defmodule Batata.LiftTest do
     assert "ex.sub" in op_names(module)
   end
 
+  test "lifts composite terms with abstract !ex.term type", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule TermTest do
+          def main() do
+            {1, [2, 3], %{a: 4}}
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ "!ex.term"
+    assert rendered =~ "ex.tuple"
+    assert rendered =~ "ex.list"
+    assert rendered =~ "ex.map"
+  end
+
   test "raises explicitly on unsupported AST", %{ctx: ctx} do
     assert_raise Lift.Error, ~r/unsupported AST/, fn ->
       lift!(
