@@ -11,6 +11,8 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
                          {Application, :compile_env, 3},
                          {:erlang, :is_map_key, 2}
                        ])
+  @max_generated_iterations 512
+  @max_generated_integer_bits 4096
 
   alias Batata.Frontend.Literal
 
@@ -53,7 +55,20 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   defp wrap_body(forms), do: {:__block__, [], forms}
 
   defp expand_forms(forms) do
-    Enum.flat_map(forms, &expand_form/1)
+    {expanded, _bindings} =
+      Enum.map_reduce(forms, %{}, fn form, bindings ->
+        form = substitute_unquotes(form, bindings)
+
+        case expand_reduce_assignment(form) do
+          {:ok, generated, name, value} ->
+            {generated, Map.put(bindings, name, value)}
+
+          :error ->
+            {expand_form(form), bindings}
+        end
+      end)
+
+    List.flatten(expanded)
   end
 
   defp expand_form({:for, _meta, [{:<-, _, [{var_name, _, nil}, collection]}, [do: body]]} = form)
@@ -62,7 +77,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
       {:ok, items} when is_list(items) and items != [] ->
         Enum.flat_map(items, fn item ->
           body
-          |> substitute_unquote(var_name, item)
+          |> substitute_unquotes(%{var_name => item})
           |> body_forms()
           |> expand_forms()
         end)
@@ -97,6 +112,89 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   end
 
   defp expand_form(form), do: [form]
+
+  defp expand_reduce_assignment(
+         {:=, _meta,
+          [
+            {binding_name, _, nil},
+            {{:., _, [{:__aliases__, _, [:Enum]}, :reduce]}, _,
+             [
+               collection,
+               initial,
+               {:fn, _, [{:->, _, [[{item_name, _, nil}, {acc_name, _, nil}], body]}]}
+             ]}
+          ]}
+       )
+       when is_atom(binding_name) and is_atom(item_name) and is_atom(acc_name) do
+    with {:ok, items} when items != [] <- eval_collection(collection),
+         true <- length(items) <= @max_generated_iterations,
+         {:ok, initial} when is_integer(initial) <- Literal.eval(initial),
+         true <- generated_integer_in_bounds?(initial),
+         [next_acc | reversed_templates] <- body |> body_forms() |> Enum.reverse(),
+         templates when templates != [] <- Enum.reverse(reversed_templates),
+         true <- Enum.all?(templates, &definition_form?/1),
+         {:ok, generated, final_acc} <-
+           expand_reduce_iterations(items, initial, item_name, acc_name, templates, next_acc) do
+      {:ok, generated, binding_name, final_acc}
+    else
+      _ -> :error
+    end
+  end
+
+  defp expand_reduce_assignment(_form), do: :error
+
+  defp expand_reduce_iterations(items, initial, item_name, acc_name, templates, next_acc) do
+    items
+    |> Enum.reduce_while({:ok, [], initial}, fn item, {:ok, generated, acc} ->
+      bindings = %{item_name => item, acc_name => acc}
+      iteration_forms = Enum.map(templates, &substitute_unquotes(&1, bindings))
+
+      case eval_integer_expr(next_acc, bindings) do
+        {:ok, next_value} ->
+          {:cont, {:ok, generated ++ iteration_forms, next_value}}
+
+        :error ->
+          {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, generated, final_acc} -> {:ok, generated, final_acc}
+      :error -> :error
+    end
+  end
+
+  defp definition_form?({kind, _, _}) when kind in [:def, :defp], do: true
+  defp definition_form?(_form), do: false
+
+  defp eval_integer_expr(value, _bindings) when is_integer(value), do: {:ok, value}
+
+  defp eval_integer_expr({name, _, nil}, bindings) when is_atom(name) do
+    case Map.fetch(bindings, name) do
+      {:ok, value} when is_integer(value) -> {:ok, value}
+      _ -> :error
+    end
+  end
+
+  defp eval_integer_expr({op, _, [left, right]}, bindings) when op in [:+, :-, :*] do
+    with {:ok, left} <- eval_integer_expr(left, bindings),
+         {:ok, right} <- eval_integer_expr(right, bindings),
+         value <- apply_integer_op(op, left, right),
+         true <- generated_integer_in_bounds?(value) do
+      {:ok, value}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_integer_expr(_expression, _bindings), do: :error
+
+  defp apply_integer_op(:+, left, right), do: left + right
+  defp apply_integer_op(:-, left, right), do: left - right
+  defp apply_integer_op(:*, left, right), do: left * right
+
+  defp generated_integer_in_bounds?(value) do
+    value |> abs() |> Integer.digits(2) |> length() <= @max_generated_integer_bits
+  end
 
   defp eval_collection(collection) do
     case Literal.eval(collection) do
@@ -188,17 +286,12 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   defp eval_simple_expr(binary) when is_binary(binary), do: {:ok, binary}
   defp eval_simple_expr(other), do: Literal.eval(other)
 
-  defp substitute_unquote(ast, var_name, replacement_value) do
-    replacement_ast = Macro.escape(replacement_value)
-
+  defp substitute_unquotes(ast, bindings) do
     Macro.prewalk(ast, fn
-      {:unquote, _, [{^var_name, _, nil}]} ->
-        replacement_ast
-
-      {:unquote, _meta, [expr]} = unquote_ast ->
-        case expr do
-          {^var_name, _, nil} -> replacement_ast
-          _ -> unquote_ast
+      {:unquote, _meta, [{name, _, nil}]} = unquote_ast when is_atom(name) ->
+        case Map.fetch(bindings, name) do
+          {:ok, value} -> Macro.escape(value)
+          :error -> unquote_ast
         end
 
       {name, meta, args} when is_atom(name) and is_list(args) ->
