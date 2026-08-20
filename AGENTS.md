@@ -20,6 +20,13 @@ Rules for AI agents working in this repository.
 - All tests use `use ExUnit.Case, async: true` where possible and never mutate
   process-global or VM-global state.
 
+## Worktrees
+
+Create Batata worktrees with `script/worktree-add <path> <branch>`. Before
+editing or testing in an existing worktree, run `mix batata.native verify`
+from `scripts/native_deps`; setup is required if verification reports stale or
+missing state.
+
 ## Stacked PRs against Beaver
 
 Batata's `native-deps.lock` is the versioned source of truth for the Beaver

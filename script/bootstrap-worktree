@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+
+cd "$repo_root/scripts/native_deps"
+mix batata.native setup
+mix batata.native verify

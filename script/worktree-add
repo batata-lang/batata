@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: script/worktree-add <path> <branch>" >&2
+}
+
+if [[ $# -ne 2 ]]; then
+  usage
+  exit 2
+fi
+
+target=$1
+branch=$2
+script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+repo_root="$(git -C "$script_dir" rev-parse --show-toplevel)"
+
+if [[ $branch == -* ]] || ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+  echo "invalid branch name: $branch" >&2
+  exit 2
+fi
+
+target_parent="$(dirname -- "$target")"
+target_name="$(basename -- "$target")"
+
+if [[ ! -d $target_parent ]]; then
+  echo "worktree parent directory does not exist: $target_parent" >&2
+  exit 2
+fi
+
+target_parent="$(CDPATH= cd -- "$target_parent" && pwd -P)"
+target="$target_parent/$target_name"
+
+if [[ -e $target || -L $target ]]; then
+  echo "worktree path already exists: $target" >&2
+  exit 2
+fi
+
+created_worktree=0
+created_branch=0
+
+rollback() {
+  status=$?
+  trap - ERR
+
+  if [[ $created_worktree -eq 1 ]]; then
+    git -C "$repo_root" worktree remove --force "$target" >/dev/null 2>&1 || true
+  fi
+
+  if [[ $created_branch -eq 1 ]]; then
+    git -C "$repo_root" branch -D "$branch" >/dev/null 2>&1 || true
+  fi
+
+  printf 'worktree bootstrap failed; retry with: %q %q %q\n' \
+    "$repo_root/script/worktree-add" "$target" "$branch" >&2
+  exit "$status"
+}
+
+trap rollback ERR
+
+if git -C "$repo_root" show-ref --verify --quiet "refs/heads/$branch"; then
+  git -C "$repo_root" worktree add "$target" "$branch"
+else
+  git -C "$repo_root" worktree add -b "$branch" "$target"
+  created_branch=1
+fi
+
+created_worktree=1
+"$target/script/bootstrap-worktree"
+trap - ERR
+
+echo "Worktree ready: $target"
