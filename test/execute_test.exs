@@ -3239,6 +3239,26 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "try matches Jason-shaped throw kind and struct value patterns", %{ctx: ctx} do
+    source = """
+    defmodule JasonThrowPattern do
+      defstruct message: nil
+
+      def main() do
+        try do
+          throw(%__MODULE__{message: "boom"})
+        catch
+          :throw, %__MODULE__{} = error -> {:error, error.message}
+          :error, _error -> :wrong_kind
+        end
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nJasonThrowPattern.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "executes nested composite terms under abstract !ex.term representation", %{ctx: ctx} do
     assert {1, [2, 3], %{foo: "bar"}, <<4, 5, 6>>} ==
              Batata.execute(
