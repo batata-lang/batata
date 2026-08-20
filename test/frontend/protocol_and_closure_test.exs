@@ -39,6 +39,27 @@ defmodule Batata.Frontend.ProtocolAndClosureTest do
     assert Enum.all?(modules, &(&1.unsupported == []))
   end
 
+  test "substitutes the implicit defimpl target attribute per implementation" do
+    modules =
+      Frontend.from_source("""
+      defimpl Sample.Encoder, for: [Date, Time] do
+        def target(), do: @for
+        def encode(value), do: @for.to_iso8601(value)
+      end
+      """)
+
+    assert Enum.map(modules, fn module ->
+             target = Enum.find(module.definitions, &(&1.name == :target))
+             encode = Enum.find(module.definitions, &(&1.name == :encode))
+
+             {module.name, hd(target.clauses).body_ast,
+              Macro.to_string(hd(encode.clauses).body_ast)}
+           end) == [
+             {Sample.Encoder.Date, Date, "Date.to_iso8601(value)"},
+             {Sample.Encoder.Time, Time, "Time.to_iso8601(value)"}
+           ]
+  end
+
   test "normalizes protocol declarations separately from implementations" do
     source = """
     defprotocol Printable do
