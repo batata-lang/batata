@@ -935,6 +935,17 @@ defmodule Batata.Lift do
   defp same_var?(_left, _right), do: false
 
   defp extract_fns(
+         {:&, _, [{:/, _, [{{:., _, [module_ast, name]}, _, []}, arity]}]},
+         parent,
+         state
+       )
+       when is_atom(name) and is_integer(arity) and arity >= 0 and arity <= 4 do
+    args = Enum.map(1..arity//1, &{String.to_atom("__batata_capture_arg_#{&1}"), [], nil})
+    call = {{:., [], [module_ast, name]}, [], args}
+    extract_fns({:fn, [], [{:->, [], [args, call]}]}, parent, state)
+  end
+
+  defp extract_fns(
          {:&, _, [{:/, _, [{name, _, context}, arity]}]},
          parent,
          state
