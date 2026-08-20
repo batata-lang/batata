@@ -24,6 +24,7 @@ defmodule Batata.NativeDeps.Resolver do
         opts[:beaver_path],
         Map.fetch!(lock, "BEAVER_GIT_URL"),
         Map.fetch!(lock, "BEAVER_GIT_REF"),
+        Map.fetch!(lock, "BEAVER_GIT_SHA"),
         opts
       )
 
@@ -36,6 +37,7 @@ defmodule Batata.NativeDeps.Resolver do
         "kinda",
         opts[:kinda_path],
         Map.fetch!(kinda_meta, "git_url"),
+        Map.fetch!(kinda_meta, "ref"),
         Map.fetch!(kinda_meta, "ref"),
         opts
       )
@@ -91,48 +93,52 @@ defmodule Batata.NativeDeps.Resolver do
     config
   end
 
-  defp source!(name, explicit, url, ref, opts) do
+  defp source!(name, explicit, url, ref, expected_sha, opts) do
     if explicit do
       path = Path.expand(explicit)
       validate_directory!(path, String.capitalize(name) <> " checkout")
       %{path: path, source: :override, ref: git_revision(path) || "unversioned"}
     else
       path =
-        Path.join([NativeDeps.cache_root(opts), "sources", name, NativeDeps.digest([url, ref])])
+        Path.join([
+          NativeDeps.cache_root(opts),
+          "sources",
+          name,
+          NativeDeps.digest([url, ref, expected_sha])
+        ])
 
-      checkout!(path, url, ref)
-      %{path: path, source: :pinned, ref: ref}
+      checkout!(path, url, ref, expected_sha)
+      %{path: path, source: :pinned, ref: expected_sha}
     end
   end
 
-  defp checkout!(path, url, ref) do
+  defp checkout!(path, url, ref, expected_sha) do
     Mix.Sync.Lock.with_lock(path, fn ->
-      unless valid_checkout?(path, ref) do
+      unless valid_checkout?(path, expected_sha) do
         if File.exists?(path), do: File.rm_rf!(path)
         File.mkdir_p!(path)
         Command.run!("git", ["init", "--quiet", path])
         Command.run!("git", ["-C", path, "remote", "add", "origin", url])
         Command.run!("git", ["-C", path, "fetch", "--quiet", "--depth", "1", "origin", ref])
+
+        fetched_sha = git_revision(path, "FETCH_HEAD")
+
+        if fetched_sha != expected_sha do
+          Mix.raise(
+            "#{url} ref #{ref} resolved to #{fetched_sha || "an invalid commit"}, " <>
+              "expected #{expected_sha}"
+          )
+        end
+
         Command.run!("git", ["-C", path, "checkout", "--quiet", "--detach", "FETCH_HEAD"])
       end
     end)
 
-    unless valid_checkout?(path, ref), do: Mix.raise("cached #{path} does not resolve to #{ref}")
+    unless valid_checkout?(path, expected_sha),
+      do: Mix.raise("cached #{path} does not resolve to #{expected_sha}")
   end
 
-  defp valid_checkout?(path, ref) do
-    case System.cmd("git", ["-C", path, "rev-parse", "HEAD"], stderr_to_stdout: true) do
-      {head, 0} -> String.trim(head) == resolve_ref(path, ref)
-      _ -> false
-    end
-  end
-
-  defp resolve_ref(path, ref) do
-    case System.cmd("git", ["-C", path, "rev-parse", ref], stderr_to_stdout: true) do
-      {resolved, 0} -> String.trim(resolved)
-      _ -> ref
-    end
-  end
+  defp valid_checkout?(path, expected_sha), do: git_revision(path) == expected_sha
 
   defp llvm!(explicit, _beaver_path, _metadata, _opts) when is_binary(explicit) do
     path = Path.expand(explicit)
@@ -216,8 +222,8 @@ defmodule Batata.NativeDeps.Resolver do
     end
   end
 
-  defp git_revision(path) do
-    case System.cmd("git", ["-C", path, "rev-parse", "HEAD"], stderr_to_stdout: true) do
+  defp git_revision(path, ref \\ "HEAD") do
+    case System.cmd("git", ["-C", path, "rev-parse", ref], stderr_to_stdout: true) do
       {revision, 0} -> String.trim(revision)
       _ -> nil
     end

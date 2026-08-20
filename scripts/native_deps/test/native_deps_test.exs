@@ -31,7 +31,8 @@ defmodule Batata.NativeDepsTest do
 
     File.write!(
       Path.join(root, "native-deps.lock"),
-      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n"
+      "BEAVER_GIT_URL=unused\nBEAVER_GIT_REF=#{String.duplicate("a", 40)}\n" <>
+        "BEAVER_GIT_SHA=#{String.duplicate("a", 40)}\n"
     )
 
     File.write!(Path.join(beaver, "native-deps.json"), """
@@ -111,7 +112,8 @@ defmodule Batata.NativeDepsTest do
 
     File.write!(
       Path.join(root, "native-deps.lock"),
-      "BEAVER_GIT_URL=#{beaver_repo}\nBEAVER_GIT_REF=#{beaver_ref}\n"
+      "BEAVER_GIT_URL=#{beaver_repo}\nBEAVER_GIT_REF=#{beaver_ref}\n" <>
+        "BEAVER_GIT_SHA=#{beaver_ref}\n"
     )
 
     config =
@@ -128,6 +130,27 @@ defmodule Batata.NativeDepsTest do
     assert config[:kinda_ref] == kinda_ref
     assert String.starts_with?(config[:beaver_path], Path.join(cache, "sources/beaver/"))
     assert String.starts_with?(config[:kinda_path], Path.join(cache, "sources/kinda/"))
+  end
+
+  test "rejects a fetch ref that does not match its expected SHA", %{
+    root: root,
+    opts: opts
+  } do
+    beaver_repo = Path.join(root, "beaver-origin")
+    beaver_ref = make_repo!(beaver_repo, %{"README.md" => "beaver"})
+    wrong_sha = String.duplicate("0", 40)
+
+    File.write!(
+      Path.join(root, "native-deps.lock"),
+      "BEAVER_GIT_URL=#{beaver_repo}\nBEAVER_GIT_REF=#{beaver_ref}\n" <>
+        "BEAVER_GIT_SHA=#{wrong_sha}\n"
+    )
+
+    assert_raise Mix.Error,
+                 ~r/ref #{beaver_ref} resolved to #{beaver_ref}, expected #{wrong_sha}/,
+                 fn ->
+                   Resolver.setup!(Keyword.merge(opts, fetch_deps: false))
+                 end
   end
 
   test "source identity distinguishes paths and diagnoses dirty repositories", %{root: root} do

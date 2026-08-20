@@ -5,11 +5,6 @@ on:
   push:
     branches: [main]
 
-env:
-  # Set this repository variable before opening a Batata PR that depends on an
-  # unmerged Beaver branch. Delete it after Beaver merges.
-  BEAVER_REF: ${{ vars.BEAVER_REF || 'main' }}
-
 permissions:
   contents: read
 
@@ -22,18 +17,6 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Resolve Beaver ref
-        run: |
-          git ls-remote --exit-code --heads \
-            https://github.com/beaver-lodge/beaver.git \
-            "refs/heads/${BEAVER_REF}" >/dev/null
-
-      - name: Checkout selected Beaver
-        run: |
-          git clone --depth 1 --branch "${BEAVER_REF}" \
-            https://github.com/beaver-lodge/beaver.git beaver
-          test -f beaver/native-deps.json
 
       - uses: erlef/setup-beam@v1
         with:
@@ -58,7 +41,7 @@ jobs:
 
       - name: Configure pinned native dependencies
         working-directory: scripts/native_deps
-        run: mix batata.native setup --beaver-path "${{ github.workspace }}/beaver"
+        run: mix batata.native setup
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
