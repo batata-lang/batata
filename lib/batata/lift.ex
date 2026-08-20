@@ -81,7 +81,11 @@ defmodule Batata.Lift do
         @arg_modes_key => Batata.Signature.infer(definitions)
       }
 
-      groups = Enum.group_by(definitions, &{&1.name, &1.arity})
+      groups =
+        definitions
+        |> Enum.group_by(&{&1.name, &1.arity})
+        |> Enum.sort_by(fn {{name, arity}, _definitions} -> {Atom.to_string(name), arity} end)
+
       enforce_resumable_plan(groups, budget)
 
       Enum.each(groups, fn {_key, definitions} ->
