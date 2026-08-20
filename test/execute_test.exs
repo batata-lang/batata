@@ -2040,6 +2040,31 @@ defmodule Batata.ExecuteTest do
     assert error.args == [3, 4]
   end
 
+  test "matches and binds validated struct patterns in trailing arguments", %{ctx: ctx} do
+    source = """
+    defmodule DecimalTailPatterns do
+      defstruct sign: 1, coef: 0
+
+      def classify(%__MODULE__{sign: sign}, %__MODULE__{sign: sign} = right),
+        do: {:same, right}
+
+      def classify(%__MODULE__{}, %__MODULE__{sign: sign}), do: {:different, sign}
+
+      def main() do
+        {
+          classify(%__MODULE__{sign: 1}, %__MODULE__{sign: 1, coef: 7}),
+          classify(%__MODULE__{sign: 1}, %__MODULE__{sign: -1, coef: 8})
+        }
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nDecimalTailPatterns.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "rejects multi-clause functions with non-atom trailing literals", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables, wildcards/, fn ->
       Batata.execute(
