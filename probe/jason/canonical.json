@@ -6,7 +6,7 @@
     "commit": "4ede42858eb19f80ec9e863aab52df466eab8608"
   },
   "failed_files": 0,
-  "unsupported_forms": 30,
+  "unsupported_forms": 13,
   "results": [
     {
       "path": "lib/codegen.ex",
@@ -20,8 +20,8 @@
     },
     {
       "path": "lib/encode.ex",
-      "unsupported_forms": 17,
-      "reasons": {"unknown_form": 17}
+      "unsupported_forms": 0,
+      "reasons": {}
     },
     {
       "path": "lib/encoder.ex",

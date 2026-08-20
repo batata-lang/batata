@@ -164,12 +164,13 @@ defmodule Batata.Probe.Coverage do
     files = source_files(source)
     sources = Enum.map(files, &File.read!/1)
     metadata_macros = MetadataMacroExpand.discover(sources)
+    table_generators = Frontend.MetaprogrammingExpand.discover_table_generators(sources)
 
     results =
       files
       |> Enum.zip(sources)
       |> Enum.map(fn {path, source_text} ->
-        canonical_file(path, source, source_text, metadata_macros)
+        canonical_file(path, source, source_text, metadata_macros, table_generators)
       end)
 
     %{
@@ -186,13 +187,16 @@ defmodule Batata.Probe.Coverage do
     root |> Path.join("**/*.ex") |> Path.wildcard() |> Enum.sort()
   end
 
-  defp canonical_file(path, source, source_text, metadata_macros) do
+  defp canonical_file(path, source, source_text, metadata_macros, table_generators) do
     relative = Path.relative_to(path, source)
 
     try do
       modules =
         source_text
-        |> Frontend.from_source(metadata_macros: metadata_macros)
+        |> Frontend.from_source(
+          metadata_macros: metadata_macros,
+          table_generators: table_generators
+        )
         |> List.wrap()
 
       unsupported = Enum.flat_map(modules, & &1.unsupported)

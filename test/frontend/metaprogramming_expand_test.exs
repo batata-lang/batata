@@ -185,6 +185,56 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert [%Frontend.Clause{body_ast: :supported}] = hd(snapshot.definitions).clauses
   end
 
+  test "discovers an array-backed table builder and expands multi-clause generators" do
+    builder = """
+    defmodule TableBuilder do
+      def build(ranges, default) do
+        ranges
+        |> ranges_to_orddict()
+        |> :array.from_orddict(default)
+        |> :array.to_orddict()
+      end
+
+      defp ranges_to_orddict(ranges), do: ranges
+    end
+    """
+
+    consumer = """
+    defmodule TableConsumer do
+      ranges = [{0..1, :taken}]
+      table = TableBuilder.build(ranges, :fallback)
+
+      Enum.map(table, fn
+        {index, :taken} ->
+          def value(unquote(index)), do: :taken
+
+        {index, :fallback} ->
+          def value(unquote(index)), do: :fallback
+      end)
+    end
+    """
+
+    modules = Frontend.from_sources([builder, consumer])
+    snapshot = Enum.find(modules, &(&1.name == TableConsumer))
+
+    assert snapshot.unsupported == []
+    assert Enum.count(snapshot.definitions, &(&1.name == :value)) == 2
+  end
+
+  test "does not infer table semantics from an undiscovered function name" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule UnknownTable do
+        table = Other.jump_table([{0, :value}], :fallback)
+        Enum.map(table, fn {index, value} ->
+          def value(unquote(index)), do: unquote(value)
+        end)
+      end
+      """)
+
+    assert Enum.count(snapshot.unsupported) == 2
+  end
+
   test "keeps reduce generators outside the structural allowlist visible" do
     snapshot =
       Frontend.from_source("""

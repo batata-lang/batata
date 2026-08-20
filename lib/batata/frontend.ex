@@ -75,10 +75,14 @@ defmodule Batata.Frontend do
   @spec from_sources([String.t()]) :: [Module.t()]
   def from_sources(sources) when is_list(sources) do
     metadata_macros = MetadataMacroExpand.discover(sources)
+    table_generators = MetaprogrammingExpand.discover_table_generators(sources)
 
     modules =
       Enum.flat_map(sources, fn source ->
-        case from_source(source, metadata_macros: metadata_macros) do
+        case from_source(source,
+               metadata_macros: metadata_macros,
+               table_generators: table_generators
+             ) do
           %Module{} = mod -> [mod]
           mods when is_list(mods) -> mods
         end
@@ -103,7 +107,7 @@ defmodule Batata.Frontend do
   @doc false
   @spec from_ast(Macro.t(), keyword()) :: Module.t() | [Module.t()]
   def from_ast({:__block__, _, _forms} = block, opts) do
-    expanded = MetaprogrammingExpand.expand(block)
+    expanded = MetaprogrammingExpand.expand(block, table_generators(opts))
     {:__block__, _, expanded_forms} = expanded
 
     if Enum.all?(expanded_forms, &module_form?/1) do
@@ -119,12 +123,12 @@ defmodule Batata.Frontend do
       end)
     else
       block
-      |> MetaprogrammingExpand.expand()
+      |> MetaprogrammingExpand.expand(table_generators(opts))
       |> AliasExpand.expand()
       |> RecordExpand.expand()
       |> MetadataMacroExpand.expand(metadata_macros(opts))
       |> ModuleEnvironment.expand()
-      |> MetaprogrammingExpand.expand()
+      |> MetaprogrammingExpand.expand(table_generators(opts))
       |> RuntimeMacroExpand.expand()
       |> DefaultArgExpand.expand()
       |> from_expanded_ast()
@@ -133,18 +137,19 @@ defmodule Batata.Frontend do
 
   def from_ast(ast, opts) do
     ast
-    |> MetaprogrammingExpand.expand()
+    |> MetaprogrammingExpand.expand(table_generators(opts))
     |> AliasExpand.expand()
     |> RecordExpand.expand()
     |> MetadataMacroExpand.expand(metadata_macros(opts))
     |> ModuleEnvironment.expand()
-    |> MetaprogrammingExpand.expand()
+    |> MetaprogrammingExpand.expand(table_generators(opts))
     |> RuntimeMacroExpand.expand()
     |> DefaultArgExpand.expand()
     |> from_expanded_ast()
   end
 
   defp metadata_macros(opts), do: Keyword.get(opts, :metadata_macros, %{})
+  defp table_generators(opts), do: Keyword.get(opts, :table_generators, MapSet.new())
 
   defp module_form?({kind, _, _}) when kind in [:defmodule, :defimpl, :defprotocol], do: true
   defp module_form?(_form), do: false
