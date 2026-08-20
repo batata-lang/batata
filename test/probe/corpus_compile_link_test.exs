@@ -94,6 +94,35 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
     assert byte_size(result["unit_attempt"]["diagnostic"]) <= 512
   end
 
+  @tag :tmp_dir
+  test "excludes dead private compile-time helpers from the runtime unit", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "dead_helper.ex", """
+    defmodule DeadHelper do
+      def value(), do: 42
+      defp compile_time_only(left, right), do: Enum.zip(left, right)
+    end
+    """)
+
+    result = CorpusCompileLink.run(tmp_dir)
+
+    assert result["status"] == "pass"
+    assert result["unit_attempt"]["status"] == "pass"
+    assert hd(result["attempts"])["reason_class"] == "unsupported_stdlib_call"
+  end
+
+  @tag :tmp_dir
+  test "retains private helpers reachable from a public definition", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "reachable_helper.ex", """
+    defmodule ReachableHelper do
+      def value(input), do: twice(input)
+      defp twice(input), do: input * 2
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
   defp write_source(root, name, contents) do
     lib = Path.join(root, "lib")
     File.mkdir_p!(lib)
