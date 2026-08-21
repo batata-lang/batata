@@ -2,8 +2,9 @@ defmodule Batata.Probe.Jason.CodegenPatternMapperTest do
   @moduledoc """
   Executable callback kernels derived from `Jason.Codegen` in Jason 1.4.5.
 
-  They cover the capture-free tuple-pattern `Enum.map/2` and
-  `Enum.flat_map/2` boundaries used by literal and jump-table generation.
+  They cover tuple-pattern `Enum.map/2` and `Enum.flat_map/2` boundaries used
+  by literal and jump-table generation, plus the captured shorthand mapper in
+  `build_kv_iodata/2`.
   """
 
   use Batata.Case, async: true
@@ -33,9 +34,30 @@ defmodule Batata.Probe.Jason.CodegenPatternMapperTest do
   end
   """
 
+  @captured_source """
+  defmodule JasonCodegenCapturedMapperKernel do
+    def encode_pair({key, value}, _encode_args), do: {key, value}
+
+    def build_kv_iodata(kv, encode_args) do
+      kv
+      |> Enum.map(&encode_pair(&1, encode_args))
+      |> Enum.intersperse(",")
+    end
+
+    def main() do
+      build_kv_iodata([{"one", 1}, {"two", 2}], [:escape, :encode_map])
+    end
+  end
+  """
+
   test "preserves tagged tuple inputs and mapper results", %{ctx: ctx} do
     expected = beam_result(@source)
     assert expected == Batata.execute(@source, ctx)
+  end
+
+  test "threads the build_kv_iodata capture through a piped shorthand mapper", %{ctx: ctx} do
+    expected = beam_result(@captured_source)
+    assert expected == Batata.execute(@captured_source, ctx)
   end
 
   defp beam_result(source) do
