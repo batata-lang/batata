@@ -33,6 +33,7 @@ defmodule Batata.Stdlib.Kernel do
     {:erlang, :byte_size, 1} => :native_term,
     {:erlang, :map_size, 1} => :native_term,
     {:erlang, :list_to_binary, 1} => :native_term,
+    {:erlang, :split_binary, 2} => :native_term,
     {:erlang, :is_atom, 1} => :native_term,
     {:erlang, :is_binary, 1} => :native_term,
     {:erlang, :is_integer, 1} => :native_term,
@@ -387,6 +388,7 @@ defmodule Batata.Stdlib do
                   {String, :printable?, 1},
                   {Keyword, :get, 2},
                   {Keyword, :get, 3},
+                  {:erlang, :split_binary, 2},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
                   {:lists, :reverse, 2}
@@ -432,6 +434,7 @@ defmodule Batata.Stdlib do
                      {Time, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
                      {:erlang, :iolist_to_binary, 1},
+                     {:erlang, :split_binary, 2},
                      {HashSet, :new, 1},
                      {Stream, :take, 2},
                      {Stream, :drop, 2},
@@ -473,6 +476,7 @@ defmodule Batata.Stdlib do
                       {Keyword, :get, 3},
                       {Stream, :take, 2},
                       {Stream, :drop, 2},
+                      {:erlang, :split_binary, 2},
                       {:lists, :keyfind, 3},
                       {:lists, :reverse, 1},
                       {:lists, :reverse, 2}

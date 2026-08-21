@@ -747,6 +747,32 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "splits binaries at dynamic byte positions", %{ctx: ctx} do
+    source = """
+    defmodule NativeSplitBinary do
+      def split(binary, position), do: :erlang.split_binary(binary, position)
+
+      def main() do
+        binary = <<10, 20, 30, 40>>
+        {split(binary, 0), split(binary, 2), split(binary, byte_size(binary))}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nNativeSplitBinary.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects invalid binary split positions", %{ctx: ctx} do
+    source = """
+    defmodule InvalidSplitBinary do
+      def main(), do: :erlang.split_binary(<<1, 2>>, 3)
+    end
+    """
+
+    assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+  end
+
   test "concatenates values within the supported binary domain", %{ctx: ctx} do
     assert {"leftright", "value", "three-parts"} ==
              Batata.execute(
