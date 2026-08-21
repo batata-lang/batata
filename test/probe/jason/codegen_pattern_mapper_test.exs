@@ -4,8 +4,8 @@ defmodule Batata.Probe.Jason.CodegenPatternMapperTest do
 
   They cover tuple-pattern `Enum.map/2` and `Enum.flat_map/2` boundaries used
   by literal and jump-table generation, plus the captured shorthand mapper in
-  `build_kv_iodata/2`, including its nested-list flatten pipeline up to the
-  remaining `collapse_static/1` pattern frontier.
+  `build_kv_iodata/2`, including its nested-list flatten and static binary
+  collapse pipeline.
   """
 
   use Batata.Case, async: true
@@ -55,13 +55,20 @@ defmodule Batata.Probe.Jason.CodegenPatternMapperTest do
   defmodule JasonCodegenBuildKvKernel do
     def encode_pair({key, value}, _encode_args), do: [key, value]
 
+    def collapse_static([bin1, bin2 | rest]) when is_binary(bin1) and is_binary(bin2) do
+      collapse_static([bin1 <> bin2 | rest])
+    end
+
+    def collapse_static([other | rest]), do: [other | collapse_static(rest)]
+    def collapse_static([]), do: []
+
     def build_kv_iodata(kv, encode_args) do
       elements =
         kv
         |> Enum.map(&encode_pair(&1, encode_args))
         |> Enum.intersperse(",")
 
-      List.flatten(["{", elements, 125])
+      collapse_static(List.flatten(["{", elements, 125]))
     end
 
     def main() do
@@ -80,7 +87,7 @@ defmodule Batata.Probe.Jason.CodegenPatternMapperTest do
     assert expected == Batata.execute(@captured_source, ctx)
   end
 
-  test "flattens the build_kv_iodata pipeline before static collapse", %{ctx: ctx} do
+  test "flattens and collapses the complete build_kv_iodata pipeline", %{ctx: ctx} do
     expected = beam_result(@build_kv_source)
     assert expected == Batata.execute(@build_kv_source, ctx)
   end

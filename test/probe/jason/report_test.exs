@@ -245,6 +245,24 @@ defmodule Batata.Probe.Jason.ReportTest do
            )["regression"]
   end
 
+  test "diagnostic-only changes do not produce a nil regression flag" do
+    current = %{
+      "blockers" => [],
+      "ignored_metadata" => [],
+      "module_compile_attempts" => [],
+      "diagnostic_attempts" => [diagnostic("Added", "lowering_complete", "added")]
+    }
+
+    baseline = %{
+      "blockers" => [],
+      "ignored_metadata" => [],
+      "module_compile_attempts" => [],
+      "diagnostic_attempts" => []
+    }
+
+    assert Diff.compare(current, baseline)["regression"] == false
+  end
+
   defp diagnostic(module, phase, fingerprint) do
     %{
       "path" => "lib/#{String.downcase(module)}.ex",
@@ -476,12 +494,19 @@ defmodule Batata.Probe.Jason.ReportTest do
     refute Enum.any?(jason["blockers"], &(&1["reason"] == "struct_semantics"))
     refute Enum.any?(decimal["blockers"], &(&1["reason"] == "struct_semantics"))
 
-    assert jason["diagnostic_attempts"] == []
+    assert Enum.map(
+             jason["diagnostic_attempts"],
+             &{&1["module"], &1["outcome"], &1["phase"]}
+           ) == [
+             {"Jason.Codegen", "reached_compile_pipeline", "frontend_normalization_failure"},
+             {"Jason.Helpers", "reached_compile_pipeline", "lowering_complete"},
+             {"Jason.Sigil", "reached_compile_pipeline", "frontend_normalization_failure"}
+           ]
 
     assert jason["summary"]["diagnostic_attempts"] == %{
-             "outcomes" => %{},
-             "phases" => %{},
-             "total" => 0
+             "outcomes" => %{"reached_compile_pipeline" => 3},
+             "phases" => %{"frontend_normalization_failure" => 2, "lowering_complete" => 1},
+             "total" => 3
            }
 
     for id <- [

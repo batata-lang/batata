@@ -69,4 +69,38 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     assert [%{"reason" => "macro_definition"}] = attempt["removed_blockers"]
     refute Map.has_key?(attempt, "status")
   end
+
+  @tag :tmp_dir
+  test "keeps ordinary definitions when removing top-level macro blockers", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "mixed.ex"), """
+    defmodule Fixture.Mixed do
+      defmacro generated(value), do: value
+      def main(), do: 42
+    end
+    """)
+
+    assert [attempt] = tmp_dir |> Inventory.discover!() |> DiagnosticAttempt.run()
+    assert attempt["diagnostic_only"]
+    assert attempt["outcome"] == "reached_compile_pipeline"
+    assert attempt["phase"] == "lowering_complete"
+    assert [%{"reason" => "macro_definition"}] = attempt["removed_blockers"]
+  end
+
+  test "records the next Jason.Codegen frontier after removing its macro definitions" do
+    attempts =
+      Mix.Project.deps_paths()[:jason]
+      |> Inventory.discover!()
+      |> DiagnosticAttempt.run()
+
+    assert attempt = Enum.find(attempts, &(&1["module"] == "Jason.Codegen"))
+    assert attempt["outcome"] == "reached_compile_pipeline"
+    assert attempt["phase"] == "frontend_normalization_failure"
+    assert attempt["reason_class"] == "unsupported_stdlib_call"
+
+    assert attempt["fingerprint"] ==
+             "aa6848c4ab8fbdf0573437c27c1a452a9f89807bc1a5a44cef99ed3f476f7db1"
+
+    assert Enum.map(attempt["removed_blockers"], & &1["reason"]) ==
+             ["macro_definition", "macro_definition"]
+  end
 end
