@@ -114,6 +114,26 @@ defmodule Batata.TrailingLiteralDispatchTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "matches and binds aliased trailing atom literals", %{ctx: ctx} do
+    source = """
+    defmodule TrailingLiteralAliasOracle do
+      defp route(value, true = enabled), do: {:enabled, value, enabled}
+      defp route(value, false = enabled), do: {:disabled, value, enabled}
+      defp route(value, _enabled), do: {:other, value}
+
+      def main(), do: {route(1, true), route(2, false), route(3, :unknown)}
+    end
+    """
+
+    expected =
+      source
+      |> Kernel.<>("\nTrailingLiteralAliasOracle.main()")
+      |> Code.eval_string()
+      |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "preserves all arguments when no trailing literal clause matches", %{ctx: ctx} do
     source = """
     defmodule TrailingLiteralFailure do
