@@ -3330,6 +3330,34 @@ pub export fn ex_term_enumerable_map_term_fun(
     return result;
 }
 
+/// Maps an enumerable with a captured term callback using the compiler's
+/// fixed closure ABI: four environment words followed by four argument
+/// words. The tagged item occupies the first argument slot.
+pub export fn ex_term_enumerable_map_term_fun_c(
+    enumerable: i64,
+    mapper: ?*const fn (i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64,
+    env0: i64,
+    env1: i64,
+    env2: i64,
+    env3: i64,
+) i64 {
+    const count = ex_term_enumerable_count(enumerable);
+    var result = nil_word;
+    var i: i64 = count;
+    while (i > 0) {
+        i -= 1;
+        const item =
+            switch (word_tag(enumerable)) {
+                tag_list => ex_term_list_get(enumerable, i),
+                tag_tuple => ex_term_tuple_get(enumerable, i),
+                tag_binary => (@as(i64, binary_bytes(enumerable)[@intCast(i)]) << @intCast(tag_shift)),
+                else => nil_word,
+            };
+        result = ex_term_list_cons(mapper.?(env0, env1, env2, env3, item, 0, 0, 0), result);
+    }
+    return result;
+}
+
 /// Flat-maps an enumerable with a tagged term callback. Each callback result
 /// is materialized through the enumerable protocol subset and concatenated
 /// in input order.
@@ -4693,6 +4721,7 @@ comptime {
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
     @export(&ex_term_enumerable_map_term_fun, .{ .name = "ex.term.enumerable_map_term_fun" });
+    @export(&ex_term_enumerable_map_term_fun_c, .{ .name = "ex.term.enumerable_map_term_fun_c" });
     @export(&ex_term_enumerable_flat_map_term_fun, .{ .name = "ex.term.enumerable_flat_map_term_fun" });
     @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
     @export(&ex_term_stream_take, .{ .name = "ex.term.stream_take" });
@@ -4990,6 +5019,18 @@ test "term ABI reads" {
     try std.testing.expectEqual(one, ex_term_list_head(mapped_terms));
     try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(mapped_terms)));
 
+    const captured_terms = ex_term_enumerable_map_term_fun_c(
+        list,
+        &test_mapper_pair_with_capture,
+        9 << @intCast(tag_shift),
+        0,
+        0,
+        0,
+    );
+    const captured_first = ex_term_list_head(captured_terms);
+    try std.testing.expectEqual(one, ex_term_tuple_get(captured_first, 0));
+    try std.testing.expectEqual(@as(i64, 9 << @intCast(tag_shift)), ex_term_tuple_get(captured_first, 1));
+
     const flat_mapped_terms = ex_term_enumerable_flat_map_term_fun(list, &test_mapper_duplicate_term);
     try std.testing.expectEqual(@as(i64, 4), ex_term_list_length(flat_mapped_terms));
     try std.testing.expectEqual(one, ex_term_list_head(flat_mapped_terms));
@@ -5159,6 +5200,19 @@ fn test_mapper_double(item: i64) callconv(.c) i64 {
 
 fn test_mapper_identity_term(item: i64) callconv(.c) i64 {
     return item;
+}
+
+fn test_mapper_pair_with_capture(
+    env0: i64,
+    _: i64,
+    _: i64,
+    _: i64,
+    item: i64,
+    _: i64,
+    _: i64,
+    _: i64,
+) callconv(.c) i64 {
+    return ex_term_tuple_from_list(ex_term_list_cons(item, ex_term_list_cons(env0, nil_word)));
 }
 
 fn test_mapper_duplicate_term(item: i64) callconv(.c) i64 {

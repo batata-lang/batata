@@ -29,7 +29,14 @@ defmodule Batata.Signature do
   def infer(definitions) do
     initial =
       Map.new(definitions, fn %Frontend.Definition{name: name, arity: arity, clauses: clauses} ->
-        {{name, arity}, pattern_modes(arity, clauses)}
+        modes =
+          if arity == 8 and String.contains?(Atom.to_string(name), "__enum_mapper_") do
+            List.duplicate(:term, 5) ++ List.duplicate(:scalar, 3)
+          else
+            pattern_modes(arity, clauses)
+          end
+
+        {{name, arity}, modes}
       end)
 
     fixed_point(definitions, initial)
