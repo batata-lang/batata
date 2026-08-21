@@ -156,6 +156,21 @@ defmodule Batata.Transform.PatternPlan do
       do_lower_pattern(tail, path ++ [:tail])
   end
 
+  defp do_lower_pattern([head | tail] = elements, path) do
+    if list_pattern_has_cons_tail?(tail) do
+      [
+        %Step{op: :list_cons, path: path},
+        %Step{op: :list_head, path: path ++ [:head]},
+        %Step{op: :list_tail, path: path ++ [:tail]}
+      ] ++
+        do_lower_pattern(head, path ++ [:head]) ++
+        do_lower_pattern(tail, path ++ [:tail])
+    else
+      [%Step{op: :list_exact, path: path, value: length(elements)}] ++
+        lower_indexed(elements, path)
+    end
+  end
+
   defp do_lower_pattern({:%{}, _, entries}, path) do
     if Enum.all?(entries, &supported_map_entry?/1) do
       [%Step{op: :map, path: path, value: Enum.map(entries, &elem(&1, 0))}]
@@ -215,11 +230,6 @@ defmodule Batata.Transform.PatternPlan do
     [%Step{op: :list_exact, path: path, value: 0}]
   end
 
-  defp do_lower_pattern(elements, path) when is_list(elements) do
-    [%Step{op: :list_exact, path: path, value: length(elements)}] ++
-      lower_indexed(elements, path)
-  end
-
   defp do_lower_pattern(other, path) do
     [%Step{op: :unsupported, path: path, value: other}]
   end
@@ -240,6 +250,10 @@ defmodule Batata.Transform.PatternPlan do
       do_lower_pattern(pattern, path ++ [index])
     end)
   end
+
+  defp list_pattern_has_cons_tail?([{:|, _, [_head, _tail]}]), do: true
+  defp list_pattern_has_cons_tail?([_head | tail]), do: list_pattern_has_cons_tail?(tail)
+  defp list_pattern_has_cons_tail?([]), do: false
 
   @doc "Returns `{literal_patterns, bound_vars}` for a pattern."
   @spec pattern_vars(Macro.t()) :: {[term()], [atom()]}

@@ -41,6 +41,26 @@ defmodule Batata.Transform.PatternPlanTest do
     assert ops(steps) == [:list_cons, :list_head, :list_tail, :bind, :bind]
   end
 
+  test "lowers every head in a multi-head cons pattern" do
+    steps = PatternPlan.lower_pattern(Code.string_to_quoted!("[a, b | rest]"))
+
+    assert ops(steps) ==
+             [:list_cons, :list_head, :list_tail, :bind] ++
+               [:list_cons, :list_head, :list_tail, :bind, :bind]
+
+    assert Enum.map(steps, & &1.path) == [
+             [],
+             [:head],
+             [:tail],
+             [:head],
+             [:tail],
+             [:tail, :head],
+             [:tail, :tail],
+             [:tail, :head],
+             [:tail, :tail]
+           ]
+  end
+
   test "lowers literals, wildcards and binds" do
     assert [%Step{op: :literal, value: 42}] =
              PatternPlan.lower_pattern(Code.string_to_quoted!("42"))
