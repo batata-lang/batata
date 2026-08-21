@@ -6099,6 +6099,64 @@ defmodule Batata.Lift do
     create_op("ex.raise", [reason, lit(6, ctx, block)], [ex_type("term", ctx)], ctx, block)
   end
 
+  defp lower_list_flatten(value, ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    input_list? = create_op("ex.is_list", [value], [i64], ctx, block)
+    input_list_i1 = create_op("arith.trunci", [input_list?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        input_list_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          flattened = create_op("ex.list_flatten", [value], [dyn], ctx, b)
+          valid? = create_op("ex.is_list", [flattened], [i64], ctx, b)
+          valid_i1 = create_op("arith.trunci", [valid?], [MLIR.Type.i1()], ctx, b)
+
+          [
+            build_scf_if(
+              valid_i1,
+              ctx,
+              b,
+              [i64],
+              fn valid_block -> [unbox(flattened, ctx, valid_block)] end,
+              fn invalid_block ->
+                [
+                  raise_function_clause(:lists, :do_flatten, 2, ctx, invalid_block)
+                  |> unbox(ctx, invalid_block)
+                ]
+              end
+            )
+            |> hd()
+          ]
+        end,
+        fn b -> [raise_function_clause(:lists, :flatten, 1, ctx, b) |> unbox(ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
+  defp raise_function_clause(module, function, arity, ctx, block) do
+    payload =
+      create_term_op(
+        "ex.tuple",
+        [
+          atom_term(module, ctx, block),
+          atom_term(function, ctx, block),
+          box_term(lit(arity, ctx, block), ctx, block),
+          atom_term(nil, ctx, block)
+        ],
+        ctx,
+        block
+      )
+
+    create_op("ex.raise", [payload, lit(2, ctx, block)], [ex_type("term", ctx)], ctx, block)
+  end
+
   defp native_term_call(module, :length, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.list_length", [value], [MLIR.Type.i64()], ctx, block)
 
@@ -6391,6 +6449,9 @@ defmodule Batata.Lift do
 
   defp native_term_call(_module, :first, [value], ctx, block),
     do: create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
+
+  defp native_term_call(List, :flatten, [value], ctx, block),
+    do: lower_list_flatten(value, ctx, block)
 
   defp native_term_call(_module, :self, [], ctx, block),
     do: create_op("ex.self", [], [ex_type("term", ctx)], ctx, block)

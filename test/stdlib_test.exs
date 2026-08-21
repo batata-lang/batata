@@ -25,6 +25,7 @@ defmodule Batata.StdlibTest do
 
     test "classifies declared domain modules" do
       assert Stdlib.class({List, :first, 1}) == :native_term
+      assert Stdlib.class({List, :flatten, 1}) == :native_term
       assert Stdlib.class({Atom, :to_string, 1}) == :native_term
       assert Stdlib.class({Keyword, :get, 2}) == :native_term
       assert Stdlib.class({Keyword, :get, 3}) == :native_term
@@ -169,6 +170,19 @@ defmodule Batata.StdlibTest do
       assert 3 == execute("Kernel.length([1, 2, 3])", ctx)
       assert 56 == execute("List.first([7, 8])", ctx)
       assert 1 == execute("Kernel.is_list([1])", ctx)
+    end
+
+    test "matches List.flatten/1 for nested proper lists", %{ctx: ctx} do
+      expressions = [
+        "List.flatten([1, [2, []], 3])",
+        ~S|List.flatten([<<1, 2>>, [3], {:ok, 4}])|,
+        "List.flatten([foo: [bar: 1]])"
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx), expression
+      end)
     end
 
     test "reads term sizes and elements", %{ctx: ctx} do
