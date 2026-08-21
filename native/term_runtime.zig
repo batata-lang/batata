@@ -3130,6 +3130,45 @@ pub export fn ex_term_list_cons(head: i64, tail: i64) i64 {
     return word_from_ptr(cell, tag_list);
 }
 
+fn flatten_list_reversed(list: i64, reversed: *i64, depth: usize) bool {
+    if (depth > exported_max_depth) return false;
+
+    var current = list;
+    while (word_tag(current) == tag_list) {
+        const cell = list_cell(current);
+        const head = cell[0];
+        if (is_list_word(head)) {
+            if (!flatten_list_reversed(head, reversed, depth + 1)) return false;
+        } else {
+            const next = ex_term_list_cons(head, reversed.*);
+            if (word_tag(next) != tag_list) return false;
+            reversed.* = next;
+        }
+        current = cell[1];
+    }
+    return current == nil_word;
+}
+
+/// Recursively flattens a proper list while preserving non-list terms as
+/// leaves. The integer zero word is returned as an invalid-list sentinel.
+pub export fn ex_term_list_flatten(list: i64) i64 {
+    if (!is_list_word(list)) return 0;
+
+    var reversed = nil_word;
+    if (!flatten_list_reversed(list, &reversed, 0)) return 0;
+
+    var result = nil_word;
+    var current = reversed;
+    while (word_tag(current) == tag_list) {
+        const cell = list_cell(current);
+        const next = ex_term_list_cons(cell[0], result);
+        if (word_tag(next) != tag_list) return 0;
+        result = next;
+        current = cell[1];
+    }
+    return result;
+}
+
 /// Converts a proper list word into a tuple word.
 pub export fn ex_term_tuple_from_list(list: i64) i64 {
     const len = list_len(list);
@@ -4709,6 +4748,7 @@ comptime {
     @export(&ex_term_fun_arity, .{ .name = "ex.term.fun_arity" });
     @export(&ex_term_fun_env, .{ .name = "ex.term.fun_env" });
     @export(&ex_term_list_cons, .{ .name = "ex.term.list_cons" });
+    @export(&ex_term_list_flatten, .{ .name = "ex.term.list_flatten" });
     @export(&ex_term_tuple_from_list, .{ .name = "ex.term.tuple_from_list" });
     @export(&ex_term_tuple_get, .{ .name = "ex.term.tuple_get" });
     @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
@@ -4900,6 +4940,34 @@ test "closure ABI carries arity without breaking legacy env reads" {
     try std.testing.expectEqual(@as(i64, 32), ex_term_fun_env(arity_carrying, 1));
     try std.testing.expectEqual(nil_word, ex_term_fun_env(arity_carrying, 2));
     try std.testing.expectEqual(@as(i64, -1), ex_term_fun_arity(nil_word));
+}
+
+test "list flatten preserves leaves and rejects improper nested lists" {
+    const one = @as(i64, 1 << 3);
+    const two = @as(i64, 2 << 3);
+    const three = @as(i64, 3 << 3);
+    const binary = test_binary_from_string("leaf");
+    const nested = ex_term_list_cons(
+        one,
+        ex_term_list_cons(
+            ex_term_list_cons(two, ex_term_list_cons(nil_word, nil_word)),
+            ex_term_list_cons(binary, ex_term_list_cons(three, nil_word)),
+        ),
+    );
+
+    const flattened = ex_term_list_flatten(nested);
+    try std.testing.expectEqual(@as(i64, 4), ex_term_list_length(flattened));
+    try std.testing.expectEqual(one, ex_term_list_head(flattened));
+    try std.testing.expectEqual(two, ex_term_list_get(flattened, 1));
+    try std.testing.expectEqual(binary, ex_term_list_get(flattened, 2));
+    try std.testing.expectEqual(three, ex_term_list_get(flattened, 3));
+    try std.testing.expectEqual(nil_word, ex_term_list_flatten(nil_word));
+
+    const improper = ex_term_list_cons(one, two);
+    const nested_improper = ex_term_list_cons(improper, nil_word);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_flatten(improper));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_flatten(nested_improper));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_flatten(one));
 }
 
 test "term ABI reads" {

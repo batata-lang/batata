@@ -67,6 +67,7 @@ defmodule Batata.Stdlib.List do
 
   @class_map %{
     {List, :first, 1} => :native_term,
+    {List, :flatten, 1} => :native_term,
     {:lists, :keyfind, 3} => :native_term,
     {:lists, :reverse, 1} => :native_term,
     {:lists, :reverse, 2} => :native_term
@@ -408,6 +409,7 @@ defmodule Batata.Stdlib do
                   {Time, :to_iso8601, 1},
                   {:erlang, :binary_to_float, 1},
                   {String, :printable?, 1},
+                  {List, :flatten, 1},
                   {Keyword, :get, 2},
                   {Keyword, :get, 3},
                   {:erlang, :split_binary, 2},
@@ -457,6 +459,7 @@ defmodule Batata.Stdlib do
                      {NaiveDateTime, :to_iso8601, 1},
                      {Time, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
+                     {List, :flatten, 1},
                      {:erlang, :binary_to_float, 1},
                      {:erlang, :iolist_to_binary, 1},
                      {:erlang, :split_binary, 2},
