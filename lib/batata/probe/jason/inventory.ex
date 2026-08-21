@@ -286,13 +286,21 @@ defmodule Batata.Probe.Jason.Inventory do
   defp diagnostic_source(module_name, body_forms, unsupported) do
     blockers = Enum.reject(unsupported, &(&1.reason == :ignored_metadata))
 
-    if blockers != [] and
-         Enum.all?(blockers, &(&1.reason in [:exception_semantics, :struct_semantics])) do
-      schema = Enum.filter(body_forms, &schema_declaration?/1)
-      definitions = body_forms |> Enum.filter(&simple_definition?/1) |> ensure_main()
+    cond do
+      blockers != [] and
+          Enum.all?(blockers, &(&1.reason in [:exception_semantics, :struct_semantics])) ->
+        schema = Enum.filter(body_forms, &schema_declaration?/1)
+        definitions = body_forms |> Enum.filter(&simple_definition?/1) |> ensure_main()
+        module_source(module_name, schema ++ definitions)
 
-      {:defmodule, [], [module_name, [do: {:__block__, [], schema ++ definitions}]]}
-      |> Macro.to_string()
+      blockers != [] and Enum.all?(blockers, &(&1.reason == :macro_definition)) ->
+        case Enum.filter(body_forms, &simple_definition?/1) do
+          [] -> nil
+          definitions -> module_source(module_name, ensure_main(definitions))
+        end
+
+      true ->
+        nil
     end
   end
 

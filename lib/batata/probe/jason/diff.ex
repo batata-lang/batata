@@ -16,7 +16,7 @@ defmodule Batata.Probe.Jason.Diff do
       "compile_attempt_changes" => compile_diff.changes,
       "compile_attempt_regression" => compile_diff.regression,
       "diagnostic_attempt_changes" => diagnostic_changes,
-      "regression" => blocker_diff["regression"] or compile_diff.regression
+      "regression" => blocker_diff["regression"] == true or compile_diff.regression == true
     })
   end
 
