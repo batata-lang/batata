@@ -464,6 +464,21 @@ defmodule Batata.Lift do
   end
 
   defp recognize_enum_node(
+         {:|>, _,
+          [
+            enumerable,
+            {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [fn_ast]}
+          ]} = node,
+         state
+       ) do
+    if enum_alias?(alias_parts) or stream_alias?(alias_parts) do
+      recognize_map_node(fn_ast, enumerable, node, state)
+    else
+      {node, state}
+    end
+  end
+
+  defp recognize_enum_node(
          {{:., _, [{:__aliases__, _, alias_parts}, :map]}, _, [enumerable, fn_ast]} = node,
          state
        ) do
@@ -514,6 +529,9 @@ defmodule Batata.Lift do
     case map_pattern(fn_ast) do
       {:ok, {:mapper, body_ast, item_name}} ->
         extract_mapper(body_ast, item_name, enumerable, state)
+
+      {:ok, {:captured_mapper, body_ast, item_pattern, captured}} ->
+        extract_captured_mapper(body_ast, item_pattern, captured, enumerable, state)
 
       {:ok, pattern} ->
         {{:__enum_call__, [], [:map, pattern, enumerable]}, state}
@@ -603,6 +621,31 @@ defmodule Batata.Lift do
     {marker, {[mapper_def | synthetic], counter + 1}}
   end
 
+  # Captured term mappers reuse the fixed closure ABI: four environment slots
+  # followed by four argument slots. Enum.map/2 supplies the tagged item in
+  # the first argument slot and zero-fills the remaining slots.
+  defp extract_captured_mapper(body_ast, item_pattern, captured, enumerable, state) do
+    {synthetic, counter} = state
+    mapper_name = :"__enum_mapper_#{counter}"
+
+    patterns =
+      Enum.map(captured, &{&1, [], nil}) ++
+        List.duplicate({:_, [], nil}, 4 - length(captured)) ++
+        [item_pattern] ++ List.duplicate({:_, [], nil}, 3)
+
+    mapper_def = %Frontend.Definition{
+      kind: :defp,
+      name: mapper_name,
+      arity: 8,
+      clauses: [%Frontend.Clause{patterns: patterns, body_ast: body_ast}]
+    }
+
+    marker =
+      {:__enum_call__, [], [:map, {:captured_mapper, mapper_name, captured}, enumerable]}
+
+    {marker, {[mapper_def | synthetic], counter + 1}}
+  end
+
   # Stream.filter predicates become synthetic `__stream_pred_N` definitions
   # called through the runtime's compiled-predicate filter.
   defp extract_predicate(body_ast, item_name, enumerable, state) do
@@ -663,12 +706,52 @@ defmodule Batata.Lift do
             {:ok, {:add_capture, capture_ast}}
 
           :error ->
-            compiled_mapper_pattern(body, item)
+            compiled_or_captured_mapper_pattern(body, item)
         end
     end
   end
 
+  defp map_pattern({:&, _, [body]}) do
+    with {:ok, item, expanded_body} <- expand_unary_capture(body) do
+      map_pattern({:fn, [], [{:->, [], [[item], expanded_body]}]})
+    end
+  end
+
   defp map_pattern(_), do: :error
+
+  defp compiled_or_captured_mapper_pattern(body, item) do
+    case compiled_mapper_pattern(body, item) do
+      :error -> captured_mapper_pattern(body, item)
+      pattern -> pattern
+    end
+  end
+
+  defp expand_unary_capture(body) do
+    placeholders =
+      body
+      |> Macro.prewalk(MapSet.new(), fn
+        {:&, _, [index]} = node, acc when is_integer(index) ->
+          {node, MapSet.put(acc, index)}
+
+        node, acc ->
+          {node, acc}
+      end)
+      |> elem(1)
+
+    if placeholders == MapSet.new([1]) do
+      item = {:__batata_enum_item__, [], nil}
+
+      expanded =
+        Macro.prewalk(body, fn
+          {:&, _, [1]} -> item
+          node -> node
+        end)
+
+      {:ok, item, expanded}
+    else
+      :error
+    end
+  end
 
   defp compiled_mapper_pattern(body, item) do
     case arithmetic_mapper_pattern(body, item) do
@@ -700,6 +783,18 @@ defmodule Batata.Lift do
 
     if term_pattern?(item) and MapSet.subset?(referenced, bound) do
       {:ok, {:mapper, body, item}}
+    else
+      :error
+    end
+  end
+
+  defp captured_mapper_pattern(body, item) do
+    bound = item |> collect_all_vars() |> Enum.reject(&(&1 == :_))
+    captured = body |> free_vars(bound) |> Enum.uniq() |> Enum.sort()
+
+    if captured != [] and length(captured) <= 4 and
+         (match?({name, _, nil} when is_atom(name), item) or term_pattern?(item)) do
+      {:ok, {:captured_mapper, body, item, captured}}
     else
       :error
     end
@@ -3563,6 +3658,44 @@ defmodule Batata.Lift do
             create_op(
               op,
               [enumerable_word, addr],
+              [ex_type("term", ctx)],
+              ctx,
+              block
+            ),
+            env
+          }
+
+        {:captured_mapper, mapper_name, captured} ->
+          callback_type =
+            MLIR.Type.function(List.duplicate(integer_type(ctx), 8), [integer_type(ctx)])
+
+          addr =
+            create_op(
+              "ex.func_addr",
+              [sym_name: MLIR.Attribute.string(Symbol.function(mapper_name, 8))],
+              [callback_type],
+              ctx,
+              block
+            )
+
+          captured_values =
+            captured
+            |> resolve_captured(env)
+            |> Enum.map(fn value ->
+              value
+              |> lift_value(ctx, block, env)
+              |> box_if_scalar(ctx, block)
+            end)
+
+          operands =
+            [enumerable_word, addr] ++
+              captured_values ++
+              List.duplicate(zero_i64(ctx, block), 4 - length(captured_values))
+
+          {
+            create_op(
+              "ex.enumerable_map_term_fun_c",
+              operands,
               [ex_type("term", ctx)],
               ctx,
               block
