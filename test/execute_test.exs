@@ -246,6 +246,30 @@ defmodule Batata.ExecuteTest do
     assert error.term == 2
   end
 
+  test "adapts a synthesized case fallback to term-valued branches", %{ctx: ctx} do
+    source = """
+    defmodule TermCaseFallback do
+      def select(value) do
+        case value do
+          1 -> {:ok, :one}
+          2 -> {:ok, :two}
+        end
+      end
+
+      def main(), do: select(2)
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {:ok, :two}
+
+    error =
+      assert_raise CaseClauseError, fn ->
+        Batata.execute(String.replace(source, "select(2)", "select(3)"), ctx)
+      end
+
+    assert error.term == 3
+  end
+
   test "dispatches case clauses with atom literal patterns", %{ctx: ctx} do
     source = """
     defmodule AtomCaseDispatch do

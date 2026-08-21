@@ -6848,12 +6848,7 @@ defmodule Batata.Lift do
       reason = Keyword.get(opts, :failure_reason, unmatched)
       kind = Keyword.get(opts, :failure_kind, 1)
 
-      marker =
-        if Keyword.fetch!(opts, :term_case?),
-          do: :__batata_raise__,
-          else: :__batata_raise_scalar__
-
-      clauses ++ [{:->, [], [[unmatched], {marker, kind, reason}]}]
+      clauses ++ [{:->, [], [[unmatched], {:__batata_raise__, kind, reason}]}]
     end
   end
 
@@ -6887,12 +6882,24 @@ defmodule Batata.Lift do
 
     region = MLIR.CAPI.mlirRegionCreate()
 
-    yield_types =
+    {yield_types, _first_type} =
       parsed
       |> Enum.zip(guards)
       |> Enum.zip(clause_bindss)
-      |> Enum.map(fn {{clause, guard}, clause_binds} ->
-        add_clause_block(clause, guard, scrutinee, clause_binds, env, ctx, region)
+      |> Enum.map_reduce(nil, fn {{clause, guard}, clause_binds}, first_type ->
+        type =
+          add_clause_block(
+            clause,
+            guard,
+            scrutinee,
+            clause_binds,
+            env,
+            ctx,
+            region,
+            first_type
+          )
+
+        {type, first_type || type}
       end)
 
     [first_type | rest_types] = yield_types
@@ -7545,7 +7552,7 @@ defmodule Batata.Lift do
       case clause.body do
         {:__batata_rethrow__, _, [value_ast]} ->
           {value, clause_env} = lift_expr({:throw, [], [value_ast]}, ctx, block, clause_env)
-          {coerce_rethrow_result(value, expected_type, ctx, block), clause_env}
+          {coerce_exception_result(value, expected_type, ctx, block), clause_env}
 
         body ->
           # A clause body is one AST expression even when that expression is [] or
@@ -7559,9 +7566,9 @@ defmodule Batata.Lift do
     MLIR.Value.type(value)
   end
 
-  defp coerce_rethrow_result(value, nil, _ctx, _block), do: value
+  defp coerce_exception_result(value, nil, _ctx, _block), do: value
 
-  defp coerce_rethrow_result(value, expected_type, ctx, block) do
+  defp coerce_exception_result(value, expected_type, ctx, block) do
     if MLIR.equal?(MLIR.Value.type(value), expected_type) do
       value
     else
@@ -7912,7 +7919,16 @@ defmodule Batata.Lift do
 
   defp integer_guard_comparison?(_guard_ast), do: false
 
-  defp add_clause_block(clause, guard, scrutinee, clause_binds, env, ctx, region) do
+  defp add_clause_block(
+         clause,
+         guard,
+         scrutinee,
+         clause_binds,
+         env,
+         ctx,
+         region,
+         expected_type
+       ) do
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
@@ -7923,7 +7939,16 @@ defmodule Batata.Lift do
     clause_args = if guard, do: [guard], else: []
     create_op("ex.clause", clause_args ++ clause_attrs, [], ctx, block)
 
-    {value, clause_env} = lift_block(block_ast(clause.body), ctx, block, clause_env)
+    {value, clause_env} =
+      case clause.body do
+        {:__batata_raise__, _, _} = body ->
+          {value, clause_env} = lift_expr(body, ctx, block, clause_env)
+          {coerce_exception_result(value, expected_type, ctx, block), clause_env}
+
+        body ->
+          lift_block(block_ast(body), ctx, block, clause_env)
+      end
+
     value = lift_value(value, ctx, block, clause_env)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
