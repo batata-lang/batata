@@ -2918,6 +2918,75 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_binary_comprehension(binary_word, name, body_ast, ctx, block, env) do
+    i64 = integer_type(ctx)
+    binary_i64 = unbox(binary_word, ctx, block)
+    length = create_op("ex.binary_length", [binary_word], [i64], ctx, block)
+    cursor = create_op("ex.sub", [length, lit(1, ctx, block)], [i64], ctx, block)
+    empty = create_term_op("ex.list", [], ctx, block) |> unbox(ctx, block)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_binary, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    cond = cmp(b_cursor, lit(0, ctx, before_block), "sge", ctx, before_block)
+    cond_i1 = create_op("arith.trunci", [cond], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [cond_i1, b_binary, b_acc, b_cursor], [], ctx, before_block)
+
+    [a_binary, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    a_binary_word = create_op("ex.to_word", [a_binary], [ex_type("term", ctx)], ctx, after_block)
+
+    byte =
+      create_op(
+        "ex.binary_get",
+        [a_binary_word, a_cursor],
+        [ex_type("term", ctx)],
+        ctx,
+        after_block
+      )
+      |> then(&create_op("ex.to_int", [&1], [i64], ctx, after_block))
+
+    {mapped, body_env} =
+      lift_block(block_ast(body_ast), ctx, after_block, Map.put(env, name, byte))
+
+    mapped = mapped |> lift_value(ctx, after_block, body_env) |> box_term(ctx, after_block)
+    acc_word = create_op("ex.to_word", [a_acc], [ex_type("term", ctx)], ctx, after_block)
+
+    acc_next =
+      create_op("ex.list_cons", [mapped, acc_word], [ex_type("term", ctx)], ctx, after_block)
+
+    acc_next = unbox(acc_next, ctx, after_block)
+
+    cursor_next =
+      create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_binary, acc_next, cursor_next], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [binary_i64, empty, cursor],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    while_op
+    |> MLIR.Operation.results()
+    |> Enum.to_list()
+    |> Enum.at(1)
+    |> then(&create_op("ex.to_word", [&1], [ex_type("term", ctx)], ctx, block))
+  end
+
   defp enum_capture_i64(capture, ctx, block) do
     if term_operand?(capture) do
       create_op("ex.to_int", [capture], [integer_type(ctx)], ctx, block)
@@ -3184,6 +3253,29 @@ defmodule Batata.Lift do
     entries = struct_constructor_entries(schema, provided_fields)
     {values, env} = lift_map_entries(entries, ctx, block, env)
     {create_term_op("ex.map", values, ctx, block), env}
+  end
+
+  # Byte-aligned binary comprehension: `for << <<byte>> <- binary >>, do: body`.
+  # Walk backwards and cons each mapped value so the result retains source
+  # order without a second reversal pass.
+  defp lift_expr(
+         {:for, _,
+          [
+            {:<<>>, _, [{:<-, _, [{:<<>>, _, [{name, _, context}]}, binary_ast]}]},
+            [do: body_ast]
+          ]},
+         ctx,
+         block,
+         env
+       )
+       when is_atom(name) and (is_atom(context) or is_nil(context)) do
+    if env[:__budget__] != nil do
+      raise Error, "binary comprehensions under a reduction budget are not yet supported"
+    end
+
+    {binary, env} = lift_expr(binary_ast, ctx, block, env)
+    binary = binary |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {lift_binary_comprehension(binary, name, body_ast, ctx, block, env), env}
   end
 
   defp lift_expr({:<<>>, _, segments}, ctx, block, env) do

@@ -310,6 +310,22 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "maps byte-aligned binary comprehensions in source order", %{ctx: ctx} do
+    source = """
+    defmodule BinaryComprehension do
+      def main() do
+        offset = 2
+        for <<(<<byte>> <- <<1, 3, 5>>) >>, do: byte + offset
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nBinaryComprehension.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "normalizes local and remote pipeline stages", %{ctx: ctx} do
     source = """
     defmodule PipelineDispatch do
