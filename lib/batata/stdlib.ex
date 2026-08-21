@@ -318,7 +318,8 @@ defmodule Batata.Stdlib.Integer do
 
   @class_map %{
     {Integer, :to_charlist, 1} => :native_term,
-    {Integer, :to_string, 1} => :native_term
+    {Integer, :to_string, 1} => :native_term,
+    {Integer, :to_string, 2} => :native_term
   }
 
   @doc "Returns integer-domain stdlib replacement declarations."
@@ -398,6 +399,7 @@ defmodule Batata.Stdlib do
                   {Atom, :to_string, 1},
                   {Date, :to_iso8601, 1},
                   {Integer, :to_charlist, 1},
+                  {Integer, :to_string, 2},
                   {NaiveDateTime, :to_iso8601, 1},
                   {Time, :to_iso8601, 1},
                   {:erlang, :binary_to_float, 1},
@@ -463,6 +465,7 @@ defmodule Batata.Stdlib do
                      {Base, :decode16, 1},
                      {Integer, :to_charlist, 1},
                      {Integer, :to_string, 1},
+                     {Integer, :to_string, 2},
                      {Enum, :map, 2},
                      {Enum, :to_list, 1},
                      {:lists, :reverse, 1},

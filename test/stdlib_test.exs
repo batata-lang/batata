@@ -34,6 +34,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({String, :printable?, 1}) == :native_term
       assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
+      assert Stdlib.class({Integer, :to_string, 2}) == :native_term
       assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
       assert Stdlib.class({Process, :link, 1}) == :native_term
@@ -54,6 +55,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
+      assert Stdlib.may_raise?({Integer, :to_string, 2})
       assert Stdlib.may_raise?({Keyword, :get, 3})
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       assert Stdlib.may_raise?({:erlang, :binary_to_float, 1})
@@ -106,6 +108,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Integer, :to_charlist, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({Integer, :to_string, 2}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,
@@ -495,6 +504,55 @@ defmodule Batata.StdlibTest do
         {expected, _binding} = Code.eval_string(expression)
         assert expected == execute(expression, ctx), expression
       end)
+    end
+
+    test "matches Integer.to_string/2 across bases and the tagged integer domain", %{ctx: ctx} do
+      expressions = [
+        "Integer.to_string(0, 2)",
+        "Integer.to_string(42, 2)",
+        "Integer.to_string(42, 8)",
+        "Integer.to_string(42, 10)",
+        "Integer.to_string(42, 16)",
+        "Integer.to_string(35, 36)",
+        "Integer.to_string(0 - 255, 16)",
+        "Integer.to_string(1_152_921_504_606_846_975, 36)",
+        "Integer.to_string(0 - 1_152_921_504_606_846_975 - 1, 2)"
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx)
+      end)
+    end
+
+    test "supports a dynamic Integer.to_string/2 base", %{ctx: ctx} do
+      source = """
+      defmodule IntegerToStringBase do
+        def render(value, base), do: Integer.to_string(value, base)
+        def main(), do: {render(255, 16), render(35, 36), render(10, 2)}
+      end
+      """
+
+      assert {"FF", "Z", "1010"} == Batata.execute(source, ctx)
+    end
+
+    test "matches Integer.to_string/2 argument errors", %{ctx: ctx} do
+      first = "errors were found at the given arguments:\n\n  * 1st argument: not an integer\n"
+
+      second =
+        "errors were found at the given arguments:\n\n" <>
+          "  * 2nd argument: not an integer in the range 2 through 36\n"
+
+      both =
+        "errors were found at the given arguments:\n\n" <>
+          "  * 1st argument: not an integer\n" <>
+          "  * 2nd argument: not an integer in the range 2 through 36\n"
+
+      assert_raise ArgumentError, first, fn -> execute("Integer.to_string(1.5, 10)", ctx) end
+      assert_raise ArgumentError, second, fn -> execute("Integer.to_string(1, 1)", ctx) end
+      assert_raise ArgumentError, second, fn -> execute("Integer.to_string(1, 37)", ctx) end
+      assert_raise ArgumentError, second, fn -> execute("Integer.to_string(1, :bad)", ctx) end
+      assert_raise ArgumentError, both, fn -> execute("Integer.to_string(1.5, 1)", ctx) end
     end
 
     test "keeps bounded Integer.to_charlist/1 results stable under low budgets", %{ctx: ctx} do
