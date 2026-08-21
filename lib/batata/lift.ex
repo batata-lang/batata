@@ -5007,6 +5007,12 @@ defmodule Batata.Lift do
     {lower_kernel_to_string(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
   end
 
+  defp lift_stdlib_call(Atom, :to_string, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = value |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {lower_atom_to_string(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
+  end
+
   defp lift_stdlib_call(Kernel, :inspect, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = box_term(value, ctx, block)
@@ -6285,6 +6291,59 @@ defmodule Batata.Lift do
           {atom?, fn b -> raise_unsupported_to_string(:unknown_atom, value, ctx, b) end},
           {nil, fn b -> raise_unsupported_to_string(:unsupported_type, value, ctx, b) end}
         ]
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    Enum.each(clauses, fn {guard, body_fn} ->
+      clause_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(region, clause_block)
+      clause_args = if guard, do: [guard], else: []
+      create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, clause_block)
+      result = body_fn.(clause_block)
+
+      create_op(
+        "ex.yield",
+        [result, operandSegmentSizes: segment_sizes([1])],
+        [],
+        ctx,
+        clause_block
+      )
+    end)
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [value, operandSegmentSizes: segment_sizes([1])],
+        results: [dyn],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_atom_to_string(value, known_atoms, ctx, block) do
+    dyn = ex_type("term", ctx)
+
+    clauses =
+      known_atoms
+      |> Enum.sort_by(fn {word, _atom} -> word end)
+      |> Enum.map(fn {word, atom} ->
+        tagged = create_op("ex.to_word", [lit(word, ctx, block)], [dyn], ctx, block)
+        equal? = create_op("ex.term_eq", [value, tagged], [MLIR.Type.i64()], ctx, block)
+
+        {equal?,
+         fn b ->
+           {binary, _env} = lift_expr(Atom.to_string(atom), ctx, b, %{})
+           binary
+         end}
+      end)
+      |> Kernel.++([
+        {nil, fn b -> raise_argument_error("invalid Atom.to_string/1 argument", ctx, b) end}
+      ])
 
     region = MLIR.CAPI.mlirRegionCreate()
 

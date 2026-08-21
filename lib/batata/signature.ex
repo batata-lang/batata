@@ -7,6 +7,7 @@ defmodule Batata.Signature do
   @builtin_modes %{
     {Kernel, :length, 1} => [:term],
     {:erlang, :length, 1} => [:term],
+    {Atom, :to_string, 1} => [:term],
     {:binary, :at, 2} => [:term, :scalar],
     {:binary, :copy, 1} => [:term],
     {:erlang, :binary_to_float, 1} => [:term],

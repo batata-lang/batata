@@ -25,6 +25,7 @@ defmodule Batata.StdlibTest do
 
     test "classifies declared domain modules" do
       assert Stdlib.class({List, :first, 1}) == :native_term
+      assert Stdlib.class({Atom, :to_string, 1}) == :native_term
       assert Stdlib.class({Keyword, :get, 2}) == :native_term
       assert Stdlib.class({Keyword, :get, 3}) == :native_term
       assert Stdlib.class({Map, :size, 1}) == :native_term
@@ -48,6 +49,7 @@ defmodule Batata.StdlibTest do
 
     test "declares native calls which require an actor exception boundary" do
       assert Stdlib.may_raise?({Kernel, :to_string, 1})
+      assert Stdlib.may_raise?({Atom, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
@@ -103,6 +105,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Integer, :to_charlist, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({Atom, :to_string, 1}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,
