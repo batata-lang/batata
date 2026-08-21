@@ -197,6 +197,19 @@ defmodule Batata.StdlibTest do
 
     test "executes recognized Enum.map/2 and Enum.reduce/3 patterns", %{ctx: ctx} do
       assert 3 == execute("Enum.count(Enum.map([1, 2, 3], fn x -> x end))", ctx)
+
+      assert [{2, 1}, {4, 3}] ==
+               execute(
+                 "Enum.map([{1, 2}, {3, 4}], fn {left, right} -> {right, left} end)",
+                 ctx
+               )
+
+      assert [2, 1, 4, 3] ==
+               execute(
+                 "Enum.flat_map([{1, 2}, {3, 4}], fn {left, right} -> [right, left] end)",
+                 ctx
+               )
+
       assert 6 == execute("Enum.reduce([1, 2, 3], 0, fn x, a -> x + a end)", ctx)
       assert 16 == execute("Enum.reduce([1, 2, 3], 10, fn x, a -> a + x end)", ctx)
       assert 42 == execute("Enum.reduce([1, 2, 3], 42, fn _x, a -> a end)", ctx)

@@ -9,8 +9,10 @@ defmodule Batata.Signature do
     {:erlang, :length, 1} => [:term],
     {Atom, :to_string, 1} => [:term],
     {Integer, :to_string, 2} => [:term, :scalar],
+    {Enum, :flat_map, 2} => [:term, :term],
     {Enum, :into, 2} => [:term, :term],
     {Enum, :intersperse, 2} => [:term, :term],
+    {Enum, :map, 2} => [:term, :term],
     {Map, :to_list, 1} => [:term],
     {:binary, :at, 2} => [:term, :scalar],
     {:binary, :copy, 1} => [:term],
@@ -102,6 +104,16 @@ defmodule Batata.Signature do
       end
 
     {node, mark_arguments(modes, names, args, call_modes)}
+  end
+
+  defp infer_node(
+         {:__enum_call__, _, [kind, _pattern, {name, _, nil}]} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when kind in [:map, :flat_map] and is_atom(name) do
+    {node, mark_name(modes, names, name)}
   end
 
   defp infer_node({name, _, args} = node, modes, names, signatures)

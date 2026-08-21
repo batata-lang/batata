@@ -3305,6 +3305,67 @@ pub export fn ex_term_enumerable_map_fun(
     return result;
 }
 
+/// Maps an enumerable with a term-aware compiled mapper. Unlike the scalar
+/// mapper ABI above, both the item passed to the callback and its result stay
+/// tagged term words, allowing tuple/list/map pattern matching and term
+/// construction in the mapper body.
+pub export fn ex_term_enumerable_map_term_fun(
+    enumerable: i64,
+    mapper: ?*const fn (i64) callconv(.c) i64,
+) i64 {
+    const count = ex_term_enumerable_count(enumerable);
+    var result = nil_word;
+    var i: i64 = count;
+    while (i > 0) {
+        i -= 1;
+        const item =
+            switch (word_tag(enumerable)) {
+                tag_list => ex_term_list_get(enumerable, i),
+                tag_tuple => ex_term_tuple_get(enumerable, i),
+                tag_binary => (@as(i64, binary_bytes(enumerable)[@intCast(i)]) << @intCast(tag_shift)),
+                else => nil_word,
+            };
+        result = ex_term_list_cons(mapper.?(item), result);
+    }
+    return result;
+}
+
+/// Flat-maps an enumerable with a tagged term callback. Each callback result
+/// is materialized through the enumerable protocol subset and concatenated
+/// in input order.
+pub export fn ex_term_enumerable_flat_map_term_fun(
+    enumerable: i64,
+    mapper: ?*const fn (i64) callconv(.c) i64,
+) i64 {
+    const count = ex_term_enumerable_count(enumerable);
+    var result = nil_word;
+    var i: i64 = count;
+    while (i > 0) {
+        i -= 1;
+        const item =
+            switch (word_tag(enumerable)) {
+                tag_list => ex_term_list_get(enumerable, i),
+                tag_tuple => ex_term_tuple_get(enumerable, i),
+                tag_binary => (@as(i64, binary_bytes(enumerable)[@intCast(i)]) << @intCast(tag_shift)),
+                else => nil_word,
+            };
+
+        var mapped = ex_term_enumerable_to_list(mapper.?(item));
+        var reversed = nil_word;
+        while (word_tag(mapped) == tag_list) {
+            const cell = list_cell(mapped);
+            reversed = ex_term_list_cons(cell[0], reversed);
+            mapped = cell[1];
+        }
+        while (word_tag(reversed) == tag_list) {
+            const cell = list_cell(reversed);
+            result = ex_term_list_cons(cell[0], result);
+            reversed = cell[1];
+        }
+    }
+    return result;
+}
+
 /// Filters a list by a compiled predicate `(item: i64) -> i64` (nonzero
 /// keeps), producing a list in order.
 pub export fn ex_term_stream_filter(
@@ -4631,6 +4692,8 @@ comptime {
     @export(&ex_term_enumerable_intersperse, .{ .name = "ex.term.enumerable_intersperse" });
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
+    @export(&ex_term_enumerable_map_term_fun, .{ .name = "ex.term.enumerable_map_term_fun" });
+    @export(&ex_term_enumerable_flat_map_term_fun, .{ .name = "ex.term.enumerable_flat_map_term_fun" });
     @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
     @export(&ex_term_stream_take, .{ .name = "ex.term.stream_take" });
     @export(&ex_term_stream_drop, .{ .name = "ex.term.stream_drop" });
@@ -4923,6 +4986,15 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(mapped_binary));
     try std.testing.expectEqual(@as(i64, 4), ex_term_list_head(ex_term_list_tail(mapped_binary)) >> @intCast(tag_shift));
 
+    const mapped_terms = ex_term_enumerable_map_term_fun(list, &test_mapper_identity_term);
+    try std.testing.expectEqual(one, ex_term_list_head(mapped_terms));
+    try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(mapped_terms)));
+
+    const flat_mapped_terms = ex_term_enumerable_flat_map_term_fun(list, &test_mapper_duplicate_term);
+    try std.testing.expectEqual(@as(i64, 4), ex_term_list_length(flat_mapped_terms));
+    try std.testing.expectEqual(one, ex_term_list_head(flat_mapped_terms));
+    try std.testing.expectEqual(one, ex_term_list_head(ex_term_list_tail(flat_mapped_terms)));
+
     // stream filter: keep even items (predicate: item % 2 == 0)
     const filtered = ex_term_stream_filter(list, &test_predicate_even);
     try std.testing.expectEqual(@as(i64, 1), ex_term_list_length(filtered));
@@ -5083,6 +5155,14 @@ fn test_callback(arg: i64) callconv(.c) i64 {
 
 fn test_mapper_double(item: i64) callconv(.c) i64 {
     return item * 2;
+}
+
+fn test_mapper_identity_term(item: i64) callconv(.c) i64 {
+    return item;
+}
+
+fn test_mapper_duplicate_term(item: i64) callconv(.c) i64 {
+    return ex_term_list_cons(item, ex_term_list_cons(item, nil_word));
 }
 
 fn test_predicate_even(item: i64) callconv(.c) i64 {

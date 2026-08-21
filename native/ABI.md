@@ -222,6 +222,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.enumerable_reduce_range` | `(start: i64, stop: i64, acc: i64, continuation: i64) -> i64` | inclusive integer range reduce (ascending or descending), reusing the continuation table (15 = count, acc + 1 per item) |
 | `ex.term.enumerable_reduce_fun` | `(enumerable: i64, acc: i64, reducer_addr: i64) -> i64` | reduce by calling a compiled reducer `(item, acc) -> acc` on each item (list/tuple/binary); items are untagged integers |
 | `ex.term.enumerable_map_fun` | `(enumerable: i64, mapper_addr: i64) -> i64` | map by calling a compiled mapper `(item) -> i64` on each item, producing a list in order |
+| `ex.term.enumerable_map_term_fun` | `(enumerable: i64, mapper_addr: i64) -> i64` | map by calling a compiled term mapper `(tagged_item) -> tagged_result`, producing a list in order |
+| `ex.term.enumerable_flat_map_term_fun` | `(enumerable: i64, mapper_addr: i64) -> i64` | flat-map by calling a compiled term mapper and concatenating each enumerable result in order |
 | `ex.term.stream_filter` | `(list: i64, predicate_addr: i64) -> i64` | filter a list by a compiled predicate `(item) -> i64` (nonzero keeps), in order |
 | `ex.term.stream_take` | `(list: i64, n: i64) -> i64` | first n elements (clamped to [0, len]) |
 | `ex.term.stream_drop` | `(list: i64, n: i64) -> i64` | list without the first n elements (clamped to [0, len]) |
