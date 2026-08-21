@@ -4344,6 +4344,43 @@ pub export fn ex_term_map_put(map: i64, key: i64, value: i64) i64 {
     return ex_term_map_from_list(pairs);
 }
 
+/// Merges a list or map enumerable of `{key, value}` pairs into a target map.
+/// Entries are applied in enumeration order, so later duplicate keys win.
+/// Returns nil for unsupported enumerables, malformed pairs, improper lists,
+/// or a non-map target.
+pub export fn ex_term_enumerable_into_map(enumerable: i64, target: i64) i64 {
+    if (word_tag(target) != tag_map) return nil_word;
+    var result = target;
+
+    if (enumerable == nil_word) return result;
+
+    switch (word_tag(enumerable)) {
+        tag_list => {
+            var current = enumerable;
+            while (word_tag(current) == tag_list) {
+                const cell = list_cell(current);
+                const pair = cell[0];
+                if (word_tag(pair) != tag_tuple or tuple_len(pair) != 2) return nil_word;
+                const elements = tuple_elems(pair);
+                result = ex_term_map_put(result, elements[0], elements[1]);
+                if (result == nil_word) return nil_word;
+                current = cell[1];
+            }
+            return if (current == nil_word) result else nil_word;
+        },
+        tag_map => {
+            const len = map_len(enumerable);
+            const entries = map_entries(enumerable);
+            for (0..len) |i| {
+                result = ex_term_map_put(result, entries[i * 2], entries[i * 2 + 1]);
+                if (result == nil_word) return nil_word;
+            }
+            return result;
+        },
+        else => return nil_word,
+    }
+}
+
 /// Converts a list of integer byte words into a binary word.
 pub export fn ex_term_binary_from_list(list: i64) i64 {
     const len = list_len(list);
@@ -4560,6 +4597,7 @@ comptime {
     @export(&ex_term_map_fetch, .{ .name = "ex.term.map_fetch" });
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
+    @export(&ex_term_enumerable_into_map, .{ .name = "ex.term.enumerable_into_map" });
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
     @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
@@ -4787,6 +4825,26 @@ test "term ABI reads" {
     const non_map = ex_term_map_fetch(one, one);
     try std.testing.expectEqual(@as(i64, 0), ex_term_to_int(ex_term_tuple_get(non_map, 0)));
     try std.testing.expectEqual(nil_word, ex_term_tuple_get(non_map, 1));
+
+    // Enum.into/2 map collection: later list pairs override defaults and
+    // duplicate keys, while map enumerables add their own pairs.
+    const three: i64 = 24;
+    const four: i64 = 32;
+    const pair_one_three = tuple2(one, three);
+    const pair_one_four = tuple2(one, four);
+    const pair_two_three = tuple2(two, three);
+    const pairs = ex_term_list_cons(pair_one_three, ex_term_list_cons(pair_one_four, ex_term_list_cons(pair_two_three, nil_word)));
+    const merged = ex_term_enumerable_into_map(pairs, map);
+    try std.testing.expectEqual(@as(i64, 2), ex_term_map_length(merged));
+    try std.testing.expectEqual(four, ex_term_tuple_get(ex_term_map_fetch(merged, one), 1));
+    try std.testing.expectEqual(three, ex_term_tuple_get(ex_term_map_fetch(merged, two), 1));
+    try std.testing.expectEqual(map, ex_term_enumerable_into_map(nil_word, map));
+
+    const source_map = ex_term_map_from_list(ex_term_list_cons(two, ex_term_list_cons(four, nil_word)));
+    const merged_map = ex_term_enumerable_into_map(source_map, map);
+    try std.testing.expectEqual(four, ex_term_tuple_get(ex_term_map_fetch(merged_map, two), 1));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_enumerable_into_map(list, map)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_enumerable_into_map(pairs, one)));
 
     // enumerable counts: list length, tuple arity, map pairs, binary bytes
     const count_bytes = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(one, nil_word)));
