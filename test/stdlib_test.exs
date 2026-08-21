@@ -35,6 +35,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({String, :printable?, 1}) == :native_term
       assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
       assert Stdlib.class({Integer, :to_string, 2}) == :native_term
+      assert Stdlib.class({Enum, :into, 2}) == :native_term
       assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
       assert Stdlib.class({Process, :link, 1}) == :native_term
@@ -56,6 +57,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
       assert Stdlib.may_raise?({Integer, :to_string, 2})
+      assert Stdlib.may_raise?({Enum, :into, 2})
       assert Stdlib.may_raise?({Keyword, :get, 3})
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       assert Stdlib.may_raise?({:erlang, :binary_to_float, 1})
@@ -119,6 +121,13 @@ defmodule Batata.StdlibTest do
                allocation: :may_allocate,
                preemption: :none,
                reductions: :constant
+             }
+
+      assert Stdlib.metadata({Enum, :into, 2}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :per_element
              }
 
       assert Stdlib.metadata({Atom, :to_string, 1}) == %{
@@ -553,6 +562,31 @@ defmodule Batata.StdlibTest do
       assert_raise ArgumentError, second, fn -> execute("Integer.to_string(1, 37)", ctx) end
       assert_raise ArgumentError, second, fn -> execute("Integer.to_string(1, :bad)", ctx) end
       assert_raise ArgumentError, both, fn -> execute("Integer.to_string(1.5, 1)", ctx) end
+    end
+
+    test "collects list and map enumerables into maps", %{ctx: ctx} do
+      expressions = [
+        "Enum.into([], %{a: 1})",
+        "Enum.into([a: 2, b: 3], %{a: 1, c: 4})",
+        "Enum.into([a: 2, a: 3], %{a: 1})",
+        "Enum.into(%{a: 2, b: 3}, %{a: 1, c: 4})",
+        "Enum.into([escape: :html_safe], %{escape: :json, maps: :naive})"
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx)
+      end)
+    end
+
+    test "rejects malformed bounded Enum.into/2 map collections", %{ctx: ctx} do
+      assert_raise ArgumentError, "invalid Enum.into/2 map collection", fn ->
+        execute("Enum.into([1], %{})", ctx)
+      end
+
+      assert_raise ArgumentError, "invalid Enum.into/2 map collection", fn ->
+        execute("Enum.into([a: 1], [])", ctx)
+      end
     end
 
     test "keeps bounded Integer.to_charlist/1 results stable under low budgets", %{ctx: ctx} do
