@@ -3233,6 +3233,36 @@ pub export fn ex_term_enumerable_to_list(enumerable: i64) i64 {
     }
 }
 
+/// Materializes an enumerable and inserts `separator` between adjacent
+/// elements. Empty and single-element inputs do not allocate separators;
+/// nil is returned for unsupported enumerable tags.
+pub export fn ex_term_enumerable_intersperse(enumerable: i64, separator: i64) i64 {
+    if (!is_list_word(enumerable) and
+        word_tag(enumerable) != tag_tuple and
+        word_tag(enumerable) != tag_map and
+        word_tag(enumerable) != tag_binary) return nil_word;
+
+    var current = ex_term_enumerable_to_list(enumerable);
+    var reversed = nil_word;
+    var first = true;
+    while (word_tag(current) == tag_list) {
+        const cell = list_cell(current);
+        if (!first) reversed = ex_term_list_cons(separator, reversed);
+        reversed = ex_term_list_cons(cell[0], reversed);
+        first = false;
+        current = cell[1];
+    }
+
+    var result = nil_word;
+    current = reversed;
+    while (word_tag(current) == tag_list) {
+        const cell = list_cell(current);
+        result = ex_term_list_cons(cell[0], result);
+        current = cell[1];
+    }
+    return result;
+}
+
 /// Materializes an inclusive integer range as a list.
 pub export fn ex_term_enumerable_to_list_range(start: i64, stop: i64) i64 {
     var result = nil_word;
@@ -4598,6 +4628,7 @@ comptime {
     @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
     @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
     @export(&ex_term_enumerable_into_map, .{ .name = "ex.term.enumerable_into_map" });
+    @export(&ex_term_enumerable_intersperse, .{ .name = "ex.term.enumerable_intersperse" });
     @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
     @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
     @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
@@ -4863,6 +4894,21 @@ test "term ABI reads" {
     const to_list_bytes = ex_term_enumerable_to_list(count_bin);
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(to_list_bytes));
     try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(to_list_bytes)));
+    const separator = 99 << @intCast(tag_shift);
+    const interspersed = ex_term_enumerable_intersperse(list, separator);
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(interspersed));
+    try std.testing.expectEqual(one, ex_term_list_head(interspersed));
+    try std.testing.expectEqual(separator, ex_term_list_head(ex_term_list_tail(interspersed)));
+    try std.testing.expectEqual(two, ex_term_list_head(ex_term_list_tail(ex_term_list_tail(interspersed))));
+    try std.testing.expectEqual(nil_word, ex_term_enumerable_intersperse(nil_word, separator));
+    const singleton = ex_term_list_cons(one, nil_word);
+    const singleton_result = ex_term_enumerable_intersperse(singleton, separator);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_list_length(singleton_result));
+    try std.testing.expectEqual(one, ex_term_list_head(singleton_result));
+    try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_intersperse(tuple, separator)));
+    try std.testing.expectEqual(@as(i64, 5), ex_term_list_length(ex_term_enumerable_intersperse(count_bin, separator)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_list_length(ex_term_enumerable_intersperse(map, separator)));
+    try std.testing.expectEqual(nil_word, ex_term_enumerable_intersperse(one, separator));
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_to_list_range(1, 3)));
     try std.testing.expectEqual(@as(i64, 3), ex_term_list_length(ex_term_enumerable_to_list_range(3, 1)));
 
