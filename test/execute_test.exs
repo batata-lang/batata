@@ -800,6 +800,32 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "converts known atoms to their string names", %{ctx: ctx} do
+    source = """
+    defmodule NativeAtomToString do
+      def render(atom), do: Atom.to_string(atom)
+
+      def main() do
+        {render(:alpha), render(nil), render(true), render(false),
+         render(:"Elixir.NativeAtomToString")}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nNativeAtomToString.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects non-atoms passed to Atom.to_string/1", %{ctx: ctx} do
+    source = """
+    defmodule InvalidAtomToString do
+      def main(), do: Atom.to_string(42)
+    end
+    """
+
+    assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+  end
+
   test "concatenates values within the supported binary domain", %{ctx: ctx} do
     assert {"leftright", "value", "three-parts"} ==
              Batata.execute(

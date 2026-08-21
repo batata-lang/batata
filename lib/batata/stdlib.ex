@@ -76,6 +76,17 @@ defmodule Batata.Stdlib.List do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.Atom do
+  @moduledoc "Atom-domain declarations."
+
+  @class_map %{
+    {Atom, :to_string, 1} => :native_term
+  }
+
+  @doc "Returns atom-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Keyword do
   @moduledoc "Keyword-list lookup declarations."
 
@@ -354,6 +365,7 @@ defmodule Batata.Stdlib do
 
   @classes Elixir.Enum.reduce(
              [
+               Batata.Stdlib.Atom.class_map(),
                Batata.Stdlib.Binary.class_map(),
                Batata.Stdlib.Date.class_map(),
                Batata.Stdlib.Kernel.class_map(),
@@ -382,6 +394,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 1},
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
+                  {Atom, :to_string, 1},
                   {Date, :to_iso8601, 1},
                   {Integer, :to_charlist, 1},
                   {NaiveDateTime, :to_iso8601, 1},
@@ -431,6 +444,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :list_to_binary, 1},
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
+                     {Atom, :to_string, 1},
                      {Date, :to_iso8601, 1},
                      {NaiveDateTime, :to_iso8601, 1},
                      {Time, :to_iso8601, 1},
