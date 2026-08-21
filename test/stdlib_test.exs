@@ -16,6 +16,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({IO, :iodata_to_binary, 1}) == :native_term
       assert Stdlib.class({:erlang, :iolist_to_binary, 1}) == :native_term
       assert Stdlib.class({:binary, :at, 2}) == :native_term
+      assert Stdlib.class({:binary, :match, 2}) == :native_term
       assert Stdlib.class({Date, :to_iso8601, 1}) == :native_term
       assert Stdlib.class({Time, :to_iso8601, 1}) == :native_term
     end
