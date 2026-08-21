@@ -4205,11 +4205,14 @@ pub export fn ex_term_binary_decode16(binary: i64) i64 {
     return result;
 }
 
-/// Renders a tagged integer term as a decimal binary; nil for non-integers.
-pub export fn ex_term_int_to_string(word: i64) i64 {
-    if (!is_int(word)) return nil_word;
+/// Renders a tagged integer term in base 2..36 using uppercase digits; nil
+/// for non-integers or an invalid base.
+pub export fn ex_term_int_to_string_base(word: i64, base: i64) i64 {
+    if (!is_int(word) or base < 2 or base > 36) return nil_word;
     const value = word_payload(word);
-    var digits: [24]u8 = undefined;
+    const radix: u64 = @intCast(base);
+    const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    var digits: [64]u8 = undefined;
     var i: usize = 0;
     const negative = value < 0;
     var mag: u64 = @abs(value);
@@ -4217,8 +4220,8 @@ pub export fn ex_term_int_to_string(word: i64) i64 {
         digits[0] = '0';
         i = 1;
     } else {
-        while (mag > 0) : (mag /= 10) {
-            digits[i] = @intCast('0' + mag % 10);
+        while (mag > 0) : (mag /= radix) {
+            digits[i] = alphabet[@intCast(mag % radix)];
             i += 1;
         }
     }
@@ -4234,6 +4237,11 @@ pub export fn ex_term_int_to_string(word: i64) i64 {
         out[j] = digits[i - 1 - j];
     }
     return result;
+}
+
+/// Renders a tagged integer term as a decimal binary; nil for non-integers.
+pub export fn ex_term_int_to_string(word: i64) i64 {
+    return ex_term_int_to_string_base(word, 10);
 }
 
 /// Renders a tagged integer term as uppercase hexadecimal with an Elixir
@@ -4585,6 +4593,7 @@ comptime {
     @export(&ex_term_binary_encode16, .{ .name = "ex.term.binary_encode16" });
     @export(&ex_term_binary_decode16, .{ .name = "ex.term.binary_decode16" });
     @export(&ex_term_int_to_string, .{ .name = "ex.term.int_to_string" });
+    @export(&ex_term_int_to_string_base, .{ .name = "ex.term.int_to_string_base" });
     @export(&ex_term_int_to_hex, .{ .name = "ex.term.int_to_hex" });
     @export(&ex_term_string_to_int, .{ .name = "ex.term.string_to_int" });
     @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
@@ -4706,6 +4715,14 @@ test "term ABI construction and predicates" {
     const neg_str = ex_term_int_to_string(-1 << @intCast(tag_shift));
     try std.testing.expectEqual(@as(i64, 2), ex_term_binary_length(neg_str));
     try std.testing.expectEqual(@as(i64, -1), ex_term_string_to_int(neg_str));
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(forty_two, 2), test_binary_from_string("101010")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(forty_two, 16), test_binary_from_string("2A")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(35 << @intCast(tag_shift), 36), test_binary_from_string("Z")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(-255 << @intCast(tag_shift), 16), test_binary_from_string("-FF")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_string_base(forty_two, 1)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_string_base(forty_two, 37)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_string_base(test_binary_from_string("42"), 10)));
 }
 
 test "closure ABI carries arity without breaking legacy env reads" {
