@@ -214,6 +214,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.map_length` | `(map: i64) -> i64` | map pair count; 0 for non-maps |
 | `ex.term.enumerable_count` | `(word: i64) -> i64` | element count by tag: list length / tuple arity / map pairs / binary bytes; 0 otherwise |
 | `ex.term.enumerable_to_list` | `(word: i64) -> i64` | materialize by tag: list identity, tuple elements, map `{k, v}` pairs, binary byte terms; nil for unsupported tags |
+| `ex.term.enumerable_into_map` | `(enumerable: i64, target: i64) -> i64` | merge list/map `{key, value}` pairs into a map in enumeration order; nil for malformed/unsupported inputs |
 | `ex.term.enumerable_to_list_range` | `(start: i64, stop: i64) -> i64` | materialize an inclusive integer range as a list |
 | `ex.term.enumerable_reduce` | `(enumerable: i64, acc: i64, continuation: i64) -> i64` | tag-dispatched reduce over list/tuple/binary/map; continuation 1 = sum, 2 = return acc, 3 = map values sum, 4 = map keys sum, 5 = map entries sum, 6 = product, 7 = acc - item, 8 = item - acc, 9 = div(acc, item), 10 = div(item, acc), 11 = rem(acc, item), 12 = rem(item, acc); zero divisor yields 0 |
 | `ex.term.enumerable_reduce_c` | `(enumerable: i64, acc: i64, continuation: i64, capture: i64) -> i64` | closure-shaped reduce with a captured scalar; continuation 13 = sum with capture (acc + item + capture), 14 = product with capture (acc + item * capture) |
