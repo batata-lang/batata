@@ -5993,6 +5993,44 @@ defmodule Batata.Lift do
   defp native_term_call(Integer, :to_string, [value], ctx, block),
     do: create_op("ex.int_to_string", [value], [ex_type("term", ctx)], ctx, block)
 
+  defp native_term_call(Integer, :to_string, [value, base], ctx, block) do
+    i64 = integer_type(ctx)
+    value_integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
+    base_integer? = create_op("ex.is_integer", [base], [i64], ctx, block)
+    base_int = create_op("ex.to_int", [base], [i64], ctx, block)
+    lower = cmp(base_int, 2, "sge", ctx, block)
+    upper = cmp(base_int, 36, "sle", ctx, block)
+    base_in_range = create_op("arith.andi", [lower, upper], [i64], ctx, block)
+    base_valid = create_op("arith.andi", [base_integer?, base_in_range], [i64], ctx, block)
+    base_valid_i1 = create_op("arith.trunci", [base_valid], [MLIR.Type.i1()], ctx, block)
+    both_valid = create_op("arith.andi", [value_integer?, base_valid], [i64], ctx, block)
+    both_valid_i1 = create_op("arith.trunci", [both_valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        both_valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          [
+            create_op(
+              "ex.int_to_string_base",
+              [value, base_int],
+              [ex_type("term", ctx)],
+              ctx,
+              b
+            )
+            |> unbox(ctx, b)
+          ]
+        end,
+        fn b -> [lower_integer_to_string_error(value_integer?, base_valid_i1, ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
   defp native_term_call(Integer, :to_charlist, [value], ctx, block) do
     i64 = integer_type(ctx)
     integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
@@ -6144,6 +6182,54 @@ defmodule Batata.Lift do
 
   defp native_term_call(module, fun, _args, _ctx, _block) do
     raise Error, "no native_term lowering for #{inspect(module)}.#{fun}"
+  end
+
+  defp lower_integer_to_string_error(value_integer?, base_valid_i1, ctx, block) do
+    i64 = integer_type(ctx)
+    value_integer_i1 = create_op("arith.trunci", [value_integer?], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      value_integer_i1,
+      ctx,
+      block,
+      [i64],
+      fn b ->
+        message =
+          "errors were found at the given arguments:\n\n" <>
+            "  * 2nd argument: not an integer in the range 2 through 36\n"
+
+        [raise_argument_error(message, ctx, b) |> unbox(ctx, b)]
+      end,
+      fn b -> [lower_invalid_integer_to_string_value(base_valid_i1, ctx, b)] end
+    )
+    |> hd()
+  end
+
+  defp lower_invalid_integer_to_string_value(base_valid_i1, ctx, block) do
+    i64 = integer_type(ctx)
+
+    build_scf_if(
+      base_valid_i1,
+      ctx,
+      block,
+      [i64],
+      fn b ->
+        message =
+          "errors were found at the given arguments:\n\n" <>
+            "  * 1st argument: not an integer\n"
+
+        [raise_argument_error(message, ctx, b) |> unbox(ctx, b)]
+      end,
+      fn b ->
+        message =
+          "errors were found at the given arguments:\n\n" <>
+            "  * 1st argument: not an integer\n" <>
+            "  * 2nd argument: not an integer in the range 2 through 36\n"
+
+        [raise_argument_error(message, ctx, b) |> unbox(ctx, b)]
+      end
+    )
+    |> hd()
   end
 
   defp lower_split_binary(binary, position, ctx, block) do
