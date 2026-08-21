@@ -22,6 +22,7 @@
     {"id": "string.printable", "status": "executable", "gate": "stdlib_test", "scope": "String.printable?/1 including invalid UTF-8 and non-binary FunctionClauseError"},
     {"id": "kernel.inspect", "status": "executable", "gate": "stdlib_test", "scope": "integer, binary, compile-known atom, nil, and boolean terms; inspect/2 limited to literal [base: :hex]"},
     {"id": "stdlib.lists_lookup_reverse", "status": "executable", "gate": "execute_test", "scope": ":lists.keyfind/3 and :lists.reverse/1,2 with BEAM loose numeric equality, ArgumentError paths, and resumable traversal"},
+    {"id": "stdlib.enum_term_callbacks", "status": "executable", "gate": "codegen_pattern_mapper_test", "scope": "capture-free one-clause tuple-pattern Enum.map/2 and Enum.flat_map/2 callbacks with tagged term inputs and outputs"},
     {"id": "control.short_circuit_and", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; returns original operand values; right-hand-side assignments excluded"},
     {"id": "control.if", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; missing else yields nil; branch assignments excluded"},
     {"id": "struct.constructor", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with runtime-representable literal defaults, validated atom-key overrides, and exception marker injection"},
