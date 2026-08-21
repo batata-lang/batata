@@ -248,6 +248,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.binary_encode16` | `(binary: i64) -> i64` | uppercase hexadecimal binary of the bytes; nil for non-binaries |
 | `ex.term.binary_decode16` | `(binary: i64) -> i64` | bytes from an uppercase hexadecimal binary; nil for non-binaries, odd lengths, or invalid digits |
 | `ex.term.int_to_string` | `(word: i64) -> i64` | decimal binary of a tagged integer term; nil for non-integers |
+| `ex.term.int_to_string_base` | `(word: i64, base: i64) -> i64` | base 2..36 uppercase binary of a tagged integer term; nil for non-integers / invalid base |
 | `ex.term.int_to_hex` | `(word: i64) -> i64` | uppercase hexadecimal binary with `0x` prefix; nil for non-integers |
 | `ex.term.string_to_int` | `(binary: i64) -> i64` | scalar i64 parsed from a decimal binary (optionally signed); 0 for invalid input or overflow |
 | `ex.term.map_from_list` | `(list: i64) -> i64` | flat key/value list -> map |
