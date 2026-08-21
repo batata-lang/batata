@@ -486,6 +486,17 @@ defmodule Batata.Lift do
   end
 
   defp recognize_enum_node(
+         {{:., _, [{:__aliases__, _, alias_parts}, :flat_map]}, _, [enumerable, fn_ast]} = node,
+         state
+       ) do
+    if enum_alias?(alias_parts) do
+      recognize_flat_map_node(fn_ast, enumerable, node, state)
+    else
+      {node, state}
+    end
+  end
+
+  defp recognize_enum_node(
          {{:., _, [{:__aliases__, _, alias_parts}, :reduce]}, _, [enumerable, acc, fn_ast]} =
            node,
          state
@@ -518,6 +529,18 @@ defmodule Batata.Lift do
       :error -> {node, state}
     end
   end
+
+  defp recognize_flat_map_node({:fn, _, [{:->, _, [[item], body]}]}, enumerable, node, state) do
+    case pattern_mapper_pattern(body, item) do
+      {:ok, {:mapper, body_ast, item_pattern}} ->
+        extract_mapper(body_ast, item_pattern, enumerable, state, :flat_map)
+
+      :error ->
+        {node, state}
+    end
+  end
+
+  defp recognize_flat_map_node(_fn_ast, _enumerable, node, state), do: {node, state}
 
   defp recognize_reduce_node(fn_ast, enumerable, acc, node, state) do
     case reduce_pattern(fn_ast) do
@@ -557,7 +580,7 @@ defmodule Batata.Lift do
 
   # Arbitrary arithmetic mappers become synthetic `__enum_mapper_N`
   # definitions called through the runtime's compiled-mapper map.
-  defp extract_mapper(body_ast, item_name, enumerable, state) do
+  defp extract_mapper(body_ast, item_pattern, enumerable, state, kind \\ :map) do
     {synthetic, counter} = state
     mapper_name = :"__enum_mapper_#{counter}"
 
@@ -567,13 +590,16 @@ defmodule Batata.Lift do
       arity: 1,
       clauses: [
         %Frontend.Clause{
-          patterns: [{item_name, [], nil}],
+          patterns: [item_pattern],
           body_ast: body_ast
         }
       ]
     }
 
-    marker = {:__enum_call__, [], [:map, {:mapper, mapper_name}, enumerable]}
+    marker =
+      {:__enum_call__, [],
+       [kind, {:mapper, mapper_name, term_pattern?(item_pattern)}, enumerable]}
+
     {marker, {[mapper_def | synthetic], counter + 1}}
   end
 
@@ -637,12 +663,19 @@ defmodule Batata.Lift do
             {:ok, {:add_capture, capture_ast}}
 
           :error ->
-            arithmetic_mapper_pattern(body, item)
+            compiled_mapper_pattern(body, item)
         end
     end
   end
 
   defp map_pattern(_), do: :error
+
+  defp compiled_mapper_pattern(body, item) do
+    case arithmetic_mapper_pattern(body, item) do
+      :error -> pattern_mapper_pattern(body, item)
+      pattern -> pattern
+    end
+  end
 
   defp arithmetic_mapper_pattern(body, item) do
     if arithmetic_tree?(body) and
@@ -650,7 +683,23 @@ defmodule Batata.Lift do
          |> collect_tree_vars()
          |> MapSet.new()
          |> MapSet.subset?(MapSet.new([tree_var_name(item)])) do
-      {:ok, {:mapper, body, tree_var_name(item)}}
+      {:ok, {:mapper, body, item}}
+    else
+      :error
+    end
+  end
+
+  # A one-clause mapper with a term pattern can use the same compiled mapper
+  # ABI as a variable mapper. Preserve the parameter pattern on the synthetic
+  # definition so normal function-clause dispatch performs the match and
+  # binds its variables. Captures remain unsupported on this path because the
+  # current mapper ABI carries only the enumerable item.
+  defp pattern_mapper_pattern(body, item) do
+    bound = item |> collect_all_vars() |> MapSet.new() |> MapSet.delete(:_)
+    referenced = body |> collect_all_vars() |> MapSet.new() |> MapSet.delete(:_)
+
+    if term_pattern?(item) and MapSet.subset?(referenced, bound) do
+      {:ok, {:mapper, body, item}}
     else
       :error
     end
@@ -3495,7 +3544,7 @@ defmodule Batata.Lift do
              env[:__batch_size__]
            ), env}
 
-        {:mapper, mapper_name} ->
+        {:mapper, mapper_name, term_mapper?} ->
           addr =
             create_op(
               "ex.func_addr",
@@ -3505,9 +3554,14 @@ defmodule Batata.Lift do
               block
             )
 
+          op =
+            if term_mapper?,
+              do: "ex.enumerable_map_term_fun",
+              else: "ex.enumerable_map_fun"
+
           {
             create_op(
-              "ex.enumerable_map_fun",
+              op,
               [enumerable_word, addr],
               [ex_type("term", ctx)],
               ctx,
@@ -3525,6 +3579,36 @@ defmodule Batata.Lift do
       block,
       env
     )
+  end
+
+  defp lift_expr(
+         {:__enum_call__, _, [:flat_map, {:mapper, mapper_name, true}, enumerable_ast]},
+         ctx,
+         block,
+         env
+       ) do
+    {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+    enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+
+    addr =
+      create_op(
+        "ex.func_addr",
+        [sym_name: MLIR.Attribute.string(Symbol.function(mapper_name, 1))],
+        [MLIR.Type.function([integer_type(ctx)], [integer_type(ctx)])],
+        ctx,
+        block
+      )
+
+    {
+      create_op(
+        "ex.enumerable_flat_map_term_fun",
+        [enumerable_word, addr],
+        [ex_type("term", ctx)],
+        ctx,
+        block
+      ),
+      env
+    }
   end
 
   defp lift_expr(
