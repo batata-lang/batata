@@ -3343,28 +3343,16 @@ defmodule Batata.Lift do
     {create_term_op("ex.list", [], ctx, block), env}
   end
 
-  defp lift_expr([{:|, _, [head, tail]}], ctx, block, env) do
-    {head, env} = lift_expr(head, ctx, block, env)
-    {tail, env} = lift_expr(tail, ctx, block, env)
+  defp lift_expr([{:|, _, [head_ast, tail_ast]}], ctx, block, env) do
+    {head, env} = lift_expr(head_ast, ctx, block, env)
+    {tail, env} = lift_expr(tail_ast, ctx, block, env)
 
     value =
       create_op(
         "ex.list_cons",
         [
-          create_op(
-            "ex.to_word",
-            [lift_value(head, ctx, block, env)],
-            [ex_type("term", ctx)],
-            ctx,
-            block
-          ),
-          create_op(
-            "ex.to_word",
-            [lift_value(tail, ctx, block, env)],
-            [ex_type("term", ctx)],
-            ctx,
-            block
-          )
+          list_cons_operand(head_ast, head, ctx, block, env),
+          list_cons_operand(tail_ast, tail, ctx, block, env)
         ],
         [ex_type("term", ctx)],
         ctx,
@@ -4110,6 +4098,20 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp list_cons_operand(ast, value, ctx, block, env) when is_integer(ast) do
+    value |> lift_value(ctx, block, env) |> box_term(ctx, block)
+  end
+
+  defp list_cons_operand(_ast, value, ctx, block, env) do
+    create_op(
+      "ex.to_word",
+      [lift_value(value, ctx, block, env)],
+      [ex_type("term", ctx)],
+      ctx,
+      block
+    )
   end
 
   defp validate_term_integer_literal!(integer)
@@ -7704,6 +7706,22 @@ defmodule Batata.Lift do
   end
 
   defp do_build_match([{:|, _, [head, tail]}], value, ctx, block) do
+    build_list_cons_match(head, tail, value, ctx, block)
+  end
+
+  defp do_build_match([head | tail] = elements, value, ctx, block) do
+    if list_pattern_has_cons_tail?(tail) do
+      build_list_cons_match(head, tail, value, ctx, block)
+    else
+      build_exact_list_match(elements, value, ctx, block)
+    end
+  end
+
+  defp do_build_match(other, _value, _ctx, _block) do
+    raise Error, "unsupported term pattern: #{inspect(other)}"
+  end
+
+  defp build_list_cons_match(head, tail, value, ctx, block) do
     cond_list =
       create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
@@ -7725,7 +7743,7 @@ defmodule Batata.Lift do
      head_binds ++ tail_binds}
   end
 
-  defp do_build_match(elements, value, ctx, block) when is_list(elements) do
+  defp build_exact_list_match(elements, value, ctx, block) do
     cond_list =
       create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
@@ -7738,13 +7756,15 @@ defmodule Batata.Lift do
         block
       )
 
-    {elem_conds, binds} = list_elements_match(elements, value, ctx, block, [])
-    {combine([cond_list, cond_len | elem_conds], ctx, block), binds}
+    {elem_conds, binds, final_tail} = list_elements_match(elements, value, ctx, block, [])
+    {proper_tail_cond, []} = do_build_match([], final_tail, ctx, block)
+
+    {combine([cond_list, cond_len | elem_conds] ++ [proper_tail_cond], ctx, block), binds}
   end
 
-  defp do_build_match(other, _value, _ctx, _block) do
-    raise Error, "unsupported term pattern: #{inspect(other)}"
-  end
+  defp list_pattern_has_cons_tail?([{:|, _, [_head, _tail]}]), do: true
+  defp list_pattern_has_cons_tail?([_head | tail]), do: list_pattern_has_cons_tail?(tail)
+  defp list_pattern_has_cons_tail?([]), do: false
 
   defp build_tuple_match(elements, value, ctx, block) do
     cond_tuple =
@@ -7846,14 +7866,17 @@ defmodule Batata.Lift do
   defp pattern_variable_name({name, _, nil}) when is_atom(name), do: name
   defp pattern_variable_name(_pattern), do: nil
 
-  defp list_elements_match([], _value, _ctx, _block, binds), do: {[], binds}
+  defp list_elements_match([], value, _ctx, _block, binds), do: {[], binds, value}
 
   defp list_elements_match([element | rest], value, ctx, block, binds) do
     head_value = create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
     tail_value = create_op("ex.list_tail", [value], [ex_type("term", ctx)], ctx, block)
     {head_cond, head_binds} = do_build_match(element, head_value, ctx, block)
-    {tail_conds, tail_binds} = list_elements_match(rest, tail_value, ctx, block, binds)
-    {[head_cond | tail_conds], head_binds ++ tail_binds}
+
+    {tail_conds, tail_binds, final_tail} =
+      list_elements_match(rest, tail_value, ctx, block, binds)
+
+    {[head_cond | tail_conds], head_binds ++ tail_binds, final_tail}
   end
 
   defp build_binary_match(segments, value, ctx, block, defer_rest? \\ false) do
