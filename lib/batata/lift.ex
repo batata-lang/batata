@@ -5972,6 +5972,9 @@ defmodule Batata.Lift do
   defp native_term_call(String, :to_float, [value], ctx, block),
     do: create_op("ex.string_to_float", [value], [ex_type("term", ctx)], ctx, block)
 
+  defp native_term_call(:erlang, :binary_to_float, [value], ctx, block),
+    do: lower_binary_to_float(value, ctx, block)
+
   defp native_term_call(Base, :encode16, [value], ctx, block),
     do: create_op("ex.binary_encode16", [value], [ex_type("term", ctx)], ctx, block)
 
@@ -6157,6 +6160,31 @@ defmodule Batata.Lift do
         fn b ->
           [
             raise_argument_error("invalid :erlang.split_binary/2 arguments", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lower_binary_to_float(binary, ctx, block) do
+    i64 = integer_type(ctx)
+    value = create_op("ex.string_to_float", [binary], [ex_type("term", ctx)], ctx, block)
+    valid = create_op("ex.is_float", [value], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn _b -> [unbox(value, ctx, block)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid :erlang.binary_to_float/1 argument", ctx, b)
             |> unbox(ctx, b)
           ]
         end

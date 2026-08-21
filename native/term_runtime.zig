@@ -3881,14 +3881,35 @@ pub export fn ex_term_is_float(word: i64) i64 {
     return if (word_tag(word) == tag_float and runtime_local_kind(word) == null) 1 else 0;
 }
 
-/// Parses an already validated JSON number token into a boxed binary64 term.
+/// Parses a BEAM-compatible float binary into a boxed binary64 term.
 /// Invalid syntax and non-finite results return nil; callers own error shape.
 pub export fn ex_term_string_to_float(binary: i64) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const bytes = binary_bytes(binary)[0..binary_len(binary)];
+    if (!valid_float_syntax(bytes)) return nil_word;
     const value = std.fmt.parseFloat(f64, bytes) catch return nil_word;
     if (!std.math.isFinite(value)) return nil_word;
     return ex_term_float_lit(@bitCast(@as(u64, @bitCast(value))));
+}
+
+fn valid_float_syntax(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    var cursor: usize = 0;
+    if (bytes[cursor] == '+' or bytes[cursor] == '-') cursor += 1;
+    const integer_start = cursor;
+    while (cursor < bytes.len and std.ascii.isDigit(bytes[cursor])) cursor += 1;
+    if (cursor == integer_start or cursor >= bytes.len or bytes[cursor] != '.') return false;
+    cursor += 1;
+    const fraction_start = cursor;
+    while (cursor < bytes.len and std.ascii.isDigit(bytes[cursor])) cursor += 1;
+    if (cursor == fraction_start) return false;
+    if (cursor == bytes.len) return true;
+    if (bytes[cursor] != 'e' and bytes[cursor] != 'E') return false;
+    cursor += 1;
+    if (cursor < bytes.len and (bytes[cursor] == '+' or bytes[cursor] == '-')) cursor += 1;
+    const exponent_start = cursor;
+    while (cursor < bytes.len and std.ascii.isDigit(bytes[cursor])) cursor += 1;
+    return cursor > exponent_start and cursor == bytes.len;
 }
 
 /// Returns the byte length of a binary word; 0 for non-binaries.
@@ -4606,7 +4627,7 @@ test "boxed floats share tag 7 without colliding with runtime-local words" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_is_float(runtime_local_word(runtime_local_ref, 42)));
 }
 
-test "string to float preserves finite binary64 values and rejects overflow" {
+test "string to float preserves finite binary64 values and rejects invalid syntax" {
     const handle = ex_term_runtime_create();
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
     defer {
@@ -4618,8 +4639,13 @@ test "string to float preserves finite binary64 values and rejects overflow" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_float(value));
     try std.testing.expectEqual(@as(u64, @bitCast(@as(f64, 12.5))), float_bits(value));
 
-    const overflow = ex_term_string_to_float(test_binary_from_string("1e400"));
+    const overflow = ex_term_string_to_float(test_binary_from_string("1.0e400"));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(overflow));
+
+    for ([_][]const u8{ "1", "1e2", "1.", ".5", "1.0e", "NaN" }) |invalid| {
+        const parsed = ex_term_string_to_float(test_binary_from_string(invalid));
+        try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(parsed));
+    }
 }
 
 test "term ABI construction and predicates" {

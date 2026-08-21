@@ -773,6 +773,33 @@ defmodule Batata.ExecuteTest do
     assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
   end
 
+  test "converts valid float binaries with BEAM-compatible syntax", %{ctx: ctx} do
+    for value <- ["+1.0", "12.5", "1.5e+2", "1.5E-2", "-0.0"] do
+      source = """
+      defmodule NativeBinaryToFloat do
+        def convert(binary), do: :erlang.binary_to_float(binary)
+        def main(), do: convert(#{inspect(value)})
+      end
+      """
+
+      expected = :erlang.binary_to_float(value)
+      actual = Batata.execute(source, ctx)
+      assert <<actual::float-64-native>> == <<expected::float-64-native>>
+    end
+  end
+
+  test "rejects invalid float binaries", %{ctx: ctx} do
+    for value <- ["1", "1e2", "1.", ".5", "1.0e", "NaN", :not_binary] do
+      source = """
+      defmodule InvalidBinaryToFloat do
+        def main(), do: :erlang.binary_to_float(#{inspect(value)})
+      end
+      """
+
+      assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+    end
+  end
+
   test "concatenates values within the supported binary domain", %{ctx: ctx} do
     assert {"leftright", "value", "three-parts"} ==
              Batata.execute(
