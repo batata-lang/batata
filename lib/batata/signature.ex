@@ -9,6 +9,7 @@ defmodule Batata.Signature do
     {:erlang, :length, 1} => [:term],
     {:binary, :at, 2} => [:term, :scalar],
     {:binary, :copy, 1} => [:term],
+    {:erlang, :binary_to_float, 1} => [:term],
     {:erlang, :split_binary, 2} => [:term, :scalar],
     {:lists, :keyfind, 3} => [:term, :term, :term],
     {:lists, :reverse, 1} => [:term],
