@@ -1443,9 +1443,16 @@ defmodule Batata.Lift do
     do: {:term_pattern, pattern}
 
   defp multi_arg_tail_pattern!({:=, _, [left, right]} = pattern) do
-    if struct_tail_pattern?(left) or struct_tail_pattern?(right),
-      do: {:term_pattern, pattern},
-      else: unsupported_multi_arg_tail_pattern!(pattern)
+    cond do
+      struct_tail_pattern?(left) or struct_tail_pattern?(right) ->
+        {:term_pattern, pattern}
+
+      normalized = atom_literal_alias_pattern(left, right, pattern) ->
+        {:term_pattern, normalized}
+
+      true ->
+        unsupported_multi_arg_tail_pattern!(pattern)
+    end
   end
 
   defp multi_arg_tail_pattern!({:__aliases__, _, parts} = pattern) when is_list(parts) do
@@ -1470,6 +1477,26 @@ defmodule Batata.Lift do
 
   defp struct_tail_pattern?({:%, _, _}), do: true
   defp struct_tail_pattern?(_pattern), do: false
+
+  defp atom_literal_alias_pattern(left, right, {:=, metadata, _arguments}) do
+    case {compile_known_atom(left), pattern_variable_name(right)} do
+      {{:ok, atom}, name} when is_atom(name) ->
+        {:=, metadata, [atom, right]}
+
+      _ ->
+        case {pattern_variable_name(left), compile_known_atom(right)} do
+          {name, {:ok, atom}} when is_atom(name) -> {:=, metadata, [left, atom]}
+          _ -> nil
+        end
+    end
+  end
+
+  defp compile_known_atom({:__aliases__, _, parts})
+       when is_list(parts) and parts != [],
+       do: {:ok, Elixir.Module.concat(parts)}
+
+  defp compile_known_atom(atom) when is_atom(atom), do: {:ok, atom}
+  defp compile_known_atom(_pattern), do: :error
 
   defp tail_match(patterns, arguments, ctx, block, module_env) do
     schema = Map.get(module_env, @struct_schema_key)
