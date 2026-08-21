@@ -5934,6 +5934,32 @@ defmodule Batata.Lift do
   defp native_term_call(Enum, :count, [value], ctx, block),
     do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(Enum, :into, [enumerable, target], ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    collected = create_op("ex.enumerable_into_map", [enumerable, target], [dyn], ctx, block)
+    valid = create_op("ex.is_map", [collected], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [unbox(collected, ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid Enum.into/2 map collection", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
   defp native_term_call(Enum, :to_list, [value], ctx, block),
     do: create_op("ex.enumerable_to_list", [value], [ex_type("term", ctx)], ctx, block)
 

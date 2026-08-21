@@ -9,6 +9,7 @@ defmodule Batata.Signature do
     {:erlang, :length, 1} => [:term],
     {Atom, :to_string, 1} => [:term],
     {Integer, :to_string, 2} => [:term, :scalar],
+    {Enum, :into, 2} => [:term, :term],
     {Map, :to_list, 1} => [:term],
     {:binary, :at, 2} => [:term, :scalar],
     {:binary, :copy, 1} => [:term],
