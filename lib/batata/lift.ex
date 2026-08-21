@@ -5919,6 +5919,9 @@ defmodule Batata.Lift do
   defp native_term_call(:erlang, :iolist_to_binary, [value], ctx, block),
     do: create_op("ex.iodata_to_binary", [value], [ex_type("term", ctx)], ctx, block)
 
+  defp native_term_call(:erlang, :split_binary, [binary, position], ctx, block),
+    do: lower_split_binary(binary, position, ctx, block)
+
   defp native_term_call(Enum, :count, [value], ctx, block),
     do: create_op("ex.enumerable_count", [value], [MLIR.Type.i64()], ctx, block)
 
@@ -6129,6 +6132,100 @@ defmodule Batata.Lift do
 
   defp native_term_call(module, fun, _args, _ctx, _block) do
     raise Error, "no native_term lowering for #{inspect(module)}.#{fun}"
+  end
+
+  defp lower_split_binary(binary, position, ctx, block) do
+    i64 = integer_type(ctx)
+    binary? = create_op("ex.is_binary", [binary], [i64], ctx, block)
+    integer? = create_op("ex.is_integer", [position], [i64], ctx, block)
+    index = create_op("ex.to_int", [position], [i64], ctx, block)
+    length = create_op("ex.binary_length", [binary], [i64], ctx, block)
+    non_negative = cmp(index, 0, "sge", ctx, block)
+    within_length = cmp(index, length, "sle", ctx, block)
+    valid = create_op("arith.andi", [binary?, integer?], [i64], ctx, block)
+    valid = create_op("arith.andi", [valid, non_negative], [i64], ctx, block)
+    valid = create_op("arith.andi", [valid, within_length], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [build_split_binary(binary, index, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid :erlang.split_binary/2 arguments", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp build_split_binary(binary, index, ctx, block) do
+    i64 = integer_type(ctx)
+    binary_i64 = unbox(binary, ctx, block)
+    empty = create_term_op("ex.list", [], ctx, block) |> unbox(ctx, block)
+    cursor = create_op("ex.sub", [index, lit(1, ctx, block)], [i64], ctx, block)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_binary, b_acc, b_cursor] = before_block |> Walker.arguments() |> Enum.to_list()
+    continue = cmp(b_cursor, 0, "sge", ctx, before_block)
+    continue_i1 = create_op("arith.trunci", [continue], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [continue_i1, b_binary, b_acc, b_cursor], [], ctx, before_block)
+
+    [a_binary, a_acc, a_cursor] = after_block |> Walker.arguments() |> Enum.to_list()
+    a_binary_word = create_op("ex.to_word", [a_binary], [ex_type("term", ctx)], ctx, after_block)
+    acc_word = create_op("ex.to_word", [a_acc], [ex_type("term", ctx)], ctx, after_block)
+
+    byte =
+      create_op(
+        "ex.binary_get",
+        [a_binary_word, a_cursor],
+        [ex_type("term", ctx)],
+        ctx,
+        after_block
+      )
+
+    acc_next =
+      create_op("ex.list_cons", [byte, acc_word], [ex_type("term", ctx)], ctx, after_block)
+
+    acc_next = unbox(acc_next, ctx, after_block)
+
+    cursor_next =
+      create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_binary, acc_next, cursor_next], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [binary_i64, empty, cursor],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    prefix_list = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+    prefix_list = create_op("ex.to_word", [prefix_list], [ex_type("term", ctx)], ctx, block)
+    prefix = create_op("ex.binary_from_list", [prefix_list], [ex_type("term", ctx)], ctx, block)
+    suffix = create_op("ex.binary_slice", [binary, index], [ex_type("term", ctx)], ctx, block)
+    create_term_op("ex.tuple", [prefix, suffix], ctx, block)
   end
 
   defp lower_kernel_to_string(value, known_atoms, ctx, block) do

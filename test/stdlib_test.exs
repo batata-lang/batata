@@ -15,6 +15,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:erlang, :length, 1}) == :native_term
       assert Stdlib.class({IO, :iodata_to_binary, 1}) == :native_term
       assert Stdlib.class({:erlang, :iolist_to_binary, 1}) == :native_term
+      assert Stdlib.class({:erlang, :split_binary, 2}) == :native_term
       assert Stdlib.class({:binary, :at, 2}) == :native_term
       assert Stdlib.class({:binary, :match, 2}) == :native_term
       assert Stdlib.class({Date, :to_iso8601, 1}) == :native_term
@@ -51,6 +52,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
       assert Stdlib.may_raise?({Keyword, :get, 3})
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
+      assert Stdlib.may_raise?({:erlang, :split_binary, 2})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
     end
@@ -103,6 +105,13 @@ defmodule Batata.StdlibTest do
                allocation: :may_allocate,
                preemption: :none,
                reductions: :constant
+             }
+
+      assert Stdlib.metadata({:erlang, :split_binary, 2}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :per_element
              }
 
       assert Enum.all?(Stdlib.classes(), fn {mfa, _class} -> Stdlib.metadata(mfa) != nil end)
