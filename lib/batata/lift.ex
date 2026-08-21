@@ -5050,6 +5050,19 @@ defmodule Batata.Lift do
     lift_stdlib_call(Keyword, :get, [keywords, key, nil], ctx, block, env)
   end
 
+  defp lift_stdlib_call(:binary, :match, [binary_ast, patterns_ast], ctx, block, env) do
+    case static_binary_match_bytes(patterns_ast) do
+      {:ok, bytes} ->
+        {binary, env} = lift_expr(binary_ast, ctx, block, env)
+        binary = binary |> lift_value(ctx, block, env) |> box_term(ctx, block)
+        {lower_binary_match(binary, bytes, ctx, block), env}
+
+      :error ->
+        raise Error,
+              ":binary.match/2 supports a compile-known non-empty byte pattern or list of byte patterns"
+    end
+  end
+
   defp lift_stdlib_call(Keyword, :get, [keywords, key, default], ctx, block, env) do
     {values, env} = lift_operands_boxed([keywords, key, default], ctx, block, env)
     [keywords, key, default] = values
@@ -5141,6 +5154,102 @@ defmodule Batata.Lift do
   # epoch shift from Calendar.ISO day zero (0000-01-01). The adjusted era
   # numerator preserves floor division for dates before the epoch even though
   # `ex.div` truncates toward zero.
+  defp static_binary_match_bytes(pattern) when is_binary(pattern) and byte_size(pattern) == 1,
+    do: {:ok, :binary.bin_to_list(pattern)}
+
+  defp static_binary_match_bytes(patterns) when is_list(patterns) and patterns != [] do
+    if Enum.all?(patterns, &(is_binary(&1) and byte_size(&1) == 1)) do
+      {:ok, patterns |> Enum.map(&:binary.first/1) |> Enum.uniq()}
+    else
+      :error
+    end
+  end
+
+  defp static_binary_match_bytes(_patterns), do: :error
+
+  defp lower_binary_match(binary, bytes, ctx, block) do
+    i64 = integer_type(ctx)
+    binary_i64 = unbox(binary, ctx, block)
+    length = create_op("ex.binary_length", [binary], [i64], ctx, block)
+    cursor = lit(0, ctx, block)
+    not_found = lit(-1, ctx, block)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 3)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_binary, b_cursor, b_found] = before_block |> Walker.arguments() |> Enum.to_list()
+    in_bounds = cmp(b_cursor, length, "slt", ctx, before_block)
+    unmatched = cmp(b_found, -1, "eq", ctx, before_block)
+    continue = create_op("arith.andi", [in_bounds, unmatched], [i64], ctx, before_block)
+    continue_i1 = create_op("arith.trunci", [continue], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [continue_i1, b_binary, b_cursor, b_found], [], ctx, before_block)
+
+    [a_binary, a_cursor, a_found] = after_block |> Walker.arguments() |> Enum.to_list()
+    a_binary_word = create_op("ex.to_word", [a_binary], [ex_type("term", ctx)], ctx, after_block)
+
+    byte =
+      create_op(
+        "ex.binary_get",
+        [a_binary_word, a_cursor],
+        [ex_type("term", ctx)],
+        ctx,
+        after_block
+      )
+      |> then(&create_op("ex.to_int", [&1], [i64], ctx, after_block))
+
+    matched =
+      bytes
+      |> Enum.map(&cmp(byte, &1, "eq", ctx, after_block))
+      |> combine_any(ctx, after_block)
+
+    matched_i1 = create_op("arith.trunci", [matched], [MLIR.Type.i1()], ctx, after_block)
+
+    found_next =
+      create_op("arith.select", [matched_i1, a_cursor, a_found], [i64], ctx, after_block)
+
+    cursor_next =
+      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_binary, cursor_next, found_next], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [binary_i64, cursor, not_found],
+        results: [i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    found = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(2)
+    found? = cmp(found, 0, "sge", ctx, block)
+    found_i1 = create_op("arith.trunci", [found?], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      found_i1,
+      ctx,
+      block,
+      [i64],
+      fn b ->
+        index = box_term(found, ctx, b)
+        width = box_term(lit(1, ctx, b), ctx, b)
+        [create_term_op("ex.tuple", [index, width], ctx, b) |> unbox(ctx, b)]
+      end,
+      fn b -> [atom_term(:nomatch, ctx, b) |> unbox(ctx, b)] end
+    )
+    |> hd()
+    |> then(&create_op("ex.to_word", [&1], [ex_type("term", ctx)], ctx, block))
+  end
+
   defp lower_date_to_iso8601(days, ctx, block) do
     i64 = integer_type(ctx)
     z = create_op("ex.sub", [days, lit(60, ctx, block)], [i64], ctx, block)

@@ -731,6 +731,22 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "matches compile-known byte patterns in binaries", %{ctx: ctx} do
+    source = """
+    defmodule NativeBinaryMatch do
+      def main() do
+        {
+          :binary.match(<<10, 65, 30>>, ["A", "("]),
+          :binary.match(<<10, 65, 30>>, ["(", ")"])
+        }
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nNativeBinaryMatch.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "concatenates values within the supported binary domain", %{ctx: ctx} do
     assert {"leftright", "value", "three-parts"} ==
              Batata.execute(

@@ -407,6 +407,7 @@ defmodule Batata do
     |> Map.put(atom_word(false), false)
     |> Map.put(atom_word(String), String)
     |> Map.put(atom_word(:printable?), :printable?)
+    |> Map.put(atom_word(:nomatch), :nomatch)
     |> Map.put(atom_word(:unknown_atom), :unknown_atom)
     |> Map.put(atom_word(:unsupported_type), :unsupported_type)
   end
