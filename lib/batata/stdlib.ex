@@ -169,7 +169,8 @@ defmodule Batata.Stdlib.Map do
 
   @class_map %{
     {Map, :size, 1} => :native_term,
-    {Map, :put, 3} => :native_term
+    {Map, :put, 3} => :native_term,
+    {Map, :to_list, 1} => :native_term
   }
 
   @doc "Returns map-domain stdlib replacement declarations."
@@ -441,6 +442,7 @@ defmodule Batata.Stdlib do
                      {MapSet, :new, 1},
                      {MapSet, :put, 2},
                      {Map, :put, 3},
+                     {Map, :to_list, 1},
                      {Kernel, :list_to_binary, 1},
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
@@ -487,6 +489,7 @@ defmodule Batata.Stdlib do
                       {Enum, :map, 2},
                       {Enum, :reduce, 3},
                       {Enum, :to_list, 1},
+                      {Map, :to_list, 1},
                       {MapSet, :new, 1},
                       {HashSet, :new, 1},
                       {Keyword, :get, 2},

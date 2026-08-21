@@ -29,6 +29,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Keyword, :get, 2}) == :native_term
       assert Stdlib.class({Keyword, :get, 3}) == :native_term
       assert Stdlib.class({Map, :size, 1}) == :native_term
+      assert Stdlib.class({Map, :to_list, 1}) == :native_term
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({String, :printable?, 1}) == :native_term
@@ -153,6 +154,7 @@ defmodule Batata.StdlibTest do
       assert 3 == execute("byte_size(<<1, 2, 3>>)", ctx)
       assert 1 == execute("map_size(%{1 => 2})", ctx)
       assert 2 == execute("Map.size(%{1 => 2, 3 => 4})", ctx)
+      assert [{1, 2}, {3, 4}] == execute("Map.to_list(%{1 => 2, 3 => 4})", ctx)
       assert 2 == execute("Tuple.size({1, 2})", ctx)
       assert 3 == execute("Enum.count([1, 2, 3])", ctx)
       assert 2 == execute("Enum.count({1, 2})", ctx)
