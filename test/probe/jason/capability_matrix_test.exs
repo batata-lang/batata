@@ -36,6 +36,9 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["stdlib.enum_term_callbacks"]["status"] == "executable"
     assert capabilities["stdlib.enum_term_callbacks"]["gate"] == "codegen_pattern_mapper_test"
     assert capabilities["stdlib.enum_term_callbacks"]["scope"] =~ "up to four tagged captures"
+    assert capabilities["stdlib.list_flatten"]["status"] == "executable"
+    assert capabilities["stdlib.list_flatten"]["gate"] == "codegen_pattern_mapper_test"
+    assert capabilities["stdlib.list_flatten"]["scope"] =~ "proper nested lists"
     assert capabilities["control.short_circuit_and"]["status"] == "executable"
     assert capabilities["control.short_circuit_and"]["gate"] == "execute_test"
 
