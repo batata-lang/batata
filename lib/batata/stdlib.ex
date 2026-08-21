@@ -335,6 +335,7 @@ defmodule Batata.Stdlib.Enum do
   @class_map %{
     {Enum, :count, 1} => :native_term,
     {Enum, :into, 2} => :native_term,
+    {Enum, :intersperse, 2} => :native_term,
     {Enum, :map, 2} => :beamer_callback,
     {Enum, :reduce, 3} => :beamer_callback,
     {Enum, :to_list, 1} => :native_term
@@ -402,6 +403,7 @@ defmodule Batata.Stdlib do
                   {Integer, :to_charlist, 1},
                   {Integer, :to_string, 2},
                   {Enum, :into, 2},
+                  {Enum, :intersperse, 2},
                   {NaiveDateTime, :to_iso8601, 1},
                   {Time, :to_iso8601, 1},
                   {:erlang, :binary_to_float, 1},
@@ -469,6 +471,7 @@ defmodule Batata.Stdlib do
                      {Integer, :to_string, 1},
                      {Integer, :to_string, 2},
                      {Enum, :into, 2},
+                     {Enum, :intersperse, 2},
                      {Enum, :map, 2},
                      {Enum, :to_list, 1},
                      {:lists, :reverse, 1},
@@ -493,6 +496,7 @@ defmodule Batata.Stdlib do
   @per_element_mfas MapSet.new([
                       {Enum, :count, 1},
                       {Enum, :into, 2},
+                      {Enum, :intersperse, 2},
                       {Enum, :map, 2},
                       {Enum, :reduce, 3},
                       {Enum, :to_list, 1},

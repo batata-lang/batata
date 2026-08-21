@@ -5960,6 +5960,37 @@ defmodule Batata.Lift do
     create_op("ex.to_word", [result], [dyn], ctx, block)
   end
 
+  defp native_term_call(Enum, :intersperse, [enumerable, separator], ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+
+    list? = create_op("ex.is_list", [enumerable], [i64], ctx, block)
+    map? = create_op("ex.is_map", [enumerable], [i64], ctx, block)
+    valid = create_op("arith.ori", [list?, map?], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    interspersed =
+      create_op("ex.enumerable_intersperse", [enumerable, separator], [dyn], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [unbox(interspersed, ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid Enum.intersperse/2 enumerable", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
   defp native_term_call(Enum, :to_list, [value], ctx, block),
     do: create_op("ex.enumerable_to_list", [value], [ex_type("term", ctx)], ctx, block)
 

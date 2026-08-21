@@ -36,6 +36,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
       assert Stdlib.class({Integer, :to_string, 2}) == :native_term
       assert Stdlib.class({Enum, :into, 2}) == :native_term
+      assert Stdlib.class({Enum, :intersperse, 2}) == :native_term
       assert Stdlib.class({Enum, :count, 1}) == :native_term
       assert Stdlib.class({Enum, :map, 2}) == :beamer_callback
       assert Stdlib.class({Process, :link, 1}) == :native_term
@@ -58,6 +59,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
       assert Stdlib.may_raise?({Integer, :to_string, 2})
       assert Stdlib.may_raise?({Enum, :into, 2})
+      assert Stdlib.may_raise?({Enum, :intersperse, 2})
       assert Stdlib.may_raise?({Keyword, :get, 3})
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       assert Stdlib.may_raise?({:erlang, :binary_to_float, 1})
@@ -124,6 +126,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Enum, :into, 2}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :per_element
+             }
+
+      assert Stdlib.metadata({Enum, :intersperse, 2}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,
@@ -587,6 +596,30 @@ defmodule Batata.StdlibTest do
       assert_raise ArgumentError, "invalid Enum.into/2 map collection", fn ->
         execute("Enum.into([a: 1], [])", ctx)
       end
+    end
+
+    test "intersperses bounded enumerables while preserving iodata elements", %{ctx: ctx} do
+      expressions = [
+        "Enum.count(Enum.intersperse([], :separator))",
+        "Enum.intersperse([1], :separator)",
+        "Enum.intersperse([1, 2, 3], 0)",
+        "Enum.intersperse(%{1 => 2, 3 => 4}, :separator)",
+        ~S|IO.iodata_to_binary(Enum.intersperse([], ","))|,
+        ~S|IO.iodata_to_binary(Enum.intersperse(["a", "b", "c"], ","))|
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx)
+      end)
+    end
+
+    test "rejects non-enumerable Enum.intersperse/2 inputs", %{ctx: ctx} do
+      Enum.each(["1", "{1, 2}", "<<1, 2>>"], fn input ->
+        assert_raise ArgumentError, "invalid Enum.intersperse/2 enumerable", fn ->
+          execute("Enum.intersperse(#{input}, 0)", ctx)
+        end
+      end)
     end
 
     test "keeps bounded Integer.to_charlist/1 results stable under low budgets", %{ctx: ctx} do
