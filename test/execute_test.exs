@@ -289,6 +289,27 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "returns and invokes remote function captures", %{ctx: ctx} do
+    source = """
+    defmodule RemoteFunctionCapture do
+      def choose(:atom_module), do: &:erlang.length/1
+      def choose(:alias_module), do: &Kernel.length/1
+
+      def main() do
+        atom_length = choose(:atom_module)
+        alias_length = choose(:alias_module)
+
+        {atom_length.([:one]), alias_length.([:one, :two, :three])}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nRemoteFunctionCapture.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "normalizes local and remote pipeline stages", %{ctx: ctx} do
     source = """
     defmodule PipelineDispatch do

@@ -5,6 +5,10 @@ defmodule Batata.Signature do
 
   @term_guards ~w(is_atom is_binary is_float is_function is_list is_map is_tuple)a
   @builtin_modes %{
+    {Kernel, :length, 1} => [:term],
+    {:erlang, :length, 1} => [:term],
+    {:binary, :at, 2} => [:term, :scalar],
+    {:binary, :copy, 1} => [:term],
     {:lists, :keyfind, 3} => [:term, :term, :term],
     {:lists, :reverse, 1} => [:term],
     {:lists, :reverse, 2} => [:term, :term]
@@ -77,13 +81,18 @@ defmodule Batata.Signature do
     {node, modes}
   end
 
-  defp infer_node({{:., _, [module]}, _, args} = node, modes, names, _signatures)
-       when is_atom(module) and is_list(args) do
+  defp infer_node(
+         {{:., _, [module_ast, function]}, _, args} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_atom(function) and is_list(args) do
     call_modes =
-      builtin_modes(module, call_name(node), length(args)) ||
-        if(Batata.Stdlib.class({module, call_name(node), length(args)}) == :native_term,
-          do: List.duplicate(:term, length(args))
-        )
+      case module_ref(module_ast) do
+        {:ok, module} -> builtin_modes(module, function, length(args))
+        :error -> nil
+      end
 
     {node, mark_arguments(modes, names, args, call_modes)}
   end
@@ -110,7 +119,11 @@ defmodule Batata.Signature do
 
   defp infer_node(node, modes, _names, _signatures), do: {node, modes}
 
-  defp call_name({{:., _, [_module, function]}, _, _args}), do: function
+  defp module_ref({:__aliases__, _, parts}) when is_list(parts),
+    do: {:ok, Module.concat(parts)}
+
+  defp module_ref(module) when is_atom(module), do: {:ok, module}
+  defp module_ref(_module), do: :error
 
   defp mark_arguments(modes, _names, _args, nil), do: modes
 
