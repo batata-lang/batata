@@ -104,13 +104,18 @@ fn is_runtime_ref(word: i64) bool {
 
 fn is_list_word(word: i64) bool {
     // [] (the empty list) is represented as the nil atom, matching BEAM.
-    return word == nil_word or word_tag(word) == tag_list;
+    return word == nil_word or is_list_cell_word(word);
+}
+
+fn is_list_cell_word(word: i64) bool {
+    return word_tag(word) == tag_list and
+        (@as(usize, @bitCast(word)) & ~tag_mask) != 0;
 }
 
 fn list_len(list: i64) usize {
     var current = list;
     var count: usize = 0;
-    while (word_tag(current) == tag_list) {
+    while (is_list_cell_word(current)) {
         const cell = list_cell(current);
         count += 1;
         current = cell[1];
@@ -3861,25 +3866,25 @@ pub export fn ex_term_file_read_lines(path_word: i64) i64 {
 
 /// Returns the head of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_head(list: i64) i64 {
-    if (word_tag(list) != tag_list) return nil_word;
+    if (!is_list_cell_word(list)) return nil_word;
     return list_cell(list)[0];
 }
 
 /// Returns the tail of a list word; nil for non-lists or the empty list.
 pub export fn ex_term_list_tail(list: i64) i64 {
-    if (word_tag(list) != tag_list) return nil_word;
+    if (!is_list_cell_word(list)) return nil_word;
     return list_cell(list)[1];
 }
 
 /// Returns the element at index of a list word; nil when out of range or
 /// not a list.
 pub export fn ex_term_list_get(list: i64, index: i64) i64 {
-    if (word_tag(list) != tag_list) return nil_word;
+    if (!is_list_cell_word(list)) return nil_word;
     var cell = list_cell(list);
     var i: i64 = 0;
     while (i < index) : (i += 1) {
         const tail = cell[1];
-        if (word_tag(tail) != tag_list) return nil_word;
+        if (!is_list_cell_word(tail)) return nil_word;
         cell = list_cell(tail);
     }
     return cell[0];
@@ -4993,6 +4998,13 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_list(ex_term_list_tail(ex_term_list_tail(list))));
     try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(nil_word));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_list_head(nil_word)));
+
+    const null_list_word: i64 = @intCast(tag_list);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_is_list(null_list_word));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_length(null_list_word));
+    try std.testing.expectEqual(nil_word, ex_term_list_head(null_list_word));
+    try std.testing.expectEqual(nil_word, ex_term_list_tail(null_list_word));
+    try std.testing.expectEqual(nil_word, ex_term_list_get(null_list_word, 0));
 
     // map reads
     const entries = ex_term_list_cons(one, ex_term_list_cons(two, nil_word));
