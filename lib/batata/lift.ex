@@ -7681,6 +7681,15 @@ defmodule Batata.Lift do
     build_tuple_match(elements, value, ctx, block)
   end
 
+  defp do_build_match(
+         {:%, _, [{:_, _, nil}, {:%{}, _, entries}]},
+         value,
+         ctx,
+         block
+       ) do
+    build_any_struct_match(entries, value, ctx, block)
+  end
+
   defp do_build_match({:%{}, _, entries}, value, ctx, block) do
     build_map_match(entries, value, ctx, block)
   end
@@ -7809,42 +7818,54 @@ defmodule Batata.Lift do
 
     {conds, binds} =
       Enum.map_reduce(entries, [], fn {key, pattern}, binds ->
-        key_word =
-          create_op(
-            "ex.to_word",
-            [lit(atom_word(key), ctx, block)],
-            [ex_type("term", ctx)],
-            ctx,
-            block
-          )
-
-        fetched = create_op("ex.map_fetch", [value, key_word], [ex_type("term", ctx)], ctx, block)
-
-        found =
-          create_op(
-            "ex.tuple_get",
-            [fetched, lit(0, ctx, block)],
-            [ex_type("term", ctx)],
-            ctx,
-            block
-          )
-
-        fetched_value =
-          create_op(
-            "ex.tuple_get",
-            [fetched, lit(1, ctx, block)],
-            [ex_type("term", ctx)],
-            ctx,
-            block
-          )
-
-        found_int = create_op("ex.to_int", [found], [MLIR.Type.i64()], ctx, block)
-        found_cond = cmp(found_int, 1, "eq", ctx, block)
+        {found_cond, fetched_value} = fetch_map_pattern_value(key, value, ctx, block)
         {value_cond, value_binds} = do_build_match(pattern, fetched_value, ctx, block)
         {combine([found_cond, value_cond], ctx, block), value_binds ++ binds}
       end)
 
     {combine([cond_map | conds], ctx, block), Enum.reverse(binds)}
+  end
+
+  defp build_any_struct_match(entries, value, ctx, block) do
+    {map_cond, binds} = build_map_match(entries, value, ctx, block)
+    {found_cond, module} = fetch_map_pattern_value(:__struct__, value, ctx, block)
+    atom_cond = create_op("ex.is_atom", [module], [MLIR.Type.i64()], ctx, block)
+
+    {combine([map_cond, found_cond, atom_cond], ctx, block), binds}
+  end
+
+  defp fetch_map_pattern_value(key, value, ctx, block) do
+    key_word =
+      create_op(
+        "ex.to_word",
+        [lit(atom_word(key), ctx, block)],
+        [ex_type("term", ctx)],
+        ctx,
+        block
+      )
+
+    fetched = create_op("ex.map_fetch", [value, key_word], [ex_type("term", ctx)], ctx, block)
+
+    found =
+      create_op(
+        "ex.tuple_get",
+        [fetched, lit(0, ctx, block)],
+        [ex_type("term", ctx)],
+        ctx,
+        block
+      )
+
+    fetched_value =
+      create_op(
+        "ex.tuple_get",
+        [fetched, lit(1, ctx, block)],
+        [ex_type("term", ctx)],
+        ctx,
+        block
+      )
+
+    found_int = create_op("ex.to_int", [found], [MLIR.Type.i64()], ctx, block)
+    {cmp(found_int, 1, "eq", ctx, block), fetched_value}
   end
 
   defp atom_keyed_map_pattern_entry?({key, _pattern}) when is_atom(key), do: true
