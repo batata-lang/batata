@@ -60,25 +60,45 @@ defmodule Batata.Frontend.ProtocolAndClosureTest do
            ]
   end
 
+  test "expands lexical aliases and __MODULE__ per implementation target" do
+    modules =
+      Frontend.from_source("""
+      defimpl Sample.Encoder, for: [Date, Time] do
+        alias Sample.Shared, as: Shared
+        def identity(), do: {__MODULE__, Shared}
+      end
+      """)
+
+    assert Enum.map(modules, fn module ->
+             identity = Enum.find(module.definitions, &(&1.name == :identity))
+             {module.name, identity.clauses |> hd() |> Map.fetch!(:body_ast) |> Macro.to_string()}
+           end) == [
+             {Sample.Encoder.Date, "{Sample.Encoder.Date, Sample.Shared}"},
+             {Sample.Encoder.Time, "{Sample.Encoder.Time, Sample.Shared}"}
+           ]
+  end
+
   test "does not leak implicit defimpl attributes into nested lexical modules" do
     module =
       Frontend.from_source("""
       defimpl Sample.Encoder, for: Any do
-        def attributes(), do: {@protocol, @for}
+        def attributes(), do: {@protocol, @for, __MODULE__}
 
         defmodule Nested do
-          def attributes(), do: {@protocol, @for}
+          def attributes(), do: {@protocol, @for, __MODULE__}
         end
       end
       """)
 
     attributes = Enum.find(module.definitions, &(&1.name == :attributes))
-    assert hd(attributes.clauses).body_ast == {Sample.Encoder, Any}
+
+    assert attributes.clauses |> hd() |> Map.fetch!(:body_ast) |> Macro.to_string() ==
+             "{Sample.Encoder, Any, Sample.Encoder.Any}"
 
     assert [%Frontend.UnsupportedForm{reason: :nested_defmodule, form: nested}] =
              module.unsupported
 
-    assert Macro.to_string(nested) =~ "{@protocol, @for}"
+    assert Macro.to_string(nested) =~ "{@protocol, @for, __MODULE__}"
   end
 
   test "normalizes protocol declarations separately from implementations" do

@@ -3299,6 +3299,15 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_expr({:__aliases__, _, module_parts}, ctx, block, env)
+       when is_list(module_parts) do
+    if Enum.all?(module_parts, &is_atom/1) do
+      lift_expr(Elixir.Module.concat(module_parts), ctx, block, env)
+    else
+      raise Error, "unsupported module literal: #{inspect(module_parts)}"
+    end
+  end
+
   defp lift_expr({:+, _, [left, right]}, ctx, block, env) do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)

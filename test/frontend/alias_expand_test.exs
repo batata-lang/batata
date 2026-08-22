@@ -64,6 +64,22 @@ defmodule Batata.Frontend.AliasExpandTest do
     assert Macro.to_string(body) == "Jason.Decoder.parse(input)"
   end
 
+  test "normalizes bare and module-shaped __MODULE__ uses" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule Sample do
+        def identity(), do: __MODULE__
+        def build(), do: %__MODULE__{}
+      end
+      """)
+
+    identity = Enum.find(snapshot.definitions, &(&1.name == :identity))
+    build = Enum.find(snapshot.definitions, &(&1.name == :build))
+
+    assert Macro.to_string(hd(identity.clauses).body_ast) == "Sample"
+    assert Macro.to_string(hd(build.clauses).body_ast) == "%Sample{}"
+  end
+
   @tag :tmp_dir
   test "preserves BEAM behaviour for a self-contained fixture", %{tmp_dir: tmp_dir} do
     source = """

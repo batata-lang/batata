@@ -203,6 +203,7 @@ defmodule Batata.Frontend do
 
     {definitions, unsupported, struct_schema} =
       body
+      |> AliasExpand.expand_body(impl_module)
       |> expand_defimpl_attributes(protocol, target)
       |> body_forms()
       |> normalize_body(impl_module)
