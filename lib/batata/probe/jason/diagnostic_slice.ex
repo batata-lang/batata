@@ -9,6 +9,24 @@ defmodule Batata.Probe.Jason.DiagnosticSlice do
   @doc false
   @spec ordinary_definitions([Macro.t()], MapSet.t(signature())) :: [Macro.t()]
   def ordinary_definitions(forms, compile_time_public \\ MapSet.new()) when is_list(forms) do
+    compile_time_only = compile_time_only_signatures(forms, compile_time_public)
+
+    Enum.filter(forms, fn form ->
+      case definition(form) do
+        [%{kind: kind, signature: signature}] when kind in @ordinary_kinds ->
+          not MapSet.member?(compile_time_only, signature)
+
+        _ ->
+          false
+      end
+    end)
+  end
+
+  @doc false
+  @spec compile_time_only_signatures([Macro.t()], MapSet.t(signature())) ::
+          MapSet.t(signature())
+  def compile_time_only_signatures(forms, compile_time_public \\ MapSet.new())
+      when is_list(forms) do
     definitions = Enum.flat_map(forms, &definition/1)
     graph = call_graph(definitions)
 
@@ -26,19 +44,9 @@ defmodule Batata.Probe.Jason.DiagnosticSlice do
       |> MapSet.difference(compile_time_reachable)
       |> MapSet.union(MapSet.difference(public, compile_time_public))
 
-    compile_time_only =
-      compile_time_reachable
-      |> MapSet.difference(reachable(graph, ordinary_roots))
-
-    Enum.filter(forms, fn form ->
-      case definition(form) do
-        [%{kind: kind, signature: signature}] when kind in @ordinary_kinds ->
-          not MapSet.member?(compile_time_only, signature)
-
-        _ ->
-          false
-      end
-    end)
+    compile_time_reachable
+    |> MapSet.difference(reachable(graph, ordinary_roots))
+    |> MapSet.intersection(signatures(definitions, @ordinary_kinds))
   end
 
   defp definition({kind, _, [head, [do: body]]})

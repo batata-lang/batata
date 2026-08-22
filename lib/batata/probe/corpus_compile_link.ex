@@ -10,6 +10,7 @@ defmodule Batata.Probe.CorpusCompileLink do
   alias Batata.CompilationUnit
   alias Batata.Frontend
   alias Batata.Lower
+  alias Batata.Probe.CorpusRuntimeSlice
   alias Batata.Probe.Jason.CompileAttempt
   alias Beaver.MLIR
 
@@ -19,17 +20,23 @@ defmodule Batata.Probe.CorpusCompileLink do
   def run(source) do
     sources = source |> source_files() |> Enum.map(&File.read!/1)
     modules = Frontend.from_sources(sources)
-    module_names = MapSet.new(modules, & &1.name)
-    dependencies = internal_dependencies(modules, module_names)
+    runtime_slice = CorpusRuntimeSlice.slice(source, modules)
+    runtime_modules = runtime_slice.modules
+    module_names = MapSet.new(runtime_modules, & &1.name)
+    dependencies = internal_dependencies(runtime_modules, module_names)
     attempts = Enum.map(modules, &attempt/1)
     isolated_passes = Enum.count(attempts, &(&1["status"] == "pass"))
-    unit_attempt = attempt_unit(modules)
+    unit_attempt = attempt_unit(runtime_modules)
     status = if unit_attempt["status"] == "pass", do: "pass", else: "blocked"
 
     %{
       "status" => status,
       "mode" => @mode,
       "modules" => length(modules),
+      "runtime_slice" => %{
+        "removed_definitions" => runtime_slice.removed_definitions,
+        "removed_definition_count" => length(runtime_slice.removed_definitions)
+      },
       "isolated_passes" => isolated_passes,
       "internal_dependencies" => dependencies,
       "unresolved_internal_dependencies" =>
