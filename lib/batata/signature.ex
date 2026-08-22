@@ -157,8 +157,9 @@ defmodule Batata.Signature do
 
   defp infer_node(node, modes, _names, _signatures), do: {node, modes}
 
-  defp module_ref({:__aliases__, _, parts}) when is_list(parts),
-    do: {:ok, Module.concat(parts)}
+  defp module_ref({:__aliases__, _, parts}) when is_list(parts) and parts != [] do
+    if Enum.all?(parts, &is_atom/1), do: {:ok, Module.concat(parts)}, else: :error
+  end
 
   defp module_ref(module) when is_atom(module), do: {:ok, module}
   defp module_ref(_module), do: :error

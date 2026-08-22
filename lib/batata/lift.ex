@@ -4971,11 +4971,9 @@ defmodule Batata.Lift do
 
   defp catch_all_clause?(_clause), do: false
 
-  defp module_ref({:__aliases__, _, [module]}) when is_atom(module),
-    do: {:ok, Module.concat([module])}
-
-  defp module_ref({:__aliases__, _, [:"Elixir", module]}) when is_atom(module),
-    do: {:ok, Module.concat([:"Elixir", module])}
+  defp module_ref({:__aliases__, _, parts}) when is_list(parts) and parts != [] do
+    if Enum.all?(parts, &is_atom/1), do: {:ok, Module.concat(parts)}, else: :error
+  end
 
   # A bare lowercase atom module reference (`erlang.monotonic_time()` parses
   # the module as `{:erlang, meta, nil}`).

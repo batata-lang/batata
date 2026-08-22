@@ -190,8 +190,9 @@ defmodule Batata.CompilationUnit do
 
   defp resolve_module(module) when is_atom(module), do: {:ok, module}
 
-  defp resolve_module({:__aliases__, _, parts}) when is_list(parts),
-    do: {:ok, Module.concat(parts)}
+  defp resolve_module({:__aliases__, _, parts}) when is_list(parts) and parts != [] do
+    if Enum.all?(parts, &is_atom/1), do: {:ok, Module.concat(parts)}, else: :error
+  end
 
   defp resolve_module(_ast), do: :error
 
