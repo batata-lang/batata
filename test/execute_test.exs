@@ -2326,6 +2326,23 @@ defmodule Batata.ExecuteTest do
     assert error.args == [3, 4]
   end
 
+  test "executes generated default wrappers with hygienic variable contexts", %{ctx: ctx} do
+    source = """
+    defmodule GeneratedDefaultWrapper do
+      def choose(left, right, fallback \\\\ 5), do: left + right + fallback
+
+      def main() do
+        choose(1, 2) + choose(3, 4, 6)
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nGeneratedDefaultWrapper.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "matches and binds validated struct patterns in trailing arguments", %{ctx: ctx} do
     source = """
     defmodule DecimalTailPatterns do

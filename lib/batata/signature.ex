@@ -23,6 +23,8 @@ defmodule Batata.Signature do
     {:lists, :reverse, 2} => [:term, :term]
   }
 
+  defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
+
   def builtin_modes(module, function, arity),
     do: Map.get(@builtin_modes, {module, function, arity})
 
@@ -74,21 +76,21 @@ defmodule Batata.Signature do
   end
 
   defp infer_node(
-         {{:., _, [{name, _, nil}, field]}, _, []} = node,
+         {{:., _, [{name, _, context}, field]}, _, []} = node,
          modes,
          names,
          _signatures
        )
-       when is_atom(name) and is_atom(field),
+       when is_variable_ast(name, context) and is_atom(field),
        do: {node, mark_name(modes, names, name)}
 
   defp infer_node(
-         {:case, _, [{name, _, nil}, [do: clauses]]} = node,
+         {:case, _, [{name, _, context}, [do: clauses]]} = node,
          modes,
          names,
          _signatures
        )
-       when is_atom(name) and is_list(clauses) do
+       when is_variable_ast(name, context) and is_list(clauses) do
     modes =
       if Enum.any?(clauses, &term_case_clause?/1),
         do: mark_name(modes, names, name),
@@ -114,12 +116,12 @@ defmodule Batata.Signature do
   end
 
   defp infer_node(
-         {:__enum_call__, _, [kind, _pattern, {name, _, nil}]} = node,
+         {:__enum_call__, _, [kind, _pattern, {name, _, context}]} = node,
          modes,
          names,
          _signatures
        )
-       when kind in [:map, :flat_map] and is_atom(name) do
+       when kind in [:map, :flat_map] and is_variable_ast(name, context) do
     {node, mark_name(modes, names, name)}
   end
 
@@ -157,8 +159,11 @@ defmodule Batata.Signature do
     args
     |> Enum.zip(call_modes)
     |> Enum.reduce(modes, fn
-      {{name, _, nil}, :term}, acc when is_atom(name) -> mark_name(acc, names, name)
-      _, acc -> acc
+      {{name, _, context}, :term}, acc when is_variable_ast(name, context) ->
+        mark_name(acc, names, name)
+
+      _, acc ->
+        acc
     end)
   end
 
@@ -181,7 +186,7 @@ defmodule Batata.Signature do
 
   defp pattern_mode(pattern), do: if(scalar_pattern?(pattern), do: :scalar, else: :term)
 
-  defp plain_variable({name, _, nil}) when is_atom(name), do: name
+  defp plain_variable({name, _, context}) when is_variable_ast(name, context), do: name
   defp plain_variable(_pattern), do: nil
 
   defp term_case_clause?({:->, _, [args, _body]}) do
