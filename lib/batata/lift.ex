@@ -37,6 +37,8 @@ defmodule Batata.Lift do
   @min_term_integer -1_152_921_504_606_846_976
   @max_term_integer 1_152_921_504_606_846_975
 
+  defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
+
   defmodule Error do
     @moduledoc "Raised when the frontend encounters an unsupported AST form."
     defexception [:message]
@@ -308,14 +310,14 @@ defmodule Batata.Lift do
   end
 
   defp function_clause_catch_all?(%Frontend.Clause{patterns: patterns, guard_ast: nil}) do
-    Enum.all?(patterns, &match?({name, _, nil} when is_atom(name), &1))
+    Enum.all?(patterns, &match?({name, _, context} when is_variable_ast(name, context), &1))
   end
 
   defp function_clause_catch_all?(_clause), do: false
 
   defp function_clause_has_pattern?(%Frontend.Clause{patterns: patterns}) do
     Enum.any?(patterns, fn
-      {name, _, nil} when is_atom(name) -> false
+      {name, _, context} when is_variable_ast(name, context) -> false
       _pattern -> true
     end)
   end
@@ -1573,9 +1575,9 @@ defmodule Batata.Lift do
     end)
   end
 
-  defp multi_arg_tail_pattern!({:_, _, nil}), do: {:variable, nil}
+  defp multi_arg_tail_pattern!({:_, _, context}) when is_atom(context), do: {:variable, nil}
 
-  defp multi_arg_tail_pattern!({name, _, nil}) when is_atom(name),
+  defp multi_arg_tail_pattern!({name, _, context}) when is_variable_ast(name, context),
     do: {:variable, name}
 
   defp multi_arg_tail_pattern!({:%, _, _} = pattern), do: {:term_pattern, pattern}
@@ -1673,8 +1675,8 @@ defmodule Batata.Lift do
     clauses
     |> Enum.zip(clause_tail_patterns)
     |> Enum.any?(fn
-      {%Frontend.Clause{patterns: [{name, _, nil} | _], guard_ast: nil}, tails}
-      when is_atom(name) ->
+      {%Frontend.Clause{patterns: [{name, _, context} | _], guard_ast: nil}, tails}
+      when is_variable_ast(name, context) ->
         Enum.all?(tails, &match?({:variable, _}, &1))
 
       _clause ->
@@ -4078,7 +4080,8 @@ defmodule Batata.Lift do
     end
   end
 
-  defp lift_expr({name, _, nil}, _ctx, _block, env) when is_atom(name) do
+  defp lift_expr({name, _, context}, _ctx, _block, env)
+       when is_variable_ast(name, context) do
     case Map.fetch(env, name) do
       {:ok, value} -> {value, env}
       :error -> raise Error, "unbound variable reference: #{inspect(name)}"
@@ -7278,7 +7281,10 @@ defmodule Batata.Lift do
     end
   end
 
-  defp clause_catch_all?({:->, _, [[{name, _, nil}], _body]}) when is_atom(name), do: true
+  defp clause_catch_all?({:->, _, [[{name, _, context}], _body]})
+       when is_variable_ast(name, context),
+       do: true
+
   defp clause_catch_all?(_clause), do: false
 
   defp lift_scalar_case(clauses, scrutinee, env, ctx, block, opts) do
@@ -7358,7 +7364,7 @@ defmodule Batata.Lift do
     extra_clause_conds = case_clause_conditions(opts, length(parsed))
 
     unless match?(
-             {name, _, nil} when is_atom(name),
+             {name, _, context} when is_variable_ast(name, context),
              parsed |> List.last() |> Map.fetch!(:pattern)
            ) do
       raise Error, "case requires a final catch-all clause"
@@ -7613,7 +7619,8 @@ defmodule Batata.Lift do
   defp resolve_struct_schema(module, %{} = schemas), do: Map.fetch(schemas, module)
   defp resolve_struct_schema(_module, _), do: :error
 
-  defp do_build_match({name, _, nil}, value, _ctx, _block) when is_atom(name) do
+  defp do_build_match({name, _, context}, value, _ctx, _block)
+       when is_variable_ast(name, context) do
     if name == :_ do
       {nil, []}
     else
@@ -7884,7 +7891,7 @@ defmodule Batata.Lift do
     end
   end
 
-  defp pattern_variable_name({name, _, nil}) when is_atom(name), do: name
+  defp pattern_variable_name({name, _, context}) when is_variable_ast(name, context), do: name
   defp pattern_variable_name(_pattern), do: nil
 
   defp list_elements_match([], value, _ctx, _block, binds), do: {[], binds, value}
@@ -8358,7 +8365,7 @@ defmodule Batata.Lift do
 
   defp parse_pattern(integer) when is_integer(integer), do: {[integer], []}
 
-  defp parse_pattern({name, _, nil}) when is_atom(name) do
+  defp parse_pattern({name, _, context}) when is_variable_ast(name, context) do
     if name == :_ do
       {[], []}
     else
@@ -8557,7 +8564,7 @@ defmodule Batata.Lift do
     end
   end
 
-  defp param_name({name, _, nil}) when is_atom(name), do: name
+  defp param_name({name, _, context}) when is_variable_ast(name, context), do: name
   defp param_name(pattern), do: raise(Error, "unsupported parameter pattern: #{inspect(pattern)}")
 
   defp function_arg_modes(name, arity, module_env) do
