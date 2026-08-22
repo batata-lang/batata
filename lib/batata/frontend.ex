@@ -203,7 +203,7 @@ defmodule Batata.Frontend do
 
     {definitions, unsupported, struct_schema} =
       body
-      |> expand_defimpl_attributes(target)
+      |> expand_defimpl_attributes(protocol, target)
       |> body_forms()
       |> normalize_body(impl_module)
 
@@ -274,24 +274,27 @@ defmodule Batata.Frontend do
     raise ArgumentError, "unsupported defimpl target: #{Macro.to_string(target)}"
   end
 
-  defp expand_defimpl_attributes({kind, _, _} = ast, _target)
+  defp expand_defimpl_attributes({kind, _, _} = ast, _protocol, _target)
        when kind in [:defmodule, :defprotocol, :defimpl],
        do: ast
 
-  defp expand_defimpl_attributes({:@, _, [{:for, _, nil}]}, target),
+  defp expand_defimpl_attributes({:@, _, [{:protocol, _, nil}]}, protocol, _target),
+    do: Macro.escape(protocol)
+
+  defp expand_defimpl_attributes({:@, _, [{:for, _, nil}]}, _protocol, target),
     do: Macro.escape(target)
 
-  defp expand_defimpl_attributes(tuple, target) when is_tuple(tuple) do
+  defp expand_defimpl_attributes(tuple, protocol, target) when is_tuple(tuple) do
     tuple
     |> Tuple.to_list()
-    |> Enum.map(&expand_defimpl_attributes(&1, target))
+    |> Enum.map(&expand_defimpl_attributes(&1, protocol, target))
     |> List.to_tuple()
   end
 
-  defp expand_defimpl_attributes(values, target) when is_list(values),
-    do: Enum.map(values, &expand_defimpl_attributes(&1, target))
+  defp expand_defimpl_attributes(values, protocol, target) when is_list(values),
+    do: Enum.map(values, &expand_defimpl_attributes(&1, protocol, target))
 
-  defp expand_defimpl_attributes(other, _target), do: other
+  defp expand_defimpl_attributes(other, _protocol, _target), do: other
 
   defp body_forms({:__block__, _, forms}), do: forms
   defp body_forms(form), do: List.wrap(form)

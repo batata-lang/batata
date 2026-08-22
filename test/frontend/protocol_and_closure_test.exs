@@ -39,25 +39,46 @@ defmodule Batata.Frontend.ProtocolAndClosureTest do
     assert Enum.all?(modules, &(&1.unsupported == []))
   end
 
-  test "substitutes the implicit defimpl target attribute per implementation" do
+  test "substitutes implicit defimpl attributes per implementation" do
     modules =
       Frontend.from_source("""
       defimpl Sample.Encoder, for: [Date, Time] do
-        def target(), do: @for
-        def encode(value), do: @for.to_iso8601(value)
+        def attributes(), do: {@protocol, @for}
+        def encode(value), do: @protocol.encode(value, @for)
       end
       """)
 
     assert Enum.map(modules, fn module ->
-             target = Enum.find(module.definitions, &(&1.name == :target))
+             attributes = Enum.find(module.definitions, &(&1.name == :attributes))
              encode = Enum.find(module.definitions, &(&1.name == :encode))
 
-             {module.name, hd(target.clauses).body_ast,
+             {module.name, hd(attributes.clauses).body_ast,
               Macro.to_string(hd(encode.clauses).body_ast)}
            end) == [
-             {Sample.Encoder.Date, Date, "Date.to_iso8601(value)"},
-             {Sample.Encoder.Time, Time, "Time.to_iso8601(value)"}
+             {Sample.Encoder.Date, {Sample.Encoder, Date}, "Sample.Encoder.encode(value, Date)"},
+             {Sample.Encoder.Time, {Sample.Encoder, Time}, "Sample.Encoder.encode(value, Time)"}
            ]
+  end
+
+  test "does not leak implicit defimpl attributes into nested lexical modules" do
+    module =
+      Frontend.from_source("""
+      defimpl Sample.Encoder, for: Any do
+        def attributes(), do: {@protocol, @for}
+
+        defmodule Nested do
+          def attributes(), do: {@protocol, @for}
+        end
+      end
+      """)
+
+    attributes = Enum.find(module.definitions, &(&1.name == :attributes))
+    assert hd(attributes.clauses).body_ast == {Sample.Encoder, Any}
+
+    assert [%Frontend.UnsupportedForm{reason: :nested_defmodule, form: nested}] =
+             module.unsupported
+
+    assert Macro.to_string(nested) =~ "{@protocol, @for}"
   end
 
   test "normalizes protocol declarations separately from implementations" do
