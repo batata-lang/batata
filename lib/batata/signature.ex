@@ -125,6 +125,15 @@ defmodule Batata.Signature do
     {node, mark_name(modes, names, name)}
   end
 
+  defp infer_node(
+         {:^, _, [{name, _, context}]} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_variable_ast(name, context),
+       do: {node, mark_name(modes, names, name)}
+
   defp infer_node({name, _, args} = node, modes, names, signatures)
        when is_atom(name) and is_list(args) do
     call_modes =

@@ -495,6 +495,77 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "matches pinned atom and binary keys with BEAM semantics", %{ctx: ctx} do
+    source = """
+    defmodule PinnedMapKeyOracle do
+      def classify(map, key) do
+        case map do
+          %{^key => :expected} -> {:exact, key}
+          %{^key => value} -> {:value, value}
+          _ -> :missing
+        end
+      end
+
+      def nested(map, key) do
+        case map do
+          %{outer: %{^key => value}} -> {:nested, value}
+          _ -> :missing
+        end
+      end
+
+      def main() do
+        {
+          classify(%{known: :expected}, :known),
+          classify(%{"binary" => :other}, "binary"),
+          classify(%{"other" => :expected}, "binary"),
+          nested(%{outer: %{"nested" => 4}}, "nested")
+        }
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nPinnedMapKeyOracle.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects an unbound pinned map key", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error, ~r/pinned map key requires an outer binding: key/, fn ->
+      Batata.execute(
+        """
+        defmodule UnboundPinnedMapKey do
+          def main() do
+            case %{known: 1} do
+              %{^key => _} -> :match
+              _ -> :missing
+            end
+          end
+        end
+        """,
+        ctx
+      )
+    end
+
+    assert_raise Batata.Lift.Error,
+                 ~r/map patterns only support atom literal or pinned keys/,
+                 fn ->
+                   Batata.execute(
+                     """
+                     defmodule DynamicMapKeyExpression do
+                       def main() do
+                         case %{"a" => 1} do
+                           %{String.downcase("A") => _} -> :match
+                           _ -> :missing
+                         end
+                       end
+                     end
+                     """,
+                     ctx
+                   )
+                 end
+  end
+
   test "matches map value subpatterns and binds pattern aliases", %{ctx: ctx} do
     source = """
     defmodule DecimalPatternShape do

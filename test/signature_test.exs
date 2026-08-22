@@ -15,12 +15,30 @@ defmodule Batata.SignatureTest do
     end
   end
 
-  defp definition(name, pattern, body) do
+  test "infers a pinned map key and map scrutinee as terms" do
+    map = {:map, [], nil}
+    key = {:key, [], nil}
+    pinned = {:%{}, [], [{{:^, [], [key]}, {:_, [], nil}}]}
+
+    body =
+      {:case, [],
+       [map, [do: [{:->, [], [[pinned], :match]}, {:->, [], [[{:_, [], nil}], :missing]}]]]}
+
+    lookup = definition(:lookup, [map, key], body)
+
+    assert Batata.Signature.infer([lookup]) == %{{:lookup, 2} => [:term, :term]}
+  end
+
+  defp definition(name, patterns, body) when is_list(patterns) do
     %Definition{
       kind: :defp,
       name: name,
-      arity: 1,
-      clauses: [%Clause{patterns: [pattern], body_ast: body}]
+      arity: length(patterns),
+      clauses: [%Clause{patterns: patterns, body_ast: body}]
     }
+  end
+
+  defp definition(name, pattern, body) do
+    definition(name, [pattern], body)
   end
 end
