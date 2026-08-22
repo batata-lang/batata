@@ -71,15 +71,16 @@ Pinned Jason has exactly one accepted candidate: the literal-list `for` at
 `lib/encode.ex:233`. It expands the Date, Time, NaiveDateTime, and DateTime
 clauses and now dispatches their compile-known atom literals. Batata's
 `Date.to_iso8601/1` replacement executes the full supported Date range against
-a BEAM oracle. Its `Time.to_iso8601/1` and `NaiveDateTime.to_iso8601/1`
-replacements likewise execute closed packed-integer slices across all
-microsecond display precisions, including the generated clauses' iodata-shaped
-body. None of these replacements accepts host Date, Time, or NaiveDateTime
-structs. The generated Jason body therefore next stops at the unsupported
-`DateTime.to_iso8601/1` standard-library call, while a smaller Batata-owned
-module-alias fixture reaches lowering completion. This lane still makes no
-execution claim for module-level generation and does not itself change blocker
-identity or module eligibility.
+a BEAM oracle. Its `Time.to_iso8601/1`, `NaiveDateTime.to_iso8601/1`, and the
+UTC-only `DateTime.to_iso8601/1` replacement likewise execute closed
+packed-integer slices across all microsecond display precisions, including the
+generated clauses' iodata-shaped body. The DateTime slice accepts only the
+literal `Etc/UTC` zone and emits the `Z` suffix. None of these replacements
+accepts host Date, Time, NaiveDateTime, or DateTime structs. The whole-corpus
+link now crosses all four generated encoders and next stops at the unresolved
+`Enumerable.List.reduce` module call. This lane still makes no execution claim
+for module-level generation and does not itself change blocker identity or
+module eligibility.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and

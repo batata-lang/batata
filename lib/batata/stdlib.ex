@@ -146,6 +146,20 @@ defmodule Batata.Stdlib.NaiveDateTime do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.DateTime do
+  @moduledoc """
+  DateTime-domain declarations. UTC datetimes reuse the packed NaiveDateTime
+  representation in the current slice; non-UTC zones remain unsupported.
+  """
+
+  @class_map %{
+    {DateTime, :to_iso8601, 1} => :native_term
+  }
+
+  @doc "Returns UTC-datetime-domain stdlib replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Process do
   @moduledoc """
   Process supervision primitives backed by the native actor runtime.
@@ -374,6 +388,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.Atom.class_map(),
                Batata.Stdlib.Binary.class_map(),
                Batata.Stdlib.Date.class_map(),
+               Batata.Stdlib.DateTime.class_map(),
                Batata.Stdlib.Kernel.class_map(),
                Batata.Stdlib.Keyword.class_map(),
                Batata.Stdlib.List.class_map(),
@@ -402,6 +417,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :to_string, 1},
                   {Atom, :to_string, 1},
                   {Date, :to_iso8601, 1},
+                  {DateTime, :to_iso8601, 1},
                   {Integer, :to_charlist, 1},
                   {Integer, :to_string, 2},
                   {Enum, :into, 2},
@@ -458,6 +474,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :inspect, 2},
                      {Atom, :to_string, 1},
                      {Date, :to_iso8601, 1},
+                     {DateTime, :to_iso8601, 1},
                      {NaiveDateTime, :to_iso8601, 1},
                      {Time, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
