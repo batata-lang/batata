@@ -499,13 +499,13 @@ defmodule Batata.Probe.Jason.ReportTest do
              &{&1["module"], &1["outcome"], &1["phase"]}
            ) == [
              {"Jason.Codegen", "reached_compile_pipeline", "frontend_normalization_failure"},
-             {"Jason.Helpers", "reached_compile_pipeline", "lowering_complete"},
-             {"Jason.Sigil", "reached_compile_pipeline", "frontend_normalization_failure"}
+             {"Jason.Helpers", "synthetic_only", "not_attempted"},
+             {"Jason.Sigil", "synthetic_only", "not_attempted"}
            ]
 
     assert jason["summary"]["diagnostic_attempts"] == %{
-             "outcomes" => %{"reached_compile_pipeline" => 3},
-             "phases" => %{"frontend_normalization_failure" => 2, "lowering_complete" => 1},
+             "outcomes" => %{"reached_compile_pipeline" => 1, "synthetic_only" => 2},
+             "phases" => %{"frontend_normalization_failure" => 1, "not_attempted" => 2},
              "total" => 3
            }
 
