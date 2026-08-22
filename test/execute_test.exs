@@ -17,6 +17,16 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "materializes __MODULE__ inside a protocol implementation", %{ctx: ctx} do
+    source = """
+    defimpl NativeModuleMarker, for: Integer do
+      def main(), do: __MODULE__
+    end
+    """
+
+    assert Batata.execute(source, ctx) == NativeModuleMarker.Integer
+  end
+
   test "executes bindings", %{ctx: ctx} do
     assert 6 ==
              Batata.execute(

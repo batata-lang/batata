@@ -12,17 +12,23 @@ defmodule Batata.Frontend.AliasExpand do
   @doc "Expands supported aliases and `__MODULE__` references in one module."
   @spec expand(Macro.t()) :: Macro.t()
   def expand({:defmodule, metadata, [name_ast, [do: body]]}) do
-    module_parts = module_parts(name_ast)
+    {:defmodule, metadata, [name_ast, [do: expand_body(body, name_ast)]]}
+  end
+
+  def expand(ast), do: ast
+
+  @doc "Expands a lexical body against its effective module name."
+  @spec expand_body(Macro.t(), module() | Macro.t()) :: Macro.t()
+  def expand_body(body, module) do
+    module_parts = module_parts(module)
 
     {forms, _aliases} =
       body
       |> body_forms()
       |> Enum.map_reduce(%{}, &expand_form(&1, &2, module_parts))
 
-    {:defmodule, metadata, [name_ast, [do: block(forms)]]}
+    block(forms)
   end
-
-  def expand(ast), do: ast
 
   @doc "Returns whether a declaration belongs to the supported syntax-only slice."
   @spec supported_declaration?(Macro.t()) :: boolean()

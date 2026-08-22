@@ -367,7 +367,12 @@ defmodule Batata do
       snapshot
       |> Map.fetch!(:definitions)
       |> Enum.reduce(atoms, fn definition, acc ->
-        Map.put(acc, atom_word(definition.name), definition.name)
+        definition.clauses
+        |> Enum.reduce(Map.put(acc, atom_word(definition.name), definition.name), fn clause,
+                                                                                     clause_atoms ->
+          ([clause.patterns, clause.body_ast] ++ List.wrap(clause.guard_ast))
+          |> Enum.reduce(clause_atoms, &collect_literal_atoms/2)
+        end)
       end)
 
     atoms = add_struct_schema_atoms(atoms, snapshot.struct_schema)
@@ -378,6 +383,15 @@ defmodule Batata do
     atoms = if Regex.match?(~r/\bnil\b/, source), do: Map.put(atoms, 1, nil), else: atoms
 
     add_common_atoms(atoms)
+  end
+
+  defp collect_literal_atoms({:__aliases__, _metadata, parts}, atoms) when is_list(parts) do
+    if Enum.all?(parts, &is_atom/1) do
+      module = Elixir.Module.concat(parts)
+      Map.put(atoms, atom_word(module), module)
+    else
+      atoms
+    end
   end
 
   defp collect_literal_atoms({name, metadata, arguments}, atoms)
