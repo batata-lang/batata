@@ -55,6 +55,7 @@ defmodule Batata.Probe.Coverage do
     metadata = config |> Map.fetch!(:metadata) |> Report.read_metadata!()
     capabilities = config |> Map.fetch!(:capabilities) |> CapabilityMatrix.load!()
     canonical_baseline = read_optional_json(config[:canonical_baseline])
+    link_baseline = read_optional_json(config[:link_baseline])
 
     raw =
       case Map.get(config, :raw_report) do
@@ -64,6 +65,7 @@ defmodule Batata.Probe.Coverage do
 
     verify_source_identity!(raw, metadata)
     verify_canonical_identity!(canonical_baseline, metadata)
+    verify_link_identity!(link_baseline, metadata)
     diff = Diff.compare(raw, baseline)
     canonical = canonical_acceptance(source)
     compile_link = CorpusCompileLink.run(source)
@@ -95,7 +97,7 @@ defmodule Batata.Probe.Coverage do
       },
       "corpus_compile_link" => %{
         "status" => compile_link["status"],
-        "baseline" => nil,
+        "baseline" => link_baseline,
         "current" => compile_link,
         "target" => %{"status" => "pass", "unresolved_internal_dependencies" => 0}
       },
@@ -297,6 +299,18 @@ defmodule Batata.Probe.Coverage do
     if corpus["commit"] != metadata["commit"] or corpus["ref"] != metadata["ref"] do
       raise ArgumentError,
             "canonical baseline corpus identity does not match #{metadata["name"]} metadata"
+    end
+  end
+
+  defp verify_link_identity!(nil, _metadata), do: :ok
+
+  defp verify_link_identity!(baseline, metadata) do
+    corpus = baseline["corpus"] || %{}
+
+    unless corpus["name"] == metadata["name"] and corpus["ref"] == metadata["ref"] and
+             corpus["commit"] == metadata["commit"] do
+      raise ArgumentError,
+            "link baseline corpus identity does not match #{metadata["name"]} metadata"
     end
   end
 

@@ -278,6 +278,8 @@ defmodule Batata.Probe.Jason.ReportTest do
   test "committed corpus baselines contain no supported alias blockers" do
     jason = "probe/jason/baseline.json" |> File.read!() |> JSON.decode!()
     decimal = "probe/decimal/baseline.json" |> File.read!() |> JSON.decode!()
+    jason_link = "probe/jason/link.json" |> File.read!() |> JSON.decode!()
+    decimal_link = "probe/decimal/link.json" |> File.read!() |> JSON.decode!()
 
     assert jason["summary"]["categories"]["alias"] == nil
     assert decimal["summary"]["categories"]["alias"] == nil
@@ -289,6 +291,24 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert decimal["summary"]["ignored_metadata"] == 106
     assert jason["summary"]["definitions"] == 241
     assert decimal["summary"]["definitions"] == 245
+
+    assert jason_link["runtime_slice"] == %{"removed_definition_count" => 20}
+    assert jason_link["unresolved_internal_dependencies"] == 14
+
+    assert jason_link["unit_attempt"] == %{
+             "status" => "frontend_normalization_failure",
+             "reason_class" => "lift_error",
+             "fingerprint" => "88e149d6bf1193845d90bc892e1b40159189783d44bc8be707a807f048f926e4"
+           }
+
+    assert decimal_link["runtime_slice"] == %{"removed_definition_count" => 0}
+    assert decimal_link["unresolved_internal_dependencies"] == 7
+
+    assert decimal_link["unit_attempt"] == %{
+             "status" => "frontend_normalization_failure",
+             "reason_class" => "unsupported_stdlib_call",
+             "fingerprint" => "6b654af8adb5c72b9cb38d86f8f86d706348906f3d12ec5892f67e59abae9a5f"
+           }
 
     assert jason["summary"]["generation_constructs"] == %{
              "definition_generation" => 19,

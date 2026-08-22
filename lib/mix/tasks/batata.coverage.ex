@@ -65,6 +65,7 @@ defmodule Mix.Tasks.Batata.Coverage do
       source: source,
       baseline: "probe/#{name}/baseline.json",
       canonical_baseline: "probe/#{name}/canonical.json",
+      link_baseline: "probe/#{name}/link.json",
       metadata: "probe/#{name}/source.json",
       capabilities: "probe/#{name}/capabilities.json",
       raw_report: raw_report
