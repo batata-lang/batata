@@ -13,6 +13,7 @@ defmodule Batata.Probe.Jason.Inventory do
   alias Batata.Frontend.AliasExpand
   alias Batata.Frontend.DefaultArgExpand
   alias Batata.Frontend.GuardSupport
+  alias Batata.Probe.Jason.DiagnosticSlice
 
   @ignored_metadata_attributes [
     :doc,
@@ -294,7 +295,7 @@ defmodule Batata.Probe.Jason.Inventory do
         module_source(module_name, schema ++ definitions)
 
       blockers != [] and Enum.all?(blockers, &(&1.reason == :macro_definition)) ->
-        case Enum.filter(body_forms, &simple_definition?/1) do
+        case DiagnosticSlice.ordinary_definitions(body_forms) do
           [] -> nil
           definitions -> module_source(module_name, ensure_main(definitions))
         end

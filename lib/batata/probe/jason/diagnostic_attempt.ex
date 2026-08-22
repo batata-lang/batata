@@ -42,8 +42,7 @@ defmodule Batata.Probe.Jason.DiagnosticAttempt do
   defp attempt(path, module) do
     blockers = semantic_blockers(module)
 
-    if module.definitions == [] and blockers != [] and
-         Enum.all?(blockers, &(&1.reason == :macro_definition)) do
+    if blockers != [] and Enum.all?(blockers, &(&1.reason == :macro_definition)) do
       [
         %{
           "path" => path,
