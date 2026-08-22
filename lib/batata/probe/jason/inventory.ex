@@ -13,6 +13,7 @@ defmodule Batata.Probe.Jason.Inventory do
   alias Batata.Frontend.AliasExpand
   alias Batata.Frontend.DefaultArgExpand
   alias Batata.Frontend.GuardSupport
+  alias Batata.Probe.Jason.CallPhase
   alias Batata.Probe.Jason.DiagnosticSlice
 
   @ignored_metadata_attributes [
@@ -77,12 +78,20 @@ defmodule Batata.Probe.Jason.Inventory do
     |> Path.join("**/*.ex")
     |> Path.wildcard()
     |> Enum.sort()
-    |> Enum.map(&discover_file(&1, display_root))
+    |> Enum.map(&discover_file_raw(&1, display_root))
+    |> put_diagnostic_sources()
   end
 
   @doc "Parses one source file and inventories every directly declared module."
   @spec discover_file(Path.t(), Path.t()) :: file_inventory()
   def discover_file(path, display_root \\ File.cwd!()) do
+    path
+    |> discover_file_raw(display_root)
+    |> then(&put_diagnostic_sources([&1]))
+    |> hd()
+  end
+
+  defp discover_file_raw(path, display_root) do
     source = File.read!(path)
     relative_path = Path.relative_to(path, display_root)
 
@@ -162,7 +171,7 @@ defmodule Batata.Probe.Jason.Inventory do
       definitions: accepted_definitions(source_snapshot),
       unsupported: unsupported,
       dependency_forms: dependency_forms(expanded_forms),
-      diagnostic_source: diagnostic_source(module_name, expanded_forms, unsupported),
+      diagnostic_source: nil,
       compile_harness: harness_details(expanded_forms),
       compile_source: compile_source(module_name, expanded_forms, unsupported)
     }
@@ -284,7 +293,49 @@ defmodule Batata.Probe.Jason.Inventory do
     }
   end
 
-  defp diagnostic_source(module_name, body_forms, unsupported) do
+  defp put_diagnostic_sources(files) do
+    compile_time_only =
+      files
+      |> Enum.reduce(MapSet.new(), fn file, calls ->
+        module_calls =
+          file.modules
+          |> Enum.flat_map(& &1.dependency_forms)
+          |> CallPhase.collect()
+
+        top_level_calls =
+          file.top_level_unsupported
+          |> Enum.map(& &1.form_ast)
+          |> CallPhase.collect()
+
+        calls
+        |> MapSet.union(module_calls)
+        |> MapSet.union(top_level_calls)
+      end)
+      |> CallPhase.compile_time_only()
+
+    Enum.map(files, fn file ->
+      modules =
+        Enum.map(file.modules, fn module ->
+          module_name = module.module |> String.split(".") |> Module.concat()
+          signatures = Map.get(compile_time_only, module.module, MapSet.new())
+
+          Map.put(
+            module,
+            :diagnostic_source,
+            diagnostic_source(
+              module_name,
+              module.dependency_forms,
+              module.unsupported,
+              signatures
+            )
+          )
+        end)
+
+      Map.put(file, :modules, modules)
+    end)
+  end
+
+  defp diagnostic_source(module_name, body_forms, unsupported, compile_time_public) do
     blockers = Enum.reject(unsupported, &(&1.reason == :ignored_metadata))
 
     cond do
@@ -295,7 +346,7 @@ defmodule Batata.Probe.Jason.Inventory do
         module_source(module_name, schema ++ definitions)
 
       blockers != [] and Enum.all?(blockers, &(&1.reason == :macro_definition)) ->
-        case DiagnosticSlice.ordinary_definitions(body_forms) do
+        case DiagnosticSlice.ordinary_definitions(body_forms, compile_time_public) do
           [] -> nil
           definitions -> module_source(module_name, ensure_main(definitions))
         end

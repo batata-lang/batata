@@ -7,31 +7,33 @@ defmodule Batata.Probe.Jason.DiagnosticSlice do
   @type signature :: {atom(), non_neg_integer()}
 
   @doc false
-  @spec ordinary_definitions([Macro.t()]) :: [Macro.t()]
-  def ordinary_definitions(forms) when is_list(forms) do
+  @spec ordinary_definitions([Macro.t()], MapSet.t(signature())) :: [Macro.t()]
+  def ordinary_definitions(forms, compile_time_public \\ MapSet.new()) when is_list(forms) do
     definitions = Enum.flat_map(forms, &definition/1)
     graph = call_graph(definitions)
 
     macro_roots = signatures(definitions, @macro_kinds)
-    macro_reachable = reachable(graph, macro_roots)
+    public = signatures(definitions, [:def])
+    compile_time_public = MapSet.intersection(compile_time_public, public)
+
+    compile_time_reachable =
+      graph
+      |> reachable(MapSet.union(macro_roots, compile_time_public))
 
     ordinary_roots =
       definitions
       |> signatures(@ordinary_kinds)
-      |> MapSet.difference(macro_reachable)
-      |> MapSet.union(signatures(definitions, [:def]))
+      |> MapSet.difference(compile_time_reachable)
+      |> MapSet.union(MapSet.difference(public, compile_time_public))
 
-    macro_only =
-      macro_reachable
+    compile_time_only =
+      compile_time_reachable
       |> MapSet.difference(reachable(graph, ordinary_roots))
 
     Enum.filter(forms, fn form ->
       case definition(form) do
-        [%{kind: :defp, signature: signature}] ->
-          not MapSet.member?(macro_only, signature)
-
-        [%{kind: kind}] when kind in @ordinary_kinds ->
-          true
+        [%{kind: kind, signature: signature}] when kind in @ordinary_kinds ->
+          not MapSet.member?(compile_time_only, signature)
 
         _ ->
           false
@@ -74,6 +76,10 @@ defmodule Batata.Probe.Jason.DiagnosticSlice do
   defp local_calls(ast) do
     {_ast, calls} =
       Macro.prewalk(ast, MapSet.new(), fn
+        {:|>, _, [_left, {name, _, arguments}]} = node, calls
+        when is_atom(name) and is_list(arguments) ->
+          {node, MapSet.put(calls, {name, length(arguments) + 1})}
+
         {:&, _, [{:/, _, [{name, _, context}, arity]}]} = node, calls
         when is_atom(name) and is_atom(context) and is_integer(arity) and arity >= 0 ->
           {node, MapSet.put(calls, {name, arity})}
