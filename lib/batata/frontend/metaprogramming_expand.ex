@@ -501,6 +501,22 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
+  defp eval_compile_expr({:<<>>, _, segments}, bindings) when is_list(segments) do
+    segments
+    |> Enum.reduce_while({:ok, [], 0}, fn segment, {:ok, values, size} ->
+      with {:ok, value, segment_size} <- eval_binary_segment(segment, bindings),
+           true <- size + segment_size <= @max_generated_iterations do
+        {:cont, {:ok, [value | values], size + segment_size}}
+      else
+        _ -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, values, _size} -> {:ok, values |> Enum.reverse() |> IO.iodata_to_binary()}
+      :error -> :error
+    end
+  end
+
   defp eval_compile_expr([{:|, _, [head, tail]}], bindings),
     do: eval_compile_expr({:|, [], [head, tail]}, bindings)
 
@@ -544,6 +560,23 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
   end
 
   defp eval_compile_expr(expression, _bindings), do: Literal.eval(expression)
+
+  defp eval_binary_segment({:"::", _, [expression, {:binary, _, nil}]}, bindings) do
+    case eval_compile_expr(expression, bindings) do
+      {:ok, value} when is_binary(value) -> {:ok, value, byte_size(value)}
+      _ -> :error
+    end
+  end
+
+  defp eval_binary_segment(segment, _bindings) when is_binary(segment),
+    do: {:ok, segment, byte_size(segment)}
+
+  defp eval_binary_segment(segment, bindings) do
+    case eval_compile_expr(segment, bindings) do
+      {:ok, value} when is_integer(value) and value in 0..255 -> {:ok, value, 1}
+      _ -> :error
+    end
+  end
 
   defp eval_proper_list(values, bindings) do
     values
@@ -745,8 +778,8 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
 
   defp substitute_unquotes(ast, bindings) do
     Macro.prewalk(ast, fn
-      {:unquote, _meta, [{name, _, nil}]} = unquote_ast when is_atom(name) ->
-        case Map.fetch(bindings, name) do
+      {:unquote, _meta, [expression]} = unquote_ast ->
+        case eval_compile_expr(expression, bindings) do
           {:ok, value} -> Macro.escape(value)
           :error -> unquote_ast
         end
