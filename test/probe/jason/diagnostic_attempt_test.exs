@@ -152,7 +152,66 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
     assert module.diagnostic_source =~ "defp shared"
   end
 
-  test "records the next Jason.Codegen frontier after removing its macro definitions" do
+  @tag :tmp_dir
+  test "slices public providers reached only from another module's compile-time forms", %{
+    tmp_dir: tmp_dir
+  } do
+    File.write!(Path.join(tmp_dir, "provider.ex"), """
+    defmodule Fixture.Provider do
+      defmacro marker(value), do: value
+      def build(value), do: helper(value)
+      def untouched(value), do: value
+      defp helper(value), do: value
+    end
+    """)
+
+    File.write!(Path.join(tmp_dir, "consumer.ex"), """
+    defmodule Fixture.Consumer do
+      alias Fixture.Provider
+      defmacro generated(value), do: Provider.build(value)
+    end
+    """)
+
+    provider =
+      tmp_dir
+      |> Inventory.discover!()
+      |> Enum.flat_map(& &1.modules)
+      |> Enum.find(&(&1.module == "Fixture.Provider"))
+
+    refute provider.diagnostic_source =~ "def build"
+    refute provider.diagnostic_source =~ "defp helper"
+    assert provider.diagnostic_source =~ "def untouched"
+  end
+
+  @tag :tmp_dir
+  test "keeps public providers and helpers shared with a runtime call site", %{tmp_dir: tmp_dir} do
+    File.write!(Path.join(tmp_dir, "provider.ex"), """
+    defmodule Fixture.Provider do
+      defmacro marker(value), do: value
+      def build(value), do: helper(value)
+      defp helper(value), do: value
+    end
+    """)
+
+    File.write!(Path.join(tmp_dir, "consumer.ex"), """
+    defmodule Fixture.Consumer do
+      alias Fixture.Provider
+      defmacro generated(value), do: Provider.build(value)
+      def runtime(value), do: Provider.build(value)
+    end
+    """)
+
+    provider =
+      tmp_dir
+      |> Inventory.discover!()
+      |> Enum.flat_map(& &1.modules)
+      |> Enum.find(&(&1.module == "Fixture.Provider"))
+
+    assert provider.diagnostic_source =~ "def build"
+    assert provider.diagnostic_source =~ "defp helper"
+  end
+
+  test "records Jason.Codegen as a compile-time-only provider" do
     inventory = Mix.Project.deps_paths()[:jason] |> Inventory.discover!()
 
     assert codegen =
@@ -160,22 +219,15 @@ defmodule Batata.Probe.Jason.DiagnosticAttemptTest do
              |> Enum.flat_map(& &1.modules)
              |> Enum.find(&(&1.module == "Jason.Codegen"))
 
-    refute codegen.diagnostic_source =~ "defp clauses_to_ranges"
-    refute codegen.diagnostic_source =~ "defp literal_clauses"
-    refute codegen.diagnostic_source =~ "defp jump_table_to_clauses"
-    refute codegen.diagnostic_source =~ "Macro.expand"
-    assert codegen.diagnostic_source =~ "def jump_table"
-    assert codegen.diagnostic_source =~ "def build_kv_iodata"
+    assert codegen.diagnostic_source == nil
 
     attempts = DiagnosticAttempt.run(inventory)
 
     assert attempt = Enum.find(attempts, &(&1["module"] == "Jason.Codegen"))
-    assert attempt["outcome"] == "reached_compile_pipeline"
-    assert attempt["phase"] == "frontend_normalization_failure"
-    assert attempt["reason_class"] == "remote_module_call"
-
-    assert attempt["fingerprint"] ==
-             "77a989f65a142cbcb967a3a8080ea400731e151fcd65d12af97de3224b66a821"
+    assert attempt["outcome"] == "synthetic_only"
+    assert attempt["phase"] == "not_attempted"
+    refute Map.has_key?(attempt, "reason_class")
+    refute Map.has_key?(attempt, "fingerprint")
 
     assert Enum.map(attempt["removed_blockers"], & &1["reason"]) ==
              ["macro_definition", "macro_definition"]
