@@ -789,6 +789,13 @@ defmodule Batata.StdlibTest do
         end
 
       assert error.message =~ "unsupported stdlib call: Foo.bar/1"
+
+      nested_error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute("Foo.Bar.baz(1)", ctx)
+        end
+
+      assert nested_error.message =~ "unsupported stdlib call: Foo.Bar.baz/1"
     end
 
     test "rejects declared-but-unsupported stdlib calls explicitly", %{ctx: ctx} do

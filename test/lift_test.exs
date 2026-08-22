@@ -820,4 +820,24 @@ defmodule Batata.LiftTest do
       )
     end
   end
+
+  test "rejects malformed nested module alias parts", %{ctx: ctx} do
+    malformed_call = {{:., [], [{:__aliases__, [], [:Foo, 123]}, :bar]}, [], [1]}
+
+    snapshot = %Frontend.Module{
+      name: MalformedAlias,
+      definitions: [
+        %Frontend.Definition{
+          kind: :def,
+          name: :main,
+          arity: 0,
+          clauses: [%Frontend.Clause{patterns: [], body_ast: malformed_call}]
+        }
+      ]
+    }
+
+    assert_raise Lift.Error, ~r/unsupported AST.*Foo.*123/s, fn ->
+      snapshot |> Lift.module_to_ir(ctx: ctx) |> Beaver.Deferred.resolve(ctx)
+    end
+  end
 end

@@ -12,7 +12,7 @@
   },
   "unit_attempt": {
     "status": "frontend_normalization_failure",
-    "reason_class": "remote_module_call",
-    "fingerprint": "4ca952db666f61739e018f434d43e2cb599b2b32a88b952f351faccd5ab2099e"
+    "reason_class": "unsupported_stdlib_call",
+    "fingerprint": "6517a8b0b7eb388820139fc36133631cf252dc61361f42a16fdb55d15a649f88"
   }
 }
