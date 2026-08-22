@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "name": "decimal",
+    "ref": "v2.3.0",
+    "commit": "592d59ac4474933f91cdc3e8e037f137f7e008b0"
+  },
+  "status": "blocked",
+  "unresolved_internal_dependencies": 7,
+  "runtime_slice": {
+    "removed_definition_count": 0
+  },
+  "unit_attempt": {
+    "status": "frontend_normalization_failure",
+    "reason_class": "unsupported_stdlib_call",
+    "fingerprint": "6b654af8adb5c72b9cb38d86f8f86d706348906f3d12ec5892f67e59abae9a5f"
+  }
+}

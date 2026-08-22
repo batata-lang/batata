@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "name": "jason",
+    "ref": "v1.4.5",
+    "commit": "4ede42858eb19f80ec9e863aab52df466eab8608"
+  },
+  "status": "blocked",
+  "unresolved_internal_dependencies": 14,
+  "runtime_slice": {
+    "removed_definition_count": 20
+  },
+  "unit_attempt": {
+    "status": "frontend_normalization_failure",
+    "reason_class": "lift_error",
+    "fingerprint": "88e149d6bf1193845d90bc892e1b40159189783d44bc8be707a807f048f926e4"
+  }
+}
