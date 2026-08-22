@@ -21,6 +21,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:binary, :at, 2}) == :native_term
       assert Stdlib.class({:binary, :match, 2}) == :native_term
       assert Stdlib.class({Date, :to_iso8601, 1}) == :native_term
+      assert Stdlib.class({DateTime, :to_iso8601, 1}) == :native_term
       assert Stdlib.class({Time, :to_iso8601, 1}) == :native_term
     end
 
@@ -58,6 +59,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Atom, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
+      assert Stdlib.may_raise?({DateTime, :to_iso8601, 1})
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
       assert Stdlib.may_raise?({Integer, :to_string, 2})
       assert Stdlib.may_raise?({Enum, :into, 2})
@@ -101,6 +103,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Date, :to_iso8601, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({DateTime, :to_iso8601, 1}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,

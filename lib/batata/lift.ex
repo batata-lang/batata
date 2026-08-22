@@ -5053,6 +5053,53 @@ defmodule Batata.Lift do
           "NaiveDateTime.new requires valid integer literal arguments in this slice"
   end
 
+  defp lift_stdlib_call(
+         NaiveDateTime,
+         :new!,
+         [year, month, day, hour, minute, second],
+         ctx,
+         block,
+         env
+       ) do
+    lift_naive_datetime_new([year, month, day, hour, minute, second], ctx, block, env)
+  end
+
+  defp lift_stdlib_call(
+         NaiveDateTime,
+         :new!,
+         [year, month, day, hour, minute, second, {microsecond, precision}],
+         ctx,
+         block,
+         env
+       ) do
+    lift_naive_datetime_new(
+      [year, month, day, hour, minute, second, microsecond, precision],
+      ctx,
+      block,
+      env
+    )
+  end
+
+  defp lift_stdlib_call(NaiveDateTime, :new!, _args, _ctx, _block, _env) do
+    raise Error,
+          "NaiveDateTime.new! requires valid integer literal arguments in this slice"
+  end
+
+  defp lift_stdlib_call(
+         DateTime,
+         :from_naive!,
+         [naive_datetime_ast, "Etc/UTC"],
+         ctx,
+         block,
+         env
+       ) do
+    lift_expr(naive_datetime_ast, ctx, block, env)
+  end
+
+  defp lift_stdlib_call(DateTime, :from_naive!, _args, _ctx, _block, _env) do
+    raise Error, "DateTime.from_naive! only supports the literal Etc/UTC zone in this slice"
+  end
+
   defp lift_stdlib_call(Date, :to_iso8601, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = lift_value(value, ctx, block, env)
@@ -5161,6 +5208,49 @@ defmodule Batata.Lift do
         fn b ->
           [
             raise_argument_error("invalid NaiveDateTime.to_iso8601/1 datetime", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    {create_op("ex.to_word", [result_word], [ex_type("term", ctx)], ctx, block), env}
+  end
+
+  defp lift_stdlib_call(DateTime, :to_iso8601, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = lift_value(value, ctx, block, env)
+
+    {packed, integer?} =
+      if term_operand?(value) do
+        {create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block),
+         create_op("ex.is_integer", [value], [integer_type(ctx)], ctx, block)}
+      else
+        {value, lit(1, ctx, block)}
+      end
+
+    precision = date_rem(packed, 10, ctx, block)
+    lower = cmp(packed, 0, "sge", ctx, block)
+    upper = cmp(packed, 6_311_074_175_999_999_996, "sle", ctx, block)
+    precision_valid = cmp(precision, 6, "sle", ctx, block)
+    in_range = create_op("arith.andi", [lower, upper], [integer_type(ctx)], ctx, block)
+
+    valid_shape =
+      create_op("arith.andi", [in_range, precision_valid], [integer_type(ctx)], ctx, block)
+
+    valid = create_op("arith.andi", [integer?, valid_shape], [integer_type(ctx)], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result_word =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b -> [lower_datetime_to_iso8601(packed, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid DateTime.to_iso8601/1 datetime", ctx, b)
             |> unbox(ctx, b)
           ]
         end
@@ -5798,6 +5888,13 @@ defmodule Batata.Lift do
     separator = date_binary([lit(?T, ctx, block)], ctx, block)
     time = lower_time_to_iso8601(time_packed, ctx, block)
     iodata = create_term_op("ex.list", [date, separator, time], ctx, block)
+    create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lower_datetime_to_iso8601(packed, ctx, block) do
+    datetime = lower_naive_datetime_to_iso8601(packed, ctx, block)
+    suffix = date_binary([lit(?Z, ctx, block)], ctx, block)
+    iodata = create_term_op("ex.list", [datetime, suffix], ctx, block)
     create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block)
   end
 
