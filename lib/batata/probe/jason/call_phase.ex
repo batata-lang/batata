@@ -45,6 +45,8 @@ defmodule Batata.Probe.Jason.CallPhase do
   defp scan_form({kind, _, [_head, [do: body]]}) when kind in @definition_kinds,
     do: walk(body, :runtime)
 
+  defp scan_form({:__block__, _, forms}) when is_list(forms), do: collect(forms)
+
   defp scan_form({kind, _, [_head, [do: body]]}) when kind in @macro_kinds,
     do: walk(body, :compile_time)
 
