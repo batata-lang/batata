@@ -95,6 +95,33 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "excludes source-proven compile-time providers from the runtime unit", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "provider.ex", """
+    defmodule Fixture.Provider do
+      def build(value), do: Enum.zip(value, value)
+    end
+    """)
+
+    write_source(tmp_dir, "consumer.ex", """
+    defmodule Fixture.Consumer do
+      defmacro generated(value), do: Fixture.Provider.build(value)
+      def main(), do: 42
+    end
+    """)
+
+    result = CorpusCompileLink.run(tmp_dir)
+
+    assert result["unit_attempt"]["status"] == "pass"
+
+    assert result["runtime_slice"] == %{
+             "removed_definition_count" => 1,
+             "removed_definitions" => [
+               %{"module" => "Fixture.Provider", "function" => "build", "arity" => 1}
+             ]
+           }
+  end
+
+  @tag :tmp_dir
   test "excludes dead private compile-time helpers from the runtime unit", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "dead_helper.ex", """
     defmodule DeadHelper do
