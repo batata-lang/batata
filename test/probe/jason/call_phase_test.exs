@@ -50,6 +50,27 @@ defmodule Batata.Probe.Jason.CallPhaseTest do
            ]
   end
 
+  test "classifies every form in a multi-form source root independently" do
+    ast =
+      Code.string_to_quoted!("""
+      defmodule Fixture.Provider do
+        def runtime(value), do: Fixture.Target.runtime(value)
+      end
+
+      defimpl Fixture.Protocol, for: Any do
+        def encode(value), do: Fixture.Target.protocol_runtime(value)
+      end
+
+      Fixture.Target.module_build()
+      """)
+
+    assert ast |> CallPhase.collect() |> sorted() == [
+             {"Fixture.Target", {:module_build, 0}, :compile_time},
+             {"Fixture.Target", {:protocol_runtime, 1}, :runtime},
+             {"Fixture.Target", {:runtime, 1}, :runtime}
+           ]
+  end
+
   test "selects only signatures with compile-time incoming edges and no runtime edge" do
     calls =
       MapSet.new([
