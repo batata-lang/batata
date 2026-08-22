@@ -3583,7 +3583,7 @@ defmodule Batata.Lift do
     value = box_if_scalar(lift_value(value, ctx, block, env), ctx, block)
 
     {_match_cond, binds} =
-      build_match(pattern, value, ctx, block, false, Map.get(env, @struct_schema_key))
+      build_match(pattern, value, ctx, block, false, Map.get(env, @struct_schema_key), env)
 
     {value, Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)}
   end
@@ -4361,7 +4361,7 @@ defmodule Batata.Lift do
     %{pattern: pattern, guard: guard, body: body} = clause
 
     {match_cond, binds} =
-      build_match(pattern, msg, ctx, block, guard == nil, Map.get(env, @struct_schema_key))
+      build_match(pattern, msg, ctx, block, guard == nil, Map.get(env, @struct_schema_key), env)
 
     cond =
       case guard do
@@ -7393,7 +7393,8 @@ defmodule Batata.Lift do
             ctx,
             block,
             clause.guard == nil,
-            Map.get(env, @struct_schema_key)
+            Map.get(env, @struct_schema_key),
+            env
           )
 
         {match_cond, binds} =
@@ -7572,12 +7573,15 @@ defmodule Batata.Lift do
   # pattern into the clause body (expandable 210418e): without a guard, the
   # slice is only needed when the clause matches, so a rejected clause never
   # allocates it.
-  defp build_match(pattern, value, ctx, block, defer_rest?, struct_schema) do
+  defp build_match(pattern, value, ctx, block, defer_rest?, struct_schema, pattern_env \\ %{}) do
     pattern = normalize_struct_patterns(pattern, struct_schema)
 
     case pattern do
-      {:<<>>, _, segments} -> build_binary_match(segments, value, ctx, block, defer_rest?)
-      _ -> do_build_match(pattern, value, ctx, block)
+      {:<<>>, _, segments} ->
+        build_binary_match(segments, value, ctx, block, pattern_env, defer_rest?)
+
+      _ ->
+        do_build_match(pattern, value, ctx, block, pattern_env)
     end
   end
 
@@ -7619,7 +7623,7 @@ defmodule Batata.Lift do
   defp resolve_struct_schema(module, %{} = schemas), do: Map.fetch(schemas, module)
   defp resolve_struct_schema(_module, _), do: :error
 
-  defp do_build_match({name, _, context}, value, _ctx, _block)
+  defp do_build_match({name, _, context}, value, _ctx, _block, _pattern_env)
        when is_variable_ast(name, context) do
     if name == :_ do
       {nil, []}
@@ -7628,9 +7632,9 @@ defmodule Batata.Lift do
     end
   end
 
-  defp do_build_match({:=, _, [left, right]} = alias_pattern, value, ctx, block) do
+  defp do_build_match({:=, _, [left, right]} = alias_pattern, value, ctx, block, pattern_env) do
     {subpattern, alias_name} = pattern_alias_parts!(left, right, alias_pattern)
-    {cond, binds} = do_build_match(subpattern, value, ctx, block)
+    {cond, binds} = do_build_match(subpattern, value, ctx, block, pattern_env)
 
     if alias_name == :_ do
       {cond, binds}
@@ -7645,7 +7649,7 @@ defmodule Batata.Lift do
 
   # An atom literal pattern (`receive do :urgent -> ... end`): compare the
   # scrutinee word against the atom's deterministic hash word.
-  defp do_build_match(atom, value, ctx, block) when is_atom(atom) do
+  defp do_build_match(atom, value, ctx, block, _pattern_env) when is_atom(atom) do
     word = lit(atom_word(atom), ctx, block)
     word_dyn = create_op("ex.to_word", [word], [ex_type("term", ctx)], ctx, block)
 
@@ -7661,7 +7665,7 @@ defmodule Batata.Lift do
     {cond, []}
   end
 
-  defp do_build_match(integer, value, ctx, block) when is_integer(integer) do
+  defp do_build_match(integer, value, ctx, block, _pattern_env) when is_integer(integer) do
     lit =
       create_op(
         "ex.lit",
@@ -7675,37 +7679,39 @@ defmodule Batata.Lift do
     {create_op("ex.term_eq", [value, boxed], [MLIR.Type.i64()], ctx, block), []}
   end
 
-  defp do_build_match(tuple, value, ctx, block) when is_tuple(tuple) and tuple_size(tuple) != 3 do
-    build_tuple_match(Tuple.to_list(tuple), value, ctx, block)
+  defp do_build_match(tuple, value, ctx, block, pattern_env)
+       when is_tuple(tuple) and tuple_size(tuple) != 3 do
+    build_tuple_match(Tuple.to_list(tuple), value, ctx, block, pattern_env)
   end
 
-  defp do_build_match({a, b, c}, value, ctx, block)
+  defp do_build_match({a, b, c}, value, ctx, block, pattern_env)
        when not (is_atom(a) and is_list(b) and is_list(c)) do
-    build_tuple_match([a, b, c], value, ctx, block)
+    build_tuple_match([a, b, c], value, ctx, block, pattern_env)
   end
 
-  defp do_build_match({:{}, _, elements}, value, ctx, block) do
-    build_tuple_match(elements, value, ctx, block)
+  defp do_build_match({:{}, _, elements}, value, ctx, block, pattern_env) do
+    build_tuple_match(elements, value, ctx, block, pattern_env)
   end
 
   defp do_build_match(
          {:%, _, [{:_, _, nil}, {:%{}, _, entries}]},
          value,
          ctx,
-         block
+         block,
+         pattern_env
        ) do
-    build_any_struct_match(entries, value, ctx, block)
+    build_any_struct_match(entries, value, ctx, block, pattern_env)
   end
 
-  defp do_build_match({:%{}, _, entries}, value, ctx, block) do
-    build_map_match(entries, value, ctx, block)
+  defp do_build_match({:%{}, _, entries}, value, ctx, block, pattern_env) do
+    build_map_match(entries, value, ctx, block, pattern_env)
   end
 
-  defp do_build_match({:<<>>, _, segments}, value, ctx, block) do
-    build_binary_match(segments, value, ctx, block)
+  defp do_build_match({:<<>>, _, segments}, value, ctx, block, pattern_env) do
+    build_binary_match(segments, value, ctx, block, pattern_env)
   end
 
-  defp do_build_match([], value, ctx, block) do
+  defp do_build_match([], value, ctx, block, _pattern_env) do
     cond_list =
       create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
@@ -7721,23 +7727,23 @@ defmodule Batata.Lift do
     {combine([cond_list, cond_len], ctx, block), []}
   end
 
-  defp do_build_match([{:|, _, [head, tail]}], value, ctx, block) do
-    build_list_cons_match(head, tail, value, ctx, block)
+  defp do_build_match([{:|, _, [head, tail]}], value, ctx, block, pattern_env) do
+    build_list_cons_match(head, tail, value, ctx, block, pattern_env)
   end
 
-  defp do_build_match([head | tail] = elements, value, ctx, block) do
+  defp do_build_match([head | tail] = elements, value, ctx, block, pattern_env) do
     if list_pattern_has_cons_tail?(tail) do
-      build_list_cons_match(head, tail, value, ctx, block)
+      build_list_cons_match(head, tail, value, ctx, block, pattern_env)
     else
-      build_exact_list_match(elements, value, ctx, block)
+      build_exact_list_match(elements, value, ctx, block, pattern_env)
     end
   end
 
-  defp do_build_match(other, _value, _ctx, _block) do
+  defp do_build_match(other, _value, _ctx, _block, _pattern_env) do
     raise Error, "unsupported term pattern: #{inspect(other)}"
   end
 
-  defp build_list_cons_match(head, tail, value, ctx, block) do
+  defp build_list_cons_match(head, tail, value, ctx, block, pattern_env) do
     cond_list =
       create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
@@ -7752,14 +7758,14 @@ defmodule Batata.Lift do
 
     head_value = create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
     tail_value = create_op("ex.list_tail", [value], [ex_type("term", ctx)], ctx, block)
-    {head_cond, head_binds} = do_build_match(head, head_value, ctx, block)
-    {tail_cond, tail_binds} = do_build_match(tail, tail_value, ctx, block)
+    {head_cond, head_binds} = do_build_match(head, head_value, ctx, block, pattern_env)
+    {tail_cond, tail_binds} = do_build_match(tail, tail_value, ctx, block, pattern_env)
 
     {combine([cond_list, cond_nonempty, head_cond, tail_cond], ctx, block),
      head_binds ++ tail_binds}
   end
 
-  defp build_exact_list_match(elements, value, ctx, block) do
+  defp build_exact_list_match(elements, value, ctx, block, pattern_env) do
     cond_list =
       create_op("ex.is_list", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
@@ -7772,8 +7778,10 @@ defmodule Batata.Lift do
         block
       )
 
-    {elem_conds, binds, final_tail} = list_elements_match(elements, value, ctx, block, [])
-    {proper_tail_cond, []} = do_build_match([], final_tail, ctx, block)
+    {elem_conds, binds, final_tail} =
+      list_elements_match(elements, value, ctx, block, pattern_env, [])
+
+    {proper_tail_cond, []} = do_build_match([], final_tail, ctx, block, pattern_env)
 
     {combine([cond_list, cond_len | elem_conds] ++ [proper_tail_cond], ctx, block), binds}
   end
@@ -7782,7 +7790,7 @@ defmodule Batata.Lift do
   defp list_pattern_has_cons_tail?([_head | tail]), do: list_pattern_has_cons_tail?(tail)
   defp list_pattern_has_cons_tail?([]), do: false
 
-  defp build_tuple_match(elements, value, ctx, block) do
+  defp build_tuple_match(elements, value, ctx, block, pattern_env) do
     cond_tuple =
       create_op("ex.is_tuple", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
@@ -7808,48 +7816,50 @@ defmodule Batata.Lift do
             block
           )
 
-        {cond, element_binds} = do_build_match(element, element_value, ctx, block)
+        {cond, element_binds} =
+          do_build_match(element, element_value, ctx, block, pattern_env)
+
         {cond, element_binds ++ binds}
       end)
 
     {combine([cond_tuple, cond_len | elem_conds], ctx, block), Enum.reverse(binds)}
   end
 
-  defp build_map_match(entries, value, ctx, block) do
-    unless Enum.all?(entries, &atom_keyed_map_pattern_entry?/1) do
+  defp build_map_match(entries, value, ctx, block, pattern_env) do
+    unless Enum.all?(entries, &supported_map_pattern_entry?/1) do
       raise Error,
-            "map patterns only support atom literal keys: #{inspect(entries)}"
+            "map patterns only support atom literal or pinned keys: #{inspect(entries)}"
     end
 
     cond_map = create_op("ex.is_map", [value], [MLIR.Type.i64()], ctx, block)
 
     {conds, binds} =
       Enum.map_reduce(entries, [], fn {key, pattern}, binds ->
-        {found_cond, fetched_value} = fetch_map_pattern_value(key, value, ctx, block)
-        {value_cond, value_binds} = do_build_match(pattern, fetched_value, ctx, block)
+        {found_cond, fetched_value} =
+          fetch_map_pattern_value(key, value, ctx, block, pattern_env)
+
+        {value_cond, value_binds} =
+          do_build_match(pattern, fetched_value, ctx, block, pattern_env)
+
         {combine([found_cond, value_cond], ctx, block), value_binds ++ binds}
       end)
 
     {combine([cond_map | conds], ctx, block), Enum.reverse(binds)}
   end
 
-  defp build_any_struct_match(entries, value, ctx, block) do
-    {map_cond, binds} = build_map_match(entries, value, ctx, block)
-    {found_cond, module} = fetch_map_pattern_value(:__struct__, value, ctx, block)
+  defp build_any_struct_match(entries, value, ctx, block, pattern_env) do
+    {map_cond, binds} = build_map_match(entries, value, ctx, block, pattern_env)
+
+    {found_cond, module} =
+      fetch_map_pattern_value(:__struct__, value, ctx, block, pattern_env)
+
     atom_cond = create_op("ex.is_atom", [module], [MLIR.Type.i64()], ctx, block)
 
     {combine([map_cond, found_cond, atom_cond], ctx, block), binds}
   end
 
-  defp fetch_map_pattern_value(key, value, ctx, block) do
-    key_word =
-      create_op(
-        "ex.to_word",
-        [lit(atom_word(key), ctx, block)],
-        [ex_type("term", ctx)],
-        ctx,
-        block
-      )
+  defp fetch_map_pattern_value(key, value, ctx, block, pattern_env) do
+    key_word = map_pattern_key_word(key, ctx, block, pattern_env)
 
     fetched = create_op("ex.map_fetch", [value, key_word], [ex_type("term", ctx)], ctx, block)
 
@@ -7875,8 +7885,31 @@ defmodule Batata.Lift do
     {cmp(found_int, 1, "eq", ctx, block), fetched_value}
   end
 
-  defp atom_keyed_map_pattern_entry?({key, _pattern}) when is_atom(key), do: true
-  defp atom_keyed_map_pattern_entry?(_entry), do: false
+  defp map_pattern_key_word({:^, _, [{name, _, context}]}, ctx, block, pattern_env)
+       when is_variable_ast(name, context) do
+    case Map.fetch(pattern_env, name) do
+      {:ok, key} -> box_if_scalar(key, ctx, block)
+      :error -> raise Error, "pinned map key requires an outer binding: #{name}"
+    end
+  end
+
+  defp map_pattern_key_word(key, ctx, block, _pattern_env) when is_atom(key) do
+    create_op(
+      "ex.to_word",
+      [lit(atom_word(key), ctx, block)],
+      [ex_type("term", ctx)],
+      ctx,
+      block
+    )
+  end
+
+  defp supported_map_pattern_entry?({key, _pattern}) when is_atom(key), do: true
+
+  defp supported_map_pattern_entry?({{:^, _, [{name, _, context}]}, _pattern})
+       when is_variable_ast(name, context),
+       do: true
+
+  defp supported_map_pattern_entry?(_entry), do: false
 
   defp pattern_alias_parts!(left, right, alias_pattern) do
     case {pattern_variable_name(left), pattern_variable_name(right)} do
@@ -7894,20 +7927,21 @@ defmodule Batata.Lift do
   defp pattern_variable_name({name, _, context}) when is_variable_ast(name, context), do: name
   defp pattern_variable_name(_pattern), do: nil
 
-  defp list_elements_match([], value, _ctx, _block, binds), do: {[], binds, value}
+  defp list_elements_match([], value, _ctx, _block, _pattern_env, binds),
+    do: {[], binds, value}
 
-  defp list_elements_match([element | rest], value, ctx, block, binds) do
+  defp list_elements_match([element | rest], value, ctx, block, pattern_env, binds) do
     head_value = create_op("ex.list_head", [value], [ex_type("term", ctx)], ctx, block)
     tail_value = create_op("ex.list_tail", [value], [ex_type("term", ctx)], ctx, block)
-    {head_cond, head_binds} = do_build_match(element, head_value, ctx, block)
+    {head_cond, head_binds} = do_build_match(element, head_value, ctx, block, pattern_env)
 
     {tail_conds, tail_binds, final_tail} =
-      list_elements_match(rest, tail_value, ctx, block, binds)
+      list_elements_match(rest, tail_value, ctx, block, pattern_env, binds)
 
     {[head_cond | tail_conds], head_binds ++ tail_binds, final_tail}
   end
 
-  defp build_binary_match(segments, value, ctx, block, defer_rest? \\ false) do
+  defp build_binary_match(segments, value, ctx, block, pattern_env, defer_rest? \\ false) do
     {segs, rest} = parse_binary_segments(segments)
 
     cond_bin =
@@ -7926,7 +7960,7 @@ defmodule Batata.Lift do
                 block
               )
 
-            {cond, pat_binds} = do_build_match(pat, byte_value, ctx, block)
+            {cond, pat_binds} = do_build_match(pat, byte_value, ctx, block, pattern_env)
 
             next =
               create_op("ex.add", [offset, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)
@@ -7941,13 +7975,17 @@ defmodule Batata.Lift do
               create_op("ex.binary_utf8_get", [value, offset], [ex_type("term", ctx)], ctx, block)
 
             cond_w = cmp(width, 0, "ne", ctx, block)
-            {pat_cond, pat_binds} = do_build_match(pat, codepoint, ctx, block)
+
+            {pat_cond, pat_binds} =
+              do_build_match(pat, codepoint, ctx, block, pattern_env)
+
             next = create_op("ex.add", [offset, width], [MLIR.Type.i64()], ctx, block)
             {[cond_w, pat_cond | conds], pat_binds ++ binds, next}
         end
       end)
 
-    {rest_cond, rest_binds} = build_rest_bind(rest, value, offset, ctx, block, defer_rest?)
+    {rest_cond, rest_binds} =
+      build_rest_bind(rest, value, offset, ctx, block, pattern_env, defer_rest?)
 
     cond_len =
       cmp(
@@ -7962,9 +8000,10 @@ defmodule Batata.Lift do
      Enum.reverse(binds) ++ rest_binds}
   end
 
-  defp build_rest_bind(nil, _value, _offset, _ctx, _block, _defer_rest?), do: {nil, []}
+  defp build_rest_bind(nil, _value, _offset, _ctx, _block, _pattern_env, _defer_rest?),
+    do: {nil, []}
 
-  defp build_rest_bind({name, _, nil}, value, offset, ctx, _block, true)
+  defp build_rest_bind({name, _, nil}, value, offset, ctx, _block, _pattern_env, true)
        when is_atom(name) and name != :_ do
     slice = fn clause_block ->
       create_op("ex.binary_slice", [value, offset], [ex_type("term", ctx)], ctx, clause_block)
@@ -7973,11 +8012,11 @@ defmodule Batata.Lift do
     {nil, [{name, {:deferred, slice}}]}
   end
 
-  defp build_rest_bind(rest_pat, value, offset, ctx, block, _defer_rest?) do
+  defp build_rest_bind(rest_pat, value, offset, ctx, block, pattern_env, _defer_rest?) do
     rest_value =
       create_op("ex.binary_slice", [value, offset], [ex_type("term", ctx)], ctx, block)
 
-    do_build_match(rest_pat, rest_value, ctx, block)
+    do_build_match(rest_pat, rest_value, ctx, block, pattern_env)
   end
 
   defp parse_binary_segments(segments) do
