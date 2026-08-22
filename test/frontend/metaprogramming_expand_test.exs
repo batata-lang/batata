@@ -221,6 +221,80 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert Enum.count(snapshot.definitions, &(&1.name == :value)) == 2
   end
 
+  test "evaluates bounded binary expressions in generated unquotes" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule BinaryGenerator do
+        Enum.each([{?/, ?/}, {?b, ?b}], fn {byte, char} when is_integer(char) ->
+          def escape(unquote(byte)), do: unquote(<<?\\\\, char>>)
+        end)
+
+        def main() do
+          case {escape(?/), escape(?b)} do
+            {<<?\\\\, ?/>>, <<?\\\\, ?b>>} -> 1
+            _ -> 0
+          end
+        end
+      end
+      """)
+
+    escape_bodies =
+      snapshot.definitions
+      |> Enum.filter(&(&1.name == :escape))
+      |> Enum.flat_map(& &1.clauses)
+      |> Enum.map(& &1.body_ast)
+
+    assert escape_bodies == [<<?\\, ?/>>, <<?\\, ?b>>]
+    assert snapshot.unsupported == []
+  end
+
+  test "evaluates explicit binary segments in generated unquotes" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule BinarySegmentGenerator do
+        Enum.each([{"\\\\", ?/}], fn {prefix, char} ->
+          def escape(), do: unquote(<<prefix::binary, char>>)
+        end)
+      end
+      """)
+
+    assert [%Frontend.Definition{clauses: [%Frontend.Clause{body_ast: <<?\\, ?/>>}]}] =
+             snapshot.definitions
+  end
+
+  test "does not evaluate unsupported generated bitstring segments" do
+    ast =
+      Code.string_to_quoted!("""
+      defmodule UnsupportedBinaryGenerator do
+        for value <- [1] do
+          def value(), do: unquote(<<value::16>>)
+        end
+      end
+      """)
+
+    expanded = MetaprogrammingExpand.expand(ast)
+    assert Macro.to_string(expanded) =~ "unquote(<<value::16>>)"
+  end
+
+  test "executes functions generated from bounded binary expressions" do
+    source = """
+    defmodule BinaryGeneratorExecution do
+      Enum.each([{?/, ?/}, {?b, ?b}], fn {byte, char} when is_integer(char) ->
+        defp escape(unquote(byte)), do: unquote(<<?\\\\, char>>)
+      end)
+
+      def main() do
+        case {escape(?/), escape(?b)} do
+          {<<?\\\\, ?/>>, <<?\\\\, ?b>>} -> 1
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    assert 1 == Batata.execute(source, Context.create())
+  end
+
   test "does not infer table semantics from an undiscovered function name" do
     snapshot =
       Frontend.from_source("""
