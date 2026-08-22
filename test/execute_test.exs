@@ -895,6 +895,73 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "formats floats with the BEAM-compatible short representation", %{ctx: ctx} do
+    values = [
+      0.0,
+      -0.0,
+      0.1,
+      12.5,
+      100.0,
+      1000.0,
+      1230.0,
+      1200.0,
+      0.0001,
+      0.00001,
+      5.0e-324,
+      2.225_073_858_507_201_4e-308,
+      1.797_693_134_862_315_7e308
+    ]
+
+    source = """
+    defmodule NativeFloatToBinary do
+      def format(value), do: :erlang.float_to_binary(value, [:short])
+
+      def main() do
+        [
+          format(0.0),
+          format(-0.0),
+          format(0.1),
+          format(12.5),
+          format(100.0),
+          format(1000.0),
+          format(1230.0),
+          format(1200.0),
+          format(0.0001),
+          format(0.00001),
+          format(5.0e-324),
+          format(2.2250738585072014e-308),
+          format(1.7976931348623157e308)
+        ]
+      end
+    end
+    """
+
+    expected = Enum.map(values, &:erlang.float_to_binary(&1, [:short]))
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects invalid short float formatting arguments", %{ctx: ctx} do
+    source = """
+    defmodule InvalidFloatToBinary do
+      def main(), do: :erlang.float_to_binary(42, [:short])
+    end
+    """
+
+    assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+  end
+
+  test "rejects unsupported float formatting options during lifting", %{ctx: ctx} do
+    source = """
+    defmodule UnsupportedFloatToBinary do
+      def main(), do: :erlang.float_to_binary(1.0, [:compact])
+    end
+    """
+
+    assert_raise Batata.Lift.Error, ~r/supports only the literal option \[:short\]/, fn ->
+      Batata.execute(source, ctx)
+    end
+  end
+
   test "converts known atoms to their string names", %{ctx: ctx} do
     source = """
     defmodule NativeAtomToString do

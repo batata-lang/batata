@@ -5223,6 +5223,42 @@ defmodule Batata.Lift do
     {native_term_call(Process, :monitor, [box_term(pid, ctx, block)], ctx, block), env}
   end
 
+  defp lift_stdlib_call(:erlang, :float_to_binary, [value_ast, [:short]], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = value |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    i64 = integer_type(ctx)
+    valid = create_op("ex.is_float", [value], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          [
+            create_op("ex.float_to_binary_short", [value], [ex_type("term", ctx)], ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end,
+        fn b ->
+          [
+            raise_argument_error("invalid :erlang.float_to_binary/2 arguments", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    {create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block), env}
+  end
+
+  defp lift_stdlib_call(:erlang, :float_to_binary, [_value_ast, options], _ctx, _block, _env) do
+    raise Error,
+          ":erlang.float_to_binary/2 supports only the literal option [:short], got: #{inspect(options)}"
+  end
+
   defp lift_stdlib_call(Kernel, :to_string, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = box_term(value, ctx, block)

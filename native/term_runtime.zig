@@ -4055,6 +4055,51 @@ pub export fn ex_term_string_to_float(binary: i64) i64 {
     return ex_term_float_lit(@bitCast(@as(u64, @bitCast(value))));
 }
 
+fn ensure_float_marker(src: []const u8, out: []u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, src, '.')) |_| return src;
+
+    if (std.mem.indexOfScalar(u8, src, 'e')) |index| {
+        @memcpy(out[0..index], src[0..index]);
+        @memcpy(out[index..][0..2], ".0");
+        @memcpy(out[index + 2 ..][0 .. src.len - index], src[index..]);
+        return out[0 .. src.len + 2];
+    }
+
+    @memcpy(out[0..src.len], src);
+    @memcpy(out[src.len..][0..2], ".0");
+    return out[0 .. src.len + 2];
+}
+
+/// Formats a boxed finite binary64 term with Erlang's `[:short]` contract.
+/// Zig's Ryu formatter supplies the shortest round-trip mantissa. Erlang uses
+/// scientific notation at and beyond the binary64 exact-integer boundary;
+/// below that boundary it uses the shorter valid spelling (decimal on equal
+/// length).
+pub export fn ex_term_float_to_binary_short(word: i64) i64 {
+    if (word_tag(word) != tag_float or runtime_local_kind(word) != null) return nil_word;
+    const value: f64 = @bitCast(float_bits(word));
+    if (!std.math.isFinite(value)) return nil_word;
+
+    var decimal_buf: [std.fmt.float.bufferSize(.decimal, f64)]u8 = undefined;
+    var scientific_buf: [std.fmt.float.bufferSize(.scientific, f64)]u8 = undefined;
+    var decimal_marked_buf: [decimal_buf.len + 2]u8 = undefined;
+    var scientific_marked_buf: [scientific_buf.len + 2]u8 = undefined;
+
+    const decimal = std.fmt.float.render(&decimal_buf, value, .{ .mode = .decimal }) catch return nil_word;
+    const scientific = std.fmt.float.render(&scientific_buf, value, .{ .mode = .scientific }) catch return nil_word;
+    const decimal_marked = ensure_float_marker(decimal, &decimal_marked_buf);
+    const scientific_marked = ensure_float_marker(scientific, &scientific_marked_buf);
+    const rendered = if (@abs(value) >= 9_007_199_254_740_992.0 or scientific_marked.len < decimal_marked.len)
+        scientific_marked
+    else
+        decimal_marked;
+
+    const words = alloc_binary(rendered.len) orelse return nil_word;
+    const result = word_from_ptr(words, tag_binary);
+    @memcpy(binary_bytes(result)[0..rendered.len], rendered);
+    return result;
+}
+
 fn valid_float_syntax(bytes: []const u8) bool {
     if (bytes.len == 0) return false;
     var cursor: usize = 0;
@@ -4809,6 +4854,7 @@ comptime {
     @export(&ex_term_float_lit, .{ .name = "ex.term.float_lit" });
     @export(&ex_term_is_float, .{ .name = "ex.term.is_float" });
     @export(&ex_term_string_to_float, .{ .name = "ex.term.string_to_float" });
+    @export(&ex_term_float_to_binary_short, .{ .name = "ex.term.float_to_binary_short" });
     @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
     @export(&ex_term_is_atom, .{ .name = "ex.term.is_atom" });
     @export(&ex_term_is_binary, .{ .name = "ex.term.is_binary" });
@@ -4861,6 +4907,44 @@ test "string to float preserves finite binary64 values and rejects invalid synta
         const parsed = ex_term_string_to_float(test_binary_from_string(invalid));
         try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(parsed));
     }
+}
+
+test "short float formatting matches Erlang decimal and exponent boundaries" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const cases = [_]struct { value: f64, expected: []const u8 }{
+        .{ .value = 0.0, .expected = "0.0" },
+        .{ .value = -0.0, .expected = "-0.0" },
+        .{ .value = 0.1, .expected = "0.1" },
+        .{ .value = 12.5, .expected = "12.5" },
+        .{ .value = 100.0, .expected = "100.0" },
+        .{ .value = 1000.0, .expected = "1.0e3" },
+        .{ .value = 1230.0, .expected = "1230.0" },
+        .{ .value = 1200.0, .expected = "1.2e3" },
+        .{ .value = 0.0001, .expected = "0.0001" },
+        .{ .value = 0.00001, .expected = "1.0e-5" },
+        .{ .value = 1234567890123456.0, .expected = "1234567890123456.0" },
+        .{ .value = 9007199254740991.0, .expected = "9007199254740991.0" },
+        .{ .value = 9007199254740992.0, .expected = "9.007199254740992e15" },
+        .{ .value = 1.234567890123456e16, .expected = "1.234567890123456e16" },
+        .{ .value = 6.926449721417386e17, .expected = "6.926449721417386e17" },
+        .{ .value = 5.0e-324, .expected = "5.0e-324" },
+        .{ .value = 2.2250738585072014e-308, .expected = "2.2250738585072014e-308" },
+        .{ .value = 1.7976931348623157e308, .expected = "1.7976931348623157e308" },
+    };
+
+    for (cases) |case| {
+        const value = ex_term_float_lit(@bitCast(@as(u64, @bitCast(case.value))));
+        const rendered = ex_term_float_to_binary_short(value);
+        try std.testing.expectEqualSlices(u8, case.expected, binary_bytes(rendered)[0..binary_len(rendered)]);
+    }
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_float_to_binary_short(1 << @intCast(tag_shift))));
 }
 
 test "term ABI construction and predicates" {
