@@ -29,6 +29,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({List, :first, 1}) == :native_term
       assert Stdlib.class({List, :flatten, 1}) == :native_term
       assert Stdlib.class({Atom, :to_string, 1}) == :native_term
+      assert Stdlib.class({String.Chars, :to_string, 1}) == :native_term
       assert Stdlib.class({Keyword, :get, 2}) == :native_term
       assert Stdlib.class({Keyword, :get, 3}) == :native_term
       assert Stdlib.class({Map, :size, 1}) == :native_term
@@ -57,6 +58,7 @@ defmodule Batata.StdlibTest do
     test "declares native calls which require an actor exception boundary" do
       assert Stdlib.may_raise?({Kernel, :to_string, 1})
       assert Stdlib.may_raise?({Atom, :to_string, 1})
+      assert Stdlib.may_raise?({String.Chars, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({DateTime, :to_iso8601, 1})

@@ -83,10 +83,13 @@ Enumerable protocol now lowers to compiler-owned helper clauses which preserve
 `:cont`, `:halt`, `:suspend`, completion, and resumable-continuation results
 while invoking reducers through the term-word closure ABI. This makes
 `Enumerable.Jason.OrderedObject` an isolated compile pass and advances the
-whole-corpus requirement to the unsupported `String.Chars.to_string/1`
-callback contract. This lane still makes no execution claim for module-level
-generation; the reducer evidence comes from compiler-owned lowering and
-execution gates.
+whole-corpus requirement to the direct `String.Chars.to_string/1` callback
+contract. That callback now shares the bounded `Kernel.to_string/1` scalar
+lowering for integers, binaries, and compile-known atoms, including the same
+typed failure for unsupported values. The whole-corpus frontier consequently
+advances to a multi-clause trailing literal pattern. This lane still makes no
+execution claim for module-level generation; the reducer and protocol-callback
+evidence comes from compiler-owned lowering and execution gates.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and

@@ -89,6 +89,17 @@ defmodule Batata.Stdlib.Atom do
   def class_map, do: @class_map
 end
 
+defmodule Batata.Stdlib.StringChars do
+  @moduledoc "String.Chars protocol callback declarations."
+
+  @class_map %{
+    {String.Chars, :to_string, 1} => :native_term
+  }
+
+  @doc "Returns String.Chars callback replacement declarations."
+  def class_map, do: @class_map
+end
+
 defmodule Batata.Stdlib.Keyword do
   @moduledoc "Keyword-list lookup declarations."
 
@@ -401,6 +412,7 @@ defmodule Batata.Stdlib do
                Batata.Stdlib.File.class_map(),
                Batata.Stdlib.IO.class_map(),
                Batata.Stdlib.String.class_map(),
+               Batata.Stdlib.StringChars.class_map(),
                Batata.Stdlib.Time.class_map(),
                Batata.Stdlib.Base.class_map(),
                Batata.Stdlib.Integer.class_map(),
@@ -416,6 +428,7 @@ defmodule Batata.Stdlib do
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
                   {Atom, :to_string, 1},
+                  {String.Chars, :to_string, 1},
                   {Date, :to_iso8601, 1},
                   {DateTime, :to_iso8601, 1},
                   {Integer, :to_charlist, 1},

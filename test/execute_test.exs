@@ -807,6 +807,38 @@ defmodule Batata.ExecuteTest do
     assert error.value == [1]
   end
 
+  test "executes the direct String.Chars callback over the supported scalar domain", %{ctx: ctx} do
+    assert {"123", "binary", "known"} ==
+             Batata.execute(
+               """
+               defmodule NativeStringCharsCallback do
+                 def main() do
+                   {String.Chars.to_string(123), String.Chars.to_string("binary"),
+                    String.Chars.to_string(:known)}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "raises a typed error for unsupported direct String.Chars callback values", %{ctx: ctx} do
+    error =
+      assert_raise Batata.UnsupportedFeatureError, fn ->
+        Batata.execute(
+          """
+          defmodule NativeStringCharsCallbackFailure do
+            def main(), do: String.Chars.to_string([1])
+          end
+          """,
+          ctx
+        )
+      end
+
+    assert error.reason == :unsupported_type
+    assert error.value == [1]
+  end
+
   test "lowers binary interpolation through Kernel.to_string", %{ctx: ctx} do
     assert {"value=42!", "left/right", "atom=known"} ==
              Batata.execute(

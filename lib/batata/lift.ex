@@ -5504,6 +5504,10 @@ defmodule Batata.Lift do
     {lower_kernel_to_string(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
   end
 
+  defp lift_stdlib_call(String.Chars, :to_string, [value_ast], ctx, block, env) do
+    lift_stdlib_call(Kernel, :to_string, [value_ast], ctx, block, env)
+  end
+
   defp lift_stdlib_call(Atom, :to_string, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = value |> lift_value(ctx, block, env) |> box_term(ctx, block)
