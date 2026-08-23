@@ -21,16 +21,27 @@ defmodule Batata.TermRuntimeTest do
     assert results |> Enum.map(&elem(&1, 0)) |> Enum.uniq() == [path]
     assert results |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == 1
 
+    nm = System.find_executable("nm") || raise "nm not found on PATH"
+    {symbols, 0} = System.cmd(nm, ["-g", path], stderr_to_stdout: true)
+    assert symbols =~ "ex.term.runtime_create"
+    refute symbols =~ "ex_term_runtime_create"
+
     temporary_pattern = Path.join(Path.dirname(path), ".*.tmp#{Path.extname(path)}")
     assert Path.wildcard(temporary_pattern) == []
   end
 
-  test "Zig term runtime unit tests pass", %{} do
+  @tag :tmp_dir
+  test "Zig term runtime unit and comptime contract tests pass", %{tmp_dir: tmp_dir} do
     zig = System.find_executable("zig") || raise "zig not found on PATH"
-    source = Path.join(Batata.TermRuntime.native_dir(), "term_runtime.zig")
+    build_root = Batata.TermRuntime.native_dir() |> Path.dirname()
 
     {output, status} =
-      System.cmd(zig, ["test", source, "-lc"], stderr_to_stdout: true)
+      System.cmd(
+        zig,
+        ["build", "test-runtime", "test-contracts", "--cache-dir", Path.join(tmp_dir, "cache")],
+        stderr_to_stdout: true,
+        cd: build_root
+      )
 
     assert status == 0
     refute output =~ "FAIL"

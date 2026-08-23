@@ -5,8 +5,9 @@ GDExtension bindings around Batata-compiled functions.
 
 The package validates a closed set of scalar method signatures and emits a
 canonical binding plan with a stable SHA-256 digest. Its first native target
-also generates and links a raw GDExtension adapter that Godot can load,
-initialize, deinitialize, and unload.
+uses a checked-in Zig adapter and a compile-time Term Runtime extension
+contract to build a GDExtension that Godot can load, initialize, deinitialize,
+and unload. Batata never generates Zig source.
 
 ```elixir
 defmodule Example do
@@ -51,9 +52,9 @@ their ownership and lifetime codecs exist. Failures use
 `Batata.Godot.Diagnostic` with stable `E_GODOT_*` codes and JSON-ready context
 and recovery actions.
 
-The generated bundle records the binding-plan, adapter, native artifact and
-Godot API digests, target triple, entry symbol, compiler versions, and a sorted
-artifact index. The pinned raw interface is Godot 4.6.2
+The generated bundle records the binding-plan, fixed adapter implementation,
+native artifact and Godot API digests, target triple, entry symbol, compiler
+versions, and a sorted artifact index. The pinned raw interface is Godot 4.6.2
 `gdextension_interface.json`, SHA-256
 `34d7058f31af186d36b84567e70a9f9543da0d74f25cfe5266d4fe2d27e090f0`.
 

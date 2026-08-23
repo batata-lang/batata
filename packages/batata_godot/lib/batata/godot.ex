@@ -1,6 +1,6 @@
 defmodule Batata.Godot do
   @moduledoc """
-  Compile-time declarations for generated Godot GDExtension bindings.
+  Compile-time declarations for Batata Godot GDExtension bindings.
 
   The package produces a validated, canonical binding plan and can build the
   first loadable raw GDExtension boundary. Class registration and method
@@ -47,7 +47,7 @@ defmodule Batata.Godot do
     Build.build(source, extension, output_dir, ctx, opts)
   end
 
-  @doc "Replays a generated extension through Godot 4.6.2 headless loading."
+  @doc "Replays a built extension through Godot 4.6.2 headless loading."
   @spec smoke_load!(Path.t(), Path.t() | nil) :: :ok
   def smoke_load!(output_dir, godot \\ nil), do: Build.smoke_load!(output_dir, godot)
 end

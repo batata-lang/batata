@@ -47,7 +47,6 @@ defmodule Batata.Godot.BuildTest do
       for path <- [
             output.library,
             output.gdextension,
-            output.adapter,
             output.binding_plan,
             output.bundle,
             output.artifact_index,
@@ -65,9 +64,10 @@ defmodule Batata.Godot.BuildTest do
       assert bundle["godot_api_version"] == "4.6.2"
       assert bundle["target"] == "aarch64-apple-darwin"
       assert byte_size(bundle["binding_plan_sha256"]) == 64
-      assert byte_size(bundle["adapter_sha256"]) == 64
+      assert byte_size(bundle["adapter_implementation_sha256"]) == 64
       assert manifest["zig"] =~ ~r/^0\.16\./
-      assert length(index["files"]) == 4
+      assert length(index["files"]) == 3
+      assert Path.wildcard(Path.join(tmp_dir, "**/*.zig"), match_dot: true) == []
 
       assert :ok = Batata.Godot.smoke_load!(tmp_dir)
     end

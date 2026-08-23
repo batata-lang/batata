@@ -8,17 +8,17 @@ defmodule Batata.Godot.Build do
   headless load smoke. It does not register the declared class yet.
   """
 
-  alias Batata.Godot.{Adapter, BindingPlan, Diagnostic}
+  alias Batata.Godot.{BindingPlan, Diagnostic, Resource}
 
   @godot_api_version "4.6.2"
   @godot_api_sha256 "34d7058f31af186d36b84567e70a9f9543da0d74f25cfe5266d4fe2d27e090f0"
+  @initialization_levels %{core: 0, servers: 1, scene: 2, editor: 3}
   @target "aarch64-apple-darwin"
   @option_keys [:batata, :godot, :smoke, :zig]
 
   @type output :: %{
           library: Path.t(),
           gdextension: Path.t(),
-          adapter: Path.t(),
           binding_plan: Path.t(),
           bundle: Path.t(),
           artifact_index: Path.t(),
@@ -44,30 +44,25 @@ defmodule Batata.Godot.Build do
     validate_api_version!(plan)
     {zig, zig_version} = resolve_zig!(opts[:zig])
 
-    generated_dir = Path.join(output_dir, "generated")
     native_dir = Path.join(output_dir, ".batata")
     bin_dir = Path.join(output_dir, "bin")
-    File.mkdir_p!(generated_dir)
     File.mkdir_p!(bin_dir)
 
-    adapter_path = Path.join(generated_dir, "adapter.zig")
-    binding_plan_path = Path.join(generated_dir, "binding_plan.json")
+    binding_plan_path = Path.join(output_dir, "binding_plan.json")
     library_name = "lib#{plan.extension}.macos.debug.arm64.dylib"
     library_path = Path.join(bin_dir, library_name)
     gdextension_path = Path.join(bin_dir, "#{plan.extension}.gdextension")
 
-    File.write!(adapter_path, Adapter.zig_source(plan))
     File.write!(binding_plan_path, BindingPlan.canonical_json(plan))
 
     native = Batata.build(source, native_dir, ctx, Keyword.get(opts, :batata, []))
     verify_method_symbols!(native.archive, plan)
-    link!(zig, adapter_path, native, library_path)
+    link!(zig, plan, native, native_dir, library_path)
     verify_library_symbols!(library_path, plan)
-    File.write!(gdextension_path, Adapter.gdextension_source(plan, library_name))
+    File.write!(gdextension_path, Resource.gdextension_source(plan, library_name))
 
     metadata =
       write_metadata!(output_dir, plan, zig_version,
-        adapter: adapter_path,
         binding_plan: binding_plan_path,
         gdextension: gdextension_path,
         library: library_path,
@@ -79,7 +74,6 @@ defmodule Batata.Godot.Build do
     end
 
     Map.merge(metadata, %{
-      adapter: adapter_path,
       binding_plan: binding_plan_path,
       gdextension: gdextension_path,
       library: library_path,
@@ -311,29 +305,46 @@ defmodule Batata.Godot.Build do
       )
   end
 
-  defp link!(zig, adapter_path, native, library_path) do
+  defp link!(zig, %BindingPlan{} = plan, native, build_dir, library_path) do
+    level = Map.fetch!(@initialization_levels, plan.initialization_level)
+    install_dir = Path.join(build_dir, "godot-install")
+    cache_dir = Path.join(build_dir, "godot-zig-cache")
+    build_root = native_build_root()
+    library_base = "#{plan.extension}.macos.debug.arm64"
+
     args = [
-      "build-lib",
-      "-dynamic",
-      "-O",
-      "Debug",
-      "-fPIC",
-      "-femit-bin=#{library_path}",
-      adapter_path,
-      native.object,
-      native.runtime_lib,
-      "-lc"
+      "build",
+      "godot-extension",
+      "--prefix",
+      install_dir,
+      "--cache-dir",
+      cache_dir,
+      "-Doptimize=Debug",
+      "-Dentry-symbol=#{plan.entry_symbol}",
+      "-Dinitialization-level=#{level}",
+      "-Dterm-runtime-source=#{Path.join(Batata.TermRuntime.native_dir(), "term_runtime.zig")}",
+      "-Dbatata-object=#{native.object}",
+      "-Druntime-library=#{native.runtime_lib}",
+      "-Dlibrary-name=#{library_base}"
     ]
 
-    case System.cmd(zig, args, stderr_to_stdout: true) do
-      {_output, 0} ->
-        :ok
+    try do
+      case System.cmd(zig, args, stderr_to_stdout: true, cd: build_root) do
+        {_output, 0} ->
+          install_dir
+          |> Path.join("lib")
+          |> Path.join("lib#{library_base}.dylib")
+          |> File.rename!(library_path)
 
-      {output, status} ->
-        diagnostic!("E_GODOT_LINK_FAILED", "Zig failed to link the GDExtension", %{
-          exit_status: status,
-          output: output
-        })
+        {output, status} ->
+          diagnostic!("E_GODOT_LINK_FAILED", "Zig failed to link the GDExtension", %{
+            exit_status: status,
+            output: output
+          })
+      end
+    after
+      File.rm_rf(install_dir)
+      File.rm_rf(cache_dir)
     end
   end
 
@@ -354,7 +365,6 @@ defmodule Batata.Godot.Build do
 
   defp write_metadata!(output_dir, plan, zig_version, artifacts) do
     artifact_paths = [
-      artifacts[:adapter],
       artifacts[:binding_plan],
       artifacts[:gdextension],
       artifacts[:library]
@@ -370,7 +380,7 @@ defmodule Batata.Godot.Build do
     native_bundle = artifacts[:native].bundle |> File.read!() |> JSON.decode!()
 
     bundle = %{
-      "adapter_sha256" => digest_file(artifacts[:adapter]),
+      "adapter_implementation_sha256" => adapter_implementation_digest(),
       "binding_plan_sha256" => BindingPlan.digest(plan),
       "compatibility_minimum" => plan.compatibility_minimum,
       "entry_symbol" => plan.entry_symbol,
@@ -406,6 +416,37 @@ defmodule Batata.Godot.Build do
 
   defp digest_file(path) do
     path |> File.read!() |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower)
+  end
+
+  defp adapter_implementation_digest do
+    [
+      Path.join(native_build_root(), "build.zig"),
+      Path.join(native_build_root(), "build.zig.zon"),
+      Path.join(native_build_root(), "native/zig-src/main.zig")
+    ]
+    |> Enum.map_join(&digest_file/1)
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp native_build_root do
+    :batata_godot
+    |> Application.app_dir("priv")
+    |> canonical_path()
+    |> Path.dirname()
+  end
+
+  defp canonical_path(path) do
+    case File.read_link(path) do
+      {:ok, resolved} ->
+        case Path.type(resolved) do
+          :absolute -> resolved
+          :relative -> Path.expand(resolved, Path.dirname(path))
+        end
+
+      {:error, _reason} ->
+        Path.expand(path)
+    end
   end
 
   defp load_error?(output) do

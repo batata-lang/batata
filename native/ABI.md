@@ -319,8 +319,13 @@ Predicates return `1` or `0` as an `i64`.
 
 ## Building
 
+The standalone library root uses `TermRuntime.Extension` to reflect over the
+runtime namespace, validate every selected C ABI function at comptime, and map
+`ex_term_*` declarations to the documented `ex.term.*` surface. Host adapters
+use the same contract with their own declaration-to-symbol mapper.
+
 ```sh
-zig build-lib native/term_runtime.zig -dynamic -O ReleaseSafe -femit-bin=priv/term_runtime/libterm_runtime.so -lc
+zig build term-runtime-shared --prefix priv/term_runtime -Doptimize=ReleaseSafe
 ```
 
 `-lc` links libc so the runtime can reference `setjmp`/`longjmp` for
