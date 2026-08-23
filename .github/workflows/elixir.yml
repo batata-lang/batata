@@ -65,6 +65,19 @@ jobs:
         working-directory: scripts/native_deps
         run: mix batata.native test --warnings-as-errors --max-cases 1 --timeout 120000
 
+      - name: Test Batata Godot package
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_godot
+            export BATATA_PATH=../..
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors
+          '
+
       - name: Upload concurrent runtime traces
         if: always()
         uses: actions/upload-artifact@v4
