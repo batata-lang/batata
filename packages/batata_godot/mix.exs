@@ -46,7 +46,7 @@ defmodule BatataGodot.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => "https://github.com/batata-lang/batata"},
-      files: ~w(lib .formatter.exs mix.exs README.md)
+      files: ~w(lib native priv build.zig build.zig.zon .formatter.exs mix.exs README.md)
     ]
   end
 end

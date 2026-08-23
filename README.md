@@ -331,12 +331,11 @@ Protocol consolidation starts with the native provider layer:
 ## Packages
 
 The [`packages/batata_godot`](packages/batata_godot) Mix project defines the
-fail-closed compile-time binding plan for generated Godot GDExtensions. Its
-first schema maps one Godot class and scalar method signatures to verified
-Batata native symbols; generated Zig adapters and shared-library output are
-the next implementation slice.
-
-## Dev setup
+fail-closed binding plan and initial loadable raw adapter for Godot
+GDExtensions. Its first schema maps one Godot class and scalar method
+signatures to verified Batata native symbols; a fixed Zig adapter uses the
+Term Runtime comptime extension contract to materialize the configured entry
+symbol without generating Zig source.
 
 ## Dev setup
 
@@ -349,8 +348,8 @@ mix deps.get
 mix test
 ```
 
-The Zig runtime is built on demand with `zig build-lib` (zig 0.16 is required
-and preinstalled in CI).
+The Zig runtime is built on demand through the checked-in `build.zig` graph
+(zig 0.16 is required and preinstalled in CI).
 
 Measure the native actor scheduler after a short warmup (the command emits one
 JSON object with 1/2/4-worker timings, speedups, maximum concurrent actors,

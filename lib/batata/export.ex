@@ -97,7 +97,7 @@ defmodule Batata.Export do
 
   @doc "Digest of the Zig runtime ABI manifest, so ABI changes flip the bundle."
   def runtime_version do
-    abi = Path.expand("native/ABI.md", File.cwd!())
+    abi = Path.join(Batata.TermRuntime.native_dir(), "ABI.md")
 
     if File.exists?(abi) do
       digest(File.read!(abi))

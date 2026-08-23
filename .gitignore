@@ -24,6 +24,7 @@ batata-*.tar
 
 # Built Zig term runtime artifacts.
 /priv/term_runtime/
+/.zig-cache/
 
 # Worktree-local native dependency state.
 /.batata/

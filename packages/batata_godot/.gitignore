@@ -3,5 +3,6 @@
 /deps/
 /doc/
 /tmp/
+/.zig-cache/
 /erl_crash.dump
 /batata_godot-*.tar

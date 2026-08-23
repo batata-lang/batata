@@ -1,6 +1,6 @@
 defmodule Batata.TermRuntime do
   @moduledoc """
-  Builds and locates the Zig term runtime shared library.
+  Builds and locates the Zig term runtime libraries.
 
   The runtime implements the declaration-first ABI in `native/ABI.md` and is
   consumed by the JIT (`Batata.execute/2`) through
@@ -10,11 +10,17 @@ defmodule Batata.TermRuntime do
 
   @doc "Directory containing the Zig runtime sources."
   @spec native_dir() :: Path.t()
-  def native_dir, do: Path.expand("native", File.cwd!())
+  def native_dir do
+    :batata
+    |> Application.app_dir("priv")
+    |> canonical_path()
+    |> Path.dirname()
+    |> Path.join("native")
+  end
 
   @doc "Directory where built runtime artifacts are written."
   @spec priv_dir() :: Path.t()
-  def priv_dir, do: Path.expand("priv/term_runtime", File.cwd!())
+  def priv_dir, do: Application.app_dir(:batata, "priv/term_runtime")
 
   @doc "Shared library file name for the current OS."
   @spec shared_lib_name() :: String.t()
@@ -46,8 +52,8 @@ defmodule Batata.TermRuntime do
   end
 
   @doc """
-  Ensures the shared library exists, building it with `zig build-lib` when
-  missing. Returns the shared library path.
+  Ensures the shared library exists, building it with the pinned Zig build
+  graph when missing. Returns the shared library path.
   """
   @spec ensure_built!(keyword()) :: Path.t()
   def ensure_built!(opts \\ []) do
@@ -95,17 +101,16 @@ defmodule Batata.TermRuntime do
 
   defp usable?(path), do: File.exists?(path) and File.stat!(path).size > 0
 
-  # Rebuild when the Zig sources are newer than the built library, so pulling
-  # new intrinsics (or any runtime change) does not silently keep using the
-  # previous binary.
+  # Rebuild when any Zig source or build contract is newer than the artifact,
+  # so pulling runtime or comptime-extension changes cannot retain stale code.
   defp stale?(path) do
-    source = Path.join(native_dir(), "term_runtime.zig")
-
-    File.exists?(source) and File.stat!(source).mtime > File.stat!(path).mtime
+    build_sources()
+    |> Enum.any?(&(File.stat!(&1).mtime > File.stat!(path).mtime))
   end
 
   defp build_and_publish!(kind, path) do
     temporary = temporary_path(path)
+    File.mkdir_p!(Path.dirname(path))
 
     try do
       build!(kind, temporary)
@@ -143,45 +148,66 @@ defmodule Batata.TermRuntime do
   end
 
   defp build!(:dynamic, path) do
-    zig!([
-      "build-lib",
-      source_path(),
-      "-dynamic",
-      "-O",
-      "ReleaseSafe",
-      "-lc",
-      "-femit-bin=#{path}"
-    ])
+    zig_build!("term-runtime-shared", shared_lib_name(), path)
   end
 
   defp build!(:static, path) do
-    # `-fno-stack-check`: the Zig std references `__zig_probe_stack`, which a
-    # plain C linker (the AOT driver) cannot resolve; the JIT path does not
-    # need this flag.
-    zig!([
-      "build-lib",
-      source_path(),
-      "-O",
-      "ReleaseSafe",
-      "-lc",
-      "-fno-stack-check",
-      "-femit-bin=#{path}"
-    ])
+    zig_build!("term-runtime-static", static_lib_name(), path)
   end
 
-  defp zig!(args) do
+  defp zig_build!(step, installed_name, path) do
     zig = System.find_executable("zig") || raise "zig not found on PATH"
-    File.mkdir_p!(priv_dir())
+    prefix = path <> ".install"
+    cache = path <> ".zig-cache"
 
-    {output, status} =
-      System.cmd(zig, args, stderr_to_stdout: true, cd: File.cwd!())
+    try do
+      {output, status} =
+        System.cmd(
+          zig,
+          [
+            "build",
+            step,
+            "--prefix",
+            prefix,
+            "--cache-dir",
+            cache,
+            "-Doptimize=ReleaseSafe"
+          ],
+          stderr_to_stdout: true,
+          cd: build_root()
+        )
 
-    if status != 0 do
-      raise "failed to build the Zig term runtime:\n#{output}"
+      if status != 0 do
+        raise "failed to build the Zig term runtime:\n#{output}"
+      end
+
+      prefix
+      |> Path.join("lib")
+      |> Path.join(installed_name)
+      |> File.rename!(path)
+    after
+      File.rm_rf!(prefix)
+      File.rm_rf!(cache)
     end
-
-    :ok
   end
 
-  defp source_path, do: Path.join(native_dir(), "term_runtime.zig")
+  defp build_root, do: Path.dirname(native_dir())
+
+  defp build_sources do
+    Path.wildcard(Path.join(native_dir(), "**/*.zig")) ++
+      [Path.join(build_root(), "build.zig"), Path.join(build_root(), "build.zig.zon")]
+  end
+
+  defp canonical_path(path) do
+    case File.read_link(path) do
+      {:ok, resolved} ->
+        case Path.type(resolved) do
+          :absolute -> resolved
+          :relative -> Path.expand(resolved, Path.dirname(path))
+        end
+
+      {:error, _reason} ->
+        Path.expand(path)
+    end
+  end
 end

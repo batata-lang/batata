@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+pub const Extension = @import("extension.zig").Extension;
 const c = @cImport({
     @cInclude("setjmp.h");
     @cInclude("stdio.h");
@@ -1082,7 +1083,7 @@ fn tuple5(a: i64, b: i64, d: i64, e: i64, f: i64) i64 {
 }
 
 /// Allocates an isolated execution instance and returns its opaque handle.
-pub export fn ex_term_runtime_create() i64 {
+pub fn ex_term_runtime_create() callconv(.c) i64 {
     const instance = create_runtime();
     runtime_lock.lock();
     defer runtime_lock.unlock();
@@ -1101,7 +1102,7 @@ pub export fn ex_term_runtime_create() i64 {
 }
 
 /// Binds an execution instance to the calling worker thread.
-pub export fn ex_term_runtime_enter(handle: i64) i64 {
+pub fn ex_term_runtime_enter(handle: i64) callconv(.c) i64 {
     if (active_runtime_handle == handle and active_runtime != null) return 0;
     if (active_runtime_handle != 0 or worker_runtime != null) return -2;
     runtime_lock.lock();
@@ -1130,7 +1131,7 @@ pub export fn ex_term_runtime_enter(handle: i64) i64 {
 
 /// Leaves the explicit instance and restores the thread-owned compatibility
 /// runtime on the next ABI call.
-pub export fn ex_term_runtime_leave() i64 {
+pub fn ex_term_runtime_leave() callconv(.c) i64 {
     if (active_runtime_handle == 0) return -1;
     const instance = active_runtime orelse return -1;
     instance.lifecycle_lock.lock();
@@ -1155,7 +1156,7 @@ pub export fn ex_term_runtime_leave() i64 {
 }
 
 /// Releases an execution instance. All workers must leave it before destroy.
-pub export fn ex_term_runtime_destroy(handle: i64) i64 {
+pub fn ex_term_runtime_destroy(handle: i64) callconv(.c) i64 {
     runtime_lock.lock();
     const slot = runtime_slot_locked(handle) orelse {
         runtime_lock.unlock();
@@ -1184,7 +1185,7 @@ pub export fn ex_term_runtime_destroy(handle: i64) i64 {
     return 0;
 }
 
-pub export fn ex_term_runtime_arena_bytes(handle: i64) i64 {
+pub fn ex_term_runtime_arena_bytes(handle: i64) callconv(.c) i64 {
     runtime_lock.lock();
     defer runtime_lock.unlock();
     const slot = runtime_slot_locked(handle) orelse return -1;
@@ -1192,7 +1193,7 @@ pub export fn ex_term_runtime_arena_bytes(handle: i64) i64 {
     return @intCast(instance.arena_capacity_words * @sizeOf(i64));
 }
 
-pub export fn ex_term_runtime_arena_chunks(handle: i64) i64 {
+pub fn ex_term_runtime_arena_chunks(handle: i64) callconv(.c) i64 {
     runtime_lock.lock();
     defer runtime_lock.unlock();
     const slot = runtime_slot_locked(handle) orelse return -1;
@@ -1200,7 +1201,7 @@ pub export fn ex_term_runtime_arena_chunks(handle: i64) i64 {
     return @intCast(instance.arena_chunk_count);
 }
 
-pub export fn ex_term_runtime_arena_high_water(handle: i64) i64 {
+pub fn ex_term_runtime_arena_high_water(handle: i64) callconv(.c) i64 {
     runtime_lock.lock();
     defer runtime_lock.unlock();
     const slot = runtime_slot_locked(handle) orelse return -1;
@@ -1208,7 +1209,7 @@ pub export fn ex_term_runtime_arena_high_water(handle: i64) i64 {
     return @intCast(instance.arena_used_words.load(.acquire) * @sizeOf(i64));
 }
 
-pub export fn ex_term_runtime_oom(handle: i64) i64 {
+pub fn ex_term_runtime_oom(handle: i64) callconv(.c) i64 {
     runtime_lock.lock();
     defer runtime_lock.unlock();
     const slot = runtime_slot_locked(handle) orelse return -1;
@@ -1218,7 +1219,7 @@ pub export fn ex_term_runtime_oom(handle: i64) i64 {
 
 /// Pins a completed execution result and transfers ownership of its runtime
 /// to the returned opaque handle. Zero means the bounded registry is full.
-pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
+pub fn ex_term_result_create(runtime_handle: i64, word: i64) callconv(.c) i64 {
     if (active_runtime_handle != runtime_handle) return -1;
     const instance = active_runtime orelse return -1;
     instance.lifecycle_lock.lock();
@@ -1253,7 +1254,7 @@ pub export fn ex_term_result_create(runtime_handle: i64, word: i64) i64 {
 }
 
 /// Releases a result and the execution runtime it owns.
-pub export fn ex_term_result_destroy(handle: i64) i64 {
+pub fn ex_term_result_destroy(handle: i64) callconv(.c) i64 {
     result_lock.lock();
     const initial = result_slot_locked(handle) orelse {
         result_lock.unlock();
@@ -1313,7 +1314,7 @@ pub export fn ex_term_result_destroy(handle: i64) i64 {
 
 /// Classifies the root. Untagged scalar returns remain scalar even when their
 /// low bits happen to resemble a heap tag.
-pub export fn ex_term_result_root_kind(handle: i64) i64 {
+pub fn ex_term_result_root_kind(handle: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
@@ -1322,21 +1323,21 @@ pub export fn ex_term_result_root_kind(handle: i64) i64 {
     return 0;
 }
 
-pub export fn ex_term_result_root_word(handle: i64) i64 {
+pub fn ex_term_result_root_word(handle: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
     return slot.word;
 }
 
-pub export fn ex_term_result_term_kind(handle: i64, word: i64) i64 {
+pub fn ex_term_result_term_kind(handle: i64, word: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
     return result_term_kind_locked(slot, word);
 }
 
-pub export fn ex_term_result_term_length(handle: i64, word: i64) i64 {
+pub fn ex_term_result_term_length(handle: i64, word: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
@@ -1352,7 +1353,7 @@ pub export fn ex_term_result_term_length(handle: i64, word: i64) i64 {
     };
 }
 
-pub export fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) i64 {
+pub fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
@@ -1677,7 +1678,7 @@ fn begin_term_export(handle: i64) error{ Invalid, Busy }!ExportLease {
 }
 
 /// Copies a result-owned portable term into generation-checked host storage.
-pub export fn ex_term_export(handle: i64, word: i64) i64 {
+pub fn ex_term_export(handle: i64, word: i64) callconv(.c) i64 {
     const lease = begin_result_export(handle, word) catch |err| return switch (err) {
         error.Invalid => -1,
         error.Unsupported => -3,
@@ -1687,7 +1688,7 @@ pub export fn ex_term_export(handle: i64, word: i64) i64 {
     return registerExported(lease.runtime, lease.word, lease.root_scalar);
 }
 
-pub export fn ex_term_exported_clone(handle: i64) i64 {
+pub fn ex_term_exported_clone(handle: i64) callconv(.c) i64 {
     exported_lock.lock();
     defer exported_lock.unlock();
     const slot = exported_slot_locked(handle) orelse return -1;
@@ -1696,7 +1697,7 @@ pub export fn ex_term_exported_clone(handle: i64) i64 {
     return handle;
 }
 
-pub export fn ex_term_exported_destroy(handle: i64) i64 {
+pub fn ex_term_exported_destroy(handle: i64) callconv(.c) i64 {
     exported_lock.lock();
     defer exported_lock.unlock();
     const slot = exported_slot_locked(handle) orelse return -1;
@@ -1704,14 +1705,14 @@ pub export fn ex_term_exported_destroy(handle: i64) i64 {
     return 0;
 }
 
-pub export fn ex_term_exported_length(handle: i64) i64 {
+pub fn ex_term_exported_length(handle: i64) callconv(.c) i64 {
     exported_lock.lock();
     defer exported_lock.unlock();
     const slot = exported_slot_locked(handle) orelse return -1;
     return @intCast(slot.bytes.?.len);
 }
 
-pub export fn ex_term_exported_get(handle: i64, index_word: i64) i64 {
+pub fn ex_term_exported_get(handle: i64, index_word: i64) callconv(.c) i64 {
     if (index_word < 0) return -1;
     exported_lock.lock();
     defer exported_lock.unlock();
@@ -1851,7 +1852,7 @@ fn decodeTerm(decoder: *Decoder, storage: [*]i64, next: *usize, root: bool, root
 }
 
 /// Imports an exported value into an explicitly entered target runtime.
-pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
+pub fn ex_term_import(runtime_handle: i64, exported_handle: i64) callconv(.c) i64 {
     const bytes = retain_exported_bytes(exported_handle) catch |err| return switch (err) {
         error.Invalid => -1,
         error.Limit => -4,
@@ -1905,7 +1906,7 @@ pub export fn ex_term_import(runtime_handle: i64, exported_handle: i64) i64 {
     return opaque_handle(index, slot.generation);
 }
 
-pub export fn ex_term_handle_export(handle: i64) i64 {
+pub fn ex_term_handle_export(handle: i64) callconv(.c) i64 {
     const lease = begin_term_export(handle) catch |err| return switch (err) {
         error.Invalid => -1,
         error.Busy => -5,
@@ -1914,7 +1915,7 @@ pub export fn ex_term_handle_export(handle: i64) i64 {
     return registerExported(lease.runtime, lease.word, lease.root_scalar);
 }
 
-pub export fn ex_term_handle_destroy(handle: i64) i64 {
+pub fn ex_term_handle_destroy(handle: i64) callconv(.c) i64 {
     term_lock.lock();
     const initial = term_slot_locked(handle) orelse {
         term_lock.unlock();
@@ -2034,7 +2035,7 @@ fn resolve_pid(instance: *Runtime, pid: i64) ?*Process {
 /// start so each run observes a clean actor table (processes/mailboxes do not
 /// leak across `Batata.execute` calls). Returns 1, or nil when the capacity
 /// is out of range.
-pub export fn ex_term_process_table_reset(cap: i64) i64 {
+pub fn ex_term_process_table_reset(cap: i64) callconv(.c) i64 {
     const instance = runtime();
     if (cap < 1 or cap > max_process_cap) return nil_word;
     if (worker_runtime != null) return -1;
@@ -2102,18 +2103,18 @@ threadlocal var uncaught_boundary: ?*c.jmp_buf = null;
 
 /// Size of the C `jmp_buf` so the compiled code can allocate it on its own
 /// stack.
-pub export fn ex_term_jmp_buf_size() i64 {
+pub fn ex_term_jmp_buf_size() callconv(.c) i64 {
     return @sizeOf(c.jmp_buf);
 }
 
 /// Address of libc's `setjmp`, so the compiled code can call it indirectly
 /// without the ORC linker resolving libc symbols.
-pub export fn ex_term_setjmp_addr() i64 {
+pub fn ex_term_setjmp_addr() callconv(.c) i64 {
     return @bitCast(@intFromPtr(&c.setjmp));
 }
 
 /// Pushes a setjmp buffer for a try region.
-pub export fn ex_term_try_push(buf: *c.jmp_buf) i64 {
+pub fn ex_term_try_push(buf: *c.jmp_buf) callconv(.c) i64 {
     if (jmp_depth >= jmp_stack.len) return -1;
     jmp_stack[jmp_depth] = buf;
     jmp_depth += 1;
@@ -2121,14 +2122,14 @@ pub export fn ex_term_try_push(buf: *c.jmp_buf) i64 {
 }
 
 /// Pops the innermost try region's setjmp buffer.
-pub export fn ex_term_try_pop() i64 {
+pub fn ex_term_try_pop() callconv(.c) i64 {
     if (jmp_depth > 0) jmp_depth -= 1;
     return 0;
 }
 
 /// Throws a value to the innermost try region. A worker catches otherwise
 /// uncaught values at the actor boundary; calls outside a worker still abort.
-pub export fn ex_term_throw(value: i64) noreturn {
+pub fn ex_term_throw(value: i64) callconv(.c) noreturn {
     throw_value = value;
     unwind_kind = 0;
     if (jmp_depth > 0) c.longjmp(jmp_stack[jmp_depth - 1], 1);
@@ -2138,7 +2139,7 @@ pub export fn ex_term_throw(value: i64) noreturn {
 
 /// Raises an exception past user catch frames to the actor boundary. `kind`
 /// is kept as runtime metadata, never encoded in the user-controlled reason.
-pub export fn ex_term_raise(reason: i64, kind: i64) noreturn {
+pub fn ex_term_raise(reason: i64, kind: i64) callconv(.c) noreturn {
     throw_value = reason;
     unwind_kind = kind;
     if (uncaught_boundary) |boundary| c.longjmp(boundary, 1);
@@ -2147,13 +2148,13 @@ pub export fn ex_term_raise(reason: i64, kind: i64) noreturn {
 
 /// Returns the value delivered by the most recent throw (called from the
 /// catch region after the longjmp returns).
-pub export fn ex_term_catch_value() i64 {
+pub fn ex_term_catch_value() callconv(.c) i64 {
     return throw_value;
 }
 
 /// Returns the pid of the current execution context. The scalar slice runs a
 /// single actor with pid 1 (the atom term with id 1).
-pub export fn ex_term_self() i64 {
+pub fn ex_term_self() callconv(.c) i64 {
     return current_proc().pid;
 }
 
@@ -2161,7 +2162,7 @@ pub export fn ex_term_self() i64 {
 /// message itself, or nil when the pid is invalid or the mailbox is full.
 /// Message delivery does not bump the recipient's epoch in this slice: a
 /// plain FIFO receive must observe the message on resume.
-pub export fn ex_term_send(pid: i64, msg: i64) i64 {
+pub fn ex_term_send(pid: i64, msg: i64) callconv(.c) i64 {
     const sender = current_proc().pid;
     if (!is_pid(pid)) return nil_word;
     const instance = runtime();
@@ -2182,18 +2183,18 @@ pub export fn ex_term_send(pid: i64, msg: i64) i64 {
 }
 
 /// Dequeues the oldest message; nil when the mailbox is empty.
-pub export fn ex_term_receive() i64 {
+pub fn ex_term_receive() callconv(.c) i64 {
     return current_proc().mailbox.pop() orelse nil_word;
 }
 
 /// The nil term word (atom id 0).
-pub export fn ex_term_nil() i64 {
+pub fn ex_term_nil() callconv(.c) i64 {
     return nil_word;
 }
 
 /// The current process's `receive ... after` timeout start; 0 when the wait
 /// loop has not started timing yet.
-pub export fn ex_term_receive_start() i64 {
+pub fn ex_term_receive_start() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2201,7 +2202,7 @@ pub export fn ex_term_receive_start() i64 {
 }
 
 /// Sets the current process's `receive ... after` timeout start.
-pub export fn ex_term_receive_start_set(value: i64) i64 {
+pub fn ex_term_receive_start_set(value: i64) callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2210,7 +2211,7 @@ pub export fn ex_term_receive_start_set(value: i64) i64 {
 }
 
 /// Wall-clock milliseconds (UTC epoch) for `receive ... after` timeouts.
-pub export fn ex_term_monotonic_time() i64 {
+pub fn ex_term_monotonic_time() callconv(.c) i64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(i64, ts.tv_sec) * 1000 +
@@ -2219,7 +2220,7 @@ pub export fn ex_term_monotonic_time() i64 {
 
 /// The BEAM native time unit (nanoseconds on 64-bit) for
 /// `erlang.monotonic_time/0,1`.
-pub export fn ex_term_native_time() i64 {
+pub fn ex_term_native_time() callconv(.c) i64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(i64, ts.tv_sec) * 1_000_000_000 + @as(i64, ts.tv_nsec);
@@ -2227,7 +2228,7 @@ pub export fn ex_term_native_time() i64 {
 
 /// Hands out a fresh logical-clock value for `erlang.unique_integer/0,1`;
 /// `negative` selects the decreasing negative series.
-pub export fn ex_term_unique_integer(negative: i64) i64 {
+pub fn ex_term_unique_integer(negative: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.counter_lock.lock();
     defer instance.counter_lock.unlock();
@@ -2236,13 +2237,13 @@ pub export fn ex_term_unique_integer(negative: i64) i64 {
 }
 
 /// Number of messages in the current process's mailbox.
-pub export fn ex_term_mailbox_len() i64 {
+pub fn ex_term_mailbox_len() callconv(.c) i64 {
     return @intCast(current_proc().mailbox.count());
 }
 
 /// The message at `cursor` (0-based from the mailbox head) without removing
 /// it; nil when out of range.
-pub export fn ex_term_mailbox_peek(cursor: i64) i64 {
+pub fn ex_term_mailbox_peek(cursor: i64) callconv(.c) i64 {
     const proc = current_proc();
     if (cursor < 0) return nil_word;
     return proc.mailbox.peek(@intCast(cursor)) orelse nil_word;
@@ -2250,7 +2251,7 @@ pub export fn ex_term_mailbox_peek(cursor: i64) i64 {
 
 /// Removes the message at `cursor`, shifting later messages forward; returns
 /// 1, or nil when out of range.
-pub export fn ex_term_mailbox_remove(cursor: i64) i64 {
+pub fn ex_term_mailbox_remove(cursor: i64) callconv(.c) i64 {
     const proc = current_proc();
     if (cursor < 0) return nil_word;
     return if (proc.mailbox.remove(@intCast(cursor))) 1 else nil_word;
@@ -2260,7 +2261,7 @@ pub export fn ex_term_mailbox_remove(cursor: i64) i64 {
 /// the first slice; resumed slices skip it (guarded by the continuation check
 /// in the lift) so messages that arrived while the process was suspended are
 /// preserved.
-pub export fn ex_term_mailbox_clear() i64 {
+pub fn ex_term_mailbox_clear() callconv(.c) i64 {
     current_proc().mailbox.clear();
     return nil_word;
 }
@@ -2270,7 +2271,7 @@ pub export fn ex_term_mailbox_clear() i64 {
 /// A completed process's slot is recycled first (stage 1) with a bumped
 /// generation; otherwise the table grows dynamically, so spawn only fails on
 /// allocation failure. `process_count` grows only to the concurrency peak.
-pub export fn ex_term_spawn(fun: i64) i64 {
+pub fn ex_term_spawn(fun: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2335,7 +2336,7 @@ fn grow_process_table(instance: *Runtime, needed: usize) void {
 
 /// Saves the current process's cursor-loop continuation (list, acc, cursor)
 /// at the current epoch. Returns 1.
-pub export fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
+pub fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2352,7 +2353,7 @@ pub export fn ex_term_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
 
 /// Saves a selective-receive continuation (mailbox scan state): unlike a
 /// cursor-loop continuation, message arrival invalidates it.
-pub export fn ex_term_receive_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
+pub fn ex_term_receive_cont_save(arg: i64, acc: i64, cursor: i64) callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2370,7 +2371,7 @@ pub export fn ex_term_receive_cont_save(arg: i64, acc: i64, cursor: i64) i64 {
 /// 1 when the current process has a continuation saved at the current epoch;
 /// a message arrival bumps the epoch, so stale continuations read as not
 /// pending.
-pub export fn ex_term_cont_pending() i64 {
+pub fn ex_term_cont_pending() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2381,7 +2382,7 @@ pub export fn ex_term_cont_pending() i64 {
 /// The entry's mailbox reset is gated on this: a resume — even one whose
 /// continuation was invalidated by a message arrival — must keep the messages
 /// that arrived while the process was suspended.
-pub export fn ex_term_cont_active() i64 {
+pub fn ex_term_cont_active() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2389,7 +2390,7 @@ pub export fn ex_term_cont_active() i64 {
 }
 
 /// Clears the current process's saved continuation.
-pub export fn ex_term_cont_clear() i64 {
+pub fn ex_term_cont_clear() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2399,21 +2400,21 @@ pub export fn ex_term_cont_clear() i64 {
 
 /// Saved loop state (arg/acc/cursor) of the current process's continuation;
 /// nil when none is pending.
-pub export fn ex_term_cont_load_arg() i64 {
+pub fn ex_term_cont_load_arg() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
     return if (proc.cont.active) proc.cont.arg else nil_word;
 }
 
-pub export fn ex_term_cont_load_acc() i64 {
+pub fn ex_term_cont_load_acc() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
     return if (proc.cont.active) proc.cont.acc else nil_word;
 }
 
-pub export fn ex_term_cont_load_cursor() i64 {
+pub fn ex_term_cont_load_cursor() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2423,7 +2424,7 @@ pub export fn ex_term_cont_load_cursor() i64 {
 /// Advances to the next runnable process (round-robin from the current one)
 /// and returns its pid. Stays on the current process when it is the only
 /// runnable one.
-pub export fn ex_term_schedule_next() i64 {
+pub fn ex_term_schedule_next() callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2442,7 +2443,7 @@ pub export fn ex_term_schedule_next() i64 {
 
 /// Atomically claims one runnable actor for a non-zero worker id. The actor
 /// remains runnable while owned, but no second worker can claim it.
-pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
+pub fn ex_term_process_claim_next(worker_id: i64) callconv(.c) i64 {
     if (worker_id <= 0 or worker_id > std.math.maxInt(u32)) return nil_word;
     const owner: u32 = @intCast(worker_id);
     const instance = runtime();
@@ -2468,7 +2469,7 @@ pub export fn ex_term_process_claim_next(worker_id: i64) i64 {
 }
 
 /// Releases the actor claimed by this worker after a yielded slice.
-pub export fn ex_term_process_release() i64 {
+pub fn ex_term_process_release() callconv(.c) i64 {
     const proc = current_proc();
     const pid = proc.pid;
     proc.owner.store(0, .release);
@@ -2478,7 +2479,7 @@ pub export fn ex_term_process_release() i64 {
 /// Parks the current actor only when no message was appended beyond the
 /// completed selective-receive scan cursor. Holding the mailbox lock across
 /// the state transition prevents a lost wakeup with a concurrent send.
-pub export fn ex_term_process_wait(cursor: i64) i64 {
+pub fn ex_term_process_wait(cursor: i64) callconv(.c) i64 {
     if (cursor < 0) return -1;
     const instance = runtime();
     const proc = current_proc();
@@ -2576,10 +2577,10 @@ fn update_atomic_max(value: *std.atomic.Value(u32), candidate: u32) void {
 /// Runs all actors to completion using exactly `worker_count` OS workers.
 /// The caller participates as worker 1; additional workers are joined before
 /// the entry process result is returned.
-pub export fn ex_term_worker_run(
+pub fn ex_term_worker_run(
     worker_count: i64,
     dispatcher: ?*const fn (i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     if (worker_count <= 0 or worker_count > 64 or dispatcher == null) return -1;
     const instance = runtime();
     if (active_runtime_handle == 0) return -1;
@@ -2627,19 +2628,19 @@ pub export fn ex_term_worker_run(
     return ex_term_process_result(pid_of(0, 1));
 }
 
-pub export fn ex_term_worker_count() i64 {
+pub fn ex_term_worker_count() callconv(.c) i64 {
     return runtime().configured_workers.load(.acquire);
 }
 
-pub export fn ex_term_worker_max_active() i64 {
+pub fn ex_term_worker_max_active() callconv(.c) i64 {
     return runtime().max_active_actors.load(.acquire);
 }
 
-pub export fn ex_term_worker_migrations() i64 {
+pub fn ex_term_worker_migrations() callconv(.c) i64 {
     return @intCast(runtime().migrations.load(.acquire));
 }
 
-pub export fn ex_term_process_thread_id(pid: i64) i64 {
+pub fn ex_term_process_thread_id(pid: i64) callconv(.c) i64 {
     const instance = runtime();
     if (!is_pid(pid)) return 0;
     instance.scheduler_lock.lock();
@@ -2650,7 +2651,7 @@ pub export fn ex_term_process_thread_id(pid: i64) i64 {
 
 /// Closure word of the current process's entry; 0 for the initial process
 /// (the compiled `__batata_entry`).
-pub export fn ex_term_current_entry() i64 {
+pub fn ex_term_current_entry() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2759,7 +2760,7 @@ fn propagate_exit_locked(instance: *Runtime, proc: *Process, reason: i64) void {
 }
 
 /// Marks the current process done and stores its result.
-pub export fn ex_term_process_done(result: i64) i64 {
+pub fn ex_term_process_done(result: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2800,7 +2801,7 @@ pub export fn ex_term_process_done(result: i64) i64 {
 
 /// Marks the current process as abnormally exited and records its reason.
 /// The owner is always released so other actors and workers can continue.
-pub export fn ex_term_process_exit(reason: i64) i64 {
+pub fn ex_term_process_exit(reason: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2810,7 +2811,7 @@ pub export fn ex_term_process_exit(reason: i64) i64 {
 }
 
 /// Sets the current process's trap-exit flag and returns its previous value.
-pub export fn ex_term_process_trap_exit(enabled: i64) i64 {
+pub fn ex_term_process_trap_exit(enabled: i64) callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -2821,7 +2822,7 @@ pub export fn ex_term_process_trap_exit(enabled: i64) i64 {
 
 /// Creates a symmetric link. Atom words for EXIT and normal are supplied by
 /// compiled code because atom identifiers are program hashes, not runtime IDs.
-pub export fn ex_term_link(pid: i64, exit_tag: i64, normal_tag: i64) i64 {
+pub fn ex_term_link(pid: i64, exit_tag: i64, normal_tag: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2845,7 +2846,7 @@ pub export fn ex_term_link(pid: i64, exit_tag: i64, normal_tag: i64) i64 {
 }
 
 /// Removes both sides of a link; returns 1 when the target pid is live.
-pub export fn ex_term_unlink(pid: i64) i64 {
+pub fn ex_term_unlink(pid: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2858,7 +2859,7 @@ pub export fn ex_term_unlink(pid: i64) i64 {
 
 /// Sends an exit signal without creating a link. A trapping target receives
 /// `{EXIT, from, reason}`; a non-trapping target exits unless reason is normal.
-pub export fn ex_term_exit(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64) i64 {
+pub fn ex_term_exit(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2880,12 +2881,12 @@ pub export fn ex_term_exit(pid: i64, reason: i64, exit_tag: i64, normal_tag: i64
 }
 
 /// Monitors a live process and returns a fresh runtime-local reference.
-pub export fn ex_term_monitor(
+pub fn ex_term_monitor(
     pid: i64,
     down_tag: i64,
     process_tag: i64,
     normal_tag: i64,
-) i64 {
+) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2908,7 +2909,7 @@ pub export fn ex_term_monitor(
 }
 
 /// Removes a monitor owned by the current process; returns 1 when found.
-pub export fn ex_term_demonitor(reference: i64) i64 {
+pub fn ex_term_demonitor(reference: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2930,7 +2931,7 @@ pub export fn ex_term_demonitor(reference: i64) i64 {
 }
 
 /// Number of runnable processes (the scheduler driver loops while > 0).
-pub export fn ex_term_processes_runnable() i64 {
+pub fn ex_term_processes_runnable() callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2943,7 +2944,7 @@ pub export fn ex_term_processes_runnable() i64 {
 
 /// Result of a completed process; nil when the process is unknown or still
 /// runnable.
-pub export fn ex_term_process_result(pid: i64) i64 {
+pub fn ex_term_process_result(pid: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2956,7 +2957,7 @@ pub export fn ex_term_process_result(pid: i64) i64 {
 
 /// Returns an abnormally exited process's reason; nil for a live, normally
 /// completed, stale or unknown pid.
-pub export fn ex_term_process_exit_reason(pid: i64) i64 {
+pub fn ex_term_process_exit_reason(pid: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2969,7 +2970,7 @@ pub export fn ex_term_process_exit_reason(pid: i64) i64 {
 
 /// Exception discriminator for an abnormally exited process; zero denotes
 /// an ordinary uncaught throw or a non-exception exit.
-pub export fn ex_term_process_exit_kind(pid: i64) i64 {
+pub fn ex_term_process_exit_kind(pid: i64) callconv(.c) i64 {
     const instance = runtime();
     instance.scheduler_lock.lock();
     defer instance.scheduler_lock.unlock();
@@ -2981,7 +2982,7 @@ pub export fn ex_term_process_exit_kind(pid: i64) i64 {
 }
 
 /// Reads exception metadata through a retained host result handle.
-pub export fn ex_term_result_exception_kind(handle: i64) i64 {
+pub fn ex_term_result_exception_kind(handle: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
@@ -2994,7 +2995,7 @@ pub export fn ex_term_result_exception_kind(handle: i64) i64 {
     return if (proc.status == .exited) proc.exit_kind else 0;
 }
 
-pub export fn ex_term_result_exception_reason(handle: i64) i64 {
+pub fn ex_term_result_exception_reason(handle: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
@@ -3008,7 +3009,7 @@ pub export fn ex_term_result_exception_reason(handle: i64) i64 {
 }
 
 /// Sets the reduction budget and resets the used counter (epoch untouched).
-pub export fn ex_term_clock_init(budget: i64) i64 {
+pub fn ex_term_clock_init(budget: i64) callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -3019,7 +3020,7 @@ pub export fn ex_term_clock_init(budget: i64) i64 {
 
 /// Charges `cost` reductions; returns 1 when the budget is exhausted (the
 /// caller should yield), else 0. Negative cost is clamped to zero.
-pub export fn ex_term_clock_tick(cost: i64) i64 {
+pub fn ex_term_clock_tick(cost: i64) callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -3028,7 +3029,7 @@ pub export fn ex_term_clock_tick(cost: i64) i64 {
 }
 
 /// Remaining reduction budget (clamped to >= 0); -1 when no budget is set.
-pub export fn ex_term_clock_budget_left() i64 {
+pub fn ex_term_clock_budget_left() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -3038,7 +3039,7 @@ pub export fn ex_term_clock_budget_left() i64 {
 }
 
 /// Current continuation-generation counter.
-pub export fn ex_term_clock_epoch() i64 {
+pub fn ex_term_clock_epoch() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -3046,7 +3047,7 @@ pub export fn ex_term_clock_epoch() i64 {
 }
 
 /// Bumps the epoch (message arrival / scheduler round); returns the new value.
-pub export fn ex_term_clock_bump_epoch() i64 {
+pub fn ex_term_clock_bump_epoch() callconv(.c) i64 {
     const proc = current_proc();
     proc.state_lock.lock();
     defer proc.state_lock.unlock();
@@ -3056,7 +3057,7 @@ pub export fn ex_term_clock_bump_epoch() i64 {
 }
 
 /// Number of preemptive yields so far (slice boundaries in the loop driver).
-pub export fn ex_term_yield_count() i64 {
+pub fn ex_term_yield_count() callconv(.c) i64 {
     const instance = runtime();
     instance.counter_lock.lock();
     defer instance.counter_lock.unlock();
@@ -3064,7 +3065,7 @@ pub export fn ex_term_yield_count() i64 {
 }
 
 /// Records one yield at a slice boundary and bumps the yield counter.
-pub export fn ex_term_yield_mark() i64 {
+pub fn ex_term_yield_mark() callconv(.c) i64 {
     const instance = runtime();
     instance.counter_lock.lock();
     defer instance.counter_lock.unlock();
@@ -3074,14 +3075,14 @@ pub export fn ex_term_yield_mark() i64 {
 
 /// Untags an integer term word to its scalar value; 0 for non-integers (the
 /// caller is expected to have checked `is_integer` first).
-pub export fn ex_term_to_int(word: i64) i64 {
+pub fn ex_term_to_int(word: i64) callconv(.c) i64 {
     if (word_tag(word) != tag_int) return 0;
     return word_payload(word);
 }
 
 /// Constructs a first-class function value: a closure word holding the index
 /// of the extracted `__fn_*` and up to four captured env words.
-pub export fn ex_term_make_fun(fn_idx: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) i64 {
+pub fn ex_term_make_fun(fn_idx: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) callconv(.c) i64 {
     if (env_len < 0 or env_len > 4) return nil_word;
     const words = alloc_words(6) orelse return nil_word;
     words[0] = fn_idx;
@@ -3093,7 +3094,7 @@ pub export fn ex_term_make_fun(fn_idx: i64, env_len: i64, e0: i64, e1: i64, e2: 
 
 /// Constructs an arity-carrying closure while leaving the legacy closure
 /// layout readable for callers that still use `ex.term.make_fun`.
-pub export fn ex_term_make_fun_with_arity(fn_idx: i64, arity: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) i64 {
+pub fn ex_term_make_fun_with_arity(fn_idx: i64, arity: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) callconv(.c) i64 {
     if (arity < 0 or arity > 4 or env_len < 0 or env_len > 4) return nil_word;
     const words = alloc_words(7) orelse return nil_word;
     words[0] = fn_idx;
@@ -3105,21 +3106,21 @@ pub export fn ex_term_make_fun_with_arity(fn_idx: i64, arity: i64, env_len: i64,
 }
 
 /// Returns the function index of a closure word; 0 for non-functions.
-pub export fn ex_term_fun_idx(fun: i64) i64 {
+pub fn ex_term_fun_idx(fun: i64) callconv(.c) i64 {
     if (word_tag(fun) != tag_fun) return 0;
     return fun_words(fun)[0];
 }
 
 /// Returns a closure's declared arity; -1 for non-functions and legacy
 /// closures whose layout did not carry arity.
-pub export fn ex_term_fun_arity(fun: i64) i64 {
+pub fn ex_term_fun_arity(fun: i64) callconv(.c) i64 {
     if (word_tag(fun) != tag_fun or !fun_has_arity(fun)) return -1;
     return fun_words(fun)[2];
 }
 
 /// Returns the `index`-th captured env word of a closure; nil for
 /// non-functions or out-of-range indices.
-pub export fn ex_term_fun_env(fun: i64, index: i64) i64 {
+pub fn ex_term_fun_env(fun: i64, index: i64) callconv(.c) i64 {
     if (word_tag(fun) != tag_fun) return nil_word;
     const words = fun_words(fun);
     const env_len = fun_env_len(fun);
@@ -3128,7 +3129,7 @@ pub export fn ex_term_fun_env(fun: i64, index: i64) i64 {
 }
 
 /// Conses a head word onto a list tail, returning a proper list word.
-pub export fn ex_term_list_cons(head: i64, tail: i64) i64 {
+pub fn ex_term_list_cons(head: i64, tail: i64) callconv(.c) i64 {
     const cell = alloc_words(2) orelse return nil_word;
     cell[0] = head;
     cell[1] = tail;
@@ -3156,7 +3157,7 @@ fn flatten_list_reversed(list: i64, reversed: *i64, depth: usize) bool {
 
 /// Recursively flattens a proper list while preserving non-list terms as
 /// leaves. The integer zero word is returned as an invalid-list sentinel.
-pub export fn ex_term_list_flatten(list: i64) i64 {
+pub fn ex_term_list_flatten(list: i64) callconv(.c) i64 {
     if (!is_list_word(list)) return 0;
 
     var reversed = nil_word;
@@ -3175,7 +3176,7 @@ pub export fn ex_term_list_flatten(list: i64) i64 {
 }
 
 /// Converts a proper list word into a tuple word.
-pub export fn ex_term_tuple_from_list(list: i64) i64 {
+pub fn ex_term_tuple_from_list(list: i64) callconv(.c) i64 {
     const len = list_len(list);
     const tuple = alloc_words(len + 1) orelse return nil_word;
     tuple[0] = @intCast(len);
@@ -3185,7 +3186,7 @@ pub export fn ex_term_tuple_from_list(list: i64) i64 {
 
 /// Reads the element at `index` from a tuple word; nil for out-of-range or
 /// non-tuples (the caller is expected to have checked `is_tuple` first).
-pub export fn ex_term_tuple_get(tuple: i64, index: i64) i64 {
+pub fn ex_term_tuple_get(tuple: i64, index: i64) callconv(.c) i64 {
     if (word_tag(tuple) != tag_tuple) return nil_word;
     const len = tuple_len(tuple);
     if (index < 0 or index >= @as(i64, @intCast(len))) return nil_word;
@@ -3193,20 +3194,20 @@ pub export fn ex_term_tuple_get(tuple: i64, index: i64) i64 {
 }
 
 /// Returns the arity of a tuple word; 0 for non-tuples.
-pub export fn ex_term_tuple_length(tuple: i64) i64 {
+pub fn ex_term_tuple_length(tuple: i64) callconv(.c) i64 {
     if (word_tag(tuple) != tag_tuple) return 0;
     return @intCast(tuple_len(tuple));
 }
 
 /// Returns the pair count of a map word; 0 for non-maps.
-pub export fn ex_term_map_length(map: i64) i64 {
+pub fn ex_term_map_length(map: i64) callconv(.c) i64 {
     if (word_tag(map) != tag_map) return 0;
     return @intCast(map_len(map));
 }
 
 /// Returns `{found, value}` for a map key. `found` is a tagged integer term,
 /// so a stored nil value remains distinguishable from a missing key.
-pub export fn ex_term_map_fetch(map: i64, key: i64) i64 {
+pub fn ex_term_map_fetch(map: i64, key: i64) callconv(.c) i64 {
     if (word_tag(map) != tag_map) return tuple2(0, nil_word);
     const len = map_len(map);
     const entries = map_entries(map);
@@ -3218,7 +3219,7 @@ pub export fn ex_term_map_fetch(map: i64, key: i64) i64 {
 
 /// Returns the element count of an enumerable term: list length, tuple
 /// arity, map pair count, or binary byte length; 0 for non-enumerables.
-pub export fn ex_term_enumerable_count(word: i64) i64 {
+pub fn ex_term_enumerable_count(word: i64) callconv(.c) i64 {
     return switch (word_tag(word)) {
         tag_list => @intCast(list_len(word)),
         tag_tuple => @intCast(tuple_len(word)),
@@ -3231,7 +3232,7 @@ pub export fn ex_term_enumerable_count(word: i64) i64 {
 /// Materializes an enumerable as a list by term tag: lists pass through,
 /// tuples yield their elements, maps yield `{k, v}` tuple pairs, binaries
 /// yield tagged byte integers. nil for unsupported tags.
-pub export fn ex_term_enumerable_to_list(enumerable: i64) i64 {
+pub fn ex_term_enumerable_to_list(enumerable: i64) callconv(.c) i64 {
     switch (word_tag(enumerable)) {
         tag_list => return enumerable,
         tag_tuple => {
@@ -3280,7 +3281,7 @@ pub export fn ex_term_enumerable_to_list(enumerable: i64) i64 {
 /// Materializes an enumerable and inserts `separator` between adjacent
 /// elements. Empty and single-element inputs do not allocate separators;
 /// nil is returned for unsupported enumerable tags.
-pub export fn ex_term_enumerable_intersperse(enumerable: i64, separator: i64) i64 {
+pub fn ex_term_enumerable_intersperse(enumerable: i64, separator: i64) callconv(.c) i64 {
     if (!is_list_word(enumerable) and
         word_tag(enumerable) != tag_tuple and
         word_tag(enumerable) != tag_map and
@@ -3308,7 +3309,7 @@ pub export fn ex_term_enumerable_intersperse(enumerable: i64, separator: i64) i6
 }
 
 /// Materializes an inclusive integer range as a list.
-pub export fn ex_term_enumerable_to_list_range(start: i64, stop: i64) i64 {
+pub fn ex_term_enumerable_to_list_range(start: i64, stop: i64) callconv(.c) i64 {
     var result = nil_word;
     if (start <= stop) {
         var i = stop;
@@ -3327,10 +3328,10 @@ pub export fn ex_term_enumerable_to_list_range(start: i64, stop: i64) i64 {
 /// Maps an enumerable by calling a compiled mapper `(item: i64) -> i64` on
 /// each item, producing a list in order. Items are untagged integers; the
 /// mapped scalar is tagged as an int term in the result.
-pub export fn ex_term_enumerable_map_fun(
+pub fn ex_term_enumerable_map_fun(
     enumerable: i64,
     mapper: ?*const fn (i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     const count = ex_term_enumerable_count(enumerable);
     var result = nil_word;
     var i: i64 = count;
@@ -3353,10 +3354,10 @@ pub export fn ex_term_enumerable_map_fun(
 /// mapper ABI above, both the item passed to the callback and its result stay
 /// tagged term words, allowing tuple/list/map pattern matching and term
 /// construction in the mapper body.
-pub export fn ex_term_enumerable_map_term_fun(
+pub fn ex_term_enumerable_map_term_fun(
     enumerable: i64,
     mapper: ?*const fn (i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     const count = ex_term_enumerable_count(enumerable);
     var result = nil_word;
     var i: i64 = count;
@@ -3377,14 +3378,14 @@ pub export fn ex_term_enumerable_map_term_fun(
 /// Maps an enumerable with a captured term callback using the compiler's
 /// fixed closure ABI: four environment words followed by four argument
 /// words. The tagged item occupies the first argument slot.
-pub export fn ex_term_enumerable_map_term_fun_c(
+pub fn ex_term_enumerable_map_term_fun_c(
     enumerable: i64,
     mapper: ?*const fn (i64, i64, i64, i64, i64, i64, i64, i64) callconv(.c) i64,
     env0: i64,
     env1: i64,
     env2: i64,
     env3: i64,
-) i64 {
+) callconv(.c) i64 {
     const count = ex_term_enumerable_count(enumerable);
     var result = nil_word;
     var i: i64 = count;
@@ -3405,10 +3406,10 @@ pub export fn ex_term_enumerable_map_term_fun_c(
 /// Flat-maps an enumerable with a tagged term callback. Each callback result
 /// is materialized through the enumerable protocol subset and concatenated
 /// in input order.
-pub export fn ex_term_enumerable_flat_map_term_fun(
+pub fn ex_term_enumerable_flat_map_term_fun(
     enumerable: i64,
     mapper: ?*const fn (i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     const count = ex_term_enumerable_count(enumerable);
     var result = nil_word;
     var i: i64 = count;
@@ -3440,10 +3441,10 @@ pub export fn ex_term_enumerable_flat_map_term_fun(
 
 /// Filters a list by a compiled predicate `(item: i64) -> i64` (nonzero
 /// keeps), producing a list in order.
-pub export fn ex_term_stream_filter(
+pub fn ex_term_stream_filter(
     list: i64,
     predicate: ?*const fn (i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     if (word_tag(list) != tag_list) return nil_word;
     const count = list_len(list);
     var result = nil_word;
@@ -3459,7 +3460,7 @@ pub export fn ex_term_stream_filter(
 }
 
 /// Takes the first n elements of a list (n clamped to [0, len]).
-pub export fn ex_term_stream_take(list: i64, n: i64) i64 {
+pub fn ex_term_stream_take(list: i64, n: i64) callconv(.c) i64 {
     if (word_tag(list) != tag_list) return nil_word;
     const len: i64 = @intCast(list_len(list));
     const take_n = if (n < 0) 0 else @min(n, len);
@@ -3473,7 +3474,7 @@ pub export fn ex_term_stream_take(list: i64, n: i64) i64 {
 }
 
 /// Drops the first n elements of a list (n clamped to [0, len]).
-pub export fn ex_term_stream_drop(list: i64, n: i64) i64 {
+pub fn ex_term_stream_drop(list: i64, n: i64) callconv(.c) i64 {
     if (word_tag(list) != tag_list) return nil_word;
     const len: i64 = @intCast(list_len(list));
     const skip = if (n < 0) 0 else @min(n, len);
@@ -3494,7 +3495,7 @@ pub export fn ex_term_stream_drop(list: i64, n: i64) i64 {
 /// tagged before the step, matching list/tuple elements). 7 = acc - item,
 /// 8 = item - acc (subtraction is order-sensitive). 9-12 are the integer
 /// div/rem variants (order-sensitive, zero divisor yields 0).
-pub export fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) i64 {
+pub fn ex_term_enumerable_reduce(enumerable: i64, acc: i64, continuation: i64) callconv(.c) i64 {
     switch (word_tag(enumerable)) {
         tag_list => {
             var current = enumerable;
@@ -3577,12 +3578,12 @@ fn word_value(word: i64) i64 {
 /// Closure-shaped enumerable reduce: a captured scalar participates in the
 /// step. continuation 13 = sum with capture (acc + item + capture). The
 /// capture is the reducer's captured environment (a scalar i64 word).
-pub export fn ex_term_enumerable_reduce_c(
+pub fn ex_term_enumerable_reduce_c(
     enumerable: i64,
     acc: i64,
     continuation: i64,
     capture: i64,
-) i64 {
+) callconv(.c) i64 {
     if (continuation == 14) {
         // product with capture: acc + item * capture
         switch (word_tag(enumerable)) {
@@ -3651,12 +3652,12 @@ pub export fn ex_term_enumerable_reduce_c(
 
 /// Reduces an inclusive integer range (ascending or descending) by
 /// continuation, reusing the enumerable_reduce continuation table.
-pub export fn ex_term_enumerable_reduce_range(
+pub fn ex_term_enumerable_reduce_range(
     start: i64,
     stop: i64,
     acc: i64,
     continuation: i64,
-) i64 {
+) callconv(.c) i64 {
     var result = acc;
     if (start <= stop) {
         var i = start;
@@ -3676,11 +3677,11 @@ pub export fn ex_term_enumerable_reduce_range(
 /// `(item: i64, acc: i64) -> i64` (compiled by the frontend) on each item.
 /// The reducer address is passed as an i64. Items are untagged integers
 /// (binary bytes are raw).
-pub export fn ex_term_enumerable_reduce_fun(
+pub fn ex_term_enumerable_reduce_fun(
     enumerable: i64,
     acc: i64,
     reducer: ?*const fn (i64, i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     switch (word_tag(enumerable)) {
         tag_list => {
             var current = enumerable;
@@ -3721,10 +3722,10 @@ pub export fn ex_term_enumerable_reduce_fun(
 // the error sentinel -1.
 /// Registers a native callback entry (fn_id, function pointer). Returns 0 on
 /// success, -1 when the id is out of range.
-pub export fn ex_term_register_callback(
+pub fn ex_term_register_callback(
     fn_id: i64,
     callback: ?*const fn (i64) callconv(.c) i64,
-) i64 {
+) callconv(.c) i64 {
     if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
     const instance = runtime();
     instance.callback_lock.lock();
@@ -3735,7 +3736,7 @@ pub export fn ex_term_register_callback(
 
 /// Calls a registered native callback entry with an argument word; -1 when
 /// the id is out of range or not registered.
-pub export fn ex_term_call_callback(fn_id: i64, arg: i64) i64 {
+pub fn ex_term_call_callback(fn_id: i64, arg: i64) callconv(.c) i64 {
     if (fn_id < 0 or fn_id >= beam_callback_cap) return -1;
     const instance = runtime();
     instance.callback_lock.lock();
@@ -3758,7 +3759,7 @@ fn list_contains(list: i64, word: i64) bool {
 
 /// Builds a set (unique members) from a list. Members keep their term words;
 /// duplicate members are dropped. Order is not preserved (sets are unordered).
-pub export fn ex_term_mapset_from_list(list: i64) i64 {
+pub fn ex_term_mapset_from_list(list: i64) callconv(.c) i64 {
     var result = nil_word;
     var current = list;
     while (word_tag(current) == tag_list) {
@@ -3772,13 +3773,13 @@ pub export fn ex_term_mapset_from_list(list: i64) i64 {
 }
 
 /// Membership check: 1 when the set contains the member word, else 0.
-pub export fn ex_term_mapset_member(set: i64, member: i64) i64 {
+pub fn ex_term_mapset_member(set: i64, member: i64) callconv(.c) i64 {
     return if (word_tag(set) == tag_list and list_contains(set, member)) 1 else 0;
 }
 
 /// Adds a member to a set (deduplicated); the original set is returned when
 /// the member is already present.
-pub export fn ex_term_mapset_put(set: i64, member: i64) i64 {
+pub fn ex_term_mapset_put(set: i64, member: i64) callconv(.c) i64 {
     if (ex_term_mapset_member(set, member) == 1) return set;
     return ex_term_list_cons(member, set);
 }
@@ -3820,13 +3821,13 @@ fn read_file_binary(path_word: i64) ?i64 {
 
 /// Reads a file into a binary term; nil for missing files, non-binary paths,
 /// or oversized content.
-pub export fn ex_term_file_read(path_word: i64) i64 {
+pub fn ex_term_file_read(path_word: i64) callconv(.c) i64 {
     return read_file_binary(path_word) orelse nil_word;
 }
 
 /// Reads a file and splits it into a list of line binaries (without trailing
 /// newlines); nil on read failure.
-pub export fn ex_term_file_read_lines(path_word: i64) i64 {
+pub fn ex_term_file_read_lines(path_word: i64) callconv(.c) i64 {
     const file_binary = read_file_binary(path_word) orelse return nil_word;
     const len = binary_len(file_binary);
     const file_bytes = binary_bytes(file_binary);
@@ -3865,20 +3866,20 @@ pub export fn ex_term_file_read_lines(path_word: i64) i64 {
 }
 
 /// Returns the head of a list word; nil for non-lists or the empty list.
-pub export fn ex_term_list_head(list: i64) i64 {
+pub fn ex_term_list_head(list: i64) callconv(.c) i64 {
     if (!is_list_cell_word(list)) return nil_word;
     return list_cell(list)[0];
 }
 
 /// Returns the tail of a list word; nil for non-lists or the empty list.
-pub export fn ex_term_list_tail(list: i64) i64 {
+pub fn ex_term_list_tail(list: i64) callconv(.c) i64 {
     if (!is_list_cell_word(list)) return nil_word;
     return list_cell(list)[1];
 }
 
 /// Returns the element at index of a list word; nil when out of range or
 /// not a list.
-pub export fn ex_term_list_get(list: i64, index: i64) i64 {
+pub fn ex_term_list_get(list: i64, index: i64) callconv(.c) i64 {
     if (!is_list_cell_word(list)) return nil_word;
     var cell = list_cell(list);
     var i: i64 = 0;
@@ -3891,21 +3892,21 @@ pub export fn ex_term_list_get(list: i64, index: i64) i64 {
 }
 
 /// Returns the length of a list word (0 for nil, the empty list).
-pub export fn ex_term_list_length(list: i64) i64 {
+pub fn ex_term_list_length(list: i64) callconv(.c) i64 {
     return @intCast(list_len(list));
 }
 
 /// Deep equality: exact for immediate terms, structural for containers
 /// (tuples, lists, maps, binaries). Terms are immutable on the bump heap, so
 /// no cycle handling is needed.
-pub export fn ex_term_eq(left: i64, right: i64) i64 {
+pub fn ex_term_eq(left: i64, right: i64) callconv(.c) i64 {
     return if (term_eq(left, right)) 1 else 0;
 }
 
 /// BEAM-style loose equality: integers and floats compare by numeric value,
 /// including when nested in tuples, lists, or maps. Other terms keep the
 /// runtime's structural equality semantics.
-pub export fn ex_term_eq_loose(left: i64, right: i64) i64 {
+pub fn ex_term_eq_loose(left: i64, right: i64) callconv(.c) i64 {
     return if (term_eq_loose(left, right)) 1 else 0;
 }
 
@@ -4034,19 +4035,19 @@ fn term_eq(left: i64, right: i64) bool {
 }
 
 /// Boxes an IEEE-754 binary64 bit pattern as a first-class dynamic term.
-pub export fn ex_term_float_lit(bits: i64) i64 {
+pub fn ex_term_float_lit(bits: i64) callconv(.c) i64 {
     const payload = alloc_words(1) orelse return nil_word;
     payload[0] = bits;
     return word_from_ptr(payload, tag_float);
 }
 
-pub export fn ex_term_is_float(word: i64) i64 {
+pub fn ex_term_is_float(word: i64) callconv(.c) i64 {
     return if (word_tag(word) == tag_float and runtime_local_kind(word) == null) 1 else 0;
 }
 
 /// Parses a BEAM-compatible float binary into a boxed binary64 term.
 /// Invalid syntax and non-finite results return nil; callers own error shape.
-pub export fn ex_term_string_to_float(binary: i64) i64 {
+pub fn ex_term_string_to_float(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const bytes = binary_bytes(binary)[0..binary_len(binary)];
     if (!valid_float_syntax(bytes)) return nil_word;
@@ -4075,7 +4076,7 @@ fn ensure_float_marker(src: []const u8, out: []u8) []const u8 {
 /// scientific notation at and beyond the binary64 exact-integer boundary;
 /// below that boundary it uses the shorter valid spelling (decimal on equal
 /// length).
-pub export fn ex_term_float_to_binary_short(word: i64) i64 {
+pub fn ex_term_float_to_binary_short(word: i64) callconv(.c) i64 {
     if (word_tag(word) != tag_float or runtime_local_kind(word) != null) return nil_word;
     const value: f64 = @bitCast(float_bits(word));
     if (!std.math.isFinite(value)) return nil_word;
@@ -4121,14 +4122,14 @@ fn valid_float_syntax(bytes: []const u8) bool {
 }
 
 /// Returns the byte length of a binary word; 0 for non-binaries.
-pub export fn ex_term_binary_length(binary: i64) i64 {
+pub fn ex_term_binary_length(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return 0;
     return @intCast(binary_len(binary));
 }
 
 /// Reads the byte at `index` as a tagged int term; nil for out-of-range or
 /// non-binaries (the caller is expected to have checked `is_binary` first).
-pub export fn ex_term_binary_get(binary: i64, index: i64) i64 {
+pub fn ex_term_binary_get(binary: i64, index: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const len = binary_len(binary);
     if (index < 0 or index >= @as(i64, @intCast(len))) return nil_word;
@@ -4138,7 +4139,7 @@ pub export fn ex_term_binary_get(binary: i64, index: i64) i64 {
 
 /// Materializes a new binary word from bytes [start..len); nil for
 /// non-binaries or an out-of-range start.
-pub export fn ex_term_binary_slice(binary: i64, start: i64) i64 {
+pub fn ex_term_binary_slice(binary: i64, start: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const len = binary_len(binary);
     if (start < 0 or start > @as(i64, @intCast(len))) return nil_word;
@@ -4201,21 +4202,21 @@ fn utf8_at(binary: i64, index: i64) ?Utf8Decoded {
 
 /// Decodes the UTF-8 codepoint at `index` as a tagged int term; nil for
 /// invalid sequences or out-of-range.
-pub export fn ex_term_binary_utf8_get(binary: i64, index: i64) i64 {
+pub fn ex_term_binary_utf8_get(binary: i64, index: i64) callconv(.c) i64 {
     const decoded = utf8_at(binary, index) orelse return nil_word;
     return decoded.cp << @intCast(tag_shift);
 }
 
 /// Returns the byte width of the UTF-8 codepoint at `index`; 0 for invalid
 /// sequences or out-of-range.
-pub export fn ex_term_binary_utf8_width(binary: i64, index: i64) i64 {
+pub fn ex_term_binary_utf8_width(binary: i64, index: i64) callconv(.c) i64 {
     const decoded = utf8_at(binary, index) orelse return 0;
     return decoded.width;
 }
 
 /// Number of UTF-8 codepoints in a binary; invalid sequences count as one
 /// byte each. 0 for non-binaries.
-pub export fn ex_term_binary_utf8_length(binary: i64) i64 {
+pub fn ex_term_binary_utf8_length(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return 0;
     const len: i64 = @intCast(binary_len(binary));
     var count: i64 = 0;
@@ -4243,7 +4244,7 @@ fn printable_codepoint(cp: i64) bool {
 /// Returns whether every UTF-8 codepoint in a binary is printable according
 /// to Elixir's String.printable?/1 contract. Invalid UTF-8 and non-binaries
 /// return false; the empty binary is printable.
-pub export fn ex_term_string_printable(binary: i64) i64 {
+pub fn ex_term_string_printable(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return 0;
 
     const len: i64 = @intCast(binary_len(binary));
@@ -4293,7 +4294,7 @@ fn inspect_escape(cp: i64) ?u8 {
 /// Renders a binary using the bounded string/binary syntax needed by
 /// Kernel.inspect/1. Printable UTF-8 uses quoted string syntax; invalid or
 /// non-printable input uses decimal byte syntax (`<<1, 2>>`).
-pub export fn ex_term_binary_quote(binary: i64) i64 {
+pub fn ex_term_binary_quote(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const bytes = binary_bytes(binary);
     const len = binary_len(binary);
@@ -4368,7 +4369,7 @@ pub export fn ex_term_binary_quote(binary: i64) i64 {
 
 /// Encodes the bytes of a binary as an uppercase hexadecimal binary; nil for
 /// non-binaries.
-pub export fn ex_term_binary_encode16(binary: i64) i64 {
+pub fn ex_term_binary_encode16(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const len = binary_len(binary);
     const out_len = len * 2;
@@ -4394,7 +4395,7 @@ fn hex_value(b: u8) i8 {
 
 /// Decodes an uppercase hexadecimal binary into a byte binary; nil for
 /// non-binaries, odd lengths, or invalid digits.
-pub export fn ex_term_binary_decode16(binary: i64) i64 {
+pub fn ex_term_binary_decode16(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return nil_word;
     const len = binary_len(binary);
     if (len % 2 != 0) return nil_word;
@@ -4415,7 +4416,7 @@ pub export fn ex_term_binary_decode16(binary: i64) i64 {
 
 /// Renders a tagged integer term in base 2..36 using uppercase digits; nil
 /// for non-integers or an invalid base.
-pub export fn ex_term_int_to_string_base(word: i64, base: i64) i64 {
+pub fn ex_term_int_to_string_base(word: i64, base: i64) callconv(.c) i64 {
     if (!is_int(word) or base < 2 or base > 36) return nil_word;
     const value = word_payload(word);
     const radix: u64 = @intCast(base);
@@ -4448,13 +4449,13 @@ pub export fn ex_term_int_to_string_base(word: i64, base: i64) i64 {
 }
 
 /// Renders a tagged integer term as a decimal binary; nil for non-integers.
-pub export fn ex_term_int_to_string(word: i64) i64 {
+pub fn ex_term_int_to_string(word: i64) callconv(.c) i64 {
     return ex_term_int_to_string_base(word, 10);
 }
 
 /// Renders a tagged integer term as uppercase hexadecimal with an Elixir
 /// `0x` prefix; nil for non-integers.
-pub export fn ex_term_int_to_hex(word: i64) i64 {
+pub fn ex_term_int_to_hex(word: i64) callconv(.c) i64 {
     if (!is_int(word)) return nil_word;
     const value = word_payload(word);
     const negative = value < 0;
@@ -4494,7 +4495,7 @@ pub export fn ex_term_int_to_hex(word: i64) i64 {
 
 /// Parses a decimal binary (optionally signed) into a scalar i64; 0 for
 /// non-binaries, empty or invalid strings, or i64 overflow.
-pub export fn ex_term_string_to_int(binary: i64) i64 {
+pub fn ex_term_string_to_int(binary: i64) callconv(.c) i64 {
     if (word_tag(binary) != tag_binary) return 0;
     const len = binary_len(binary);
     if (len == 0) return 0;
@@ -4518,7 +4519,7 @@ pub export fn ex_term_string_to_int(binary: i64) i64 {
 }
 
 /// Converts a flat key/value list word (even length) into a map word.
-pub export fn ex_term_map_from_list(list: i64) i64 {
+pub fn ex_term_map_from_list(list: i64) callconv(.c) i64 {
     const count = list_len(list);
     if (count % 2 != 0) return nil_word;
     const map = alloc_words(1 + count) orelse return nil_word;
@@ -4528,7 +4529,7 @@ pub export fn ex_term_map_from_list(list: i64) i64 {
 }
 
 /// Returns a map with key associated to value, replacing an existing key.
-pub export fn ex_term_map_put(map: i64, key: i64, value: i64) i64 {
+pub fn ex_term_map_put(map: i64, key: i64, value: i64) callconv(.c) i64 {
     if (word_tag(map) != tag_map) return nil_word;
     const len = map_len(map);
     const entries = map_entries(map);
@@ -4556,7 +4557,7 @@ pub export fn ex_term_map_put(map: i64, key: i64, value: i64) i64 {
 /// Entries are applied in enumeration order, so later duplicate keys win.
 /// Returns nil for unsupported enumerables, malformed pairs, improper lists,
 /// or a non-map target.
-pub export fn ex_term_enumerable_into_map(enumerable: i64, target: i64) i64 {
+pub fn ex_term_enumerable_into_map(enumerable: i64, target: i64) callconv(.c) i64 {
     if (word_tag(target) != tag_map) return nil_word;
     var result = target;
 
@@ -4590,7 +4591,7 @@ pub export fn ex_term_enumerable_into_map(enumerable: i64, target: i64) i64 {
 }
 
 /// Converts a list of integer byte words into a binary word.
-pub export fn ex_term_binary_from_list(list: i64) i64 {
+pub fn ex_term_binary_from_list(list: i64) callconv(.c) i64 {
     const len = list_len(list);
     const binary = alloc_binary(len) orelse return nil_word;
     const result = word_from_ptr(binary, tag_binary);
@@ -4669,7 +4670,7 @@ fn write_iodata(word: i64, output: []u8, offset: *usize, allow_byte: bool, depth
 }
 
 /// Flattens nested byte lists and binaries, including a binary improper tail.
-pub export fn ex_term_iodata_to_binary(iodata: i64) i64 {
+pub fn ex_term_iodata_to_binary(iodata: i64) callconv(.c) i64 {
     if (word_tag(iodata) == tag_binary) return iodata;
     const len = iodata_size(iodata, false, 0) orelse return nil_word;
     const binary = alloc_binary(len) orelse return nil_word;
@@ -4679,188 +4680,28 @@ pub export fn ex_term_iodata_to_binary(iodata: i64) i64 {
     return result;
 }
 
-pub export fn ex_term_is_integer(word: i64) i64 {
+pub fn ex_term_is_integer(word: i64) callconv(.c) i64 {
     return if (is_int(word)) 1 else 0;
 }
 
-pub export fn ex_term_is_atom(word: i64) i64 {
+pub fn ex_term_is_atom(word: i64) callconv(.c) i64 {
     return if (is_atom(word)) 1 else 0;
 }
 
-pub export fn ex_term_is_binary(word: i64) i64 {
+pub fn ex_term_is_binary(word: i64) callconv(.c) i64 {
     return if (word_tag(word) == tag_binary) 1 else 0;
 }
 
-pub export fn ex_term_is_list(word: i64) i64 {
+pub fn ex_term_is_list(word: i64) callconv(.c) i64 {
     return if (is_list_word(word)) 1 else 0;
 }
 
-pub export fn ex_term_is_tuple(word: i64) i64 {
+pub fn ex_term_is_tuple(word: i64) callconv(.c) i64 {
     return if (word_tag(word) == tag_tuple) 1 else 0;
 }
 
-pub export fn ex_term_is_map(word: i64) i64 {
+pub fn ex_term_is_map(word: i64) callconv(.c) i64 {
     return if (word_tag(word) == tag_map) 1 else 0;
-}
-
-// The declaration-first manifest uses dotted symbol names (`ex.term.*`); Zig
-// identifiers cannot contain dots, so the C ABI symbols are re-exported under
-// the manifest names.
-comptime {
-    @export(&ex_term_runtime_create, .{ .name = "ex.term.runtime_create" });
-    @export(&ex_term_runtime_enter, .{ .name = "ex.term.runtime_enter" });
-    @export(&ex_term_runtime_leave, .{ .name = "ex.term.runtime_leave" });
-    @export(&ex_term_runtime_destroy, .{ .name = "ex.term.runtime_destroy" });
-    @export(&ex_term_runtime_arena_bytes, .{ .name = "ex.term.runtime_arena_bytes" });
-    @export(&ex_term_runtime_arena_chunks, .{ .name = "ex.term.runtime_arena_chunks" });
-    @export(&ex_term_runtime_arena_high_water, .{ .name = "ex.term.runtime_arena_high_water" });
-    @export(&ex_term_runtime_oom, .{ .name = "ex.term.runtime_oom" });
-    @export(&ex_term_result_create, .{ .name = "ex.term.result_create" });
-    @export(&ex_term_result_destroy, .{ .name = "ex.term.result_destroy" });
-    @export(&ex_term_result_root_kind, .{ .name = "ex.term.result_root_kind" });
-    @export(&ex_term_result_root_word, .{ .name = "ex.term.result_root_word" });
-    @export(&ex_term_result_exception_kind, .{ .name = "ex.term.result_exception_kind" });
-    @export(&ex_term_result_exception_reason, .{ .name = "ex.term.result_exception_reason" });
-    @export(&ex_term_result_term_kind, .{ .name = "ex.term.result_term_kind" });
-    @export(&ex_term_result_term_length, .{ .name = "ex.term.result_term_length" });
-    @export(&ex_term_result_term_get, .{ .name = "ex.term.result_term_get" });
-    @export(&ex_term_export, .{ .name = "ex.term.export" });
-    @export(&ex_term_import, .{ .name = "ex.term.import" });
-    @export(&ex_term_exported_clone, .{ .name = "ex.term.exported_clone" });
-    @export(&ex_term_exported_destroy, .{ .name = "ex.term.exported_destroy" });
-    @export(&ex_term_exported_length, .{ .name = "ex.term.exported_length" });
-    @export(&ex_term_exported_get, .{ .name = "ex.term.exported_get" });
-    @export(&ex_term_handle_export, .{ .name = "ex.term.handle_export" });
-    @export(&ex_term_handle_destroy, .{ .name = "ex.term.handle_destroy" });
-    @export(&ex_term_self, .{ .name = "ex.term.self" });
-    @export(&ex_term_send, .{ .name = "ex.term.send" });
-    @export(&ex_term_receive, .{ .name = "ex.term.receive" });
-    @export(&ex_term_nil, .{ .name = "ex.term.nil" });
-    @export(&ex_term_monotonic_time, .{ .name = "ex.term.monotonic_time" });
-    @export(&ex_term_native_time, .{ .name = "ex.term.native_time" });
-    @export(&ex_term_unique_integer, .{ .name = "ex.term.unique_integer" });
-    @export(&ex_term_receive_start, .{ .name = "ex.term.receive_start" });
-    @export(&ex_term_receive_start_set, .{ .name = "ex.term.receive_start_set" });
-    @export(&ex_term_mailbox_len, .{ .name = "ex.term.mailbox_len" });
-    @export(&ex_term_mailbox_peek, .{ .name = "ex.term.mailbox_peek" });
-    @export(&ex_term_mailbox_remove, .{ .name = "ex.term.mailbox_remove" });
-    @export(&ex_term_mailbox_clear, .{ .name = "ex.term.mailbox_clear" });
-    @export(&ex_term_spawn, .{ .name = "ex.term.spawn" });
-    @export(&ex_term_process_table_reset, .{ .name = "ex.term.process_table_reset" });
-    @export(&ex_term_cont_save, .{ .name = "ex.term.cont_save" });
-    @export(&ex_term_receive_cont_save, .{ .name = "ex.term.receive_cont_save" });
-    @export(&ex_term_cont_pending, .{ .name = "ex.term.cont_pending" });
-    @export(&ex_term_cont_active, .{ .name = "ex.term.cont_active" });
-    @export(&ex_term_cont_clear, .{ .name = "ex.term.cont_clear" });
-    @export(&ex_term_cont_load_arg, .{ .name = "ex.term.cont_load_arg" });
-    @export(&ex_term_cont_load_acc, .{ .name = "ex.term.cont_load_acc" });
-    @export(&ex_term_cont_load_cursor, .{ .name = "ex.term.cont_load_cursor" });
-    @export(&ex_term_schedule_next, .{ .name = "ex.term.schedule_next" });
-    @export(&ex_term_process_claim_next, .{ .name = "ex.term.process_claim_next" });
-    @export(&ex_term_process_release, .{ .name = "ex.term.process_release" });
-    @export(&ex_term_process_wait, .{ .name = "ex.term.process_wait" });
-    @export(&ex_term_worker_run, .{ .name = "ex.term.worker_run" });
-    @export(&ex_term_worker_count, .{ .name = "ex.term.worker_count" });
-    @export(&ex_term_worker_max_active, .{ .name = "ex.term.worker_max_active" });
-    @export(&ex_term_worker_migrations, .{ .name = "ex.term.worker_migrations" });
-    @export(&ex_term_process_thread_id, .{ .name = "ex.term.process_thread_id" });
-    @export(&ex_term_current_entry, .{ .name = "ex.term.current_entry" });
-    @export(&ex_term_process_done, .{ .name = "ex.term.process_done" });
-    @export(&ex_term_process_exit, .{ .name = "ex.term.process_exit" });
-    @export(&ex_term_process_trap_exit, .{ .name = "ex.term.process_trap_exit" });
-    @export(&ex_term_link, .{ .name = "ex.term.link" });
-    @export(&ex_term_unlink, .{ .name = "ex.term.unlink" });
-    @export(&ex_term_exit, .{ .name = "ex.term.exit" });
-    @export(&ex_term_monitor, .{ .name = "ex.term.monitor" });
-    @export(&ex_term_demonitor, .{ .name = "ex.term.demonitor" });
-    @export(&ex_term_processes_runnable, .{ .name = "ex.term.processes_runnable" });
-    @export(&ex_term_process_result, .{ .name = "ex.term.process_result" });
-    @export(&ex_term_process_exit_reason, .{ .name = "ex.term.process_exit_reason" });
-    @export(&ex_term_process_exit_kind, .{ .name = "ex.term.process_exit_kind" });
-    @export(&ex_term_clock_init, .{ .name = "ex.term.clock_init" });
-    @export(&ex_term_clock_tick, .{ .name = "ex.term.clock_tick" });
-    @export(&ex_term_clock_budget_left, .{ .name = "ex.term.clock_budget_left" });
-    @export(&ex_term_clock_epoch, .{ .name = "ex.term.clock_epoch" });
-    @export(&ex_term_clock_bump_epoch, .{ .name = "ex.term.clock_bump_epoch" });
-    @export(&ex_term_yield_count, .{ .name = "ex.term.yield_count" });
-    @export(&ex_term_yield_mark, .{ .name = "ex.term.yield_mark" });
-    @export(&ex_term_to_int, .{ .name = "ex.term.to_int" });
-    @export(&ex_term_jmp_buf_size, .{ .name = "ex.term.jmp_buf_size" });
-    @export(&ex_term_setjmp_addr, .{ .name = "ex.term.setjmp_addr" });
-    @export(&ex_term_try_push, .{ .name = "ex.term.try_push" });
-    @export(&ex_term_try_pop, .{ .name = "ex.term.try_pop" });
-    @export(&ex_term_throw, .{ .name = "ex.term.throw" });
-    @export(&ex_term_raise, .{ .name = "ex.term.raise" });
-    @export(&ex_term_catch_value, .{ .name = "ex.term.catch_value" });
-    @export(&ex_term_make_fun, .{ .name = "ex.term.make_fun" });
-    @export(&ex_term_make_fun_with_arity, .{ .name = "ex.term.make_fun_with_arity" });
-    @export(&ex_term_fun_idx, .{ .name = "ex.term.fun_idx" });
-    @export(&ex_term_fun_arity, .{ .name = "ex.term.fun_arity" });
-    @export(&ex_term_fun_env, .{ .name = "ex.term.fun_env" });
-    @export(&ex_term_list_cons, .{ .name = "ex.term.list_cons" });
-    @export(&ex_term_list_flatten, .{ .name = "ex.term.list_flatten" });
-    @export(&ex_term_tuple_from_list, .{ .name = "ex.term.tuple_from_list" });
-    @export(&ex_term_tuple_get, .{ .name = "ex.term.tuple_get" });
-    @export(&ex_term_tuple_length, .{ .name = "ex.term.tuple_length" });
-    @export(&ex_term_map_length, .{ .name = "ex.term.map_length" });
-    @export(&ex_term_map_fetch, .{ .name = "ex.term.map_fetch" });
-    @export(&ex_term_enumerable_count, .{ .name = "ex.term.enumerable_count" });
-    @export(&ex_term_enumerable_to_list, .{ .name = "ex.term.enumerable_to_list" });
-    @export(&ex_term_enumerable_into_map, .{ .name = "ex.term.enumerable_into_map" });
-    @export(&ex_term_enumerable_intersperse, .{ .name = "ex.term.enumerable_intersperse" });
-    @export(&ex_term_enumerable_to_list_range, .{ .name = "ex.term.enumerable_to_list_range" });
-    @export(&ex_term_enumerable_map_fun, .{ .name = "ex.term.enumerable_map_fun" });
-    @export(&ex_term_enumerable_map_term_fun, .{ .name = "ex.term.enumerable_map_term_fun" });
-    @export(&ex_term_enumerable_map_term_fun_c, .{ .name = "ex.term.enumerable_map_term_fun_c" });
-    @export(&ex_term_enumerable_flat_map_term_fun, .{ .name = "ex.term.enumerable_flat_map_term_fun" });
-    @export(&ex_term_stream_filter, .{ .name = "ex.term.stream_filter" });
-    @export(&ex_term_stream_take, .{ .name = "ex.term.stream_take" });
-    @export(&ex_term_stream_drop, .{ .name = "ex.term.stream_drop" });
-    @export(&ex_term_enumerable_reduce, .{ .name = "ex.term.enumerable_reduce" });
-    @export(&ex_term_enumerable_reduce_c, .{ .name = "ex.term.enumerable_reduce_c" });
-    @export(&ex_term_enumerable_reduce_range, .{ .name = "ex.term.enumerable_reduce_range" });
-    @export(&ex_term_enumerable_reduce_fun, .{ .name = "ex.term.enumerable_reduce_fun" });
-    @export(&ex_term_register_callback, .{ .name = "ex.term.register_callback" });
-    @export(&ex_term_call_callback, .{ .name = "ex.term.call_callback" });
-    @export(&ex_term_mapset_from_list, .{ .name = "ex.term.mapset_from_list" });
-    @export(&ex_term_mapset_member, .{ .name = "ex.term.mapset_member" });
-    @export(&ex_term_mapset_put, .{ .name = "ex.term.mapset_put" });
-    @export(&ex_term_file_read, .{ .name = "ex.term.file_read" });
-    @export(&ex_term_file_read_lines, .{ .name = "ex.term.file_read_lines" });
-    @export(&ex_term_list_head, .{ .name = "ex.term.list_head" });
-    @export(&ex_term_list_tail, .{ .name = "ex.term.list_tail" });
-    @export(&ex_term_list_get, .{ .name = "ex.term.list_get" });
-    @export(&ex_term_list_length, .{ .name = "ex.term.list_length" });
-    @export(&ex_term_eq, .{ .name = "ex.term.eq" });
-    @export(&ex_term_eq_loose, .{ .name = "ex.term.eq_loose" });
-    @export(&ex_term_binary_length, .{ .name = "ex.term.binary_length" });
-    @export(&ex_term_binary_get, .{ .name = "ex.term.binary_get" });
-    @export(&ex_term_binary_slice, .{ .name = "ex.term.binary_slice" });
-    @export(&ex_term_binary_utf8_get, .{ .name = "ex.term.binary_utf8_get" });
-    @export(&ex_term_binary_utf8_width, .{ .name = "ex.term.binary_utf8_width" });
-    @export(&ex_term_binary_utf8_length, .{ .name = "ex.term.binary_utf8_length" });
-    @export(&ex_term_string_printable, .{ .name = "ex.term.string_printable" });
-    @export(&ex_term_binary_quote, .{ .name = "ex.term.binary_quote" });
-    @export(&ex_term_binary_encode16, .{ .name = "ex.term.binary_encode16" });
-    @export(&ex_term_binary_decode16, .{ .name = "ex.term.binary_decode16" });
-    @export(&ex_term_int_to_string, .{ .name = "ex.term.int_to_string" });
-    @export(&ex_term_int_to_string_base, .{ .name = "ex.term.int_to_string_base" });
-    @export(&ex_term_int_to_hex, .{ .name = "ex.term.int_to_hex" });
-    @export(&ex_term_string_to_int, .{ .name = "ex.term.string_to_int" });
-    @export(&ex_term_map_from_list, .{ .name = "ex.term.map_from_list" });
-    @export(&ex_term_map_put, .{ .name = "ex.term.map_put" });
-    @export(&ex_term_binary_from_list, .{ .name = "ex.term.binary_from_list" });
-    @export(&ex_term_iodata_to_binary, .{ .name = "ex.term.iodata_to_binary" });
-    @export(&ex_term_float_lit, .{ .name = "ex.term.float_lit" });
-    @export(&ex_term_is_float, .{ .name = "ex.term.is_float" });
-    @export(&ex_term_string_to_float, .{ .name = "ex.term.string_to_float" });
-    @export(&ex_term_float_to_binary_short, .{ .name = "ex.term.float_to_binary_short" });
-    @export(&ex_term_is_integer, .{ .name = "ex.term.is_integer" });
-    @export(&ex_term_is_atom, .{ .name = "ex.term.is_atom" });
-    @export(&ex_term_is_binary, .{ .name = "ex.term.is_binary" });
-    @export(&ex_term_is_list, .{ .name = "ex.term.is_list" });
-    @export(&ex_term_is_tuple, .{ .name = "ex.term.is_tuple" });
-    @export(&ex_term_is_map, .{ .name = "ex.term.is_map" });
 }
 
 test "term ABI tag and word layout" {

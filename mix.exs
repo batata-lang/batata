@@ -64,7 +64,8 @@ defmodule Batata.MixProject do
         "Docs" => "https://hexdocs.pm/batata"
       },
       files: ~w{
-        lib .formatter.exs mix.exs README.md LICENSE
+        lib native build.zig build.zig.zon priv/README.md
+        .formatter.exs mix.exs README.md LICENSE
       }
     ]
   end
