@@ -328,6 +328,14 @@ Protocol consolidation starts with the native provider layer:
   `:beamer_callback` / `:unsupported`) for an `{module, function, arity}`;
   `Batata.Stdlib.plan/1` mirrors the built-in registry as a plan.
 
+## Packages
+
+The [`packages/batata_godot`](packages/batata_godot) Mix project defines the
+fail-closed compile-time binding plan for generated Godot GDExtensions. Its
+first schema maps one Godot class and scalar method signatures to verified
+Batata native symbols; generated Zig adapters and shared-library output are
+the next implementation slice.
+
 ## Dev setup
 
 ## Dev setup

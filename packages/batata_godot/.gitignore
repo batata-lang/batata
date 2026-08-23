@@ -1,0 +1,7 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+/erl_crash.dump
+/batata_godot-*.tar
