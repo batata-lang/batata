@@ -331,8 +331,8 @@ Protocol consolidation starts with the native provider layer:
 ## Packages
 
 The [`packages/batata_godot`](packages/batata_godot) Mix project defines the
-fail-closed compile-time binding plan for generated Godot GDExtensions. Its
-first schema maps one Godot class and scalar method signatures to verified
+fail-closed binding plan and initial loadable raw adapter for generated Godot
+GDExtensions. Its first schema maps one Godot class and scalar method signatures to verified
 Batata native symbols; generated Zig adapters and shared-library output are
 the next implementation slice.
 

@@ -3,9 +3,10 @@
 `batata_godot` is an independent Mix package for generating fail-closed Godot
 GDExtension bindings around Batata-compiled functions.
 
-The first slice defines the compile-time boundary. It validates a closed set
-of scalar method signatures and emits a canonical binding plan with a stable
-SHA-256 digest. It does not yet generate a native adapter or shared library.
+The package validates a closed set of scalar method signatures and emits a
+canonical binding plan with a stable SHA-256 digest. Its first native target
+also generates and links a raw GDExtension adapter that Godot can load,
+initialize, deinitialize, and unload.
 
 ```elixir
 defmodule Example do
@@ -24,6 +25,22 @@ json = Batata.Godot.canonical_json(Example)
 digest = Batata.Godot.digest(Example)
 ```
 
+Build the first macOS arm64 artifact with Godot 4.6.2 and Zig 0.16:
+
+```elixir
+output =
+  Batata.Godot.build(source, Example, "_build/godot", ctx,
+    smoke: true
+  )
+
+output.library
+#=> "_build/godot/bin/libbatata_example.macos.debug.arm64.dylib"
+```
+
+The optional smoke invokes `godot --headless --editor`, using an explicit
+`.godot/extension_list.cfg`, so successful linking alone cannot masquerade as
+a loadable extension.
+
 The plan records the extension and entry symbol, Godot compatibility minimum,
 initialization level, class inheritance, method signatures, and Batata native
 symbols. Method ordering and JSON field ordering are deterministic.
@@ -34,8 +51,16 @@ their ownership and lifetime codecs exist. Failures use
 `Batata.Godot.Diagnostic` with stable `E_GODOT_*` codes and JSON-ready context
 and recovery actions.
 
-Next, the binding plan will drive a generated Zig adapter, a platform shared
-library, a `.gdextension` resource, and a real `godot --headless` load test.
+The generated bundle records the binding-plan, adapter, native artifact and
+Godot API digests, target triple, entry symbol, compiler versions, and a sorted
+artifact index. The pinned raw interface is Godot 4.6.2
+`gdextension_interface.json`, SHA-256
+`34d7058f31af186d36b84567e70a9f9543da0d74f25cfe5266d4fe2d27e090f0`.
+
+This target deliberately registers no class yet. The next slice will add the
+`RefCounted` ClassDB registration and the first `int -> int` call trampoline;
+until then, successful loading does not claim that declared methods are
+callable from Godot.
 
 Inside the Batata monorepo, select the root checkout explicitly before running
 package tasks:

@@ -2,12 +2,12 @@ defmodule Batata.Godot do
   @moduledoc """
   Compile-time declarations for generated Godot GDExtension bindings.
 
-  The initial package produces a validated, canonical binding plan. Native
-  adapter generation and shared-library linking are deliberately later
-  stages, so an unsupported declaration fails before native compilation.
+  The package produces a validated, canonical binding plan and can build the
+  first loadable raw GDExtension boundary. Class registration and method
+  trampolines remain fail-closed until their ABI and ownership path exists.
   """
 
-  alias Batata.Godot.{BindingPlan, Diagnostic}
+  alias Batata.Godot.{BindingPlan, Build, Diagnostic}
 
   @doc false
   @callback __batata_godot_plan__() :: BindingPlan.t()
@@ -33,4 +33,21 @@ defmodule Batata.Godot do
   @doc "Returns the SHA-256 digest of the canonical binding plan."
   @spec digest(module()) :: String.t()
   def digest(module), do: module |> binding_plan() |> BindingPlan.digest()
+
+  @doc "Builds a macOS arm64 GDExtension from Batata source and a binding plan."
+  @spec build(
+          String.t(),
+          module() | BindingPlan.t(),
+          Path.t(),
+          Beaver.MLIR.Context.t(),
+          keyword()
+        ) ::
+          Build.output()
+  def build(source, extension, output_dir, ctx, opts \\ []) do
+    Build.build(source, extension, output_dir, ctx, opts)
+  end
+
+  @doc "Replays a generated extension through Godot 4.6.2 headless loading."
+  @spec smoke_load!(Path.t(), Path.t() | nil) :: :ok
+  def smoke_load!(output_dir, godot \\ nil), do: Build.smoke_load!(output_dir, godot)
 end

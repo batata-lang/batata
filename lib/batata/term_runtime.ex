@@ -10,11 +10,17 @@ defmodule Batata.TermRuntime do
 
   @doc "Directory containing the Zig runtime sources."
   @spec native_dir() :: Path.t()
-  def native_dir, do: Path.expand("native", File.cwd!())
+  def native_dir do
+    :batata
+    |> Application.app_dir("priv")
+    |> canonical_path()
+    |> Path.dirname()
+    |> Path.join("native")
+  end
 
   @doc "Directory where built runtime artifacts are written."
   @spec priv_dir() :: Path.t()
-  def priv_dir, do: Path.expand("priv/term_runtime", File.cwd!())
+  def priv_dir, do: Application.app_dir(:batata, "priv/term_runtime")
 
   @doc "Shared library file name for the current OS."
   @spec shared_lib_name() :: String.t()
@@ -174,7 +180,7 @@ defmodule Batata.TermRuntime do
     File.mkdir_p!(priv_dir())
 
     {output, status} =
-      System.cmd(zig, args, stderr_to_stdout: true, cd: File.cwd!())
+      System.cmd(zig, args, stderr_to_stdout: true, cd: native_dir())
 
     if status != 0 do
       raise "failed to build the Zig term runtime:\n#{output}"
@@ -184,4 +190,17 @@ defmodule Batata.TermRuntime do
   end
 
   defp source_path, do: Path.join(native_dir(), "term_runtime.zig")
+
+  defp canonical_path(path) do
+    case File.read_link(path) do
+      {:ok, resolved} ->
+        case Path.type(resolved) do
+          :absolute -> resolved
+          :relative -> Path.expand(resolved, Path.dirname(path))
+        end
+
+      {:error, _reason} ->
+        Path.expand(path)
+    end
+  end
 end
