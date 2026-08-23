@@ -1546,8 +1546,8 @@ defmodule Batata.Lift do
   # Multi-argument multi-clause functions (e.g. `reduce(binary, acc)`): the
   # first argument dispatches with `ex.case`; trailing variable names are
   # clause-local aliases for the same positional function arguments. A
-  # compile-known atom literal in a trailing position contributes an extra
-  # clause condition over that argument.
+  # compile-known atom or integer literal in a trailing position contributes
+  # an extra clause condition over that argument.
   defp lift_multi_arg_dispatch(name, arity, clauses, ctx, ip, module_env, opts) do
     clause_tail_patterns = validate_multi_arg_clauses!(arity, clauses)
 
@@ -1686,12 +1686,18 @@ defmodule Batata.Lift do
   end
 
   defp multi_arg_tail_pattern!(atom) when is_atom(atom), do: {:literal, atom}
+  defp multi_arg_tail_pattern!(integer) when is_integer(integer), do: {:literal, integer}
+
+  defp multi_arg_tail_pattern!({:-, _, [integer]}) when is_integer(integer),
+    do: {:literal, -integer}
+
   defp multi_arg_tail_pattern!(pattern), do: unsupported_multi_arg_tail_pattern!(pattern)
 
   defp unsupported_multi_arg_tail_pattern!(pattern) do
     raise Error,
           "multi-clause trailing arguments must be variables, wildcards, or " <>
-            "compile-known atom literals or validated struct patterns: #{inspect(pattern)}"
+            "compile-known atom or integer literals or validated struct patterns: " <>
+            inspect(pattern)
   end
 
   defp tail_term_pattern?({kind, _}) when kind in [:literal, :term_pattern], do: true
@@ -1733,8 +1739,8 @@ defmodule Batata.Lift do
         {{:variable, name}, argument}, bindings ->
           {nil, [{name, argument} | bindings]}
 
-        {{:literal, atom}, argument}, bindings ->
-          {condition, []} = build_match(atom, argument, ctx, block, false, schema)
+        {{:literal, literal}, argument}, bindings ->
+          {condition, []} = build_match(literal, argument, ctx, block, false, schema)
           {condition, bindings}
 
         {{:term_pattern, pattern}, argument}, bindings ->
@@ -7968,6 +7974,10 @@ defmodule Batata.Lift do
     {create_op("ex.term_eq", [value, boxed], [MLIR.Type.i64()], ctx, block), []}
   end
 
+  defp do_build_match(binary, value, ctx, block, pattern_env) when is_binary(binary) do
+    build_binary_match(:binary.bin_to_list(binary), value, ctx, block, pattern_env)
+  end
+
   defp do_build_match(tuple, value, ctx, block, pattern_env)
        when is_tuple(tuple) and tuple_size(tuple) != 3 do
     build_tuple_match(Tuple.to_list(tuple), value, ctx, block, pattern_env)
@@ -8671,6 +8681,7 @@ defmodule Batata.Lift do
   defp term_pattern?({:=, _, [left, right]}), do: term_pattern?(left) or term_pattern?(right)
   defp term_pattern?({:%, _, _}), do: true
   defp term_pattern?(pattern) when is_atom(pattern), do: true
+  defp term_pattern?(pattern) when is_binary(pattern), do: true
 
   defp term_pattern?(pattern) do
     match?({:%{}, _, _}, pattern) or

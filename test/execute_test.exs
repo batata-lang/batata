@@ -2573,12 +2573,12 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
-  test "rejects multi-clause functions with non-atom trailing literals", %{ctx: ctx} do
+  test "rejects unreviewed binary literals in multi-clause trailing positions", %{ctx: ctx} do
     assert_raise Batata.Lift.Error, ~r/trailing arguments must be variables, wildcards/, fn ->
       Batata.execute(
         """
         defmodule Math do
-          def f(1, 2) do
+          def f(1, "two") do
             1
           end
 
@@ -2587,7 +2587,7 @@ defmodule Batata.ExecuteTest do
           end
 
           def main() do
-            f(1, 2)
+            f(1, "two")
           end
         end
         """,

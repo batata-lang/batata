@@ -29,6 +29,18 @@ defmodule Batata.SignatureTest do
     assert Batata.Signature.infer([lookup]) == %{{:lookup, 2} => [:term, :term]}
   end
 
+  test "uses the term ABI for integer literals in trailing patterns" do
+    first = {:first, [], nil}
+    second = {:second, [], nil}
+
+    literal = definition(:dispatch, ["  ", 1], :one)
+    fallback = definition(:dispatch, [first, second], {:{}, [], [first, second]})
+
+    assert Batata.Signature.infer([literal, fallback]) == %{
+             {:dispatch, 2} => [:term, :term]
+           }
+  end
+
   defp definition(name, patterns, body) when is_list(patterns) do
     %Definition{
       kind: :defp,
