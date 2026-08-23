@@ -32,6 +32,7 @@ defmodule Batata.Lift do
   @known_atoms_key {__MODULE__, :known_atoms}
   @struct_schema_key {__MODULE__, :struct_schema}
   @arg_modes_key {__MODULE__, :arg_modes}
+  @current_function_key {__MODULE__, :current_function}
   @min_scalar_integer -9_223_372_036_854_775_808
   @max_scalar_integer 9_223_372_036_854_775_807
   @min_term_integer -1_152_921_504_606_846_976
@@ -518,10 +519,15 @@ defmodule Batata.Lift do
            node,
          state
        ) do
-    if enum_alias?(alias_parts) do
-      recognize_reduce_node(fn_ast, enumerable, acc, node, state)
-    else
-      {node, state}
+    cond do
+      enum_alias?(alias_parts) ->
+        recognize_reduce_node(fn_ast, enumerable, acc, node, state)
+
+      module_ref({:__aliases__, [], alias_parts}) == {:ok, Enumerable.List} ->
+        extract_enumerable_list_reduce(enumerable, acc, fn_ast, state)
+
+      true ->
+        {node, state}
     end
   end
 
@@ -573,6 +579,74 @@ defmodule Batata.Lift do
       :error ->
         {node, state}
     end
+  end
+
+  # `Enumerable.List.reduce/3` is the list implementation of the Enumerable
+  # protocol, not ordinary `Enum.reduce/3`. Lower it to a compiler-owned local
+  # helper so the reducer remains a dynamic closure and the protocol's
+  # halt/continue/suspend result contract is preserved without a host callback.
+  defp extract_enumerable_list_reduce(list_ast, acc_ast, fun_ast, {synthetic, counter}) do
+    helper = :"__enumerable_list_reduce_#{counter}"
+    list = {:list, [], nil}
+    acc = {:acc, [], nil}
+    fun = {:fun, [], nil}
+    head = {:head, [], nil}
+    tail = {:tail, [], nil}
+    next_acc = {:next_acc, [], nil}
+    callback_acc = {:callback_acc, [], nil}
+
+    callback = {:__term_apply__, [], [fun, [head, acc]]}
+
+    resume =
+      {:fn, [], [{:->, [], [[next_acc], {helper, [], [list, next_acc, fun]}]}]}
+
+    callback_resume =
+      {:fn, [], [{:->, [], [[next_acc], {helper, [], [tail, next_acc, fun]}]}]}
+
+    continue =
+      {:case, [],
+       [
+         callback,
+         [
+           do: [
+             {:->, [],
+              [[{:cont, callback_acc}], {helper, [], [tail, {:cont, callback_acc}, fun]}]},
+             {:->, [], [[{:halt, callback_acc}], {:halted, callback_acc}]},
+             {:->, [],
+              [
+                [{:suspend, callback_acc}],
+                {:{}, [], [:suspended, callback_acc, callback_resume]}
+              ]}
+           ]
+         ]
+       ]}
+
+    definition = %Frontend.Definition{
+      kind: :defp,
+      name: helper,
+      arity: 3,
+      clauses: [
+        %Frontend.Clause{
+          patterns: [{:_, [], nil}, {:halt, acc}, {:_, [], nil}],
+          body_ast: {:halted, acc}
+        },
+        %Frontend.Clause{
+          patterns: [list, {:suspend, acc}, fun],
+          body_ast: {:{}, [], [:suspended, acc, resume]}
+        },
+        %Frontend.Clause{
+          patterns: [[], {:cont, acc}, {:_, [], nil}],
+          body_ast: {:done, acc}
+        },
+        %Frontend.Clause{
+          patterns: [[{:|, [], [head, tail]}], {:cont, acc}, fun],
+          body_ast: continue
+        }
+      ]
+    }
+
+    replacement = {helper, [], [list_ast, acc_ast, fun_ast]}
+    {replacement, {[definition | synthetic], counter + 1}}
   end
 
   # Combination reducers become synthetic `__enum_reducer_N` definitions so
@@ -1263,8 +1337,10 @@ defmodule Batata.Lift do
       |> Enum.to_list()
       |> Enum.zip(Enum.zip(patterns, function_arg_modes(name, arity, module_env)))
       |> Enum.reduce(module_env, fn {value, {pattern, mode}}, env ->
-        Map.put(env, param_name(pattern), inbound_argument(value, mode, ctx, block))
+        inbound = inbound_definition_argument(value, mode, pattern, name, ctx, block)
+        Map.put(env, param_name(pattern), inbound)
       end)
+      |> Map.put(@current_function_key, name)
       |> Map.put(:__budget__, budget)
       |> Map.put(:__batch_size__, batch_size)
 
@@ -3821,6 +3897,55 @@ defmodule Batata.Lift do
   end
 
   # Anonymous-function application: `f.(args)` / `(fn ... end).(args)`.
+  # Compiler-generated protocol callbacks use a term-result marker because
+  # the closure ABI returns an i64 word for both scalar and term results. The
+  # Enumerable reducer contract guarantees a tagged tuple result here.
+  defp lift_expr({:__term_apply__, _, [fun_ast, args]}, ctx, block, env)
+       when is_list(args) do
+    case resolve_fun_ref(fun_ast, env) do
+      {:dynamic, closure} ->
+        unless length(args) <= 4 do
+          raise Error,
+                "dynamic anonymous function application supports at most 4 arguments, got #{length(args)}"
+        end
+
+        {arg_values, env} =
+          Enum.map_reduce(args, env, fn arg, env ->
+            lift_expr(arg, ctx, block, env)
+          end)
+
+        arg_values =
+          Enum.map(arg_values, fn value ->
+            value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
+          end)
+
+        closure_word = create_op("ex.to_word", [closure], [ex_type("term", ctx)], ctx, block)
+
+        applied =
+          create_op(
+            "ex.apply",
+            [closure_word] ++
+              arg_values ++
+              [
+                arg_count: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
+                operandSegmentSizes:
+                  segment_sizes(
+                    [1 | List.duplicate(1, length(args))] ++
+                      List.duplicate(0, 4 - length(args))
+                  )
+              ],
+            [integer_type(ctx)],
+            ctx,
+            block
+          )
+
+        {create_op("ex.to_word", [applied], [ex_type("term", ctx)], ctx, block), env}
+
+      _ ->
+        raise Error, "term-result callback application requires a bound dynamic function"
+    end
+  end
+
   defp lift_expr({{:., _, [fun_ast]}, _, args}, ctx, block, env) do
     case resolve_fun_ref(fun_ast, env) do
       {:ok, _fn_idx, name, arity, captured} ->
@@ -3835,8 +3960,16 @@ defmodule Batata.Lift do
           end)
 
         captured_values = resolve_captured(captured, env)
-        captured_values = Enum.map(captured_values, &lift_value(&1, ctx, block, env))
-        arg_values = Enum.map(arg_values, &lift_value(&1, ctx, block, env))
+
+        captured_values =
+          Enum.map(captured_values, fn value ->
+            value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block) |> unbox(ctx, block)
+          end)
+
+        arg_values =
+          Enum.map(arg_values, fn value ->
+            value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block) |> unbox(ctx, block)
+          end)
 
         # The extracted fn uses the fixed 8-slot closure ABI: four captured
         # slots followed by four argument slots.
@@ -3870,6 +4003,15 @@ defmodule Batata.Lift do
         {arg_values, env} =
           Enum.map_reduce(args, env, fn arg, env ->
             lift_expr(arg, ctx, block, env)
+          end)
+
+        # Runtime closures have one representation-independent ABI: captured
+        # values and applied arguments are term words. The generated dispatch
+        # refines integer words back to scalars for closures whose inferred
+        # parameter mode is scalar.
+        arg_values =
+          Enum.map(arg_values, fn value ->
+            value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
           end)
 
         closure_word = create_op("ex.to_word", [closure], [ex_type("term", ctx)], ctx, block)
@@ -7343,7 +7485,10 @@ defmodule Batata.Lift do
   # Materializes a compile-time function reference into a first-class closure
   # word; all other values pass through unchanged.
   defp lift_value({:fn_ref, fn_idx, _name, arity, captured}, ctx, block, env) do
-    env_values = resolve_captured(captured, env)
+    env_values =
+      captured
+      |> resolve_captured(env)
+      |> Enum.map(&box_if_scalar(&1, ctx, block))
 
     unless length(env_values) <= 4 do
       raise Error, "anonymous function capture exceeds 4 slots: #{length(env_values)}"
@@ -8763,17 +8908,46 @@ defmodule Batata.Lift do
 
   defp inbound_argument(value, :scalar, _ctx, _block), do: value
 
+  defp inbound_definition_argument(value, mode, pattern, name, ctx, block) do
+    if fn_abi_name?(name) do
+      inbound_closure_argument(value, mode, pattern, ctx, block)
+    else
+      inbound_argument(value, mode, ctx, block)
+    end
+  end
+
+  defp inbound_closure_argument(value, _mode, {:_, _, _}, _ctx, _block), do: value
+
+  defp inbound_closure_argument(value, :term, _pattern, ctx, block),
+    do: create_op("ex.to_word", [value], [ex_type("term", ctx)], ctx, block)
+
+  defp inbound_closure_argument(value, :scalar, _pattern, ctx, block) do
+    value = create_op("ex.to_word", [value], [ex_type("term", ctx)], ctx, block)
+    create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
+  end
+
   defp adapt_call_arguments(name, values, env, ctx, block) do
     modes =
       env
       |> Map.fetch!(@arg_modes_key)
       |> Map.get({name, length(values)}, List.duplicate(:scalar, length(values)))
 
+    dispatch? = Map.get(env, @current_function_key) == :__fn_dispatch
+
     Enum.zip_with(values, modes, fn
-      value, :term -> value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
-      value, :scalar -> value
+      value, _mode when dispatch? ->
+        if term_operand?(value), do: unbox(value, ctx, block), else: value
+
+      value, :term ->
+        value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
+
+      value, :scalar ->
+        value
     end)
   end
+
+  defp fn_abi_name?(name),
+    do: name != :__fn_dispatch and String.starts_with?(Atom.to_string(name), "__fn_")
 
   defp integer_type(ctx), do: MLIR.Type.integer(64, ctx: ctx)
 

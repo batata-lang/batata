@@ -33,10 +33,15 @@ defmodule Batata.Signature do
     initial =
       Map.new(definitions, fn %Frontend.Definition{name: name, arity: arity, clauses: clauses} ->
         modes =
-          if arity == 8 and String.contains?(Atom.to_string(name), "__enum_mapper_") do
-            List.duplicate(:term, 5) ++ List.duplicate(:scalar, 3)
-          else
-            pattern_modes(arity, clauses)
+          cond do
+            name == :__fn_dispatch and arity == 9 ->
+              [:scalar | List.duplicate(:term, 8)]
+
+            arity == 8 and String.contains?(Atom.to_string(name), "__enum_mapper_") ->
+              List.duplicate(:term, 5) ++ List.duplicate(:scalar, 3)
+
+            true ->
+              pattern_modes(arity, clauses)
           end
 
         {{name, arity}, modes}
@@ -84,6 +89,28 @@ defmodule Batata.Signature do
        )
        when is_variable_ast(name, context) and is_atom(field),
        do: {node, mark_name(modes, names, name)}
+
+  defp infer_node(
+         {{:., _, [{name, _, context}]}, _, args} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_variable_ast(name, context) and is_list(args),
+       do: {node, mark_name(modes, names, name)}
+
+  defp infer_node(
+         {:__term_apply__, _, [{name, _, context}, args]} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_variable_ast(name, context) and is_list(args),
+       do: {node, mark_name(modes, names, name)}
+
+  defp infer_node({:|, _, values} = node, modes, names, _signatures)
+       when is_list(values),
+       do: {node, mark_term_values(modes, names, values)}
 
   defp infer_node(
          {:case, _, [{name, _, context}, [do: clauses]]} = node,
@@ -184,6 +211,16 @@ defmodule Batata.Signature do
     |> Enum.reduce(modes, fn
       {^name, index}, acc -> List.replace_at(acc, index, :term)
       _, acc -> acc
+    end)
+  end
+
+  defp mark_term_values(modes, names, values) do
+    Enum.reduce(values, modes, fn
+      {name, _, context}, acc when is_variable_ast(name, context) ->
+        mark_name(acc, names, name)
+
+      _, acc ->
+        acc
     end)
   end
 
