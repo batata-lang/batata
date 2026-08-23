@@ -458,6 +458,79 @@ defmodule Batata.StdlibTest do
       assert 366 == execute("Date.new(2024, 2, 29) - Date.new(2023, 2, 28)", ctx)
     end
 
+    test "executes the Enumerable.List.reduce/3 callback contract", %{ctx: ctx} do
+      sum_reducer = fn item, acc -> {:cont, item + acc} end
+      reverse_reducer = fn item, acc -> {:cont, [item | acc]} end
+
+      assert Enumerable.List.reduce([1, 2, 3], {:cont, 0}, sum_reducer) ==
+               execute(
+                 "Enumerable.List.reduce([1, 2, 3], {:cont, 0}, fn item, acc -> " <>
+                   "{:cont, item + acc} end)",
+                 ctx
+               )
+
+      assert Enumerable.List.reduce([1, 2, 3], {:halt, 7}, sum_reducer) ==
+               execute(
+                 "Enumerable.List.reduce([1, 2, 3], {:halt, 7}, fn item, acc -> " <>
+                   "{:cont, item + acc} end)",
+                 ctx
+               )
+
+      assert Enumerable.List.reduce([1, 2, 3], {:cont, []}, reverse_reducer) ==
+               execute(
+                 "Enumerable.List.reduce([1, 2, 3], {:cont, []}, fn item, acc -> " <>
+                   "{:cont, [item | acc]} end)",
+                 ctx
+               )
+
+      {:suspended, beam_acc, beam_continuation} =
+        Enumerable.List.reduce([1, 2, 3], {:suspend, 0}, sum_reducer)
+
+      beam_resumed = beam_continuation.({:cont, beam_acc})
+
+      assert beam_resumed ==
+               execute(
+                 """
+                 reducer = fn item, acc -> {:cont, item + acc} end
+                 {:suspended, acc, continuation} =
+                   Enumerable.List.reduce([1, 2, 3], {:suspend, 0}, reducer)
+                 continuation.({:cont, acc})
+                 """,
+                 ctx
+               )
+
+      suspending_reducer = fn item, acc ->
+        if item == 3, do: {:suspend, item + acc}, else: {:cont, item + acc}
+      end
+
+      {:suspended, beam_acc, beam_continuation} =
+        Enumerable.List.reduce([1, 2, 3], {:cont, 0}, suspending_reducer)
+
+      beam_resumed = beam_continuation.({:cont, beam_acc})
+
+      assert beam_resumed ==
+               execute(
+                 """
+                 reducer = fn item, acc ->
+                   if item == 3, do: {:suspend, item + acc}, else: {:cont, item + acc}
+                 end
+
+                 {:suspended, acc, continuation} =
+                   Enumerable.List.reduce([1, 2, 3], {:cont, 0}, reducer)
+
+                 continuation.({:cont, acc})
+                 """,
+                 ctx
+               )
+
+      assert_raise CaseClauseError, fn ->
+        execute(
+          "Enumerable.List.reduce([1], {:cont, 0}, fn _item, _acc -> :bad end)",
+          ctx
+        )
+      end
+    end
+
     test "rejects non-literal Date.new explicitly", %{ctx: ctx} do
       error =
         assert_raise Batata.Lift.Error, fn ->

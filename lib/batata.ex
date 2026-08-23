@@ -419,6 +419,15 @@ defmodule Batata do
     atoms
     |> Map.put(atom_word(true), true)
     |> Map.put(atom_word(false), false)
+    # Enumerable.List.reduce/3 lowering synthesizes these protocol states;
+    # keep them materializable even when a particular input branch does not
+    # spell every result atom in source.
+    |> Map.put(atom_word(:cont), :cont)
+    |> Map.put(atom_word(:halt), :halt)
+    |> Map.put(atom_word(:suspend), :suspend)
+    |> Map.put(atom_word(:done), :done)
+    |> Map.put(atom_word(:halted), :halted)
+    |> Map.put(atom_word(:suspended), :suspended)
     |> Map.put(atom_word(String), String)
     |> Map.put(atom_word(:printable?), :printable?)
     |> Map.put(atom_word(:nomatch), :nomatch)

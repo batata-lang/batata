@@ -78,11 +78,15 @@ generated clauses' iodata-shaped body. The DateTime slice accepts only the
 literal `Etc/UTC` zone and emits the `Z` suffix. None of these replacements
 accepts host Date, Time, NaiveDateTime, or DateTime structs. The whole-corpus
 link now crosses all four generated encoders. Nested module aliases reach the
-same stdlib boundary as single-part aliases, exposing the next requirement as
-the unsupported `Enumerable.List.reduce/3` callback contract rather than a
-malformed remote module reference. This lane still makes no execution claim
-for module-level generation and does not itself change blocker identity or
-module eligibility.
+same stdlib boundary as single-part aliases. The list implementation of the
+Enumerable protocol now lowers to compiler-owned helper clauses which preserve
+`:cont`, `:halt`, `:suspend`, completion, and resumable-continuation results
+while invoking reducers through the term-word closure ABI. This makes
+`Enumerable.Jason.OrderedObject` an isolated compile pass and advances the
+whole-corpus requirement to the unsupported `String.Chars.to_string/1`
+callback contract. This lane still makes no execution claim for module-level
+generation; the reducer evidence comes from compiler-owned lowering and
+execution gates.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
