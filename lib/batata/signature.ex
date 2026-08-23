@@ -46,9 +46,36 @@ defmodule Batata.Signature do
 
         {{name, arity}, modes}
       end)
+      |> merge_trailing_integer_pattern_modes(definitions)
 
     fixed_point(definitions, initial)
   end
+
+  defp merge_trailing_integer_pattern_modes(modes, definitions) do
+    Enum.reduce(definitions, modes, fn %Frontend.Definition{
+                                         name: name,
+                                         arity: arity,
+                                         clauses: clauses
+                                       },
+                                       acc ->
+      if Enum.any?(clauses, &trailing_integer_clause?/1) do
+        required = pattern_modes(arity, clauses)
+        Map.update!(acc, {name, arity}, &merge_modes(&1, required))
+      else
+        acc
+      end
+    end)
+  end
+
+  defp trailing_integer_clause?(%Frontend.Clause{patterns: [_first | tails]}) do
+    Enum.any?(tails, fn
+      integer when is_integer(integer) -> true
+      {:-, _, [integer]} when is_integer(integer) -> true
+      _pattern -> false
+    end)
+  end
+
+  defp trailing_integer_clause?(_clause), do: false
 
   defp fixed_point(definitions, modes) do
     next =
@@ -227,7 +254,11 @@ defmodule Batata.Signature do
   defp pattern_modes(arity, clauses) do
     Enum.reduce(clauses, List.duplicate(:scalar, arity), fn clause, acc ->
       clause.patterns
-      |> Enum.map(&pattern_mode/1)
+      |> Enum.with_index()
+      |> Enum.map(fn
+        {pattern, index} when index > 0 and is_integer(pattern) -> :term
+        {pattern, _index} -> pattern_mode(pattern)
+      end)
       |> merge_modes(acc)
     end)
   end

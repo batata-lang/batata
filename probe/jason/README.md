@@ -87,9 +87,14 @@ whole-corpus requirement to the direct `String.Chars.to_string/1` callback
 contract. That callback now shares the bounded `Kernel.to_string/1` scalar
 lowering for integers, binaries, and compile-known atoms, including the same
 typed failure for unsupported values. The whole-corpus frontier consequently
-advances to a multi-clause trailing literal pattern. This lane still makes no
-execution claim for module-level generation; the reducer and protocol-callback
-evidence comes from compiler-owned lowering and execution gates.
+reached the generated `Jason.Formatter.tab/2` clauses. Multi-clause dispatch
+now admits compile-known integer literals in trailing positions, uses the term
+ABI for those arguments without changing binary-scanner signatures, and
+matches compile-known binary literals by length and bytes. This crosses all 16
+generated indentation clauses and advances the whole-corpus frontier to
+`String.duplicate/2`. This lane still makes no execution claim for module-level
+generation; the reducer, protocol-callback, and literal-dispatch evidence comes
+from compiler-owned lowering and execution gates.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and

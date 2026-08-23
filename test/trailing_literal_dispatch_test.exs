@@ -134,6 +134,47 @@ defmodule Batata.TrailingLiteralDispatchTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "dispatches compile-known integer literals in trailing positions", %{ctx: ctx} do
+    source = """
+    defmodule TrailingIntegerLiteralOracle do
+      defp tab("  ", 1), do: :one
+      defp tab("  ", 2), do: :two
+      defp tab("  ", -1), do: :negative
+      defp tab("", _depth), do: :empty
+      defp tab(indent, depth), do: {indent, depth}
+
+      def main() do
+        {tab("  ", 1), tab("  ", 2), tab("  ", -1), tab("", 3), tab("--", 1)}
+      end
+    end
+    """
+
+    expected =
+      source
+      |> Kernel.<>("\nTrailingIntegerLiteralOracle.main()")
+      |> Code.eval_string()
+      |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "preserves arguments when trailing integer clauses do not match", %{ctx: ctx} do
+    source = """
+    defmodule TrailingIntegerLiteralFailure do
+      defp only("  ", 1), do: :one
+      defp only("  ", 2), do: :two
+      def main(), do: only("  ", 3)
+    end
+    """
+
+    error = assert_raise FunctionClauseError, fn -> Batata.execute(source, ctx) end
+
+    assert error.module == TrailingIntegerLiteralFailure
+    assert error.function == :only
+    assert error.arity == 2
+    assert error.args == ["  ", 3]
+  end
+
   test "preserves all arguments when no trailing literal clause matches", %{ctx: ctx} do
     source = """
     defmodule TrailingLiteralFailure do
@@ -151,10 +192,10 @@ defmodule Batata.TrailingLiteralDispatchTest do
     assert error.args == [1, 2, 3, :"Elixir.Foreign"]
   end
 
-  test "rejects non-atom trailing literals", %{ctx: ctx} do
-    for literal <- ["2", ~S("binary"), "%{}", "[]"] do
+  test "rejects unreviewed trailing literals", %{ctx: ctx} do
+    for literal <- [~S("binary"), "%{}", "[]"] do
       assert_raise Batata.Lift.Error,
-                   ~r/trailing arguments must be variables, wildcards, or compile-known atom literals/,
+                   ~r/trailing arguments must be variables, wildcards, or compile-known atom or integer literals/,
                    fn ->
                      Batata.execute(
                        """
