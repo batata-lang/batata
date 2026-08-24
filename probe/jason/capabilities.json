@@ -15,6 +15,7 @@
     {"id": "pattern.map_parameter", "status": "executable", "gate": "execute_test"},
     {"id": "pattern.trailing_map", "status": "executable", "gate": "trailing_map_pattern_test", "scope": "bare or aliased atom-key subset maps in multi-clause trailing arguments, with guard and fallback dispatch"},
     {"id": "pattern.struct", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with validated fields and exact __struct__ matching"},
+    {"id": "pattern.dynamic_struct", "status": "executable", "gate": "dynamic_struct_module_pattern_test", "scope": "generic struct patterns with a bound module variable, atom-valued __struct__, nested atom-key fields, aliases, and clause fallback; repeated bindings excluded"},
     {"id": "map.update_exact", "status": "executable", "gate": "execute_test", "scope": "literal atom keys, BEAM evaluation order, immutable replacement, typed KeyError and BadMapError"},
     {"id": "dispatch.non_exhaustive", "status": "executable", "gate": "execute_test"},
     {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},

@@ -114,9 +114,13 @@ whose trailing `opts` argument uses the literal map patterns
 `%{pretty: true} = opts` and `%{pretty: pretty} = opts`. Multi-clause trailing
 arguments now admit bare or aliased atom-key subset maps and reuse the same
 present-key, value, binding, guard, and fallback semantics as existing map
-patterns. This crosses both pretty-encoding clauses. Dynamic struct names stay
-closed: the whole-corpus frontier is now `Jason.Encode.struct/2` at its
-`%module{}` argument pattern. String-key and other unsupported map keys remain
+patterns. This crosses both pretty-encoding clauses. Generic struct patterns
+now bind the atom-valued `__struct__` entry through a plain module variable,
+including requested nested atom-key fields and outer aliases. Repeated module
+bindings stay closed until same-variable equality is modeled. This crosses
+`Jason.Encode.struct/2` at `%module{} = value`. The whole-corpus frontier is
+now `Jason.Formatter.pp_byte/6`, where an `if` branch contains the argument
+alias `_in_bs = false`. String-key and other unsupported map keys remain
 rejected.
 This lane still makes no execution claim for module-level generation; the
 reducer, protocol-callback, literal-dispatch, bounded string-fold, positive
