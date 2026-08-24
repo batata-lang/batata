@@ -45,7 +45,7 @@ defmodule Batata.Godot.BindingPlanTest do
     assert json == Batata.Godot.canonical_json(Example)
 
     assert Batata.Godot.digest(Example) ==
-             "a6b7601274dc56231dbe2eedeee60034b2ece4cdc94c3694dc6f2b5e15daa8f8"
+             "722a23b1eae7e2d64f7ddf752d5e5b5f5d99af9bcf9da9322ed38ed69e400331"
   end
 
   test "unsupported Variant types fail closed with a recovery action" do
@@ -56,6 +56,9 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:consume, [args: [:dictionary], returns: nil]}],
+          [],
+          [],
+          [],
           consume: 1
         )
       end
@@ -78,6 +81,9 @@ defmodule Batata.Godot.BindingPlanTest do
           {:echo_vector3, [args: [:vector3], returns: :vector3]},
           {:echo_object, [args: [{:object, "RefCounted"}], returns: {:object, "RefCounted"}]}
         ],
+        [],
+        [],
+        [],
         echo_string: 1,
         echo_name: 1,
         echo_vector2: 1,
@@ -102,6 +108,9 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:echo_object, [args: [{:object, "bad class"}], returns: nil]}],
+          [],
+          [],
+          [],
           echo_object: 1
         )
       end
@@ -118,6 +127,9 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:missing, [args: [:int], returns: :int]}],
+          [],
+          [],
+          [],
           []
         )
       end
@@ -136,6 +148,9 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [declaration, declaration],
+          [],
+          [],
+          [],
           add: 2
         )
       end
@@ -152,6 +167,9 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:wide, [args: List.duplicate(:int, 9), returns: :int]}],
+          [],
+          [],
+          [],
           wide: 9
         )
       end
@@ -161,7 +179,8 @@ defmodule Batata.Godot.BindingPlanTest do
   end
 
   test "an extension requires exactly one class" do
-    error = assert_raise Diagnostic, fn -> BindingPlan.new!(Example, [], [], [], []) end
+    error =
+      assert_raise Diagnostic, fn -> BindingPlan.new!(Example, [], [], [], [], [], [], []) end
 
     assert error.code == "E_GODOT_CLASS_MISSING"
   end
@@ -169,7 +188,7 @@ defmodule Batata.Godot.BindingPlanTest do
   test "unknown declaration options fail closed" do
     error =
       assert_raise Diagnostic, fn ->
-        BindingPlan.new!(Example, [dynamic: true], [{"BatataExample", []}], [], [])
+        BindingPlan.new!(Example, [dynamic: true], [{"BatataExample", []}], [], [], [], [], [])
       end
 
     assert error.code == "E_GODOT_OPTION_UNKNOWN"

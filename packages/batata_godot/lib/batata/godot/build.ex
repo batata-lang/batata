@@ -144,6 +144,12 @@ defmodule Batata.Godot.Build do
 
     class_name = get_in(binding_plan, ["class", "name"])
     invocation_source = smoke_invocation_source(invocation, class_name, binding_plan["methods"])
+    contract_source = smoke_contract_source(binding_plan)
+
+    release_source =
+      if get_in(binding_plan, ["class", "base"]) == "Node",
+        do: "  object.free()\n  object = null",
+        else: "  object = null"
 
     File.write!(smoke_script_path, """
     extends SceneTree
@@ -158,8 +164,9 @@ defmodule Batata.Godot.Build do
         push_error("E_GODOT_INSTANCE_CREATE_FAILED: Batata class could not be instantiated")
         quit(18)
         return
+    #{contract_source}
     #{invocation_source}
-      object = null
+    #{release_source}
       quit()
     """)
 
@@ -193,6 +200,51 @@ defmodule Batata.Godot.Build do
           %{exit_status: status, output: output}
         )
     end
+  end
+
+  defp smoke_contract_source(binding_plan) do
+    properties =
+      binding_plan["properties"]
+      |> Enum.with_index()
+      |> Enum.map_join(fn {property, index} ->
+        """
+          var property_found_#{index} = false
+          for property_#{index} in object.get_property_list():
+            if property_#{index}.name == #{JSON.encode!(property["name"])}:
+              property_found_#{index} = true
+              break
+          if not property_found_#{index}:
+            push_error("E_GODOT_PROPERTY_MISSING: declared property is absent")
+            quit(22)
+            return
+        """
+      end)
+
+    signals =
+      binding_plan["signals"]
+      |> Enum.map_join(fn signal ->
+        """
+          if not object.has_signal(#{JSON.encode!(signal["name"])}):
+            push_error("E_GODOT_SIGNAL_MISSING: declared signal is absent")
+            quit(23)
+            return
+        """
+      end)
+
+    virtuals =
+      case binding_plan["virtuals"] do
+        [] ->
+          ""
+
+        _virtuals ->
+          """
+            object.set_process(true)
+            root.add_child(object)
+            await process_frame
+          """
+      end
+
+    properties <> signals <> virtuals
   end
 
   defp smoke_invocation_source(nil, _class_name, _methods), do: ""
@@ -446,7 +498,8 @@ defmodule Batata.Godot.Build do
   end
 
   defp verify_method_symbols!(archive, %BindingPlan{} = plan) do
-    Batata.Export.verify_symbols!(archive, Enum.map(plan.methods, &%{"symbol" => &1.symbol}))
+    symbols = Enum.map(plan.methods ++ plan.virtuals, &%{"symbol" => &1.symbol})
+    Batata.Export.verify_symbols!(archive, symbols)
   rescue
     error in [ArgumentError, MatchError] ->
       diagnostic!(
@@ -477,6 +530,9 @@ defmodule Batata.Godot.Build do
       "-Dclass-name=#{plan.class.name}",
       "-Dbase-class-name=#{plan.class.base}",
       "-Dmethod-specs=#{method_specs(plan)}",
+      "-Dproperty-specs=#{property_specs(plan)}",
+      "-Dsignal-specs=#{signal_specs(plan)}",
+      "-Dvirtual-specs=#{virtual_specs(plan)}",
       "-Dtrue-word=#{atom_word(true)}",
       "-Dfalse-word=#{atom_word(false)}",
       "-Dterm-runtime-source=#{Path.join(Batata.TermRuntime.native_dir(), "term_runtime.zig")}",
@@ -512,6 +568,30 @@ defmodule Batata.Godot.Build do
     end)
   end
 
+  defp property_specs(%BindingPlan{} = plan) do
+    Enum.map_join(plan.properties, ";", fn property ->
+      Enum.join(
+        [property.name, value_type_name(property.type), property.getter, property.setter],
+        "|"
+      )
+    end)
+  end
+
+  defp signal_specs(%BindingPlan{} = plan) do
+    Enum.map_join(plan.signals, ";", fn signal ->
+      Enum.join([signal.name, Enum.map_join(signal.arguments, ",", &value_type_name/1)], "|")
+    end)
+  end
+
+  defp virtual_specs(%BindingPlan{} = plan) do
+    Enum.map_join(plan.virtuals, ";", fn virtual ->
+      Enum.join(
+        [virtual.name, virtual.symbol, Enum.map_join(virtual.arguments, ",", &value_type_name/1)],
+        "|"
+      )
+    end)
+  end
+
   defp value_type_name(nil), do: "nil"
   defp value_type_name({:object, class_name}), do: "object:#{class_name}"
   defp value_type_name(value), do: Atom.to_string(value)
@@ -519,9 +599,8 @@ defmodule Batata.Godot.Build do
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
 
   defp verify_library_symbols!(library_path, %BindingPlan{} = plan) do
-    symbols = [
-      %{"symbol" => plan.entry_symbol} | Enum.map(plan.methods, &%{"symbol" => &1.symbol})
-    ]
+    compiled = Enum.map(plan.methods ++ plan.virtuals, &%{"symbol" => &1.symbol})
+    symbols = [%{"symbol" => plan.entry_symbol} | compiled]
 
     Batata.Export.verify_symbols!(library_path, symbols)
   rescue

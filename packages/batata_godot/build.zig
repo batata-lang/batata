@@ -13,6 +13,12 @@ pub fn build(b: *std.Build) void {
         @panic("missing required -Dbase-class-name");
     const method_specs = b.option([]const u8, "method-specs", "Closed Godot method descriptor list") orelse
         @panic("missing required -Dmethod-specs");
+    const property_specs = b.option([]const u8, "property-specs", "Closed Godot property descriptor list") orelse
+        @panic("missing required -Dproperty-specs");
+    const signal_specs = b.option([]const u8, "signal-specs", "Closed Godot signal descriptor list") orelse
+        @panic("missing required -Dsignal-specs");
+    const virtual_specs = b.option([]const u8, "virtual-specs", "Closed Godot virtual descriptor list") orelse
+        @panic("missing required -Dvirtual-specs");
     const true_word = b.option(i64, "true-word", "Batata true atom word") orelse
         @panic("missing required -Dtrue-word");
     const false_word = b.option(i64, "false-word", "Batata false atom word") orelse
@@ -32,6 +38,9 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "class_name", class_name);
     options.addOption([]const u8, "base_class_name", base_class_name);
     options.addOption([]const u8, "method_specs", method_specs);
+    options.addOption([]const u8, "property_specs", property_specs);
+    options.addOption([]const u8, "signal_specs", signal_specs);
+    options.addOption([]const u8, "virtual_specs", virtual_specs);
     options.addOption(i64, "true_word", true_word);
     options.addOption(i64, "false_word", false_word);
 
