@@ -8163,6 +8163,17 @@ defmodule Batata.Lift do
     build_any_struct_match(entries, value, ctx, block, pattern_env)
   end
 
+  defp do_build_match(
+         {:%, _, [{module_name, _, context}, {:%{}, _, entries}]},
+         value,
+         ctx,
+         block,
+         pattern_env
+       )
+       when is_variable_ast(module_name, context) do
+    build_dynamic_struct_match(module_name, entries, value, ctx, block, pattern_env)
+  end
+
   defp do_build_match({:%{}, _, entries}, value, ctx, block, pattern_env) do
     build_map_match(entries, value, ctx, block, pattern_env)
   end
@@ -8308,6 +8319,21 @@ defmodule Batata.Lift do
   end
 
   defp build_any_struct_match(entries, value, ctx, block, pattern_env) do
+    {cond, binds, _module} = build_generic_struct_match(entries, value, ctx, block, pattern_env)
+    {cond, binds}
+  end
+
+  defp build_dynamic_struct_match(module_name, entries, value, ctx, block, pattern_env) do
+    {cond, binds, module} = build_generic_struct_match(entries, value, ctx, block, pattern_env)
+
+    if Keyword.has_key?(binds, module_name) do
+      raise Error, "dynamic struct module repeats binding: #{inspect(module_name)}"
+    end
+
+    {cond, [{module_name, module} | binds]}
+  end
+
+  defp build_generic_struct_match(entries, value, ctx, block, pattern_env) do
     {map_cond, binds} = build_map_match(entries, value, ctx, block, pattern_env)
 
     {found_cond, module} =
@@ -8315,7 +8341,7 @@ defmodule Batata.Lift do
 
     atom_cond = create_op("ex.is_atom", [module], [MLIR.Type.i64()], ctx, block)
 
-    {combine([map_cond, found_cond, atom_cond], ctx, block), binds}
+    {combine([map_cond, found_cond, atom_cond], ctx, block), binds, module}
   end
 
   defp fetch_map_pattern_value(key, value, ctx, block, pattern_env) do

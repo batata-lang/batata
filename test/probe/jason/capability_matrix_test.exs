@@ -16,6 +16,8 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["pattern.trailing_map"]["scope"] =~ "atom-key subset maps"
     assert capabilities["pattern.struct"]["status"] == "executable"
     assert capabilities["pattern.struct"]["scope"] =~ "exact __struct__ matching"
+    assert capabilities["pattern.dynamic_struct"]["gate"] == "dynamic_struct_module_pattern_test"
+    assert capabilities["pattern.dynamic_struct"]["scope"] =~ "bound module variable"
     assert capabilities["map.update_exact"]["status"] == "executable"
     assert capabilities["map.update_exact"]["scope"] =~ "typed KeyError"
     assert capabilities["dispatch.non_exhaustive"]["status"] == "executable"
