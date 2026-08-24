@@ -25,17 +25,23 @@ defmodule Batata.Memory.Verifier do
   def verify_plan!(%Plan{policy: :strict, obligations: [_ | _] = obligations}) do
     obstruction = Enum.min_by(obligations, &{&1.site.id, to_string(&1.kind)})
 
-    raise DiagnosticError.exception(
-            code: diagnostic_code(obstruction.kind),
-            message: obstruction.missing_fact,
-            policy: :strict,
-            site: obstruction.site,
-            obstruction: obstruction,
-            strategies: obstruction.strategies
-          )
+    raise diagnostic(obstruction, :strict)
   end
 
   def verify_plan!(%Plan{} = plan), do: plan
+
+  @doc false
+  @spec diagnostic(Batata.Memory.Obligation.t(), :report | :strict) :: DiagnosticError.t()
+  def diagnostic(obstruction, policy) when policy in [:report, :strict] do
+    DiagnosticError.exception(
+      code: diagnostic_code(obstruction.kind),
+      message: obstruction.missing_fact,
+      policy: policy,
+      site: obstruction.site,
+      obstruction: obstruction,
+      strategies: obstruction.strategies
+    )
+  end
 
   defp diagnostic_code(kind)
        when kind in [:external_summary_missing, :callee_summary_missing],

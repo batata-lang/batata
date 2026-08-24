@@ -31,6 +31,13 @@ defmodule Batata.Memory do
   @spec verify!(Beaver.MLIR.Module.t(), keyword()) :: :disabled | Batata.Memory.Plan.t()
   defdelegate verify!(module, opts), to: Batata.Memory.Verifier
 
+  @doc "Writes deterministic M0 plan and diagnostic artifacts."
+  @spec write_artifacts!(Path.t(), Batata.Memory.Plan.t()) :: %{
+          memory_plan: Path.t(),
+          memory_diagnostics: Path.t()
+        }
+  defdelegate write_artifacts!(output_dir, plan), to: Batata.Memory.Artifacts, as: :write!
+
   @doc false
   @spec validate_policy!(term()) :: :disabled | :report | :strict
   def validate_policy!(policy) when policy in @policies, do: policy
