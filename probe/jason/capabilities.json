@@ -27,6 +27,7 @@
     {"id": "pattern.multi_head_cons", "status": "executable", "gate": "codegen_pattern_mapper_test", "scope": "two-or-more head cons patterns with proper or improper tails, exact-list exclusion of improper tails, guard fallthrough, and Jason collapse_static/1"},
     {"id": "control.short_circuit_and", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; returns original operand values; right-hand-side assignments excluded"},
     {"id": "control.if", "status": "executable", "gate": "execute_test", "scope": "body expressions; false and nil are falsy; missing else yields nil; branch assignments excluded"},
+    {"id": "control.no_return_case", "status": "executable", "gate": "no_return_case_test", "scope": "trailing case branches that directly throw or call a conservatively proven local no-return helper chain"},
     {"id": "struct.constructor", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with runtime-representable literal defaults, validated atom-key overrides, and exception marker injection"},
     {"id": "exception.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defexception schemas accepted by canonical frontend normalization"},
     {"id": "struct.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defstruct schemas accepted by canonical frontend normalization"},
