@@ -109,8 +109,15 @@ conservative fixed point for local helpers whose every clause ends in a direct
 calls such a helper is typed from the already-established live branches; this
 crosses the generated Unicode fallback without accepting ordinary mixed
 scalar/term cases or inferring through `try/catch`, conditionals, or external
-calls. The frontier consequently advances to the Formatter clauses whose
-trailing `opts` argument uses the literal map pattern `%{pretty: true} = opts`.
+calls. The frontier consequently advanced to the `Jason.do_encode/2` clauses
+whose trailing `opts` argument uses the literal map patterns
+`%{pretty: true} = opts` and `%{pretty: pretty} = opts`. Multi-clause trailing
+arguments now admit bare or aliased atom-key subset maps and reuse the same
+present-key, value, binding, guard, and fallback semantics as existing map
+patterns. This crosses both pretty-encoding clauses. Dynamic struct names stay
+closed: the whole-corpus frontier is now `Jason.Encode.struct/2` at its
+`%module{}` argument pattern. String-key and other unsupported map keys remain
+rejected.
 This lane still makes no execution claim for module-level generation; the
 reducer, protocol-callback, literal-dispatch, bounded string-fold, positive
 list-duplication, and no-return case evidence comes from compiler-owned

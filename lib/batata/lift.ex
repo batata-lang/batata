@@ -1705,7 +1705,7 @@ defmodule Batata.Lift do
 
   defp multi_arg_tail_pattern!({:=, _, [left, right]} = pattern) do
     cond do
-      struct_tail_pattern?(left) or struct_tail_pattern?(right) ->
+      map_or_struct_tail_pattern?(left) or map_or_struct_tail_pattern?(right) ->
         {:term_pattern, pattern}
 
       normalized = atom_literal_alias_pattern(left, right, pattern) ->
@@ -1727,6 +1727,9 @@ defmodule Batata.Lift do
   defp multi_arg_tail_pattern!(atom) when is_atom(atom), do: {:literal, atom}
   defp multi_arg_tail_pattern!(integer) when is_integer(integer), do: {:literal, integer}
 
+  defp multi_arg_tail_pattern!({:%{}, _, _entries} = pattern),
+    do: {:term_pattern, pattern}
+
   defp multi_arg_tail_pattern!({:-, _, [integer]}) when is_integer(integer),
     do: {:literal, -integer}
 
@@ -1735,15 +1738,16 @@ defmodule Batata.Lift do
   defp unsupported_multi_arg_tail_pattern!(pattern) do
     raise Error,
           "multi-clause trailing arguments must be variables, wildcards, or " <>
-            "compile-known atom or integer literals or validated struct patterns: " <>
+            "compile-known atom or integer literals or validated map/struct patterns: " <>
             inspect(pattern)
   end
 
   defp tail_term_pattern?({kind, _}) when kind in [:literal, :term_pattern], do: true
   defp tail_term_pattern?(_pattern), do: false
 
-  defp struct_tail_pattern?({:%, _, _}), do: true
-  defp struct_tail_pattern?(_pattern), do: false
+  defp map_or_struct_tail_pattern?({:%, _, _}), do: true
+  defp map_or_struct_tail_pattern?({:%{}, _, _}), do: true
+  defp map_or_struct_tail_pattern?(_pattern), do: false
 
   defp atom_literal_alias_pattern(left, right, {:=, metadata, _arguments}) do
     case {compile_known_atom(left), pattern_variable_name(right)} do
