@@ -3613,8 +3613,8 @@ defmodule Batata.Lift do
 
   defp lift_expr({:if, _, [condition_ast, options]}, ctx, block, env)
        when is_list(options) do
-    then_ast = Keyword.fetch!(options, :do)
-    else_ast = Keyword.get(options, :else, nil)
+    then_ast = options |> Keyword.fetch!(:do) |> normalize_unused_branch_aliases()
+    else_ast = options |> Keyword.get(:else, nil) |> normalize_unused_branch_aliases()
 
     if ast_has_assignment?(then_ast) or ast_has_assignment?(else_ast) do
       raise Error, "assignments in if branches are unsupported"
@@ -4349,6 +4349,39 @@ defmodule Batata.Lift do
       end)
 
     found?
+  end
+
+  defp normalize_unused_branch_aliases(ast) do
+    references = branch_variable_references(ast)
+
+    Macro.prewalk(ast, fn
+      {:=, _, [{name, _, context}, rhs]} = assignment
+      when is_variable_ast(name, context) ->
+        if unused_branch_alias?(name, context, references), do: rhs, else: assignment
+
+      other ->
+        other
+    end)
+  end
+
+  defp branch_variable_references(ast) do
+    {_ast, references} =
+      Macro.prewalk(ast, %{}, fn
+        {name, _, context} = variable, references when is_variable_ast(name, context) ->
+          {variable, Map.update(references, {name, context}, 1, &(&1 + 1))}
+
+        other, references ->
+          {other, references}
+      end)
+
+    references
+  end
+
+  defp unused_branch_alias?(:_, _context, _references), do: true
+
+  defp unused_branch_alias?(name, context, references) do
+    name |> Atom.to_string() |> String.starts_with?("_") and
+      Map.get(references, {name, context}) == 1
   end
 
   defp lift_interpolation_segments(segments, ctx, block, env) do
