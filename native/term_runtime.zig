@@ -4045,6 +4045,16 @@ pub fn ex_term_is_float(word: i64) callconv(.c) i64 {
     return if (word_tag(word) == tag_float and runtime_local_kind(word) == null) 1 else 0;
 }
 
+/// Returns the IEEE-754 binary64 payload for an arena-owned float term.
+/// Zero is returned for non-floats and foreign/stale arena pointers; callers
+/// distinguish a valid `0.0` by checking `ex_term_is_float` first.
+pub fn ex_term_float_bits(word: i64) callconv(.c) i64 {
+    if (ex_term_is_float(word) == 0) return 0;
+    const instance = runtime();
+    if (!runtime_owns_word(instance, word)) return 0;
+    return @bitCast(float_bits(word));
+}
+
 /// Parses a BEAM-compatible float binary into a boxed binary64 term.
 /// Invalid syntax and non-finite results return nil; callers own error shape.
 pub fn ex_term_string_to_float(binary: i64) callconv(.c) i64 {
@@ -4726,7 +4736,9 @@ test "boxed floats share tag 7 without colliding with runtime-local words" {
 
     const value = ex_term_float_lit(@bitCast(@as(u64, @bitCast(@as(f64, -0.0)))));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_float(value));
+    try std.testing.expectEqual(@as(u64, @bitCast(@as(f64, -0.0))), @as(u64, @bitCast(ex_term_float_bits(value))));
     try std.testing.expectEqual(@as(i64, 0), ex_term_is_float(runtime_local_word(runtime_local_ref, 42)));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_float_bits(1));
 }
 
 test "string to float preserves finite binary64 values and rejects invalid syntax" {

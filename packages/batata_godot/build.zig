@@ -11,6 +11,12 @@ pub fn build(b: *std.Build) void {
         @panic("missing required -Dclass-name");
     const base_class_name = b.option([]const u8, "base-class-name", "Godot extension base class name") orelse
         @panic("missing required -Dbase-class-name");
+    const method_specs = b.option([]const u8, "method-specs", "Closed Godot method descriptor list") orelse
+        @panic("missing required -Dmethod-specs");
+    const true_word = b.option(i64, "true-word", "Batata true atom word") orelse
+        @panic("missing required -Dtrue-word");
+    const false_word = b.option(i64, "false-word", "Batata false atom word") orelse
+        @panic("missing required -Dfalse-word");
     const term_runtime_source = b.option([]const u8, "term-runtime-source", "Path to term_runtime.zig") orelse
         @panic("missing required -Dterm-runtime-source");
     const batata_object = b.option([]const u8, "batata-object", "Path to the compiled Batata object") orelse
@@ -25,6 +31,9 @@ pub fn build(b: *std.Build) void {
     options.addOption(u8, "initialization_level", initialization_level);
     options.addOption([]const u8, "class_name", class_name);
     options.addOption([]const u8, "base_class_name", base_class_name);
+    options.addOption([]const u8, "method_specs", method_specs);
+    options.addOption(i64, "true_word", true_word);
+    options.addOption(i64, "false_word", false_word);
 
     const term_runtime = b.createModule(.{
         .root_source_file = .{ .cwd_relative = term_runtime_source },

@@ -32,6 +32,7 @@ defmodule Batata.Godot.BindingPlan do
 
   @schema 1
   @supported_types [nil, :bool, :int, :float]
+  @max_method_arity 8
   @initialization_levels [:core, :servers, :scene, :editor]
   @extension_keys [
     :compatibility_minimum,
@@ -225,6 +226,14 @@ defmodule Batata.Godot.BindingPlan do
     arguments = options |> Keyword.fetch!(:args) |> validate_types!(:arguments)
     returns = options |> Keyword.fetch!(:returns) |> validate_type!(:return)
     signature = {name, length(arguments)}
+
+    if length(arguments) > @max_method_arity do
+      diagnostic!(
+        "E_GODOT_METHOD_SIGNATURE_UNSUPPORTED",
+        "Godot methods support at most #{@max_method_arity} arguments",
+        %{method: name, arity: length(arguments), maximum: @max_method_arity}
+      )
+    end
 
     unless signature in definitions do
       diagnostic!(
