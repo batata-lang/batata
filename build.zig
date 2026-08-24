@@ -45,6 +45,7 @@ fn addRuntimeArtifact(
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .pic = if (linkage == .static) true else null,
             .stack_check = if (linkage == .static) false else null,
         }),
     });

@@ -30,6 +30,9 @@ defmodule Batata.Godot.Diagnostic do
     %__MODULE__{code: code, message: message, context: context, actions: actions}
   end
 
+  @impl Exception
+  def message(%__MODULE__{} = diagnostic), do: diagnostic |> to_map() |> JSON.encode!()
+
   @doc "Converts the exception to a JSON-ready map with stable string keys."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = diagnostic) do

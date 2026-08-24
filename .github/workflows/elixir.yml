@@ -65,17 +65,30 @@ jobs:
         working-directory: scripts/native_deps
         run: mix batata.native test --warnings-as-errors --max-cases 1 --timeout 120000
 
+      - name: Install pinned Godot 4.6.2
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot"
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/godot.zip" \
+            https://github.com/godotengine/godot-builds/releases/download/4.6.2-stable/Godot_v4.6.2-stable_linux.x86_64.zip
+          echo "30e6b6d141f0cd5bebd629ad1d0ef1324e60091bb20662d026b402ba58c59937  $RUNNER_TEMP/godot.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          mv "$RUNNER_TEMP/godot/Godot_v4.6.2-stable_linux.x86_64" "$RUNNER_TEMP/godot/godot"
+          chmod +x "$RUNNER_TEMP/godot/godot"
+          echo "$RUNNER_TEMP/godot" >> "$GITHUB_PATH"
+
       - name: Test Batata Godot package
         working-directory: scripts/native_deps
         run: |
           mix batata.native exec -- bash -c '
             cd packages/batata_godot
             export BATATA_PATH=../..
+            export MIX_ENV=test
             mix deps.get
             mix format --check-formatted
             mix compile --warnings-as-errors
             mix credo --strict
-            mix test --warnings-as-errors
+            mix test --warnings-as-errors --max-cases 1
           '
 
       - name: Upload concurrent runtime traces
@@ -175,6 +188,217 @@ jobs:
             echo "$output" | grep -q "\"reuse_last_index\": [0-9]"
             echo "$output" | grep -q "\"no_reuse_last_index\": 1000000"
           '
+
+  godot-platform:
+    name: Godot ${{ matrix.target }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Configure MSVC toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Mix package managers
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Install pinned Godot 4.6.2 on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/godot"
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/godot.zip" \
+            https://github.com/godotengine/godot-builds/releases/download/4.6.2-stable/Godot_v4.6.2-stable_macos.universal.zip
+          echo "666b2a64e4b5c59db0e4974605b888eb72eb7d4e60e870d2be6cc19727b50807  $RUNNER_TEMP/godot.zip" | shasum -a 256 --check
+          unzip -q "$RUNNER_TEMP/godot.zip" -d "$RUNNER_TEMP/godot"
+          mkdir -p "$RUNNER_TEMP/godot-bin"
+          ln -s "$RUNNER_TEMP/godot/Godot.app/Contents/MacOS/Godot" "$RUNNER_TEMP/godot-bin/godot"
+          echo "$RUNNER_TEMP/godot-bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Godot 4.6.2 on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'godot.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'godot'
+          Invoke-WebRequest -Uri 'https://github.com/godotengine/godot-builds/releases/download/4.6.2-stable/Godot_v4.6.2-stable_win64.exe.zip' -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne '14293422efb54b24a51f79d4cb55ab4001ef3d936e064a6c8af32e1f984024be') { throw "Godot SHA-256 mismatch: $actual" }
+          Expand-Archive -Path $archive -DestinationPath $directory
+          Rename-Item (Join-Path $directory 'Godot_v4.6.2-stable_win64.exe') 'godot.exe'
+          $directory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install pinned LLVM on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm.tar.gz'
+          $directory = Join-Path $env:RUNNER_TEMP 'llvm'
+          Invoke-WebRequest -Uri 'https://github.com/llvm/eudsl/releases/download/llvm/mlir_windows_amd64_20260815%2B8024076c7.tar.gz' -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne '0ca8cebdbb75d6c2871a79e121ede28e4bb44b22ec7b91ad57d52d5a91f72927') { throw "LLVM SHA-256 mismatch: $actual" }
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          tar -xzf $archive -C $directory
+          if ($LASTEXITCODE -ne 0) { throw "LLVM tar extraction failed: $LASTEXITCODE" }
+          $llvmConfig = Get-ChildItem -Path $directory -Filter llvm-config.exe -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $llvmConfig) { throw 'llvm-config.exe is missing from the pinned LLVM asset' }
+          "BATATA_WINDOWS_LLVM_CONFIG=$llvmConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install pinned Triton LLVM on macOS Intel
+        if: matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          archive="$RUNNER_TEMP/llvm.tar.gz"
+          directory="$RUNNER_TEMP/llvm"
+          curl --fail --location --retry 3 \
+            'https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-941a04e6-macos-x64-1.tar.gz' \
+            --output "$archive"
+          printf '%s  %s\n' '35162b654e2780dd99f31eb7dc9ce6fe2833407b1a40a7afa021e4cf5fe3f767' "$archive" | shasum -a 256 -c -
+          mkdir -p "$directory"
+          tar -xzf "$archive" -C "$directory"
+          llvm_config="$(find "$directory" -type f -path '*/bin/llvm-config' -print -quit)"
+          test -n "$llvm_config"
+          test -d "$("$llvm_config" --includedir)/mlir-c"
+          echo "BATATA_MACOS_INTEL_LLVM_CONFIG=$llvm_config" >> "$GITHUB_ENV"
+
+      - name: Configure pinned native dependencies on Unix
+        if: runner.os != 'Windows' && matrix.target != 'x86_64-apple-darwin'
+        working-directory: scripts/native_deps
+        run: mix batata.native setup
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Configure native dependencies on macOS Intel
+        if: matrix.target == 'x86_64-apple-darwin'
+        working-directory: scripts/native_deps
+        run: mix batata.native setup --llvm-config "$BATATA_MACOS_INTEL_LLVM_CONFIG"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Configure pinned native dependencies on Windows
+        if: runner.os == 'Windows'
+        working-directory: scripts/native_deps
+        shell: pwsh
+        run: |
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          "CC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $toolchain = Join-Path $env:GITHUB_WORKSPACE '.github\cmake\msvc-static-runtime.cmake'
+          "CMAKE_TOOLCHAIN_FILE=$toolchain" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # LLVM's CMake helpers can still add /MD on individual object
+          # targets. _CL_ is appended by cl.exe, so -MT remains the effective
+          # runtime selection for every transitive Beaver object. The dash form
+          # also avoids Git Bash treating /MT as an MSYS path.
+          "_CL_=-MT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          mix batata.native setup --llvm-config "$env:BATATA_WINDOWS_LLVM_CONFIG"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Resolve Batata Godot package
+        working-directory: scripts/native_deps
+        shell: bash
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_godot
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix deps.get
+            if [ "$RUNNER_OS" != Windows ]; then
+              mix format --check-formatted
+            fi
+          '
+
+      - name: Compile Batata Godot package
+        working-directory: scripts/native_deps
+        shell: bash
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_godot
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix compile --warnings-as-errors
+          '
+
+      - name: Check Batata Godot package
+        working-directory: scripts/native_deps
+        shell: bash
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_godot
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix credo --strict
+          '
+
+      - name: Smoke Batata Godot package
+        working-directory: scripts/native_deps
+        shell: bash
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_godot
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix test --warnings-as-errors --max-cases 1
+          '
+
+      - name: Report macOS Intel Godot crashes
+        if: failure() && matrix.target == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          echo 'Mach-O relocation diagnostics:'
+          while IFS= read -r artifact; do
+            echo "Artifact: $artifact"
+            file "$artifact"
+            case "$artifact" in
+              *.dylib)
+                dyld_info -rebase -bind "$artifact" || true
+                ;;
+              *.o)
+                otool -rv "$artifact" || true
+                ;;
+            esac
+          done < <(find packages/batata_godot/tmp -type f \( -name '*.dylib' -o -name '*.o' \) -print | sort)
+
+          sleep 3
+          shopt -s nullglob
+          reports=(
+            "$HOME"/Library/Logs/DiagnosticReports/Godot*.crash
+            "$HOME"/Library/Logs/DiagnosticReports/Godot*.ips
+            "$HOME"/Library/Logs/DiagnosticReports/godot*.crash
+            "$HOME"/Library/Logs/DiagnosticReports/godot*.ips
+          )
+          if [ "${#reports[@]}" -eq 0 ]; then
+            echo 'No Godot crash report was generated.'
+            /usr/bin/log show --last 5m --style compact --predicate 'process == "Godot" OR process == "godot"' | tail -n 260
+            exit 0
+          fi
+          for report in "${reports[@]}"; do
+            echo "Crash report: $report"
+            sed -n '1,260p' "$report"
+          done
 
   package:
     runs-on: ubuntu-22.04

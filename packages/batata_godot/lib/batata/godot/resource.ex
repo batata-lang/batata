@@ -4,8 +4,15 @@ defmodule Batata.Godot.Resource do
   alias Batata.Godot.BindingPlan
 
   @doc false
-  @spec gdextension_source(BindingPlan.t(), String.t()) :: String.t()
-  def gdextension_source(%BindingPlan{} = plan, library_name) when is_binary(library_name) do
+  @spec gdextension_source(BindingPlan.t(), %{String.t() => String.t()}) :: String.t()
+  def gdextension_source(%BindingPlan{} = plan, libraries) when is_map(libraries) do
+    library_lines =
+      libraries
+      |> Enum.sort_by(&elem(&1, 0))
+      |> Enum.map_join("\n", fn {feature, library_name} ->
+        ~s|#{feature} = "res://bin/#{library_name}"|
+      end)
+
     """
     [configuration]
 
@@ -15,7 +22,7 @@ defmodule Batata.Godot.Resource do
 
     [libraries]
 
-    macos.debug.arm64 = "res://bin/#{library_name}"
+    #{library_lines}
     """
   end
 end

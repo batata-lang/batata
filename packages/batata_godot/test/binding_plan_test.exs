@@ -66,6 +66,7 @@ defmodule Batata.Godot.BindingPlanTest do
     assert error.code == "E_GODOT_VARIANT_UNSUPPORTED"
     assert error.context.type == ":dictionary"
     assert Diagnostic.to_map(error)["recoverable"]
+    assert Exception.message(error) |> JSON.decode!() |> Map.fetch!("code") == error.code
   end
 
   test "text and vector declarations are closed value types" do

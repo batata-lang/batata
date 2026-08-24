@@ -57,13 +57,16 @@ defmodule Batata.Godot.BuildTest do
   use ExUnit.Case, async: true
 
   alias Batata.Godot.BuildTest.Extension
+  alias Batata.Godot.{Diagnostic, Platform}
 
-  @darwin_arm64 match?({:unix, :darwin}, :os.type()) and
-                  :erlang.system_info(:system_architecture)
-                  |> List.to_string()
-                  |> String.starts_with?("aarch64-")
+  @supported_host (try do
+                     Platform.host!()
+                     true
+                   rescue
+                     Diagnostic -> false
+                   end)
 
-  if @darwin_arm64 do
+  if @supported_host do
     alias Batata.Godot.BuildTest.VirtualExtension
     alias Beaver.MLIR.Context
 
@@ -134,7 +137,8 @@ defmodule Batata.Godot.BuildTest do
             output.binding_plan,
             output.bundle,
             output.artifact_index,
-            output.manifest
+            output.manifest,
+            output.platform_receipt
           ] do
         assert File.regular?(path)
       end
@@ -146,11 +150,15 @@ defmodule Batata.Godot.BuildTest do
       assert bundle["kind"] == "godot_gdextension"
       assert bundle["entry_symbol"] == "batata_load_smoke_library_init"
       assert bundle["godot_api_version"] == "4.6.2"
-      assert bundle["target"] == "aarch64-apple-darwin"
+      platform_receipt = output.platform_receipt |> File.read!() |> JSON.decode!()
+      assert bundle["target"] == platform_receipt["target"]
+      assert bundle["platform_receipt_sha256"] |> byte_size() == 64
+      assert platform_receipt["library"] == Path.relative_to(output.library, tmp_dir)
+      assert platform_receipt["library_sha256"] |> byte_size() == 64
       assert byte_size(bundle["binding_plan_sha256"]) == 64
       assert byte_size(bundle["adapter_implementation_sha256"]) == 64
       assert manifest["zig"] =~ ~r/^0\.16\./
-      assert length(index["files"]) == 3
+      assert length(index["files"]) == 4
       assert Path.wildcard(Path.join(tmp_dir, "**/*.zig"), match_dot: true) == []
 
       smoke_script = Path.join(tmp_dir, ".batata/godot-classdb-smoke.gd")
@@ -193,7 +201,7 @@ defmodule Batata.Godot.BuildTest do
         end
 
       assert error.code == "E_GODOT_PLATFORM_UNSUPPORTED"
-      assert error.context.supported == ["aarch64-apple-darwin"]
+      assert error.context.supported == Platform.supported_targets()
     end
   end
 end
