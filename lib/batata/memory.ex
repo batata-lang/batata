@@ -8,6 +8,8 @@ defmodule Batata.Memory do
 
   alias Batata.Memory.CanonicalJSON
 
+  @policies [:disabled, :report, :strict]
+
   @doc "Encodes a JSON-ready value with sorted object keys and no insignificant whitespace."
   @spec canonical_json(term()) :: String.t()
   defdelegate canonical_json(value), to: CanonicalJSON, as: :encode!
@@ -19,5 +21,22 @@ defmodule Batata.Memory do
     |> canonical_json()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
+  end
+
+  @doc "Analyzes verified `ex` IR and returns its deterministic M0 memory plan."
+  @spec analyze(Beaver.MLIR.Module.t(), keyword()) :: Batata.Memory.Plan.t()
+  defdelegate analyze(module, opts), to: Batata.Memory.Analyzer
+
+  @doc "Runs the selected memory policy before lowering and returns its plan when enabled."
+  @spec verify!(Beaver.MLIR.Module.t(), keyword()) :: :disabled | Batata.Memory.Plan.t()
+  defdelegate verify!(module, opts), to: Batata.Memory.Verifier
+
+  @doc false
+  @spec validate_policy!(term()) :: :disabled | :report | :strict
+  def validate_policy!(policy) when policy in @policies, do: policy
+
+  def validate_policy!(policy) do
+    raise ArgumentError,
+          "memory_policy must be :disabled, :report, or :strict, got: #{inspect(policy)}"
   end
 end

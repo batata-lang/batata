@@ -65,7 +65,7 @@ defmodule Batata.MixProject do
       },
       files: ~w{
         lib native build.zig build.zig.zon priv/README.md
-        .formatter.exs mix.exs README.md LICENSE
+        .formatter.exs mix.exs native-deps.lock README.md LICENSE
       }
     ]
   end

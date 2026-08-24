@@ -59,12 +59,22 @@ defmodule Batata do
       )
       |> Beaver.Deferred.resolve(ctx)
 
+    module =
+      module
+      |> Batata.Transform.run!([
+        Batata.Transform.InlineScalarCalls,
+        Batata.Transform.ExpandCase
+      ])
+      |> MLIR.verify!()
+
+    Batata.Memory.verify!(module,
+      module: snapshot.name,
+      source: source,
+      policy: Keyword.get(opts, :memory_policy, :disabled),
+      dependency_lock: opts[:memory_dependency_lock]
+    )
+
     module
-    |> Batata.Transform.run!([
-      Batata.Transform.InlineScalarCalls,
-      Batata.Transform.ExpandCase
-    ])
-    |> MLIR.verify!()
   end
 
   # The reduction budget drives the batched tick (`ex.reduction_tick(budget)`
@@ -493,7 +503,7 @@ defmodule Batata do
       |> Batata.Frontend.from_source()
       |> rename_entry(:batata_main)
 
-    module =
+    ex_module =
       snapshot
       |> Batata.Lift.module_to_ir(
         opts
@@ -506,6 +516,16 @@ defmodule Batata do
         Batata.Transform.ExpandCase
       ])
       |> MLIR.verify!()
+
+    Batata.Memory.verify!(ex_module,
+      module: snapshot.name,
+      source: source,
+      policy: Keyword.get(opts, :memory_policy, :disabled),
+      dependency_lock: opts[:memory_dependency_lock]
+    )
+
+    module =
+      ex_module
       |> Batata.Lower.to_llvm(ctx)
       |> MLIR.verify!()
 
