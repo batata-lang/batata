@@ -55,7 +55,12 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["control.if"]["status"] == "executable"
     assert capabilities["control.if"]["gate"] == "execute_test"
     assert capabilities["control.if"]["scope"] =~ "missing else yields nil"
-    assert capabilities["control.if"]["scope"] =~ "branch assignments excluded"
+
+    assert capabilities["control.if"]["scope"] =~
+             "environment-bearing branch assignments excluded"
+
+    assert capabilities["control.if_unused_alias"]["gate"] == "unused_branch_alias_test"
+    assert capabilities["control.if_unused_alias"]["scope"] =~ "proven unread"
 
     assert capabilities["struct.constructor"]["status"] == "executable"
     assert capabilities["struct.constructor"]["gate"] == "execute_test"

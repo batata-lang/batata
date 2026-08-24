@@ -118,10 +118,15 @@ patterns. This crosses both pretty-encoding clauses. Generic struct patterns
 now bind the atom-valued `__struct__` entry through a plain module variable,
 including requested nested atom-key fields and outer aliases. Repeated module
 bindings stay closed until same-variable equality is modeled. This crosses
-`Jason.Encode.struct/2` at `%module{} = value`. The whole-corpus frontier is
-now `Jason.Formatter.pp_byte/6`, where an `if` branch contains the argument
-alias `_in_bs = false`. String-key and other unsupported map keys remain
-rejected.
+`Jason.Encode.struct/2` at `%module{} = value`. Body-level `if` now erases
+branch-local `_` aliases and underscore-prefixed variable aliases only when a
+whole-branch reference count proves the binding is never read. The selected
+RHS still evaluates and supplies the expression value; ordinary assignments
+and subsequently read underscore bindings remain closed because branch SSA
+environments are not merged. This crosses `_in_bs = false` in
+`Jason.Formatter.pp_byte/6`. The whole-corpus frontier is now the generated
+byte-dispatch range guard `byte in 0..31`. String-key and other unsupported map
+keys remain rejected.
 This lane still makes no execution claim for module-level generation; the
 reducer, protocol-callback, literal-dispatch, bounded string-fold, positive
 list-duplication, and no-return case evidence comes from compiler-owned
