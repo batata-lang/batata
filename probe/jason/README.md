@@ -91,10 +91,15 @@ reached the generated `Jason.Formatter.tab/2` clauses. Multi-clause dispatch
 now admits compile-known integer literals in trailing positions, uses the term
 ABI for those arguments without changing binary-scanner signatures, and
 matches compile-known binary literals by length and bytes. This crosses all 16
-generated indentation clauses and advances the whole-corpus frontier to
-`String.duplicate/2`. This lane still makes no execution claim for module-level
-generation; the reducer, protocol-callback, and literal-dispatch evidence comes
-from compiler-owned lowering and execution gates.
+generated indentation clauses. Bounded metaprogramming evaluation now folds
+the compile-known `String.duplicate/2` calls in those clauses, with a 512-byte
+generation limit; ordinary compile-known calls use the same non-negative
+argument contract and reject results larger than 1 MiB before allocation.
+Dynamic repetition remains unsupported. The whole-corpus frontier consequently
+advances to `List.duplicate/2`. This lane still makes no execution claim for
+module-level generation; the reducer, protocol-callback, literal-dispatch, and
+bounded string-fold evidence comes from compiler-owned lowering and execution
+gates.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and

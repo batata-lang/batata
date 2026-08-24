@@ -37,6 +37,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({String, :printable?, 1}) == :native_term
+      assert Stdlib.class({String, :duplicate, 2}) == :native_term
       assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
       assert Stdlib.class({Integer, :to_string, 2}) == :native_term
       assert Stdlib.class({Enum, :into, 2}) == :native_term

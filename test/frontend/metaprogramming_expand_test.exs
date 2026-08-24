@@ -106,6 +106,23 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert Enum.map(snapshot.definitions, & &1.name) == [:depth, :depth, :depth]
   end
 
+  test "expands bounded String.duplicate calls in generated unquotes" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule DuplicateDemo do
+        for depth <- 1..3 do
+          def indentation(unquote(depth)), do: unquote(String.duplicate("ab", depth))
+        end
+      end
+      """)
+
+    assert snapshot.unsupported == []
+
+    assert Enum.flat_map(snapshot.definitions, fn definition ->
+             Enum.map(definition.clauses, & &1.body_ast)
+           end) == ["ab", "abab", "ababab"]
+  end
+
   test "structurally decodes tuple and map collection literals" do
     source = """
     defmodule LiteralDataDemo do

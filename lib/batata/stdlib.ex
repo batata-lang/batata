@@ -300,6 +300,7 @@ defmodule Batata.Stdlib.String do
   """
 
   @class_map %{
+    {String, :duplicate, 2} => :native_term,
     {String, :length, 1} => :native_term,
     {String, :printable?, 1} => :native_term,
     {String, :to_integer, 1} => :native_term,
