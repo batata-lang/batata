@@ -32,6 +32,7 @@ defmodule Batata.Lift do
   @known_atoms_key {__MODULE__, :known_atoms}
   @struct_schema_key {__MODULE__, :struct_schema}
   @arg_modes_key {__MODULE__, :arg_modes}
+  @no_return_functions_key {__MODULE__, :no_return_functions}
   @current_function_key {__MODULE__, :current_function}
   @min_scalar_integer -9_223_372_036_854_775_808
   @max_scalar_integer 9_223_372_036_854_775_807
@@ -82,7 +83,8 @@ defmodule Batata.Lift do
       module_env = %{
         @known_atoms_key => known_atoms,
         @struct_schema_key => schemas,
-        @arg_modes_key => Batata.Signature.infer(definitions)
+        @arg_modes_key => Batata.Signature.infer(definitions),
+        @no_return_functions_key => infer_no_return_functions(definitions)
       }
 
       groups =
@@ -145,6 +147,42 @@ defmodule Batata.Lift do
 
     {workers, process_cap}
   end
+
+  # Local calls are initially represented as `!ex.term` and scalar-returning
+  # calls are retyped by a later transform. A call which can never return still
+  # has to satisfy the surrounding region's result type before that transform
+  # can run. Keep this proof deliberately small: every clause must end in a
+  # direct throw or a call to another function already proven no-return.
+  defp infer_no_return_functions(definitions) do
+    groups = Enum.group_by(definitions, &{&1.name, &1.arity})
+    infer_no_return_functions(groups, MapSet.new())
+  end
+
+  defp infer_no_return_functions(groups, proven) do
+    next =
+      Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
+        clauses = Enum.flat_map(definitions, & &1.clauses)
+
+        if clauses != [] and Enum.all?(clauses, &no_return_ast?(&1.body_ast, proven)) do
+          MapSet.put(acc, signature)
+        else
+          acc
+        end
+      end)
+
+    if next == proven, do: proven, else: infer_no_return_functions(groups, next)
+  end
+
+  defp no_return_ast?({:throw, _, [_value]}, _proven), do: true
+
+  defp no_return_ast?({:__block__, _, expressions}, proven) when expressions != [],
+    do: expressions |> List.last() |> no_return_ast?(proven)
+
+  defp no_return_ast?({name, _, arguments}, proven)
+       when is_atom(name) and is_list(arguments),
+       do: MapSet.member?(proven, {name, length(arguments)})
+
+  defp no_return_ast?(_ast, _proven), do: false
 
   # The entry function (`main` for the JIT path, `batata_main` for the AOT
   # path) is renamed to `__batata_entry` so every host entry can establish an
@@ -8490,7 +8528,13 @@ defmodule Batata.Lift do
           # A clause body is one AST expression even when that expression is [] or
           # a non-empty list literal. List.wrap/1 erases [] and expands list literals
           # into multiple block expressions, so keep the AST in a singleton block.
-          lift_block([body], ctx, block, clause_env)
+          {value, clause_env} = lift_block([body], ctx, block, clause_env)
+
+          if no_return_ast?(body, Map.fetch!(env, @no_return_functions_key)) do
+            {coerce_exception_result(value, expected_type, ctx, block), clause_env}
+          else
+            {value, clause_env}
+          end
       end
 
     value = lift_value(value, ctx, block, clause_env)
@@ -8879,7 +8923,13 @@ defmodule Batata.Lift do
           {coerce_exception_result(value, expected_type, ctx, block), clause_env}
 
         body ->
-          lift_block(block_ast(body), ctx, block, clause_env)
+          {value, clause_env} = lift_block(block_ast(body), ctx, block, clause_env)
+
+          if no_return_ast?(body, Map.fetch!(env, @no_return_functions_key)) do
+            {coerce_exception_result(value, expected_type, ctx, block), clause_env}
+          else
+            {value, clause_env}
+          end
       end
 
     value = lift_value(value, ctx, block, clause_env)

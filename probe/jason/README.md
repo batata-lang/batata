@@ -103,10 +103,18 @@ the current single continuation slot is not safe across nested or repeated
 call sites. Count zero also fails closed until the Ex ABI distinguishes `[]`
 from the nil atom. These architecture gaps are tracked separately in Beaver
 issues #98 and #97. This crosses the Formatter fallback and advances the
-whole-corpus frontier to a case-result type mismatch. This lane still makes no
-execution claim for module-level generation; the reducer, protocol-callback,
-literal-dispatch, bounded string-fold, and positive list-duplication evidence
-comes from compiler-owned lowering and execution gates.
+whole-corpus frontier to `Jason.Decoder.escapeu_last/3`. Batata now computes a
+conservative fixed point for local helpers whose every clause ends in a direct
+`throw/1` or another proven no-return helper. A trailing case branch which
+calls such a helper is typed from the already-established live branches; this
+crosses the generated Unicode fallback without accepting ordinary mixed
+scalar/term cases or inferring through `try/catch`, conditionals, or external
+calls. The frontier consequently advances to the Formatter clauses whose
+trailing `opts` argument uses the literal map pattern `%{pretty: true} = opts`.
+This lane still makes no execution claim for module-level generation; the
+reducer, protocol-callback, literal-dispatch, bounded string-fold, positive
+list-duplication, and no-return case evidence comes from compiler-owned
+lowering and execution gates.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
