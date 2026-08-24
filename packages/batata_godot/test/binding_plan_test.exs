@@ -99,6 +99,22 @@ defmodule Batata.Godot.BindingPlanTest do
     assert error.context.signatures == ["add/2"]
   end
 
+  test "method arity beyond the fixed trampoline surface fails closed" do
+    error =
+      assert_raise Diagnostic, fn ->
+        BindingPlan.new!(
+          Example,
+          [],
+          [{"BatataExample", []}],
+          [{:wide, [args: List.duplicate(:int, 9), returns: :int]}],
+          wide: 9
+        )
+      end
+
+    assert error.code == "E_GODOT_METHOD_SIGNATURE_UNSUPPORTED"
+    assert error.context == %{method: :wide, arity: 9, maximum: 8}
+  end
+
   test "an extension requires exactly one class" do
     error = assert_raise Diagnostic, fn -> BindingPlan.new!(Example, [], [], [], []) end
 

@@ -6,8 +6,14 @@ defmodule Batata.Godot.BuildTest.Extension do
 
   godot_class("BatataLoadSmoke", base: "RefCounted")
   godot_method(:add, args: [:int, :int], returns: :int)
+  godot_method(:bool_identity, args: [:bool], returns: :bool)
+  godot_method(:float_identity, args: [:float], returns: :float)
+  godot_method(:nil_identity, args: [nil], returns: nil)
 
   def add(left, right), do: left + right
+  def bool_identity(value), do: value
+  def float_identity(value), do: value
+  def nil_identity(value), do: value
 end
 
 defmodule Batata.Godot.BuildTest do
@@ -36,12 +42,20 @@ defmodule Batata.Godot.BuildTest do
           defmodule GodotLoadSmoke do
             def main(), do: 0
             def add(left, right), do: left + right
+            def bool_identity(value), do: value
+            def float_identity(value), do: value
+            def nil_identity(value), do: value
           end
           """,
           Extension,
           tmp_dir,
           ctx,
-          smoke: true
+          smoke: [
+            %{method: "add", arguments: [20, 22], expected: 42},
+            %{method: "bool_identity", arguments: [true], expected: true},
+            %{method: "float_identity", arguments: [2.25], expected: 2.25},
+            %{method: "nil_identity", arguments: [nil], expected: nil}
+          ]
         )
 
       for path <- [
@@ -71,6 +85,7 @@ defmodule Batata.Godot.BuildTest do
 
       smoke_script = Path.join(tmp_dir, ".batata/godot-classdb-smoke.gd")
       assert File.read!(smoke_script) =~ ~s|ClassDB.class_exists("BatataLoadSmoke")|
+      assert File.read!(smoke_script) =~ ~s|object.callv("add", [20,22])|
 
       assert :ok = Batata.Godot.smoke_load!(tmp_dir)
     end

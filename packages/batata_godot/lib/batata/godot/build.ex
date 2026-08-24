@@ -69,8 +69,23 @@ defmodule Batata.Godot.Build do
         native: native
       )
 
-    if Keyword.get(opts, :smoke, false) do
-      smoke_load!(output_dir, Keyword.get(opts, :godot))
+    case Keyword.get(opts, :smoke, false) do
+      false ->
+        :ok
+
+      true ->
+        smoke_load!(output_dir, Keyword.get(opts, :godot))
+
+      invocation when is_map(invocation) ->
+        smoke_load!(output_dir, Keyword.get(opts, :godot), invocation)
+
+      invocations when is_list(invocations) ->
+        smoke_load!(output_dir, Keyword.get(opts, :godot), invocations)
+
+      smoke ->
+        diagnostic!("E_GODOT_OPTION_INVALID", ":smoke must be a boolean or invocation list", %{
+          value: inspect(smoke)
+        })
     end
 
     Map.merge(metadata, %{
@@ -82,8 +97,8 @@ defmodule Batata.Godot.Build do
   end
 
   @doc "Loads and unloads a generated extension with the pinned Godot headless executable."
-  @spec smoke_load!(Path.t(), Path.t() | nil) :: :ok
-  def smoke_load!(output_dir, godot \\ nil) when is_binary(output_dir) do
+  @spec smoke_load!(Path.t(), Path.t() | nil, map() | [map()] | nil) :: :ok
+  def smoke_load!(output_dir, godot \\ nil, invocation \\ nil) when is_binary(output_dir) do
     godot = resolve_godot!(godot)
     project_path = Path.join(output_dir, "project.godot")
     extension_list_dir = Path.join(output_dir, ".godot")
@@ -128,6 +143,8 @@ defmodule Batata.Godot.Build do
       |> JSON.decode!()
       |> get_in(["class", "name"])
 
+    invocation_source = smoke_invocation_source(invocation)
+
     File.write!(smoke_script_path, """
     extends SceneTree
 
@@ -136,6 +153,13 @@ defmodule Batata.Godot.Build do
         push_error("E_GODOT_CLASS_MISSING: registered Batata class is absent")
         quit(17)
         return
+      var object = ClassDB.instantiate(#{JSON.encode!(class_name)})
+      if object == null:
+        push_error("E_GODOT_INSTANCE_CREATE_FAILED: Batata class could not be instantiated")
+        quit(18)
+        return
+    #{invocation_source}
+      object = null
       quit()
     """)
 
@@ -169,6 +193,41 @@ defmodule Batata.Godot.Build do
           %{exit_status: status, output: output}
         )
     end
+  end
+
+  defp smoke_invocation_source(nil), do: ""
+
+  defp smoke_invocation_source(%{} = invocation), do: smoke_invocation_source([invocation])
+
+  defp smoke_invocation_source(invocations) when is_list(invocations) do
+    invocations
+    |> Enum.with_index()
+    |> Enum.map_join(fn
+      {%{method: method, arguments: arguments, expected: expected}, index}
+      when is_binary(method) and is_list(arguments) ->
+        [
+          "  var result_#{index} = object.callv(#{JSON.encode!(method)}, #{JSON.encode!(arguments)})",
+          "  if result_#{index} != #{JSON.encode!(expected)}:",
+          "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: compiled Batata method returned an unexpected value\")",
+          "    quit(19)",
+          "    return",
+          ""
+        ]
+        |> Enum.join("\n")
+
+      {invocation, _index} ->
+        invalid_smoke_invocation!(invocation)
+    end)
+  end
+
+  defp smoke_invocation_source(invocation), do: invalid_smoke_invocation!(invocation)
+
+  defp invalid_smoke_invocation!(invocation) do
+    diagnostic!(
+      "E_GODOT_OPTION_INVALID",
+      "smoke invocation requires method, arguments and expected fields",
+      %{value: inspect(invocation)}
+    )
   end
 
   defp normalize_plan(%BindingPlan{} = plan), do: plan
@@ -351,6 +410,9 @@ defmodule Batata.Godot.Build do
       "-Dinitialization-level=#{level}",
       "-Dclass-name=#{plan.class.name}",
       "-Dbase-class-name=#{plan.class.base}",
+      "-Dmethod-specs=#{method_specs(plan)}",
+      "-Dtrue-word=#{atom_word(true)}",
+      "-Dfalse-word=#{atom_word(false)}",
       "-Dterm-runtime-source=#{Path.join(Batata.TermRuntime.native_dir(), "term_runtime.zig")}",
       "-Dbatata-object=#{native.object}",
       "-Druntime-library=#{native.runtime_lib}",
@@ -376,6 +438,18 @@ defmodule Batata.Godot.Build do
       File.rm_rf(cache_dir)
     end
   end
+
+  defp method_specs(%BindingPlan{} = plan) do
+    Enum.map_join(plan.methods, ";", fn method ->
+      arguments = Enum.map_join(method.arguments, ",", &value_type_name/1)
+      Enum.join([method.name, method.symbol, arguments, value_type_name(method.returns)], "|")
+    end)
+  end
+
+  defp value_type_name(nil), do: "nil"
+  defp value_type_name(value), do: Atom.to_string(value)
+
+  defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
 
   defp verify_library_symbols!(library_path, %BindingPlan{} = plan) do
     symbols = [
