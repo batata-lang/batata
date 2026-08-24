@@ -23,7 +23,14 @@ defmodule Batata.Godot.NativeAdapterTest do
     assert source =~ ".namespace = @This()"
     assert source =~ "build_options.entry_symbol"
     assert source =~ "build_options.initialization_level"
-    refute source =~ "classdb_register"
+    assert source =~ "api.classdb_register_extension_class5"
+    assert source =~ "api.classdb_unregister_extension_class"
+    assert source =~ "build_options.class_name"
+    assert source =~ "build_options.base_class_name"
+
+    godot_abi = File.read!(Path.join(native_build_root(), "native/zig-src/godot.zig"))
+    assert godot_abi =~ "GDExtensionClassCreationInfo5"
+    assert godot_abi =~ "classdb_register_extension_class5"
   end
 
   test "Batata runtime extension source resolves independently of package cwd" do

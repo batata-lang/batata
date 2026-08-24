@@ -69,6 +69,9 @@ defmodule Batata.Godot.BuildTest do
       assert length(index["files"]) == 3
       assert Path.wildcard(Path.join(tmp_dir, "**/*.zig"), match_dot: true) == []
 
+      smoke_script = Path.join(tmp_dir, ".batata/godot-classdb-smoke.gd")
+      assert File.read!(smoke_script) =~ ~s|ClassDB.class_exists("BatataLoadSmoke")|
+
       assert :ok = Batata.Godot.smoke_load!(tmp_dir)
     end
   else

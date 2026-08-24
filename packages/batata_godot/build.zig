@@ -7,6 +7,10 @@ pub fn build(b: *std.Build) void {
         @panic("missing required -Dentry-symbol");
     const initialization_level = b.option(u8, "initialization-level", "Godot initialization level") orelse
         @panic("missing required -Dinitialization-level");
+    const class_name = b.option([]const u8, "class-name", "Godot extension class name") orelse
+        @panic("missing required -Dclass-name");
+    const base_class_name = b.option([]const u8, "base-class-name", "Godot extension base class name") orelse
+        @panic("missing required -Dbase-class-name");
     const term_runtime_source = b.option([]const u8, "term-runtime-source", "Path to term_runtime.zig") orelse
         @panic("missing required -Dterm-runtime-source");
     const batata_object = b.option([]const u8, "batata-object", "Path to the compiled Batata object") orelse
@@ -19,6 +23,8 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "entry_symbol", entry_symbol);
     options.addOption(u8, "initialization_level", initialization_level);
+    options.addOption([]const u8, "class_name", class_name);
+    options.addOption([]const u8, "base_class_name", base_class_name);
 
     const term_runtime = b.createModule(.{
         .root_source_file = .{ .cwd_relative = term_runtime_source },
