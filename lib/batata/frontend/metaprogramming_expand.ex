@@ -14,6 +14,7 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
                        ])
   @max_generated_iterations 512
   @max_generated_integer_bits 4096
+  @max_generated_binary_bytes 512
 
   alias Batata.Frontend.Literal
 
@@ -477,6 +478,20 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     with {:ok, value} when is_list(value) <- eval_compile_expr(expression, bindings),
          true <- List.ascii_printable?(value) do
       {:ok, List.to_string(value)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp eval_compile_expr(
+         {{:., _, [{:__aliases__, _, [:String]}, :duplicate]}, _, [binary_ast, count_ast]},
+         bindings
+       ) do
+    with {:ok, binary} when is_binary(binary) <- eval_compile_expr(binary_ast, bindings),
+         {:ok, count} when is_integer(count) and count >= 0 <-
+           eval_compile_expr(count_ast, bindings),
+         true <- byte_size(binary) * count <= @max_generated_binary_bytes do
+      {:ok, String.duplicate(binary, count)}
     else
       _ -> :error
     end

@@ -37,6 +37,7 @@ defmodule Batata.Lift do
   @max_scalar_integer 9_223_372_036_854_775_807
   @min_term_integer -1_152_921_504_606_846_976
   @max_term_integer 1_152_921_504_606_846_975
+  @max_compile_time_binary_bytes 1_048_576
 
   defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
 
@@ -5134,6 +5135,24 @@ defmodule Batata.Lift do
   # Dates are gregorian days (i64) in the slice: `Date.new(y, m, d)` with
   # integer literals is folded at lift time, so `a..b` over dates reuses the
   # integer range paths.
+  defp lift_stdlib_call(String, :duplicate, [binary, count], ctx, block, env)
+       when is_binary(binary) and is_integer(count) and count >= 0 do
+    result_size = byte_size(binary) * count
+
+    if result_size <= @max_compile_time_binary_bytes do
+      lift_expr(String.duplicate(binary, count), ctx, block, env)
+    else
+      raise Error,
+            "String.duplicate/2 compile-known result exceeds the " <>
+              "#{@max_compile_time_binary_bytes}-byte limit: #{result_size} bytes"
+    end
+  end
+
+  defp lift_stdlib_call(String, :duplicate, _args, _ctx, _block, _env) do
+    raise Error,
+          "String.duplicate/2 requires a compile-known binary and non-negative integer count"
+  end
+
   defp lift_stdlib_call(Date, :new, [year, month, day], ctx, block, env) do
     if is_integer(year) and is_integer(month) and is_integer(day) do
       days = Calendar.ISO.date_to_iso_days(year, month, day)
