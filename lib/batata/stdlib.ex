@@ -67,6 +67,7 @@ defmodule Batata.Stdlib.List do
   """
 
   @class_map %{
+    {List, :duplicate, 2} => :native_term,
     {List, :first, 1} => :native_term,
     {List, :flatten, 1} => :native_term,
     {:lists, :keyfind, 3} => :native_term,
@@ -441,6 +442,7 @@ defmodule Batata.Stdlib do
                   {:erlang, :binary_to_float, 1},
                   {:erlang, :float_to_binary, 2},
                   {String, :printable?, 1},
+                  {List, :duplicate, 2},
                   {List, :flatten, 1},
                   {Keyword, :get, 2},
                   {Keyword, :get, 3},
@@ -492,6 +494,7 @@ defmodule Batata.Stdlib do
                      {NaiveDateTime, :to_iso8601, 1},
                      {Time, :to_iso8601, 1},
                      {IO, :iodata_to_binary, 1},
+                     {List, :duplicate, 2},
                      {List, :flatten, 1},
                      {:erlang, :binary_to_float, 1},
                      {:erlang, :float_to_binary, 2},
@@ -540,6 +543,7 @@ defmodule Batata.Stdlib do
                       {Map, :to_list, 1},
                       {MapSet, :new, 1},
                       {HashSet, :new, 1},
+                      {List, :duplicate, 2},
                       {Keyword, :get, 2},
                       {Keyword, :get, 3},
                       {Stream, :take, 2},

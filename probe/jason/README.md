@@ -95,11 +95,18 @@ generated indentation clauses. Bounded metaprogramming evaluation now folds
 the compile-known `String.duplicate/2` calls in those clauses, with a 512-byte
 generation limit; ordinary compile-known calls use the same non-negative
 argument contract and reject results larger than 1 MiB before allocation.
-Dynamic repetition remains unsupported. The whole-corpus frontier consequently
-advances to `List.duplicate/2`. This lane still makes no execution claim for
-module-level generation; the reducer, protocol-callback, literal-dispatch, and
-bounded string-fold evidence comes from compiler-owned lowering and execution
-gates.
+Dynamic string repetition remains unsupported. Positive-count runtime
+`List.duplicate/2` now lowers to a compiler-owned `scf.while` which accepts any
+term, allocates one cons cell per iteration, and stops immediately when the
+bounded arena reports allocation failure. It is deliberately non-resumable:
+the current single continuation slot is not safe across nested or repeated
+call sites. Count zero also fails closed until the Ex ABI distinguishes `[]`
+from the nil atom. These architecture gaps are tracked separately in Beaver
+issues #98 and #97. This crosses the Formatter fallback and advances the
+whole-corpus frontier to a case-result type mismatch. This lane still makes no
+execution claim for module-level generation; the reducer, protocol-callback,
+literal-dispatch, bounded string-fold, and positive list-duplication evidence
+comes from compiler-owned lowering and execution gates.
 
 The atom-keyed map gates cover case-clause subset matching and function
 parameter destructuring, including present-nil versus missing keys and
