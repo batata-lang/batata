@@ -12,7 +12,7 @@
   },
   "unit_attempt": {
     "status": "frontend_normalization_failure",
-    "reason_class": "unsupported_stdlib_call",
-    "fingerprint": "4289ace098402f0cd3a1f9dd16a83a8cf0572ede1e645ada2c2f351cd377cb9a"
+    "reason_class": "lift_error",
+    "fingerprint": "7665b94410792a00938ee74d654a9bcdd66aa657f210a8b07e8395c8229d3db8"
   }
 }

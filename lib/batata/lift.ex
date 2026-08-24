@@ -5654,6 +5654,11 @@ defmodule Batata.Lift do
     mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
   end
 
+  defp lift_stdlib_call(List, :duplicate, [item_ast, count_ast], ctx, block, env) do
+    {[item, count], env} = lift_operands_boxed([item_ast, count_ast], ctx, block, env)
+    {lift_list_duplicate(item, count, ctx, block), env}
+  end
+
   defp lift_stdlib_call(Map, :put, args, ctx, block, env) do
     {values, env} = lift_operands_boxed(args, ctx, block, env)
     {native_term_call(Map, :put, values, ctx, block), env}
@@ -6176,6 +6181,101 @@ defmodule Batata.Lift do
       |> hd()
 
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lift_list_duplicate(item, count, ctx, block) do
+    i64 = integer_type(ctx)
+    integer? = create_op("ex.is_integer", [count], [i64], ctx, block)
+    count_int = create_op("ex.to_int", [count], [i64], ctx, block)
+    positive? = cmp(count_int, lit(0, ctx, block), "sgt", ctx, block)
+    valid = create_op("arith.andi", [integer?, positive?], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [emit_list_duplicate_loop(item, count_int, ctx, b)] end,
+        fn b -> [raise_function_clause(List, :duplicate, 2, ctx, b) |> unbox(ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp emit_list_duplicate_loop(item, count, ctx, block) do
+    i64 = integer_type(ctx)
+
+    state = {
+      unbox(item, ctx, block),
+      create_term_op("ex.list", [], ctx, block) |> unbox(ctx, block),
+      count
+    }
+
+    state_count = 3
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), state_count)
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+    before_args = before_block |> Walker.arguments() |> Enum.to_list()
+    [_b_item, _b_acc, b_remaining] = before_args
+    has_remaining = cmp(b_remaining, lit(0, ctx, before_block), "sgt", ctx, before_block)
+    cond_i1 = create_op("arith.trunci", [has_remaining], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [cond_i1 | before_args], [], ctx, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+    after_args = after_block |> Walker.arguments() |> Enum.to_list()
+    [a_item, a_acc, a_remaining] = after_args
+    item_word = create_op("ex.to_word", [a_item], [ex_type("term", ctx)], ctx, after_block)
+    acc_word = create_op("ex.to_word", [a_acc], [ex_type("term", ctx)], ctx, after_block)
+
+    next_acc =
+      create_op("ex.list_cons", [item_word, acc_word], [ex_type("term", ctx)], ctx, after_block)
+
+    nil_word = atom_term(nil, ctx, after_block)
+    allocation_failed = create_op("ex.term_eq", [next_acc, nil_word], [i64], ctx, after_block)
+
+    allocation_failed_i1 =
+      create_op("arith.trunci", [allocation_failed], [MLIR.Type.i1()], ctx, after_block)
+
+    decremented =
+      create_op("ex.sub", [a_remaining, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    next_remaining =
+      create_op(
+        "arith.select",
+        [allocation_failed_i1, lit(0, ctx, after_block), decremented],
+        [i64],
+        ctx,
+        after_block
+      )
+
+    create_op(
+      "scf.yield",
+      [a_item, unbox(next_acc, ctx, after_block), next_remaining],
+      [],
+      ctx,
+      after_block
+    )
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: Tuple.to_list(state),
+        results: List.duplicate(i64, state_count),
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    while_op |> MLIR.Operation.results() |> Enum.at(1)
   end
 
   defp lift_keyword_value(found, default, ctx, block) do
