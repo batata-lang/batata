@@ -19,6 +19,11 @@ defmodule Batata.Godot.BuildTest.Extension do
     returns: {:object, "RefCounted"}
   )
 
+  godot_method(:get_answer, args: [], returns: :int)
+  godot_method(:set_answer, args: [:int], returns: nil)
+  godot_property(:answer, type: :int, getter: :get_answer, setter: :set_answer)
+  godot_signal(:answer_changed, args: [:int])
+
   def add(left, right), do: left + right
   def bool_identity(value), do: value
   def float_identity(value), do: value
@@ -28,6 +33,24 @@ defmodule Batata.Godot.BuildTest.Extension do
   def vector2_identity(value), do: value
   def vector3_identity(value), do: value
   def object_identity(value), do: value
+  def get_answer, do: 42
+  def set_answer(_value), do: nil
+end
+
+defmodule Batata.Godot.BuildTest.VirtualExtension do
+  use Batata.Godot.Extension,
+    extension: "batata_virtual_smoke",
+    compatibility_minimum: "4.6.2",
+    initialization_level: :scene
+
+  godot_class("BatataVirtualSmoke", base: "Node")
+  godot_method(:ping, args: [], returns: :int)
+  godot_virtual(:_ready)
+  godot_virtual(:_process)
+
+  def ping, do: 1
+  def _ready, do: nil
+  def _process(_delta), do: nil
 end
 
 defmodule Batata.Godot.BuildTest do
@@ -41,6 +64,7 @@ defmodule Batata.Godot.BuildTest do
                   |> String.starts_with?("aarch64-")
 
   if @darwin_arm64 do
+    alias Batata.Godot.BuildTest.VirtualExtension
     alias Beaver.MLIR.Context
 
     @moduletag timeout: 180_000
@@ -64,6 +88,8 @@ defmodule Batata.Godot.BuildTest do
             def vector2_identity(value), do: value
             def vector3_identity(value), do: value
             def object_identity(value), do: value
+            def get_answer(), do: 42
+            def set_answer(_value), do: nil
           end
           """,
           Extension,
@@ -131,6 +157,32 @@ defmodule Batata.Godot.BuildTest do
       assert File.read!(smoke_script) =~ ~s|ClassDB.class_exists("BatataLoadSmoke")|
       assert File.read!(smoke_script) =~ ~s|object.callv("add", [20,22])|
 
+      assert :ok = Batata.Godot.smoke_load!(tmp_dir)
+    end
+
+    @tag :tmp_dir
+    test "registers and invokes the closed Node virtual callback set", %{tmp_dir: tmp_dir} do
+      ctx = Context.create()
+      on_exit(fn -> Context.destroy(ctx) end)
+
+      output =
+        Batata.Godot.build(
+          """
+          defmodule GodotVirtualSmoke do
+            def main(), do: 0
+            def ping(), do: 1
+            def _ready(), do: nil
+            def _process(_delta), do: nil
+          end
+          """,
+          VirtualExtension,
+          tmp_dir,
+          ctx,
+          smoke: true
+        )
+
+      plan = output.binding_plan |> File.read!() |> JSON.decode!()
+      assert Enum.map(plan["virtuals"], & &1["name"]) == ["_process", "_ready"]
       assert :ok = Batata.Godot.smoke_load!(tmp_dir)
     end
   else

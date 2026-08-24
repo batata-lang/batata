@@ -33,7 +33,23 @@ const MethodSpec = struct {
     return_object_class: []const u8,
 };
 
+const PropertySpec = struct {
+    name: []const u8,
+    value_type: ValueType,
+    getter: []const u8,
+    setter: []const u8,
+};
+
+const SignalSpec = struct {
+    name: []const u8,
+    arguments: [max_method_arity]ValueType,
+    arity: usize,
+};
+
 const method_specs = parseMethods(build_options.method_specs);
+const property_specs = parseProperties(build_options.property_specs);
+const signal_specs = parseSignals(build_options.signal_specs);
+const virtual_specs = parseVirtuals(build_options.virtual_specs);
 const Invoke = *const fn (*const [max_method_arity]i64) callconv(.c) i64;
 
 const MethodRuntime = struct {
@@ -70,9 +86,19 @@ var empty_string_name_storage: [8]u8 align(8) = undefined;
 var empty_string_storage: [8]u8 align(8) = undefined;
 var method_name_storage: [method_specs.len][8]u8 align(8) = undefined;
 var method_name_chars: [method_specs.len][method_name_storage_width]u8 = undefined;
+var property_name_storage: [property_specs.len][8]u8 align(8) = undefined;
+var property_name_chars: [property_specs.len][method_name_storage_width]u8 = undefined;
+var property_getter_storage: [property_specs.len][8]u8 align(8) = undefined;
+var property_getter_chars: [property_specs.len][method_name_storage_width]u8 = undefined;
+var property_setter_storage: [property_specs.len][8]u8 align(8) = undefined;
+var property_setter_chars: [property_specs.len][method_name_storage_width]u8 = undefined;
+var signal_name_storage: [signal_specs.len][8]u8 align(8) = undefined;
+var signal_name_chars: [signal_specs.len][method_name_storage_width]u8 = undefined;
+var virtual_runtimes = makeVirtualRuntimes();
 var method_runtimes = makeMethodRuntimes();
 var live_instances = std.atomic.Value(usize).init(0);
 var invocation_generation = std.atomic.Value(u64).init(1);
+var initialization_thread: std.Thread.Id = undefined;
 var class_registered = false;
 
 const binding_callbacks = godot.InstanceBindingCallbacks{
@@ -129,6 +155,105 @@ fn methodCount(comptime encoded: []const u8) usize {
     return std.mem.count(u8, encoded, ";") + 1;
 }
 
+fn parseProperties(comptime encoded: []const u8) [methodCount(encoded)]PropertySpec {
+    comptime {
+        @setEvalBranchQuota(10_000);
+        var result: [methodCount(encoded)]PropertySpec = undefined;
+        if (encoded.len == 0) return result;
+        var descriptors = std.mem.splitScalar(u8, encoded, ';');
+        var index: usize = 0;
+        while (descriptors.next()) |descriptor| : (index += 1) {
+            var fields = std.mem.splitScalar(u8, descriptor, '|');
+            const name = fields.next() orelse @compileError("Godot property is missing its name");
+            const value_type = fields.next() orelse @compileError("Godot property is missing its type");
+            const getter = fields.next() orelse @compileError("Godot property is missing its getter");
+            const setter = fields.next() orelse @compileError("Godot property is missing its setter");
+            if (fields.next() != null) @compileError("Godot property contains extra fields");
+            validateDescriptorName(name);
+            validateDescriptorName(getter);
+            validateDescriptorName(setter);
+            result[index] = .{
+                .name = name,
+                .value_type = parseValueType(value_type),
+                .getter = getter,
+                .setter = setter,
+            };
+        }
+        return result;
+    }
+}
+
+fn parseSignals(comptime encoded: []const u8) [methodCount(encoded)]SignalSpec {
+    comptime {
+        @setEvalBranchQuota(10_000);
+        var result: [methodCount(encoded)]SignalSpec = undefined;
+        if (encoded.len == 0) return result;
+        var descriptors = std.mem.splitScalar(u8, encoded, ';');
+        var index: usize = 0;
+        while (descriptors.next()) |descriptor| : (index += 1) {
+            var fields = std.mem.splitScalar(u8, descriptor, '|');
+            const name = fields.next() orelse @compileError("Godot signal is missing its name");
+            const arguments = fields.next() orelse @compileError("Godot signal is missing its arguments");
+            if (fields.next() != null) @compileError("Godot signal contains extra fields");
+            validateDescriptorName(name);
+            var argument_types = [_]ValueType{.nil_value} ** max_method_arity;
+            var arity: usize = 0;
+            if (arguments.len != 0) {
+                var iterator = std.mem.splitScalar(u8, arguments, ',');
+                while (iterator.next()) |argument| : (arity += 1) {
+                    if (arity == max_method_arity) @compileError("Godot signals support at most 8 arguments");
+                    argument_types[arity] = parseValueType(argument);
+                }
+            }
+            result[index] = .{ .name = name, .arguments = argument_types, .arity = arity };
+        }
+        return result;
+    }
+}
+
+fn parseVirtuals(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
+    comptime {
+        @setEvalBranchQuota(10_000);
+        var result: [methodCount(encoded)]MethodSpec = undefined;
+        if (encoded.len == 0) return result;
+        var descriptors = std.mem.splitScalar(u8, encoded, ';');
+        var index: usize = 0;
+        while (descriptors.next()) |descriptor| : (index += 1) {
+            var fields = std.mem.splitScalar(u8, descriptor, '|');
+            const name = fields.next() orelse @compileError("Godot virtual is missing its name");
+            const function_symbol = fields.next() orelse @compileError("Godot virtual is missing its symbol");
+            const arguments = fields.next() orelse @compileError("Godot virtual is missing its arguments");
+            if (fields.next() != null) @compileError("Godot virtual contains extra fields");
+            validateDescriptorName(name);
+            var argument_types = [_]ValueType{.nil_value} ** max_method_arity;
+            var arity: usize = 0;
+            if (arguments.len != 0) {
+                var iterator = std.mem.splitScalar(u8, arguments, ',');
+                while (iterator.next()) |argument| : (arity += 1) {
+                    if (arity == max_method_arity) @compileError("Godot virtuals support at most 8 arguments");
+                    argument_types[arity] = parseValueType(argument);
+                }
+            }
+            result[index] = .{
+                .name = name,
+                .symbol = function_symbol,
+                .arguments = argument_types,
+                .argument_object_classes = [_][]const u8{""} ** max_method_arity,
+                .arity = arity,
+                .returns = .nil_value,
+                .return_object_class = "",
+            };
+        }
+        return result;
+    }
+}
+
+fn validateDescriptorName(comptime name: []const u8) void {
+    if (name.len == 0 or name.len >= method_name_storage_width) {
+        @compileError("Godot descriptor names must contain 1 to 127 bytes");
+    }
+}
+
 fn parseValueType(comptime encoded: []const u8) ValueType {
     if (std.mem.eql(u8, encoded, "nil")) return .nil_value;
     if (std.mem.eql(u8, encoded, "bool")) return .bool_value;
@@ -174,6 +299,16 @@ fn makeMethodRuntimes() [method_specs.len]MethodRuntime {
     comptime {
         var result: [method_specs.len]MethodRuntime = undefined;
         for (method_specs, 0..) |spec, index| {
+            result[index] = .{ .spec = spec, .invoke = &Invocation(spec).call };
+        }
+        return result;
+    }
+}
+
+fn makeVirtualRuntimes() [virtual_specs.len]MethodRuntime {
+    comptime {
+        var result: [virtual_specs.len]MethodRuntime = undefined;
+        for (virtual_specs, 0..) |spec, index| {
             result[index] = .{ .spec = spec, .invoke = &Invocation(spec).call };
         }
         return result;
@@ -258,6 +393,9 @@ fn methodCall(
     call_error: *godot.CallError,
 ) callconv(.c) void {
     call_error.* = .{ .error_code = .ok, .argument = 0, .expected = 0 };
+    if (std.Thread.getCurrentId() != initialization_thread) {
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_WRONG_THREAD");
+    }
 
     const instance_opaque = class_instance orelse {
         return failCall(call_error, .instance_is_null, -1, 0, "E_GODOT_OBJECT_HANDLE_STALE");
@@ -616,9 +754,90 @@ fn failCall(call_error: *godot.CallError, error_code: godot.CallErrorType, argum
     api.print_error(message.ptr, "Batata.Godot.methodCall", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
 }
 
+fn getVirtualCallData(
+    class_userdata: ?*anyopaque,
+    name: godot.ConstStringNamePtr,
+    hash: u32,
+) callconv(.c) ?*anyopaque {
+    _ = class_userdata;
+    _ = hash;
+    for (&virtual_runtimes) |*virtual_runtime| {
+        if (stringNameEquals(name, virtual_runtime.spec.name)) return virtual_runtime;
+    }
+    return null;
+}
+
+fn callVirtualWithData(
+    class_instance: godot.ClassInstancePtr,
+    name: godot.ConstStringNamePtr,
+    virtual_userdata: ?*anyopaque,
+    raw_arguments: ?[*]const godot.ConstTypePtr,
+    return_value: godot.TypePtr,
+) callconv(.c) void {
+    _ = name;
+    _ = return_value;
+    if (std.Thread.getCurrentId() != initialization_thread) {
+        return api.print_error("E_GODOT_WRONG_THREAD", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    }
+    const instance_opaque = class_instance orelse {
+        return api.print_error("E_GODOT_OBJECT_HANDLE_STALE", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    };
+    const instance: *const Instance = @ptrCast(@alignCast(instance_opaque));
+    if (instance.magic != instance_magic) {
+        return api.print_error("E_GODOT_OBJECT_HANDLE_STALE", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    }
+    const runtime_opaque = virtual_userdata orelse return;
+    const virtual_runtime: *const MethodRuntime = @ptrCast(@alignCast(runtime_opaque));
+
+    const runtime_handle = term_runtime.ex_term_runtime_create();
+    if (runtime_handle <= 0 or term_runtime.ex_term_runtime_enter(runtime_handle) != 0) {
+        if (runtime_handle > 0) _ = term_runtime.ex_term_runtime_destroy(runtime_handle);
+        return api.print_error("E_GODOT_RUNTIME_BUSY", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    }
+    defer abandonRuntime(runtime_handle);
+
+    var arguments = [_]i64{nil_word} ** max_method_arity;
+    if (virtual_runtime.spec.arity == 1) {
+        const argument_pointers = raw_arguments orelse {
+            return api.print_error("E_GODOT_METHOD_ARGUMENT_MISSING", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+        };
+        const raw_delta = argument_pointers[0] orelse {
+            return api.print_error("E_GODOT_METHOD_ARGUMENT_MISSING", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+        };
+        const delta: *const f64 = @ptrCast(@alignCast(raw_delta));
+        arguments[0] = term_runtime.ex_term_float_lit(@bitCast(delta.*));
+    }
+
+    const invocation = InvocationContext{ .method = virtual_runtime, .arguments = &arguments };
+    var caught: i64 = 0;
+    var exception_kind: i64 = 0;
+    const encoded_context: i64 = @bitCast(@as(u64, @intFromPtr(&invocation)));
+    const result = term_runtime.ex_term_protected_call(&invokeProtected, encoded_context, &caught, &exception_kind);
+    if (caught != 0) {
+        return api.print_error("E_GODOT_COMPILED_EXCEPTION", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", @intCast(exception_kind), 0);
+    }
+    if (result != nil_word) {
+        return api.print_error("E_GODOT_RETURN_TYPE_MISMATCH", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    }
+}
+
+fn stringNameEquals(name: godot.ConstStringNamePtr, expected: []const u8) bool {
+    const source = name orelse return false;
+    var string_storage: [8]u8 align(8) = undefined;
+    const arguments = [_]godot.ConstTypePtr{source};
+    api.string_from_string_name(&string_storage, &arguments);
+    defer api.string_destructor(&string_storage);
+    const length = api.string_to_utf8_chars(&string_storage, null, 0);
+    if (length < 0 or length != expected.len or length >= method_name_storage_width) return false;
+    var bytes: [method_name_storage_width]u8 = undefined;
+    if (length != 0 and api.string_to_utf8_chars(&string_storage, &bytes, length) != length) return false;
+    return std.mem.eql(u8, bytes[0..@intCast(length)], expected);
+}
+
 fn initialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(.c) void {
     _ = userdata;
     if (level != build_options.initialization_level or class_registered) return;
+    initialization_thread = std.Thread.getCurrentId();
 
     api.string_name_new_with_latin1_chars(&class_name_storage, @ptrCast(class_name_z.ptr), 1);
     api.string_name_new_with_latin1_chars(&base_class_name_storage, @ptrCast(base_class_name_z.ptr), 1);
@@ -646,8 +865,8 @@ fn initialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(
         .free_instance_func = &freeInstance,
         .recreate_instance_func = null,
         .get_virtual_func = null,
-        .get_virtual_call_data_func = null,
-        .call_virtual_with_data_func = null,
+        .get_virtual_call_data_func = if (virtual_specs.len == 0) null else &getVirtualCallData,
+        .call_virtual_with_data_func = if (virtual_specs.len == 0) null else &callVirtualWithData,
         .class_userdata = null,
     };
 
@@ -688,7 +907,59 @@ fn initialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(
         };
         api.classdb_register_extension_class_method(library, &class_name_storage, &method_info);
     }
+
+    for (property_specs, 0..) |property, index| {
+        initializeStoredStringName(
+            &property_name_storage[index],
+            &property_name_chars[index],
+            property.name,
+        );
+        initializeStoredStringName(
+            &property_getter_storage[index],
+            &property_getter_chars[index],
+            property.getter,
+        );
+        initializeStoredStringName(
+            &property_setter_storage[index],
+            &property_setter_chars[index],
+            property.setter,
+        );
+        var info = propertyInfo(property.value_type);
+        info.name = &property_name_storage[index];
+        api.classdb_register_extension_class_property(
+            library,
+            &class_name_storage,
+            &info,
+            &property_setter_storage[index],
+            &property_getter_storage[index],
+        );
+    }
+
+    for (signal_specs, 0..) |signal, index| {
+        initializeStoredStringName(&signal_name_storage[index], &signal_name_chars[index], signal.name);
+        var arguments: [max_method_arity]godot.PropertyInfo = undefined;
+        for (0..signal.arity) |argument_index| {
+            arguments[argument_index] = propertyInfo(signal.arguments[argument_index]);
+        }
+        api.classdb_register_extension_class_signal(
+            library,
+            &class_name_storage,
+            &signal_name_storage[index],
+            if (signal.arity == 0) null else arguments[0..signal.arity].ptr,
+            @intCast(signal.arity),
+        );
+    }
     class_registered = true;
+}
+
+fn initializeStoredStringName(
+    storage: *[8]u8,
+    chars: *[method_name_storage_width]u8,
+    value: []const u8,
+) void {
+    @memcpy(chars[0..value.len], value);
+    chars[value.len] = 0;
+    api.string_name_new_with_latin1_chars(storage, @ptrCast(chars[0..].ptr), 1);
 }
 
 fn deinitialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(.c) void {

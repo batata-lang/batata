@@ -32,6 +32,8 @@ pub const ClassCreateInstance = *const fn (?*anyopaque, Bool) callconv(.c) Objec
 pub const ClassFreeInstance = *const fn (?*anyopaque, ClassInstancePtr) callconv(.c) void;
 pub const ClassMethodCall = *const fn (?*anyopaque, ClassInstancePtr, ?[*]const ConstVariantPtr, Int, VariantPtr, *CallError) callconv(.c) void;
 pub const ClassMethodPtrCall = *const fn (?*anyopaque, ClassInstancePtr, ?[*]const ConstTypePtr, TypePtr) callconv(.c) void;
+pub const ClassGetVirtualCallData2 = *const fn (?*anyopaque, ConstStringNamePtr, u32) callconv(.c) ?*anyopaque;
+pub const ClassCallVirtualWithData = *const fn (ClassInstancePtr, ConstStringNamePtr, ?*anyopaque, ?[*]const ConstTypePtr, TypePtr) callconv(.c) void;
 
 pub const VariantType = enum(c_int) {
     nil = 0,
@@ -117,8 +119,8 @@ pub const ClassCreationInfo5 = extern struct {
     free_instance_func: ?ClassFreeInstance,
     recreate_instance_func: ?*const anyopaque,
     get_virtual_func: ?*const anyopaque,
-    get_virtual_call_data_func: ?*const anyopaque,
-    call_virtual_with_data_func: ?*const anyopaque,
+    get_virtual_call_data_func: ?ClassGetVirtualCallData2,
+    call_virtual_with_data_func: ?ClassCallVirtualWithData,
     class_userdata: ?*anyopaque,
 };
 
@@ -148,6 +150,8 @@ pub const ObjectCastTo = *const fn (?*const anyopaque, ?*anyopaque) callconv(.c)
 pub const ClassdbGetClassTag = *const fn (ConstStringNamePtr) callconv(.c) ?*anyopaque;
 pub const ClassdbRegisterExtensionClass5 = *const fn (ClassLibraryPtr, ConstStringNamePtr, ConstStringNamePtr, *const ClassCreationInfo5) callconv(.c) void;
 pub const ClassdbRegisterExtensionClassMethod = *const fn (ClassLibraryPtr, ConstStringNamePtr, *const ClassMethodInfo) callconv(.c) void;
+pub const ClassdbRegisterExtensionClassProperty = *const fn (ClassLibraryPtr, ConstStringNamePtr, *const PropertyInfo, ConstStringNamePtr, ConstStringNamePtr) callconv(.c) void;
+pub const ClassdbRegisterExtensionClassSignal = *const fn (ClassLibraryPtr, ConstStringNamePtr, ConstStringNamePtr, ?[*]const PropertyInfo, Int) callconv(.c) void;
 pub const ClassdbUnregisterExtensionClass = *const fn (ClassLibraryPtr, ConstStringNamePtr) callconv(.c) void;
 
 pub const Api = struct {
@@ -188,6 +192,8 @@ pub const Api = struct {
     object_to_variant: VariantFromTypeConstructor,
     classdb_register_extension_class5: ClassdbRegisterExtensionClass5,
     classdb_register_extension_class_method: ClassdbRegisterExtensionClassMethod,
+    classdb_register_extension_class_property: ClassdbRegisterExtensionClassProperty,
+    classdb_register_extension_class_signal: ClassdbRegisterExtensionClassSignal,
     classdb_unregister_extension_class: ClassdbUnregisterExtensionClass,
 
     pub fn resolve(get_proc_address: GetProcAddress) ?Api {
@@ -234,6 +240,8 @@ pub const Api = struct {
             .object_to_variant = get_from(.object) orelse return null,
             .classdb_register_extension_class5 = resolveOne(ClassdbRegisterExtensionClass5, get, "classdb_register_extension_class5") orelse return null,
             .classdb_register_extension_class_method = resolveOne(ClassdbRegisterExtensionClassMethod, get, "classdb_register_extension_class_method") orelse return null,
+            .classdb_register_extension_class_property = resolveOne(ClassdbRegisterExtensionClassProperty, get, "classdb_register_extension_class_property") orelse return null,
+            .classdb_register_extension_class_signal = resolveOne(ClassdbRegisterExtensionClassSignal, get, "classdb_register_extension_class_signal") orelse return null,
             .classdb_unregister_extension_class = resolveOne(ClassdbUnregisterExtensionClass, get, "classdb_unregister_extension_class") orelse return null,
         };
     }

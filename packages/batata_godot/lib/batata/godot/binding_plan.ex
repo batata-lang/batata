@@ -39,7 +39,25 @@ defmodule Batata.Godot.BindingPlan do
           }
   end
 
-  @schema 1
+  defmodule Property do
+    @moduledoc "A ClassDB property backed by declared getter and setter methods."
+    @enforce_keys [:name, :type, :getter, :setter]
+    defstruct @enforce_keys
+  end
+
+  defmodule Signal do
+    @moduledoc "A typed ClassDB signal declaration."
+    @enforce_keys [:name, :arguments]
+    defstruct @enforce_keys
+  end
+
+  defmodule Virtual do
+    @moduledoc "A closed Godot virtual callback implemented by compiled Batata code."
+    @enforce_keys [:name, :arguments, :returns, :symbol]
+    defstruct @enforce_keys
+  end
+
+  @schema 2
   @supported_types [nil, :bool, :int, :float, :string, :string_name, :vector2, :vector3]
   @max_method_arity 8
   @initialization_levels [:core, :servers, :scene, :editor]
@@ -52,6 +70,9 @@ defmodule Batata.Godot.BindingPlan do
   ]
   @class_keys [:base]
   @method_keys [:args, :returns]
+  @property_keys [:type, :getter, :setter]
+  @signal_keys [:args]
+  @virtuals %{_ready: {[], nil}, _process: {[:float], nil}}
   @identifier ~r/^[A-Za-z_][A-Za-z0-9_]*$/
   @compatibility_version ~r/^\d+\.\d+(?:\.\d+)?$/
 
@@ -64,7 +85,10 @@ defmodule Batata.Godot.BindingPlan do
     :reloadable,
     :initialization_level,
     :class,
-    :methods
+    :methods,
+    :properties,
+    :signals,
+    :virtuals
   ]
   defstruct @enforce_keys
 
@@ -77,14 +101,24 @@ defmodule Batata.Godot.BindingPlan do
           reloadable: boolean(),
           initialization_level: atom(),
           class: Class.t(),
-          methods: [Method.t()]
+          methods: [Method.t()],
+          properties: [Property.t()],
+          signals: [Signal.t()],
+          virtuals: [Virtual.t()]
         }
 
   @doc false
-  @spec new!(module(), keyword(), [{term(), keyword()}], [{term(), keyword()}], [
-          {atom(), non_neg_integer()}
-        ]) :: t()
-  def new!(module, extension_options, class_declarations, method_declarations, definitions) do
+  @spec new!(module(), keyword(), list(), list(), list(), list(), list(), list()) :: t()
+  def new!(
+        module,
+        extension_options,
+        class_declarations,
+        method_declarations,
+        property_declarations,
+        signal_declarations,
+        virtual_declarations,
+        definitions
+      ) do
     extension_options = validate_options!(extension_options, @extension_keys, :extension)
     class = normalize_class!(class_declarations)
 
@@ -112,6 +146,9 @@ defmodule Batata.Godot.BindingPlan do
       |> validate_initialization_level!()
 
     methods = normalize_methods!(method_declarations, definitions)
+    properties = normalize_properties!(property_declarations, methods)
+    signals = normalize_signals!(signal_declarations)
+    virtuals = normalize_virtuals!(virtual_declarations, definitions)
 
     %__MODULE__{
       schema: @schema,
@@ -122,7 +159,10 @@ defmodule Batata.Godot.BindingPlan do
       reloadable: reloadable,
       initialization_level: initialization_level,
       class: class,
-      methods: methods
+      methods: methods,
+      properties: properties,
+      signals: signals,
+      virtuals: virtuals
     }
   end
 
@@ -136,6 +176,9 @@ defmodule Batata.Godot.BindingPlan do
       "extension" => plan.extension,
       "initialization_level" => Atom.to_string(plan.initialization_level),
       "methods" => Enum.map(plan.methods, &method_map/1),
+      "properties" => Enum.map(plan.properties, &property_map/1),
+      "signals" => Enum.map(plan.signals, &signal_map/1),
+      "virtuals" => Enum.map(plan.virtuals, &virtual_map/1),
       "module" => inspect(plan.module),
       "reloadable" => plan.reloadable,
       "schema" => plan.schema
@@ -146,6 +189,9 @@ defmodule Batata.Godot.BindingPlan do
   @spec canonical_json(t()) :: String.t()
   def canonical_json(%__MODULE__{} = plan) do
     methods = plan.methods |> Enum.map(&method_json/1) |> Enum.intersperse(",")
+    properties = plan.properties |> Enum.map(&property_json/1) |> Enum.intersperse(",")
+    signals = plan.signals |> Enum.map(&signal_json/1) |> Enum.intersperse(",")
+    virtuals = plan.virtuals |> Enum.map(&virtual_json/1) |> Enum.intersperse(",")
 
     [
       "{\"schema\":",
@@ -168,6 +214,12 @@ defmodule Batata.Godot.BindingPlan do
       json_string(plan.class.base),
       "},\"methods\":[",
       methods,
+      "],\"properties\":[",
+      properties,
+      "],\"signals\":[",
+      signals,
+      "],\"virtuals\":[",
+      virtuals,
       "]}"
     ]
     |> IO.iodata_to_binary()
@@ -266,6 +318,122 @@ defmodule Batata.Godot.BindingPlan do
         "Godot method declarations require args: and returns:",
         %{method: inspect(name), missing: error.key}
       )
+  end
+
+  defp normalize_properties!(declarations, methods) do
+    properties =
+      declarations
+      |> Enum.map(&normalize_property!(&1, methods))
+      |> Enum.sort_by(& &1.name)
+
+    reject_duplicate_names!(properties, "E_GODOT_PROPERTY_DUPLICATE", :properties)
+  end
+
+  defp normalize_property!({name, options}, methods) do
+    options = validate_options!(options, @property_keys, :property)
+    property_name = name |> validate_function_name!() |> Atom.to_string()
+    type = options |> Keyword.fetch!(:type) |> validate_type!(:property)
+    getter = options |> Keyword.fetch!(:getter) |> validate_function_name!() |> Atom.to_string()
+    setter = options |> Keyword.fetch!(:setter) |> validate_function_name!() |> Atom.to_string()
+
+    unless Enum.any?(methods, &(&1.name == getter and &1.arguments == [] and &1.returns == type)) do
+      diagnostic!(
+        "E_GODOT_PROPERTY_ACCESSOR_INVALID",
+        "property getter must be a declared zero-arity method returning the property type",
+        %{property: property_name, getter: getter}
+      )
+    end
+
+    unless Enum.any?(
+             methods,
+             &(&1.name == setter and &1.arguments == [type] and &1.returns == nil)
+           ) do
+      diagnostic!(
+        "E_GODOT_PROPERTY_ACCESSOR_INVALID",
+        "property setter must be a declared one-arity method accepting the property type and returning nil",
+        %{property: property_name, setter: setter}
+      )
+    end
+
+    %Property{name: property_name, type: type, getter: getter, setter: setter}
+  rescue
+    error in KeyError ->
+      diagnostic!(
+        "E_GODOT_PROPERTY_INVALID",
+        "property declarations require type:, getter: and setter:",
+        %{property: inspect(name), missing: error.key}
+      )
+  end
+
+  defp normalize_signals!(declarations) do
+    signals =
+      declarations
+      |> Enum.map(fn {name, options} ->
+        options = validate_options!(options, @signal_keys, :signal)
+        name = name |> validate_function_name!() |> Atom.to_string()
+        arguments = options |> Keyword.get(:args, []) |> validate_types!(:signal)
+
+        if length(arguments) > @max_method_arity do
+          diagnostic!(
+            "E_GODOT_SIGNAL_SIGNATURE_UNSUPPORTED",
+            "Godot signals support at most #{@max_method_arity} arguments",
+            %{signal: name, arity: length(arguments), maximum: @max_method_arity}
+          )
+        end
+
+        %Signal{name: name, arguments: arguments}
+      end)
+      |> Enum.sort_by(& &1.name)
+
+    reject_duplicate_names!(signals, "E_GODOT_SIGNAL_DUPLICATE", :signals)
+  end
+
+  defp normalize_virtuals!(declarations, definitions) do
+    virtuals =
+      declarations
+      |> Enum.map(fn name ->
+        name = validate_function_name!(name)
+
+        {arguments, returns} =
+          Map.get(@virtuals, name) ||
+            diagnostic!(
+              "E_GODOT_VIRTUAL_UNSUPPORTED",
+              "only the closed _ready and _process callback set is supported",
+              %{virtual: name, supported: Map.keys(@virtuals)}
+            )
+
+        unless {name, length(arguments)} in definitions do
+          diagnostic!(
+            "E_GODOT_VIRTUAL_FUNCTION_MISSING",
+            "declared Godot virtual has no matching public Batata function",
+            %{function: "#{name}/#{length(arguments)}"}
+          )
+        end
+
+        %Virtual{
+          name: Atom.to_string(name),
+          arguments: arguments,
+          returns: returns,
+          symbol: Batata.Symbol.function(name, length(arguments))
+        }
+      end)
+      |> Enum.sort_by(& &1.name)
+
+    reject_duplicate_names!(virtuals, "E_GODOT_VIRTUAL_DUPLICATE", :virtuals)
+  end
+
+  defp reject_duplicate_names!(values, code, field) do
+    duplicates =
+      values
+      |> Enum.frequencies_by(& &1.name)
+      |> Enum.filter(fn {_name, count} -> count > 1 end)
+      |> Enum.map(&elem(&1, 0))
+
+    if duplicates != [] do
+      diagnostic!(code, "Godot declarations must have unique names", %{field => duplicates})
+    end
+
+    values
   end
 
   defp validate_options!(options, allowed, scope) when is_list(options) do
@@ -419,6 +587,66 @@ defmodule Batata.Godot.BindingPlan do
       json_string(value_type_name(method.returns)),
       ",\"symbol\":",
       json_string(method.symbol),
+      "}"
+    ]
+  end
+
+  defp property_map(%Property{} = property) do
+    %{
+      "getter" => property.getter,
+      "name" => property.name,
+      "setter" => property.setter,
+      "type" => value_type_name(property.type)
+    }
+  end
+
+  defp property_json(%Property{} = property) do
+    [
+      "{\"name\":",
+      json_string(property.name),
+      ",\"type\":",
+      json_string(value_type_name(property.type)),
+      ",\"getter\":",
+      json_string(property.getter),
+      ",\"setter\":",
+      json_string(property.setter),
+      "}"
+    ]
+  end
+
+  defp signal_map(%Signal{} = signal) do
+    %{"arguments" => Enum.map(signal.arguments, &value_type_name/1), "name" => signal.name}
+  end
+
+  defp signal_json(%Signal{} = signal) do
+    arguments =
+      signal.arguments |> Enum.map(&json_string(value_type_name(&1))) |> Enum.intersperse(",")
+
+    ["{\"name\":", json_string(signal.name), ",\"arguments\":[", arguments, "]}"]
+  end
+
+  defp virtual_map(%Virtual{} = virtual) do
+    %{
+      "arguments" => Enum.map(virtual.arguments, &value_type_name/1),
+      "name" => virtual.name,
+      "returns" => value_type_name(virtual.returns),
+      "symbol" => virtual.symbol
+    }
+  end
+
+  defp virtual_json(%Virtual{} = virtual) do
+    arguments =
+      virtual.arguments |> Enum.map(&json_string(value_type_name(&1))) |> Enum.intersperse(",")
+
+    [
+      "{\"name\":",
+      json_string(virtual.name),
+      ",\"arguments\":[",
+      arguments,
+      "],\"returns\":",
+      json_string(value_type_name(virtual.returns)),
+      ",\"symbol\":",
+      json_string(virtual.symbol),
       "}"
     ]
   end
