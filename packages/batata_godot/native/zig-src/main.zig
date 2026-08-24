@@ -16,6 +16,8 @@ const ValueType = enum {
     bool_value,
     int_value,
     float_value,
+    string_value,
+    string_name_value,
 };
 
 const MethodSpec = struct {
@@ -65,6 +67,7 @@ const binding_callbacks = godot.InstanceBindingCallbacks{
 
 fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
     comptime {
+        @setEvalBranchQuota(10_000);
         var result: [methodCount(encoded)]MethodSpec = undefined;
         var methods = std.mem.splitScalar(u8, encoded, ';');
         var method_index: usize = 0;
@@ -111,6 +114,8 @@ fn parseValueType(comptime encoded: []const u8) ValueType {
     if (std.mem.eql(u8, encoded, "bool")) return .bool_value;
     if (std.mem.eql(u8, encoded, "int")) return .int_value;
     if (std.mem.eql(u8, encoded, "float")) return .float_value;
+    if (std.mem.eql(u8, encoded, "string")) return .string_value;
+    if (std.mem.eql(u8, encoded, "string_name")) return .string_name_value;
     @compileError("Batata.Godot method spec contains an unsupported Variant type: " ++ encoded);
 }
 
@@ -149,6 +154,8 @@ fn variantType(value_type: ValueType) godot.VariantType {
         .bool_value => .bool,
         .int_value => .int,
         .float_value => .float,
+        .string_value => .string,
+        .string_name_value => .string_name,
     };
 }
 
@@ -277,6 +284,10 @@ fn methodCall(
                 api.float_from_variant(&value, @constCast(source));
                 break :blk term_runtime.ex_term_float_lit(@bitCast(value));
             },
+            .string_value, .string_name_value => textVariantToTerm(expected, @constCast(source)) orelse {
+                abandonRuntime(runtime_handle);
+                return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(variantType(expected)), "E_GODOT_STRING_CONVERSION_FAILED");
+            },
         };
     }
 
@@ -296,9 +307,15 @@ fn methodCall(
         return failCall(call_error, .invalid_method, -1, @intCast(exception_kind), "E_GODOT_COMPILED_EXCEPTION");
     }
 
-    if (method.spec.returns != .float_value) {
+    if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value) {
         abandonRuntime(runtime_handle);
         return writeImmediateResult(method.spec.returns, result_word, return_variant, call_error);
+    }
+
+    if (method.spec.returns == .string_value or method.spec.returns == .string_name_value) {
+        writeTextResult(method.spec.returns, result_word, return_variant, call_error);
+        abandonRuntime(runtime_handle);
+        return;
     }
 
     if (term_runtime.ex_term_is_float(result_word) == 0) {
@@ -336,6 +353,66 @@ fn writeImmediateResult(
             api.int_to_variant(return_variant, &value);
         },
         .float_value => unreachable,
+        .string_value, .string_name_value => unreachable,
+    }
+}
+
+fn textVariantToTerm(value_type: ValueType, source: godot.VariantPtr) ?i64 {
+    var string_storage: [8]u8 align(8) = undefined;
+    if (value_type == .string_value) {
+        api.string_from_variant(&string_storage, source);
+    } else {
+        var string_name_storage: [8]u8 align(8) = undefined;
+        api.string_name_from_variant(&string_name_storage, source);
+        defer api.string_name_destructor(&string_name_storage);
+        const arguments = [_]godot.ConstTypePtr{&string_name_storage};
+        api.string_from_string_name(&string_storage, &arguments);
+    }
+    defer api.string_destructor(&string_storage);
+
+    const length = api.string_to_utf8_chars(&string_storage, null, 0);
+    if (length < 0) return null;
+    if (length == 0) return term_runtime.ex_term_binary_from_bytes(null, 0);
+    const memory = api.mem_alloc2(@intCast(length), 0) orelse return null;
+    defer api.mem_free2(memory, 0);
+    const bytes: [*]u8 = @ptrCast(memory);
+    if (api.string_to_utf8_chars(&string_storage, bytes, length) != length) return null;
+    return term_runtime.ex_term_binary_from_bytes(bytes, length);
+}
+
+fn writeTextResult(
+    value_type: ValueType,
+    result_word: i64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    const length = term_runtime.ex_term_binary_length(result_word);
+    if (term_runtime.ex_term_is_binary(result_word) == 0 or length < 0) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(variantType(value_type)), "E_GODOT_RETURN_TYPE_MISMATCH");
+    }
+
+    const capacity: usize = @intCast(length);
+    const memory = api.mem_alloc2(@max(capacity, 1), 0) orelse {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(variantType(value_type)), "E_GODOT_STRING_CONVERSION_FAILED");
+    };
+    defer api.mem_free2(memory, 0);
+    const bytes: [*]u8 = @ptrCast(memory);
+    if (term_runtime.ex_term_binary_copy(result_word, bytes, length) != length) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(variantType(value_type)), "E_GODOT_STRING_CONVERSION_FAILED");
+    }
+
+    if (value_type == .string_value) {
+        var string_storage: [8]u8 align(8) = undefined;
+        if (api.string_new_with_utf8_chars_and_len2(&string_storage, bytes, length) != 0) {
+            return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.string), "E_GODOT_STRING_INVALID_UTF8");
+        }
+        defer api.string_destructor(&string_storage);
+        api.string_to_variant(return_variant, &string_storage);
+    } else {
+        var string_name_storage: [8]u8 align(8) = undefined;
+        api.string_name_new_with_utf8_chars_and_len(&string_name_storage, bytes, length);
+        defer api.string_name_destructor(&string_name_storage);
+        api.string_name_to_variant(return_variant, &string_name_storage);
     }
 }
 

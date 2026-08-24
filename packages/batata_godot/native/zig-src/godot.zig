@@ -121,9 +121,14 @@ pub const MemAlloc2 = *const fn (usize, Bool) callconv(.c) ?*anyopaque;
 pub const MemFree2 = *const fn (?*anyopaque, Bool) callconv(.c) void;
 pub const PrintError = *const fn ([*:0]const u8, [*:0]const u8, [*:0]const u8, i32, Bool) callconv(.c) void;
 pub const StringNameNewWithLatin1Chars = *const fn (StringNamePtr, [*:0]const u8, Bool) callconv(.c) void;
+pub const StringNameNewWithUtf8CharsAndLen = *const fn (StringNamePtr, [*]const u8, Int) callconv(.c) void;
 pub const StringNewWithUtf8Chars = *const fn (?*anyopaque, [*:0]const u8) callconv(.c) void;
+pub const StringNewWithUtf8CharsAndLen2 = *const fn (?*anyopaque, [*]const u8, Int) callconv(.c) Int;
+pub const StringToUtf8Chars = *const fn (?*const anyopaque, ?[*]u8, Int) callconv(.c) Int;
 pub const PtrDestructor = *const fn (TypePtr) callconv(.c) void;
+pub const PtrConstructor = *const fn (TypePtr, ?[*]const ConstTypePtr) callconv(.c) void;
 pub const VariantGetPtrDestructor = *const fn (VariantType) callconv(.c) ?PtrDestructor;
+pub const VariantGetPtrConstructor = *const fn (VariantType, i32) callconv(.c) ?PtrConstructor;
 pub const VariantGetType = *const fn (ConstVariantPtr) callconv(.c) VariantType;
 pub const VariantFromTypeConstructor = *const fn (VariantPtr, TypePtr) callconv(.c) void;
 pub const TypeFromVariantConstructor = *const fn (TypePtr, VariantPtr) callconv(.c) void;
@@ -143,8 +148,13 @@ pub const Api = struct {
     mem_free2: MemFree2,
     print_error: PrintError,
     string_name_new_with_latin1_chars: StringNameNewWithLatin1Chars,
+    string_name_new_with_utf8_chars_and_len: StringNameNewWithUtf8CharsAndLen,
     string_new_with_utf8_chars: StringNewWithUtf8Chars,
+    string_new_with_utf8_chars_and_len2: StringNewWithUtf8CharsAndLen2,
+    string_to_utf8_chars: StringToUtf8Chars,
     string_destructor: PtrDestructor,
+    string_name_destructor: PtrDestructor,
+    string_from_string_name: PtrConstructor,
     variant_get_type: VariantGetType,
     variant_new_nil: VariantNewNil,
     bool_from_variant: TypeFromVariantConstructor,
@@ -153,6 +163,10 @@ pub const Api = struct {
     int_to_variant: VariantFromTypeConstructor,
     float_from_variant: TypeFromVariantConstructor,
     float_to_variant: VariantFromTypeConstructor,
+    string_from_variant: TypeFromVariantConstructor,
+    string_to_variant: VariantFromTypeConstructor,
+    string_name_from_variant: TypeFromVariantConstructor,
+    string_name_to_variant: VariantFromTypeConstructor,
     classdb_construct_object2: ClassdbConstructObject2,
     object_set_instance: ObjectSetInstance,
     object_set_instance_binding: ObjectSetInstanceBinding,
@@ -166,13 +180,19 @@ pub const Api = struct {
         const get_from = resolveOne(GetVariantFromTypeConstructor, get, "get_variant_from_type_constructor") orelse return null;
         const get_to = resolveOne(GetVariantToTypeConstructor, get, "get_variant_to_type_constructor") orelse return null;
         const get_destructor = resolveOne(VariantGetPtrDestructor, get, "variant_get_ptr_destructor") orelse return null;
+        const get_constructor = resolveOne(VariantGetPtrConstructor, get, "variant_get_ptr_constructor") orelse return null;
         return .{
             .mem_alloc2 = resolveOne(MemAlloc2, get, "mem_alloc2") orelse return null,
             .mem_free2 = resolveOne(MemFree2, get, "mem_free2") orelse return null,
             .print_error = resolveOne(PrintError, get, "print_error") orelse return null,
             .string_name_new_with_latin1_chars = resolveOne(StringNameNewWithLatin1Chars, get, "string_name_new_with_latin1_chars") orelse return null,
+            .string_name_new_with_utf8_chars_and_len = resolveOne(StringNameNewWithUtf8CharsAndLen, get, "string_name_new_with_utf8_chars_and_len") orelse return null,
             .string_new_with_utf8_chars = resolveOne(StringNewWithUtf8Chars, get, "string_new_with_utf8_chars") orelse return null,
+            .string_new_with_utf8_chars_and_len2 = resolveOne(StringNewWithUtf8CharsAndLen2, get, "string_new_with_utf8_chars_and_len2") orelse return null,
+            .string_to_utf8_chars = resolveOne(StringToUtf8Chars, get, "string_to_utf8_chars") orelse return null,
             .string_destructor = get_destructor(.string) orelse return null,
+            .string_name_destructor = get_destructor(.string_name) orelse return null,
+            .string_from_string_name = get_constructor(.string, 2) orelse return null,
             .variant_get_type = resolveOne(VariantGetType, get, "variant_get_type") orelse return null,
             .variant_new_nil = resolveOne(VariantNewNil, get, "variant_new_nil") orelse return null,
             .bool_from_variant = get_to(.bool) orelse return null,
@@ -181,6 +201,10 @@ pub const Api = struct {
             .int_to_variant = get_from(.int) orelse return null,
             .float_from_variant = get_to(.float) orelse return null,
             .float_to_variant = get_from(.float) orelse return null,
+            .string_from_variant = get_to(.string) orelse return null,
+            .string_to_variant = get_from(.string) orelse return null,
+            .string_name_from_variant = get_to(.string_name) orelse return null,
+            .string_name_to_variant = get_from(.string_name) orelse return null,
             .classdb_construct_object2 = resolveOne(ClassdbConstructObject2, get, "classdb_construct_object2") orelse return null,
             .object_set_instance = resolveOne(ObjectSetInstance, get, "object_set_instance") orelse return null,
             .object_set_instance_binding = resolveOne(ObjectSetInstanceBinding, get, "object_set_instance_binding") orelse return null,

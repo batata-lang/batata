@@ -4166,6 +4166,28 @@ pub fn ex_term_binary_length(binary: i64) callconv(.c) i64 {
     return @intCast(binary_len(binary));
 }
 
+/// Copies host-owned bytes into a runtime-owned binary. The host buffer is
+/// never retained. Returns nil for invalid input or allocation failure.
+pub fn ex_term_binary_from_bytes(bytes: ?[*]const u8, length: i64) callconv(.c) i64 {
+    if (length < 0) return nil_word;
+    const len: usize = @intCast(length);
+    if (len != 0 and bytes == null) return nil_word;
+    const binary = alloc_binary(len) orelse return nil_word;
+    const result = word_from_ptr(binary, tag_binary);
+    if (len != 0) @memcpy(binary_bytes(result)[0..len], bytes.?[0..len]);
+    return result;
+}
+
+/// Copies a runtime binary into host-owned storage without exposing the
+/// runtime allocation. Returns its length or -1 on failure.
+pub fn ex_term_binary_copy(binary: i64, destination: ?[*]u8, capacity: i64) callconv(.c) i64 {
+    if (word_tag(binary) != tag_binary or capacity < 0) return -1;
+    const len = binary_len(binary);
+    if (len > @as(usize, @intCast(capacity)) or (len != 0 and destination == null)) return -1;
+    if (len != 0) @memcpy(destination.?[0..len], binary_bytes(binary)[0..len]);
+    return @intCast(len);
+}
+
 /// Reads the byte at `index` as a tagged int term; nil for out-of-range or
 /// non-binaries (the caller is expected to have checked `is_binary` first).
 pub fn ex_term_binary_get(binary: i64, index: i64) callconv(.c) i64 {
@@ -7283,6 +7305,27 @@ test "term ABI throw unwinds to the innermost try" {
 
     // jmp_buf size is positive and matches the C ABI
     try std.testing.expect(ex_term_jmp_buf_size() > 0);
+}
+
+test "host byte copies own their binary storage" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expect(runtime_handle > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(runtime_handle);
+    }
+
+    var source = [_]u8{ 0x42, 0x61, 0x74, 0x61, 0x74, 0x61 };
+    const binary = ex_term_binary_from_bytes(&source, source.len);
+    source[0] = 0;
+    try std.testing.expectEqual(@as(i64, 6), ex_term_binary_length(binary));
+
+    var destination = [_]u8{0} ** 6;
+    try std.testing.expectEqual(@as(i64, 6), ex_term_binary_copy(binary, &destination, destination.len));
+    try std.testing.expectEqualSlices(u8, "Batata", &destination);
+    try std.testing.expectEqual(@as(i64, -1), ex_term_binary_copy(binary, &destination, 5));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_binary_copy(nil_word, &destination, destination.len));
 }
 
 fn ex_term_is_nil_word(word: i64) i64 {
