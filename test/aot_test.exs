@@ -24,6 +24,8 @@ defmodule Batata.AOTTest do
     assert File.exists?(output.archive)
     assert File.exists?(output.driver)
     assert File.exists?(output.object)
+    refute File.exists?(Path.join(tmp_dir, "batata.mlir"))
+    refute File.exists?(Path.join(tmp_dir, "batata.ll"))
 
     binary = Path.join(tmp_dir, "run_math")
 

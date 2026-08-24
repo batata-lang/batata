@@ -3,7 +3,7 @@
 `batata_godot` is an independent Mix package for generating fail-closed Godot
 GDExtension bindings around Batata-compiled functions.
 
-The package validates a closed set of scalar method signatures and emits a
+The package validates a closed set of method and class contracts and emits a
 canonical binding plan with a stable SHA-256 digest. Its first native target
 uses a checked-in Zig adapter and a compile-time Term Runtime extension
 contract to build a GDExtension that Godot can load, initialize, deinitialize,
@@ -17,6 +17,10 @@ defmodule Example do
 
   godot_class "BatataExample", base: "RefCounted"
   godot_method :add, args: [:int, :int], returns: :int
+  godot_method :get_answer, returns: :int
+  godot_method :set_answer, args: [:int]
+  godot_property :answer, type: :int, getter: :get_answer, setter: :set_answer
+  godot_signal :answer_changed, args: [:int]
 
   def add(a, b), do: a + b
 end
@@ -26,7 +30,7 @@ json = Batata.Godot.canonical_json(Example)
 digest = Batata.Godot.digest(Example)
 ```
 
-Build the first macOS arm64 artifact with Godot 4.6.2 and Zig 0.16:
+Build the host artifact with Godot 4.6.2 and Zig 0.16:
 
 ```elixir
 output =
@@ -43,25 +47,31 @@ The optional smoke invokes `godot --headless --editor`, using an explicit
 a loadable extension.
 
 The plan records the extension and entry symbol, Godot compatibility minimum,
-initialization level, class inheritance, method signatures, and Batata native
-symbols. Method ordering and JSON field ordering are deterministic.
+initialization level, class inheritance, methods, properties, signals, the
+closed `_ready`/`_process` virtual set, and Batata native symbols. Descriptor
+ordering and JSON field ordering are deterministic.
 
-Only `:nil`, `:bool`, `:int`, and `:float` are accepted in the initial schema.
-Strings, containers, objects, closures, PIDs, and references are rejected until
-their ownership and lifetime codecs exist. Failures use
+The closed value surface is `nil`, `:bool`, `:int`, `:float`, `:string`,
+`:string_name`, `:vector2`, `:vector3`, and `{:object, "ClassName"}`. Strings
+are copied, while objects cross the boundary only through invocation-scoped,
+generation-checked capabilities. Containers, closures, PIDs, and references
+remain rejected. Failures use
 `Batata.Godot.Diagnostic` with stable `E_GODOT_*` codes and JSON-ready context
 and recovery actions.
 
 The generated bundle records the binding-plan, fixed adapter implementation,
 native artifact and Godot API digests, target triple, entry symbol, compiler
-versions, and a sorted artifact index. The pinned raw interface is Godot 4.6.2
+versions, and a sorted artifact index. Each build also emits a
+`platform_receipt.json` binding the target and Godot feature tag to the library
+digest, plan digest, adapter digest, and API digest. The `.gdextension` resource
+contains the closed library table for macOS arm64/x86_64, Linux x86_64, and
+Windows x86_64. The pinned raw interface is Godot 4.6.2
 `gdextension_interface.json`, SHA-256
 `34d7058f31af186d36b84567e70a9f9543da0d74f25cfe5266d4fe2d27e090f0`.
 
-This target deliberately registers no class yet. The next slice will add the
-`RefCounted` ClassDB registration and the first `int -> int` call trampoline;
-until then, successful loading does not claim that declared methods are
-callable from Godot.
+CI loads each host library into pinned Godot 4.6.2 headless and calls compiled
+Batata methods. A successful link alone therefore cannot satisfy the platform
+gate.
 
 Inside the Batata monorepo, select the root checkout explicitly before running
 package tasks:

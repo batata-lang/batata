@@ -14,7 +14,7 @@ defmodule Batata.Godot.NativeAdapterTest do
   use ExUnit.Case, async: true
 
   alias Batata.Godot.NativeAdapterTest.Extension
-  alias Batata.Godot.Resource
+  alias Batata.Godot.{Platform, Resource}
 
   test "checked-in adapter uses the comptime term runtime extension contract" do
     source = File.read!(Path.join(native_build_root(), "native/zig-src/main.zig"))
@@ -39,11 +39,18 @@ defmodule Batata.Godot.NativeAdapterTest do
            |> File.regular?()
   end
 
-  test "GDExtension resource is pinned to the initial platform surface" do
+  test "GDExtension resource carries the closed platform feature table" do
+    assert Platform.supported_targets() == [
+             "aarch64-apple-darwin",
+             "x86_64-apple-darwin",
+             "x86_64-linux-gnu",
+             "x86_64-pc-windows-msvc"
+           ]
+
     resource =
       Extension
       |> Batata.Godot.binding_plan()
-      |> Resource.gdextension_source("libadapter_fixture.macos.debug.arm64.dylib")
+      |> Resource.gdextension_source(Platform.library_table("adapter_fixture"))
 
     assert resource =~ ~s|entry_symbol = "adapter_fixture_library_init"|
     assert resource =~ ~s|compatibility_minimum = "4.6"|
@@ -51,6 +58,15 @@ defmodule Batata.Godot.NativeAdapterTest do
 
     assert resource =~
              ~s|macos.debug.arm64 = "res://bin/libadapter_fixture.macos.debug.arm64.dylib"|
+
+    assert resource =~
+             ~s|macos.debug.x86_64 = "res://bin/libadapter_fixture.macos.debug.x86_64.dylib"|
+
+    assert resource =~
+             ~s|linux.debug.x86_64 = "res://bin/libadapter_fixture.linux.debug.x86_64.so"|
+
+    assert resource =~
+             ~s|windows.debug.x86_64 = "res://bin/adapter_fixture.windows.debug.x86_64.dll"|
   end
 
   defp native_build_root do

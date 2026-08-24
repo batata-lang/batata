@@ -2,18 +2,17 @@ defmodule Batata.Godot.Build do
   @moduledoc """
   Builds the first loadable Batata GDExtension artifact boundary.
 
-  The current target is intentionally narrow: Godot 4.6.2, macOS arm64 and
-  Zig 0.16. It links the Batata object and term runtime into a dynamic library,
+  The native targets are Godot 4.6.2 on macOS arm64/x86_64, Linux x86_64, and
+  Windows x86_64 with Zig 0.16. It links the Batata object and term runtime into a dynamic library,
   exports the configured GDExtension entry point, and can replay a real Godot
   headless load smoke. It does not register the declared class yet.
   """
 
-  alias Batata.Godot.{BindingPlan, Diagnostic, Resource}
+  alias Batata.Godot.{BindingPlan, Diagnostic, Platform, Resource}
 
   @godot_api_version "4.6.2"
   @godot_api_sha256 "34d7058f31af186d36b84567e70a9f9543da0d74f25cfe5266d4fe2d27e090f0"
   @initialization_levels %{core: 0, servers: 1, scene: 2, editor: 3}
-  @target "aarch64-apple-darwin"
   @option_keys [:batata, :godot, :smoke, :zig]
 
   @type output :: %{
@@ -23,6 +22,7 @@ defmodule Batata.Godot.Build do
           bundle: Path.t(),
           artifact_index: Path.t(),
           manifest: Path.t(),
+          platform_receipt: Path.t(),
           native: map()
         }
 
@@ -38,7 +38,7 @@ defmodule Batata.Godot.Build do
   def build(source, extension, output_dir, ctx, opts \\ [])
       when is_binary(source) and is_binary(output_dir) do
     validate_options!(opts)
-    validate_platform!()
+    platform = Platform.host!()
 
     plan = normalize_plan(extension)
     validate_api_version!(plan)
@@ -49,7 +49,7 @@ defmodule Batata.Godot.Build do
     File.mkdir_p!(bin_dir)
 
     binding_plan_path = Path.join(output_dir, "binding_plan.json")
-    library_name = "lib#{plan.extension}.macos.debug.arm64.dylib"
+    library_name = Platform.library_name(platform, plan.extension)
     library_path = Path.join(bin_dir, library_name)
     gdextension_path = Path.join(bin_dir, "#{plan.extension}.gdextension")
 
@@ -57,16 +57,21 @@ defmodule Batata.Godot.Build do
 
     native = Batata.build(source, native_dir, ctx, Keyword.get(opts, :batata, []))
     verify_method_symbols!(native.archive, plan)
-    link!(zig, plan, native, native_dir, library_path)
+    link!(zig, plan, native, native_dir, library_path, platform)
     verify_library_symbols!(library_path, plan)
-    File.write!(gdextension_path, Resource.gdextension_source(plan, library_name))
+
+    File.write!(
+      gdextension_path,
+      Resource.gdextension_source(plan, Platform.library_table(plan.extension))
+    )
 
     metadata =
       write_metadata!(output_dir, plan, zig_version,
         binding_plan: binding_plan_path,
         gdextension: gdextension_path,
         library: library_path,
-        native: native
+        native: native,
+        platform: platform
       )
 
     case Keyword.get(opts, :smoke, false) do
@@ -383,19 +388,6 @@ defmodule Batata.Godot.Build do
     end
   end
 
-  defp validate_platform! do
-    architecture = :erlang.system_info(:system_architecture) |> List.to_string()
-
-    unless match?({:unix, :darwin}, :os.type()) and String.starts_with?(architecture, "aarch64-") do
-      diagnostic!(
-        "E_GODOT_PLATFORM_UNSUPPORTED",
-        "the first GDExtension build target is macOS arm64 only",
-        %{host: architecture, supported: [@target]},
-        [%{command: "build on an arm64 macOS host"}]
-      )
-    end
-  end
-
   defp validate_api_version!(%BindingPlan{} = plan) do
     requested = version_tuple(plan.compatibility_minimum)
     supported = version_tuple(@godot_api_version)
@@ -510,12 +502,12 @@ defmodule Batata.Godot.Build do
       )
   end
 
-  defp link!(zig, %BindingPlan{} = plan, native, build_dir, library_path) do
+  defp link!(zig, %BindingPlan{} = plan, native, build_dir, library_path, platform) do
     level = Map.fetch!(@initialization_levels, plan.initialization_level)
     install_dir = Path.join(build_dir, "godot-install")
     cache_dir = Path.join(build_dir, "godot-zig-cache")
     build_root = native_build_root()
-    library_base = "#{plan.extension}.macos.debug.arm64"
+    library_base = Platform.library_base(platform, plan.extension)
 
     args = [
       "build",
@@ -546,7 +538,7 @@ defmodule Batata.Godot.Build do
         {_output, 0} ->
           install_dir
           |> Path.join("lib")
-          |> Path.join("lib#{library_base}.dylib")
+          |> Path.join(Platform.installed_library_name(platform, plan.extension))
           |> File.rename!(library_path)
 
         {output, status} ->
@@ -613,10 +605,28 @@ defmodule Batata.Godot.Build do
   end
 
   defp write_metadata!(output_dir, plan, zig_version, artifacts) do
+    platform = artifacts[:platform]
+    platform_receipt_path = Path.join(output_dir, "platform_receipt.json")
+
+    platform_receipt = %{
+      "adapter_implementation_sha256" => adapter_implementation_digest(),
+      "binding_plan_sha256" => BindingPlan.digest(plan),
+      "feature" => platform.feature,
+      "godot_api_sha256" => @godot_api_sha256,
+      "godot_api_version" => @godot_api_version,
+      "library" => Path.relative_to(artifacts[:library], output_dir),
+      "library_sha256" => digest_file(artifacts[:library]),
+      "schema_version" => 1,
+      "target" => platform.target
+    }
+
+    File.write!(platform_receipt_path, JSON.encode!(platform_receipt))
+
     artifact_paths = [
       artifacts[:binding_plan],
       artifacts[:gdextension],
-      artifacts[:library]
+      artifacts[:library],
+      platform_receipt_path
     ]
 
     files =
@@ -638,8 +648,9 @@ defmodule Batata.Godot.Build do
       "kind" => "godot_gdextension",
       "library" => Path.relative_to(artifacts[:library], output_dir),
       "native_artifact_sha256" => native_bundle["artifact_digest"],
+      "platform_receipt_sha256" => digest_file(platform_receipt_path),
       "schema_version" => 1,
-      "target" => @target
+      "target" => platform.target
     }
 
     manifest = %{
@@ -648,7 +659,7 @@ defmodule Batata.Godot.Build do
       "godot_api" => @godot_api_version,
       "godot_api_sha256" => @godot_api_sha256,
       "schema_version" => 1,
-      "target" => @target,
+      "target" => platform.target,
       "version" => Application.spec(:batata_godot, :vsn) |> to_string(),
       "zig" => zig_version
     }
@@ -660,7 +671,12 @@ defmodule Batata.Godot.Build do
     File.write!(artifact_index_path, JSON.encode!(%{"files" => files}))
     File.write!(manifest_path, JSON.encode!(manifest))
 
-    %{bundle: bundle_path, artifact_index: artifact_index_path, manifest: manifest_path}
+    %{
+      bundle: bundle_path,
+      artifact_index: artifact_index_path,
+      manifest: manifest_path,
+      platform_receipt: platform_receipt_path
+    }
   end
 
   defp digest_file(path) do
@@ -671,6 +687,7 @@ defmodule Batata.Godot.Build do
     [
       Path.join(native_build_root(), "build.zig"),
       Path.join(native_build_root(), "build.zig.zon"),
+      Path.join(native_build_root(), "native/zig-src/godot.zig"),
       Path.join(native_build_root(), "native/zig-src/main.zig")
     ]
     |> Enum.map_join(&digest_file/1)

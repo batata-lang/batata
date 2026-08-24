@@ -61,11 +61,18 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Batata's MLIR object is produced outside Zig. Delegate final relocation
+    // handling to each platform linker, which is the authority for its ABI.
+    library.use_lld = false;
     library.root_module.addImport("term_runtime", term_runtime);
     library.root_module.addOptions("build_options", options);
     library.root_module.addObjectFile(.{ .cwd_relative = batata_object });
     library.root_module.addObjectFile(.{ .cwd_relative = runtime_library });
-    library.root_module.addRPathSpecial("@loader_path");
+    switch (target.result.os.tag) {
+        .macos => library.root_module.addRPathSpecial("@loader_path"),
+        .linux => library.root_module.addRPathSpecial("$ORIGIN"),
+        else => {},
+    }
 
     const install = b.addInstallArtifact(library, .{
         .dest_dir = .{ .override = .lib },
