@@ -8,7 +8,7 @@ defmodule Batata.Stdlib.Plan do
   safety explicit before lowering:
 
     * `purity` is `:pure` or `:impure`;
-    * `allocation` is `:none` or `:may_allocate`;
+    * `allocation` is `:none`, `:may_allocate`, or `:unknown`;
     * `preemption` is `:none`, `:resumable`, or `:blocking`;
     * `reductions` is `:constant`, `:per_element`, or `:external`.
 
@@ -22,7 +22,7 @@ defmodule Batata.Stdlib.Plan do
     :mfa,
     :class,
     purity: :pure,
-    allocation: :none,
+    allocation: :unknown,
     preemption: :none,
     reductions: :constant
   ]
@@ -31,7 +31,7 @@ defmodule Batata.Stdlib.Plan do
           mfa: {module(), atom(), non_neg_integer()},
           class: atom(),
           purity: :pure | :impure,
-          allocation: :none | :may_allocate,
+          allocation: :none | :may_allocate | :unknown,
           preemption: :none | :resumable | :blocking,
           reductions: :constant | :per_element | :external
         }
