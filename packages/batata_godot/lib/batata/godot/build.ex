@@ -88,6 +88,7 @@ defmodule Batata.Godot.Build do
     project_path = Path.join(output_dir, "project.godot")
     extension_list_dir = Path.join(output_dir, ".godot")
     extension_list_path = Path.join(extension_list_dir, "extension_list.cfg")
+    smoke_script_path = Path.join(output_dir, ".batata/godot-classdb-smoke.gd")
 
     File.mkdir_p!(extension_list_dir)
 
@@ -120,7 +121,33 @@ defmodule Batata.Godot.Build do
 
     File.write!(extension_list_path, extension)
 
-    case System.cmd(godot, ["--headless", "--editor", "--path", output_dir, "--quit"],
+    class_name =
+      output_dir
+      |> Path.join("binding_plan.json")
+      |> File.read!()
+      |> JSON.decode!()
+      |> get_in(["class", "name"])
+
+    File.write!(smoke_script_path, """
+    extends SceneTree
+
+    func _init():
+      if not ClassDB.class_exists(#{JSON.encode!(class_name)}):
+        push_error("E_GODOT_CLASS_MISSING: registered Batata class is absent")
+        quit(17)
+        return
+      quit()
+    """)
+
+    case System.cmd(
+           godot,
+           [
+             "--headless",
+             "--path",
+             output_dir,
+             "--script",
+             "res://.batata/godot-classdb-smoke.gd"
+           ],
            stderr_to_stdout: true
          ) do
       {output, 0} ->
@@ -322,6 +349,8 @@ defmodule Batata.Godot.Build do
       "-Doptimize=Debug",
       "-Dentry-symbol=#{plan.entry_symbol}",
       "-Dinitialization-level=#{level}",
+      "-Dclass-name=#{plan.class.name}",
+      "-Dbase-class-name=#{plan.class.base}",
       "-Dterm-runtime-source=#{Path.join(Batata.TermRuntime.native_dir(), "term_runtime.zig")}",
       "-Dbatata-object=#{native.object}",
       "-Druntime-library=#{native.runtime_lib}",
