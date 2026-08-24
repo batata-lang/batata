@@ -193,7 +193,7 @@ defmodule Batata.TrailingLiteralDispatchTest do
   end
 
   test "rejects unreviewed trailing literals", %{ctx: ctx} do
-    for literal <- [~S("binary"), "%{}", "[]"] do
+    for literal <- [~S("binary"), "[]"] do
       assert_raise Batata.Lift.Error,
                    ~r/trailing arguments must be variables, wildcards, or compile-known atom or integer literals/,
                    fn ->

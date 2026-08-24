@@ -13,6 +13,7 @@
     {"id": "container.dynamic_map", "status": "executable", "gate": "decoder_subset_test"},
     {"id": "pattern.map_subset", "status": "executable", "gate": "execute_test"},
     {"id": "pattern.map_parameter", "status": "executable", "gate": "execute_test"},
+    {"id": "pattern.trailing_map", "status": "executable", "gate": "trailing_map_pattern_test", "scope": "bare or aliased atom-key subset maps in multi-clause trailing arguments, with guard and fallback dispatch"},
     {"id": "pattern.struct", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with validated fields and exact __struct__ matching"},
     {"id": "map.update_exact", "status": "executable", "gate": "execute_test", "scope": "literal atom keys, BEAM evaluation order, immutable replacement, typed KeyError and BadMapError"},
     {"id": "dispatch.non_exhaustive", "status": "executable", "gate": "execute_test"},
