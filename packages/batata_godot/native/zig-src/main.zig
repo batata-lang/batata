@@ -38,6 +38,11 @@ const Instance = struct {
     magic: u64,
 };
 
+const InvocationContext = struct {
+    method: *const MethodRuntime,
+    arguments: *const [max_method_arity]i64,
+};
+
 const instance_magic: u64 = 0x4241_5441_5441_4744;
 
 var api: godot.Api = undefined;
@@ -49,6 +54,7 @@ var empty_string_storage: [8]u8 align(8) = undefined;
 var method_name_storage: [method_specs.len][8]u8 align(8) = undefined;
 var method_name_chars: [method_specs.len][method_name_storage_width]u8 = undefined;
 var method_runtimes = makeMethodRuntimes();
+var live_instances = std.atomic.Value(usize).init(0);
 var class_registered = false;
 
 const binding_callbacks = godot.InstanceBindingCallbacks{
@@ -181,6 +187,7 @@ fn createInstance(class_userdata: ?*anyopaque, notify_postinitialize: godot.Bool
 
     api.object_set_instance(object, &class_name_storage, instance);
     api.object_set_instance_binding(object, library, instance, &binding_callbacks);
+    _ = live_instances.fetchAdd(1, .acq_rel);
     return object;
 }
 
@@ -190,7 +197,14 @@ fn freeInstance(class_userdata: ?*anyopaque, class_instance: godot.ClassInstance
     const instance: *Instance = @ptrCast(@alignCast(instance_ptr));
     if (instance.magic != instance_magic) return;
     instance.magic = 0;
+    _ = live_instances.fetchSub(1, .acq_rel);
     api.mem_free2(instance, 0);
+}
+
+fn invokeProtected(encoded_context: i64) callconv(.c) i64 {
+    const address: u64 = @bitCast(encoded_context);
+    const context: *const InvocationContext = @ptrFromInt(@as(usize, @intCast(address)));
+    return context.method.invoke(context.arguments);
 }
 
 fn methodCall(
@@ -266,7 +280,21 @@ fn methodCall(
         };
     }
 
-    const result_word = method.invoke(&arguments);
+    const invocation = InvocationContext{ .method = method, .arguments = &arguments };
+    var caught: i64 = 0;
+    var exception_kind: i64 = 0;
+    const encoded_context: i64 = @bitCast(@as(u64, @intFromPtr(&invocation)));
+    const result_word = term_runtime.ex_term_protected_call(
+        &invokeProtected,
+        encoded_context,
+        &caught,
+        &exception_kind,
+    );
+
+    if (caught != 0) {
+        abandonRuntime(runtime_handle);
+        return failCall(call_error, .invalid_method, -1, @intCast(exception_kind), "E_GODOT_COMPILED_EXCEPTION");
+    }
 
     if (method.spec.returns != .float_value) {
         abandonRuntime(runtime_handle);
@@ -399,6 +427,9 @@ fn initialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(
 fn deinitialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(.c) void {
     _ = userdata;
     if (level != build_options.initialization_level or !class_registered) return;
+    if (live_instances.load(.acquire) != 0) {
+        api.print_error("E_GODOT_RUNTIME_BUSY", "Batata.Godot.deinitialize", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    }
     api.classdb_unregister_extension_class(library, &class_name_storage);
     api.string_destructor(&empty_string_storage);
     class_registered = false;

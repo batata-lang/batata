@@ -51,7 +51,7 @@ defmodule Batata.Godot.BuildTest do
           tmp_dir,
           ctx,
           smoke: [
-            %{method: "add", arguments: [20, 22], expected: 42},
+            %{method: "add", arguments: [20, 22], expected: 42, repeat: 32},
             %{method: "bool_identity", arguments: [true], expected: true},
             %{method: "float_identity", arguments: [2.25], expected: 2.25},
             %{method: "nil_identity", arguments: [nil], expected: nil}

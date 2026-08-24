@@ -143,7 +143,7 @@ defmodule Batata.Godot.Build do
       |> JSON.decode!()
       |> get_in(["class", "name"])
 
-    invocation_source = smoke_invocation_source(invocation)
+    invocation_source = smoke_invocation_source(invocation, class_name)
 
     File.write!(smoke_script_path, """
     extends SceneTree
@@ -195,32 +195,70 @@ defmodule Batata.Godot.Build do
     end
   end
 
-  defp smoke_invocation_source(nil), do: ""
+  defp smoke_invocation_source(nil, _class_name), do: ""
 
-  defp smoke_invocation_source(%{} = invocation), do: smoke_invocation_source([invocation])
+  defp smoke_invocation_source(%{} = invocation, class_name),
+    do: smoke_invocation_source([invocation], class_name)
 
-  defp smoke_invocation_source(invocations) when is_list(invocations) do
+  defp smoke_invocation_source(invocations, class_name) when is_list(invocations) do
     invocations
     |> Enum.with_index()
     |> Enum.map_join(fn
-      {%{method: method, arguments: arguments, expected: expected}, index}
+      {%{method: method, arguments: arguments, expected: _expected} = invocation, index}
       when is_binary(method) and is_list(arguments) ->
-        [
-          "  var result_#{index} = object.callv(#{JSON.encode!(method)}, #{JSON.encode!(arguments)})",
-          "  if result_#{index} != #{JSON.encode!(expected)}:",
-          "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: compiled Batata method returned an unexpected value\")",
-          "    quit(19)",
-          "    return",
-          ""
-        ]
-        |> Enum.join("\n")
+        render_smoke_invocation(invocation, index, class_name)
 
       {invocation, _index} ->
         invalid_smoke_invocation!(invocation)
     end)
   end
 
-  defp smoke_invocation_source(invocation), do: invalid_smoke_invocation!(invocation)
+  defp smoke_invocation_source(invocation, _class_name),
+    do: invalid_smoke_invocation!(invocation)
+
+  defp render_smoke_invocation(invocation, index, class_name) do
+    repeat = Map.get(invocation, :repeat, 0)
+
+    unless is_integer(repeat) and repeat in 0..1_024 do
+      invalid_smoke_invocation!(invocation)
+    end
+
+    method = JSON.encode!(invocation.method)
+    arguments = JSON.encode!(invocation.arguments)
+    expected = JSON.encode!(invocation.expected)
+
+    call = [
+      "  var result_#{index} = object.callv(#{method}, #{arguments})",
+      "  if result_#{index} != #{expected}:",
+      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: compiled Batata method returned an unexpected value\")",
+      "    quit(19)",
+      "    return",
+      ""
+    ]
+
+    repeated =
+      if repeat == 0 do
+        []
+      else
+        [
+          "  for repeat_#{index} in range(#{repeat}):",
+          "    var probe_#{index} = ClassDB.instantiate(#{JSON.encode!(class_name)})",
+          "    if probe_#{index} == null:",
+          "      push_error(\"E_GODOT_INSTANCE_CREATE_FAILED: repeated instance creation failed\")",
+          "      quit(20)",
+          "      return",
+          "    var repeat_result_#{index} = probe_#{index}.callv(#{method}, #{arguments})",
+          "    if repeat_result_#{index} != #{expected}:",
+          "      push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: repeated call returned an unexpected value\")",
+          "      quit(21)",
+          "      return",
+          "    probe_#{index} = null",
+          ""
+        ]
+      end
+
+    Enum.join(call ++ repeated, "\n")
+  end
 
   defp invalid_smoke_invocation!(invocation) do
     diagnostic!(

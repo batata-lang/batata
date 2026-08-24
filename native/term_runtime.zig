@@ -2152,6 +2152,35 @@ pub fn ex_term_catch_value() callconv(.c) i64 {
     return throw_value;
 }
 
+/// Invokes a host callback behind the runtime's uncaught throw/raise
+/// boundary. `caught` is one when control returned through longjmp and zero
+/// on the normal path; `kind` preserves typed raise metadata. The callback
+/// must not retain the integer context beyond this synchronous call.
+pub fn ex_term_protected_call(
+    callback: ?*const fn (i64) callconv(.c) i64,
+    context: i64,
+    caught: *i64,
+    kind: *i64,
+) callconv(.c) i64 {
+    caught.* = 0;
+    kind.* = 0;
+    const invoke = callback orelse {
+        caught.* = -1;
+        return nil_word;
+    };
+
+    var boundary: c.jmp_buf = undefined;
+    const previous_boundary = uncaught_boundary;
+    uncaught_boundary = &boundary;
+    defer uncaught_boundary = previous_boundary;
+
+    if (c.setjmp(&boundary) == 0) return invoke(context);
+
+    caught.* = 1;
+    kind.* = unwind_kind;
+    return throw_value;
+}
+
 /// Returns the pid of the current execution context. The scalar slice runs a
 /// single actor with pid 1 (the atom term with id 1).
 pub fn ex_term_self() callconv(.c) i64 {
@@ -7215,6 +7244,27 @@ test "completed process slots are recycled by spawn (#50 stage 1)" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_is_atom(grown));
     try std.testing.expect(is_pid(grown));
     try std.testing.expectEqual(@as(i64, 4), ex_term_processes_runnable());
+}
+
+fn protectedRaise(context: i64) callconv(.c) i64 {
+    ex_term_raise(context, 6);
+}
+
+fn protectedIdentity(context: i64) callconv(.c) i64 {
+    return context;
+}
+
+test "protected host calls close normal and raised control paths" {
+    var caught: i64 = -1;
+    var kind: i64 = -1;
+
+    try std.testing.expectEqual(@as(i64, 42), ex_term_protected_call(&protectedIdentity, 42, &caught, &kind));
+    try std.testing.expectEqual(@as(i64, 0), caught);
+    try std.testing.expectEqual(@as(i64, 0), kind);
+
+    try std.testing.expectEqual(@as(i64, 99), ex_term_protected_call(&protectedRaise, 99, &caught, &kind));
+    try std.testing.expectEqual(@as(i64, 1), caught);
+    try std.testing.expectEqual(@as(i64, 6), kind);
 }
 
 test "term ABI throw unwinds to the innermost try" {
