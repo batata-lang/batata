@@ -277,6 +277,15 @@ defmodule Batata.Godot.Build do
   defp gdscript_value(value, "string_name") when is_binary(value),
     do: "&#{JSON.encode!(value)}"
 
+  defp gdscript_value([x, y], "vector2") when is_number(x) and is_number(y),
+    do: "Vector2(#{JSON.encode!(x)},#{JSON.encode!(y)})"
+
+  defp gdscript_value([x, y, z], "vector3")
+       when is_number(x) and is_number(y) and is_number(z),
+       do: "Vector3(#{JSON.encode!(x)},#{JSON.encode!(y)},#{JSON.encode!(z)})"
+
+  defp gdscript_value(:self, "object:" <> _class_name), do: "object"
+
   defp gdscript_value(value, _type), do: JSON.encode!(value)
 
   defp invalid_smoke_invocation!(invocation) do
@@ -504,6 +513,7 @@ defmodule Batata.Godot.Build do
   end
 
   defp value_type_name(nil), do: "nil"
+  defp value_type_name({:object, class_name}), do: "object:#{class_name}"
   defp value_type_name(value), do: Atom.to_string(value)
 
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1

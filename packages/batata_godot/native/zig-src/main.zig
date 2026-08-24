@@ -18,14 +18,19 @@ const ValueType = enum {
     float_value,
     string_value,
     string_name_value,
+    vector2_value,
+    vector3_value,
+    object_value,
 };
 
 const MethodSpec = struct {
     name: []const u8,
     symbol: []const u8,
     arguments: [max_method_arity]ValueType,
+    argument_object_classes: [max_method_arity][]const u8,
     arity: usize,
     returns: ValueType,
+    return_object_class: []const u8,
 };
 
 const method_specs = parseMethods(build_options.method_specs);
@@ -45,6 +50,16 @@ const InvocationContext = struct {
     arguments: *const [max_method_arity]i64,
 };
 
+const ObjectCapability = extern struct {
+    generation: u64,
+    slot: u32,
+    guard: u32,
+};
+
+const ObjectLease = struct {
+    object: godot.ObjectPtr,
+};
+
 const instance_magic: u64 = 0x4241_5441_5441_4744;
 
 var api: godot.Api = undefined;
@@ -57,6 +72,7 @@ var method_name_storage: [method_specs.len][8]u8 align(8) = undefined;
 var method_name_chars: [method_specs.len][method_name_storage_width]u8 = undefined;
 var method_runtimes = makeMethodRuntimes();
 var live_instances = std.atomic.Value(usize).init(0);
+var invocation_generation = std.atomic.Value(u64).init(1);
 var class_registered = false;
 
 const binding_callbacks = godot.InstanceBindingCallbacks{
@@ -83,12 +99,14 @@ fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
             if (name.len >= method_name_storage_width) @compileError("Batata.Godot method names must contain fewer than 128 bytes");
 
             var argument_types = [_]ValueType{.nil_value} ** max_method_arity;
+            var argument_object_classes = [_][]const u8{""} ** max_method_arity;
             var arity: usize = 0;
             if (arguments.len != 0) {
                 var argument_iterator = std.mem.splitScalar(u8, arguments, ',');
                 while (argument_iterator.next()) |argument| : (arity += 1) {
                     if (arity == max_method_arity) @compileError("Batata.Godot methods support at most 8 arguments");
                     argument_types[arity] = parseValueType(argument);
+                    argument_object_classes[arity] = parseObjectClass(argument);
                 }
             }
 
@@ -96,8 +114,10 @@ fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
                 .name = name,
                 .symbol = function_symbol,
                 .arguments = argument_types,
+                .argument_object_classes = argument_object_classes,
                 .arity = arity,
                 .returns = parseValueType(return_type),
+                .return_object_class = parseObjectClass(return_type),
             };
         }
         return result;
@@ -116,7 +136,19 @@ fn parseValueType(comptime encoded: []const u8) ValueType {
     if (std.mem.eql(u8, encoded, "float")) return .float_value;
     if (std.mem.eql(u8, encoded, "string")) return .string_value;
     if (std.mem.eql(u8, encoded, "string_name")) return .string_name_value;
+    if (std.mem.eql(u8, encoded, "vector2")) return .vector2_value;
+    if (std.mem.eql(u8, encoded, "vector3")) return .vector3_value;
+    if (std.mem.startsWith(u8, encoded, "object:") and encoded.len > "object:".len) return .object_value;
     @compileError("Batata.Godot method spec contains an unsupported Variant type: " ++ encoded);
+}
+
+fn parseObjectClass(comptime encoded: []const u8) []const u8 {
+    if (!std.mem.startsWith(u8, encoded, "object:")) return "";
+    const class_name = encoded["object:".len..];
+    if (class_name.len == 0 or class_name.len >= method_name_storage_width) {
+        @compileError("Batata.Godot object class names must contain 1 to 127 bytes");
+    }
+    return class_name;
 }
 
 fn Invocation(comptime spec: MethodSpec) type {
@@ -156,6 +188,9 @@ fn variantType(value_type: ValueType) godot.VariantType {
         .float_value => .float,
         .string_value => .string,
         .string_name_value => .string_name,
+        .vector2_value => .vector2,
+        .vector3_value => .vector3,
+        .object_value => .object,
     };
 }
 
@@ -254,6 +289,9 @@ fn methodCall(
     }
 
     var arguments = [_]i64{nil_word} ** max_method_arity;
+    var object_leases = [_]ObjectLease{.{ .object = null }} ** max_method_arity;
+    var object_lease_count: usize = 0;
+    const generation = invocation_generation.fetchAdd(1, .acq_rel);
     for (0..method.spec.arity) |index| {
         const source = argument_variants.?[index];
         const expected = method.spec.arguments[index];
@@ -288,6 +326,26 @@ fn methodCall(
                 abandonRuntime(runtime_handle);
                 return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(variantType(expected)), "E_GODOT_STRING_CONVERSION_FAILED");
             },
+            .vector2_value => blk: {
+                var value: godot.Vector2 = undefined;
+                api.vector2_from_variant(&value, @constCast(source));
+                break :blk vectorToTerm(&.{ value.x, value.y });
+            },
+            .vector3_value => blk: {
+                var value: godot.Vector3 = undefined;
+                api.vector3_from_variant(&value, @constCast(source));
+                break :blk vectorToTerm(&.{ value.x, value.y, value.z });
+            },
+            .object_value => objectVariantToTerm(
+                @constCast(source),
+                method.spec.argument_object_classes[index],
+                &object_leases,
+                &object_lease_count,
+                generation,
+            ) orelse {
+                abandonRuntime(runtime_handle);
+                return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(godot.VariantType.object), "E_GODOT_OBJECT_HANDLE_STALE");
+            },
         };
     }
 
@@ -307,13 +365,33 @@ fn methodCall(
         return failCall(call_error, .invalid_method, -1, @intCast(exception_kind), "E_GODOT_COMPILED_EXCEPTION");
     }
 
-    if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value) {
+    if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value and method.spec.returns != .vector2_value and method.spec.returns != .vector3_value and method.spec.returns != .object_value) {
         abandonRuntime(runtime_handle);
         return writeImmediateResult(method.spec.returns, result_word, return_variant, call_error);
     }
 
     if (method.spec.returns == .string_value or method.spec.returns == .string_name_value) {
         writeTextResult(method.spec.returns, result_word, return_variant, call_error);
+        abandonRuntime(runtime_handle);
+        return;
+    }
+
+    if (method.spec.returns == .vector2_value or method.spec.returns == .vector3_value) {
+        writeVectorResult(method.spec.returns, result_word, return_variant, call_error);
+        abandonRuntime(runtime_handle);
+        return;
+    }
+
+    if (method.spec.returns == .object_value) {
+        writeObjectResult(
+            result_word,
+            method.spec.return_object_class,
+            &object_leases,
+            object_lease_count,
+            generation,
+            return_variant,
+            call_error,
+        );
         abandonRuntime(runtime_handle);
         return;
     }
@@ -354,7 +432,119 @@ fn writeImmediateResult(
         },
         .float_value => unreachable,
         .string_value, .string_name_value => unreachable,
+        .vector2_value, .vector3_value => unreachable,
+        .object_value => unreachable,
     }
+}
+
+fn vectorToTerm(components: []const f32) i64 {
+    var list = nil_word;
+    var index = components.len;
+    while (index != 0) {
+        index -= 1;
+        const component: f64 = components[index];
+        list = term_runtime.ex_term_list_cons(term_runtime.ex_term_float_lit(@bitCast(component)), list);
+    }
+    return term_runtime.ex_term_tuple_from_list(list);
+}
+
+fn writeVectorResult(
+    value_type: ValueType,
+    result_word: i64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    const expected_length: i64 = if (value_type == .vector2_value) 2 else 3;
+    if (term_runtime.ex_term_is_tuple(result_word) == 0 or term_runtime.ex_term_tuple_length(result_word) != expected_length) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(variantType(value_type)), "E_GODOT_RETURN_TYPE_MISMATCH");
+    }
+
+    var components = [_]f32{ 0, 0, 0 };
+    for (0..@as(usize, @intCast(expected_length))) |index| {
+        const component = term_runtime.ex_term_tuple_get(result_word, @intCast(index));
+        if (term_runtime.ex_term_is_float(component) == 0) {
+            return failCall(call_error, .invalid_method, @intCast(index), @intFromEnum(godot.VariantType.float), "E_GODOT_RETURN_TYPE_MISMATCH");
+        }
+        const value: f64 = @bitCast(term_runtime.ex_term_float_bits(component));
+        components[index] = @floatCast(value);
+    }
+
+    if (value_type == .vector2_value) {
+        var vector = godot.Vector2{ .x = components[0], .y = components[1] };
+        api.vector2_to_variant(return_variant, &vector);
+    } else {
+        var vector = godot.Vector3{ .x = components[0], .y = components[1], .z = components[2] };
+        api.vector3_to_variant(return_variant, &vector);
+    }
+}
+
+fn objectVariantToTerm(
+    source: godot.VariantPtr,
+    expected_class: []const u8,
+    leases: *[max_method_arity]ObjectLease,
+    lease_count: *usize,
+    generation: u64,
+) ?i64 {
+    if (lease_count.* == max_method_arity) return null;
+    var object: godot.ObjectPtr = null;
+    api.object_from_variant(@ptrCast(&object), source);
+    if (object == null or !objectMatchesClass(object, expected_class)) return null;
+
+    const slot = lease_count.*;
+    leases[slot] = .{ .object = object };
+    lease_count.* += 1;
+    const capability = ObjectCapability{
+        .generation = generation,
+        .slot = @intCast(slot),
+        .guard = capabilityGuard(generation, @intCast(slot)),
+    };
+    const bytes = std.mem.asBytes(&capability);
+    return term_runtime.ex_term_binary_from_bytes(bytes.ptr, bytes.len);
+}
+
+fn writeObjectResult(
+    result_word: i64,
+    expected_class: []const u8,
+    leases: *const [max_method_arity]ObjectLease,
+    lease_count: usize,
+    generation: u64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    if (term_runtime.ex_term_is_binary(result_word) == 0 or term_runtime.ex_term_binary_length(result_word) != @sizeOf(ObjectCapability)) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.object), "E_GODOT_OBJECT_HANDLE_STALE");
+    }
+    var capability: ObjectCapability = undefined;
+    const bytes = std.mem.asBytes(&capability);
+    if (term_runtime.ex_term_binary_copy(result_word, bytes.ptr, bytes.len) != bytes.len or
+        capability.generation != generation or
+        capability.guard != capabilityGuard(capability.generation, capability.slot) or
+        capability.slot >= lease_count)
+    {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.object), "E_GODOT_OBJECT_HANDLE_STALE");
+    }
+
+    var object = leases[capability.slot].object;
+    if (object == null or !objectMatchesClass(object, expected_class)) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.object), "E_GODOT_OBJECT_HANDLE_STALE");
+    }
+    api.object_to_variant(return_variant, @ptrCast(&object));
+}
+
+fn objectMatchesClass(object: godot.ObjectPtr, expected_class: []const u8) bool {
+    if (object == null or expected_class.len == 0 or expected_class.len >= method_name_storage_width) return false;
+    var chars: [method_name_storage_width]u8 = undefined;
+    @memcpy(chars[0..expected_class.len], expected_class);
+    chars[expected_class.len] = 0;
+    var class_name: [8]u8 align(8) = undefined;
+    api.string_name_new_with_latin1_chars(&class_name, @ptrCast(chars[0..].ptr), 0);
+    defer api.string_name_destructor(&class_name);
+    const class_tag = api.classdb_get_class_tag(&class_name) orelse return false;
+    return api.object_cast_to(object, class_tag) != null;
+}
+
+fn capabilityGuard(generation: u64, slot: u32) u32 {
+    return @truncate(generation ^ (generation >> 32) ^ slot ^ 0xBA7A_7A0B);
 }
 
 fn textVariantToTerm(value_type: ValueType, source: godot.VariantPtr) ?i64 {

@@ -21,7 +21,16 @@ defmodule Batata.Godot.BindingPlan do
     @enforce_keys [:name, :arguments, :returns, :symbol]
     defstruct [:name, :arguments, :returns, :symbol]
 
-    @type value_type :: nil | :bool | :int | :float | :string | :string_name
+    @type value_type ::
+            nil
+            | :bool
+            | :int
+            | :float
+            | :string
+            | :string_name
+            | :vector2
+            | :vector3
+            | {:object, String.t()}
     @type t :: %__MODULE__{
             name: String.t(),
             arguments: [value_type()],
@@ -31,7 +40,7 @@ defmodule Batata.Godot.BindingPlan do
   end
 
   @schema 1
-  @supported_types [nil, :bool, :int, :float, :string, :string_name]
+  @supported_types [nil, :bool, :int, :float, :string, :string_name, :vector2, :vector3]
   @max_method_arity 8
   @initialization_levels [:core, :servers, :scene, :editor]
   @extension_keys [
@@ -333,6 +342,10 @@ defmodule Batata.Godot.BindingPlan do
 
   defp validate_type!(type, _position) when type in @supported_types, do: type
 
+  defp validate_type!({:object, class_name}, _position) do
+    {:object, validate_identifier!(class_name, :object_class)}
+  end
+
   defp validate_type!(type, position) do
     diagnostic!(
       "E_GODOT_VARIANT_UNSUPPORTED",
@@ -384,9 +397,9 @@ defmodule Batata.Godot.BindingPlan do
 
   defp method_map(%Method{} = method) do
     %{
-      "arguments" => Enum.map(method.arguments, &Atom.to_string/1),
+      "arguments" => Enum.map(method.arguments, &value_type_name/1),
       "name" => method.name,
-      "returns" => Atom.to_string(method.returns),
+      "returns" => value_type_name(method.returns),
       "symbol" => method.symbol
     }
   end
@@ -394,7 +407,7 @@ defmodule Batata.Godot.BindingPlan do
   defp method_json(%Method{} = method) do
     arguments =
       method.arguments
-      |> Enum.map(&json_string(Atom.to_string(&1)))
+      |> Enum.map(&json_string(value_type_name(&1)))
       |> Enum.intersperse(",")
 
     [
@@ -403,7 +416,7 @@ defmodule Batata.Godot.BindingPlan do
       ",\"arguments\":[",
       arguments,
       "],\"returns\":",
-      json_string(Atom.to_string(method.returns)),
+      json_string(value_type_name(method.returns)),
       ",\"symbol\":",
       json_string(method.symbol),
       "}"
@@ -411,6 +424,10 @@ defmodule Batata.Godot.BindingPlan do
   end
 
   defp json_string(value), do: JSON.encode!(value)
+
+  defp value_type_name({:object, class_name}), do: "object:#{class_name}"
+  defp value_type_name(nil), do: "nil"
+  defp value_type_name(value), do: Atom.to_string(value)
 
   defp default_extension(module) do
     module

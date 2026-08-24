@@ -11,6 +11,13 @@ defmodule Batata.Godot.BuildTest.Extension do
   godot_method(:nil_identity, args: [nil], returns: nil)
   godot_method(:string_identity, args: [:string], returns: :string)
   godot_method(:string_name_identity, args: [:string_name], returns: :string_name)
+  godot_method(:vector2_identity, args: [:vector2], returns: :vector2)
+  godot_method(:vector3_identity, args: [:vector3], returns: :vector3)
+
+  godot_method(:object_identity,
+    args: [{:object, "RefCounted"}],
+    returns: {:object, "RefCounted"}
+  )
 
   def add(left, right), do: left + right
   def bool_identity(value), do: value
@@ -18,6 +25,9 @@ defmodule Batata.Godot.BuildTest.Extension do
   def nil_identity(value), do: value
   def string_identity(value), do: value
   def string_name_identity(value), do: value
+  def vector2_identity(value), do: value
+  def vector3_identity(value), do: value
+  def object_identity(value), do: value
 end
 
 defmodule Batata.Godot.BuildTest do
@@ -51,6 +61,9 @@ defmodule Batata.Godot.BuildTest do
             def nil_identity(value), do: value
             def string_identity(value), do: value
             def string_name_identity(value), do: value
+            def vector2_identity(value), do: value
+            def vector3_identity(value), do: value
+            def object_identity(value), do: value
           end
           """,
           Extension,
@@ -70,6 +83,21 @@ defmodule Batata.Godot.BuildTest do
               method: "string_name_identity",
               arguments: ["batata_action"],
               expected: "batata_action"
+            },
+            %{
+              method: "vector2_identity",
+              arguments: [[1.25, -2.5]],
+              expected: [1.25, -2.5]
+            },
+            %{
+              method: "vector3_identity",
+              arguments: [[1.25, -2.5, 3.75]],
+              expected: [1.25, -2.5, 3.75]
+            },
+            %{
+              method: "object_identity",
+              arguments: [:self],
+              expected: :self
             }
           ]
         )
