@@ -65,6 +65,26 @@ defmodule Batata.Godot.BindingPlanTest do
     assert Diagnostic.to_map(error)["recoverable"]
   end
 
+  test "String and StringName are closed value types" do
+    plan =
+      BindingPlan.new!(
+        Example,
+        [],
+        [{"BatataExample", []}],
+        [
+          {:echo_string, [args: [:string], returns: :string]},
+          {:echo_name, [args: [:string_name], returns: :string_name]}
+        ],
+        echo_string: 1,
+        echo_name: 1
+      )
+
+    assert Enum.map(plan.methods, &{&1.arguments, &1.returns}) == [
+             {[:string_name], :string_name},
+             {[:string], :string}
+           ]
+  end
+
   test "a method declaration must resolve to a public function" do
     error =
       assert_raise Diagnostic, fn ->

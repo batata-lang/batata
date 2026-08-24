@@ -9,11 +9,15 @@ defmodule Batata.Godot.BuildTest.Extension do
   godot_method(:bool_identity, args: [:bool], returns: :bool)
   godot_method(:float_identity, args: [:float], returns: :float)
   godot_method(:nil_identity, args: [nil], returns: nil)
+  godot_method(:string_identity, args: [:string], returns: :string)
+  godot_method(:string_name_identity, args: [:string_name], returns: :string_name)
 
   def add(left, right), do: left + right
   def bool_identity(value), do: value
   def float_identity(value), do: value
   def nil_identity(value), do: value
+  def string_identity(value), do: value
+  def string_name_identity(value), do: value
 end
 
 defmodule Batata.Godot.BuildTest do
@@ -45,6 +49,8 @@ defmodule Batata.Godot.BuildTest do
             def bool_identity(value), do: value
             def float_identity(value), do: value
             def nil_identity(value), do: value
+            def string_identity(value), do: value
+            def string_name_identity(value), do: value
           end
           """,
           Extension,
@@ -54,7 +60,17 @@ defmodule Batata.Godot.BuildTest do
             %{method: "add", arguments: [20, 22], expected: 42, repeat: 32},
             %{method: "bool_identity", arguments: [true], expected: true},
             %{method: "float_identity", arguments: [2.25], expected: 2.25},
-            %{method: "nil_identity", arguments: [nil], expected: nil}
+            %{method: "nil_identity", arguments: [nil], expected: nil},
+            %{
+              method: "string_identity",
+              arguments: ["Batata 蝙蝠"],
+              expected: "Batata 蝙蝠"
+            },
+            %{
+              method: "string_name_identity",
+              arguments: ["batata_action"],
+              expected: "batata_action"
+            }
           ]
         )
 

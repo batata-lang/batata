@@ -136,14 +136,14 @@ defmodule Batata.Godot.Build do
 
     File.write!(extension_list_path, extension)
 
-    class_name =
+    binding_plan =
       output_dir
       |> Path.join("binding_plan.json")
       |> File.read!()
       |> JSON.decode!()
-      |> get_in(["class", "name"])
 
-    invocation_source = smoke_invocation_source(invocation, class_name)
+    class_name = get_in(binding_plan, ["class", "name"])
+    invocation_source = smoke_invocation_source(invocation, class_name, binding_plan["methods"])
 
     File.write!(smoke_script_path, """
     extends SceneTree
@@ -195,28 +195,28 @@ defmodule Batata.Godot.Build do
     end
   end
 
-  defp smoke_invocation_source(nil, _class_name), do: ""
+  defp smoke_invocation_source(nil, _class_name, _methods), do: ""
 
-  defp smoke_invocation_source(%{} = invocation, class_name),
-    do: smoke_invocation_source([invocation], class_name)
+  defp smoke_invocation_source(%{} = invocation, class_name, methods),
+    do: smoke_invocation_source([invocation], class_name, methods)
 
-  defp smoke_invocation_source(invocations, class_name) when is_list(invocations) do
+  defp smoke_invocation_source(invocations, class_name, methods) when is_list(invocations) do
     invocations
     |> Enum.with_index()
     |> Enum.map_join(fn
       {%{method: method, arguments: arguments, expected: _expected} = invocation, index}
       when is_binary(method) and is_list(arguments) ->
-        render_smoke_invocation(invocation, index, class_name)
+        render_smoke_invocation(invocation, index, class_name, methods)
 
       {invocation, _index} ->
         invalid_smoke_invocation!(invocation)
     end)
   end
 
-  defp smoke_invocation_source(invocation, _class_name),
+  defp smoke_invocation_source(invocation, _class_name, _methods),
     do: invalid_smoke_invocation!(invocation)
 
-  defp render_smoke_invocation(invocation, index, class_name) do
+  defp render_smoke_invocation(invocation, index, class_name, methods) do
     repeat = Map.get(invocation, :repeat, 0)
 
     unless is_integer(repeat) and repeat in 0..1_024 do
@@ -224,8 +224,22 @@ defmodule Batata.Godot.Build do
     end
 
     method = JSON.encode!(invocation.method)
-    arguments = JSON.encode!(invocation.arguments)
-    expected = JSON.encode!(invocation.expected)
+
+    method_spec =
+      Enum.find(methods, &(&1["name"] == invocation.method)) ||
+        invalid_smoke_invocation!(invocation)
+
+    if length(method_spec["arguments"]) != length(invocation.arguments) do
+      invalid_smoke_invocation!(invocation)
+    end
+
+    arguments =
+      invocation.arguments
+      |> Enum.zip(method_spec["arguments"])
+      |> Enum.map_join(",", fn {value, type} -> gdscript_value(value, type) end)
+      |> then(&"[#{&1}]")
+
+    expected = gdscript_value(invocation.expected, method_spec["returns"])
 
     call = [
       "  var result_#{index} = object.callv(#{method}, #{arguments})",
@@ -259,6 +273,11 @@ defmodule Batata.Godot.Build do
 
     Enum.join(call ++ repeated, "\n")
   end
+
+  defp gdscript_value(value, "string_name") when is_binary(value),
+    do: "&#{JSON.encode!(value)}"
+
+  defp gdscript_value(value, _type), do: JSON.encode!(value)
 
   defp invalid_smoke_invocation!(invocation) do
     diagnostic!(

@@ -21,7 +21,7 @@ defmodule Batata.Godot.BindingPlan do
     @enforce_keys [:name, :arguments, :returns, :symbol]
     defstruct [:name, :arguments, :returns, :symbol]
 
-    @type value_type :: nil | :bool | :int | :float
+    @type value_type :: nil | :bool | :int | :float | :string | :string_name
     @type t :: %__MODULE__{
             name: String.t(),
             arguments: [value_type()],
@@ -31,7 +31,7 @@ defmodule Batata.Godot.BindingPlan do
   end
 
   @schema 1
-  @supported_types [nil, :bool, :int, :float]
+  @supported_types [nil, :bool, :int, :float, :string, :string_name]
   @max_method_arity 8
   @initialization_levels [:core, :servers, :scene, :editor]
   @extension_keys [
