@@ -65,7 +65,7 @@ defmodule Batata.Godot.BindingPlanTest do
     assert Diagnostic.to_map(error)["recoverable"]
   end
 
-  test "String and StringName are closed value types" do
+  test "text and vector declarations are closed value types" do
     plan =
       BindingPlan.new!(
         Example,
@@ -73,16 +73,41 @@ defmodule Batata.Godot.BindingPlanTest do
         [{"BatataExample", []}],
         [
           {:echo_string, [args: [:string], returns: :string]},
-          {:echo_name, [args: [:string_name], returns: :string_name]}
+          {:echo_name, [args: [:string_name], returns: :string_name]},
+          {:echo_vector2, [args: [:vector2], returns: :vector2]},
+          {:echo_vector3, [args: [:vector3], returns: :vector3]},
+          {:echo_object, [args: [{:object, "RefCounted"}], returns: {:object, "RefCounted"}]}
         ],
         echo_string: 1,
-        echo_name: 1
+        echo_name: 1,
+        echo_vector2: 1,
+        echo_vector3: 1,
+        echo_object: 1
       )
 
     assert Enum.map(plan.methods, &{&1.arguments, &1.returns}) == [
              {[:string_name], :string_name},
-             {[:string], :string}
+             {[object: "RefCounted"], {:object, "RefCounted"}},
+             {[:string], :string},
+             {[:vector2], :vector2},
+             {[:vector3], :vector3}
            ]
+  end
+
+  test "opaque object declarations require a concrete Godot class" do
+    error =
+      assert_raise Diagnostic, fn ->
+        BindingPlan.new!(
+          Example,
+          [],
+          [{"BatataExample", []}],
+          [{:echo_object, [args: [{:object, "bad class"}], returns: nil]}],
+          echo_object: 1
+        )
+      end
+
+    assert error.code == "E_GODOT_IDENTIFIER_INVALID"
+    assert error.context.field == :object_class
   end
 
   test "a method declaration must resolve to a public function" do

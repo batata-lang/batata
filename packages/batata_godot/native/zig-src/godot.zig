@@ -39,6 +39,8 @@ pub const VariantType = enum(c_int) {
     int = 2,
     float = 3,
     string = 4,
+    vector2 = 5,
+    vector3 = 9,
     string_name = 21,
     object = 24,
 };
@@ -58,6 +60,9 @@ pub const CallError = extern struct {
     argument: i32,
     expected: i32,
 };
+
+pub const Vector2 = extern struct { x: f32, y: f32 };
+pub const Vector3 = extern struct { x: f32, y: f32, z: f32 };
 
 pub const PropertyInfo = extern struct {
     variant_type: VariantType,
@@ -139,6 +144,8 @@ pub const ClassdbConstructObject2 = *const fn (ConstStringNamePtr) callconv(.c) 
 pub const ObjectSetInstance = *const fn (ObjectPtr, ConstStringNamePtr, ClassInstancePtr) callconv(.c) void;
 pub const ObjectSetInstanceBinding = *const fn (ObjectPtr, ?*anyopaque, ?*anyopaque, *const InstanceBindingCallbacks) callconv(.c) void;
 pub const ObjectDestroy = *const fn (ObjectPtr) callconv(.c) void;
+pub const ObjectCastTo = *const fn (?*const anyopaque, ?*anyopaque) callconv(.c) ObjectPtr;
+pub const ClassdbGetClassTag = *const fn (ConstStringNamePtr) callconv(.c) ?*anyopaque;
 pub const ClassdbRegisterExtensionClass5 = *const fn (ClassLibraryPtr, ConstStringNamePtr, ConstStringNamePtr, *const ClassCreationInfo5) callconv(.c) void;
 pub const ClassdbRegisterExtensionClassMethod = *const fn (ClassLibraryPtr, ConstStringNamePtr, *const ClassMethodInfo) callconv(.c) void;
 pub const ClassdbUnregisterExtensionClass = *const fn (ClassLibraryPtr, ConstStringNamePtr) callconv(.c) void;
@@ -167,10 +174,18 @@ pub const Api = struct {
     string_to_variant: VariantFromTypeConstructor,
     string_name_from_variant: TypeFromVariantConstructor,
     string_name_to_variant: VariantFromTypeConstructor,
+    vector2_from_variant: TypeFromVariantConstructor,
+    vector2_to_variant: VariantFromTypeConstructor,
+    vector3_from_variant: TypeFromVariantConstructor,
+    vector3_to_variant: VariantFromTypeConstructor,
     classdb_construct_object2: ClassdbConstructObject2,
     object_set_instance: ObjectSetInstance,
     object_set_instance_binding: ObjectSetInstanceBinding,
     object_destroy: ObjectDestroy,
+    object_cast_to: ObjectCastTo,
+    classdb_get_class_tag: ClassdbGetClassTag,
+    object_from_variant: TypeFromVariantConstructor,
+    object_to_variant: VariantFromTypeConstructor,
     classdb_register_extension_class5: ClassdbRegisterExtensionClass5,
     classdb_register_extension_class_method: ClassdbRegisterExtensionClassMethod,
     classdb_unregister_extension_class: ClassdbUnregisterExtensionClass,
@@ -205,10 +220,18 @@ pub const Api = struct {
             .string_to_variant = get_from(.string) orelse return null,
             .string_name_from_variant = get_to(.string_name) orelse return null,
             .string_name_to_variant = get_from(.string_name) orelse return null,
+            .vector2_from_variant = get_to(.vector2) orelse return null,
+            .vector2_to_variant = get_from(.vector2) orelse return null,
+            .vector3_from_variant = get_to(.vector3) orelse return null,
+            .vector3_to_variant = get_from(.vector3) orelse return null,
             .classdb_construct_object2 = resolveOne(ClassdbConstructObject2, get, "classdb_construct_object2") orelse return null,
             .object_set_instance = resolveOne(ObjectSetInstance, get, "object_set_instance") orelse return null,
             .object_set_instance_binding = resolveOne(ObjectSetInstanceBinding, get, "object_set_instance_binding") orelse return null,
             .object_destroy = resolveOne(ObjectDestroy, get, "object_destroy") orelse return null,
+            .object_cast_to = resolveOne(ObjectCastTo, get, "object_cast_to") orelse return null,
+            .classdb_get_class_tag = resolveOne(ClassdbGetClassTag, get, "classdb_get_class_tag") orelse return null,
+            .object_from_variant = get_to(.object) orelse return null,
+            .object_to_variant = get_from(.object) orelse return null,
             .classdb_register_extension_class5 = resolveOne(ClassdbRegisterExtensionClass5, get, "classdb_register_extension_class5") orelse return null,
             .classdb_register_extension_class_method = resolveOne(ClassdbRegisterExtensionClassMethod, get, "classdb_register_extension_class_method") orelse return null,
             .classdb_unregister_extension_class = resolveOne(ClassdbUnregisterExtensionClass, get, "classdb_unregister_extension_class") orelse return null,
