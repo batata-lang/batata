@@ -146,4 +146,26 @@ defmodule Batata.TransformTest do
     assert rendered =~ "!ex.term"
     assert rendered =~ "ex.tuple"
   end
+
+  test "folds explicit unboxes when retyping term applies", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule Math do
+          def apply_twice(f, g, value) do
+            g.(f.(value))
+          end
+
+          def main() do
+            apply_twice(fn x -> x + 1 end, fn x -> x * 2 end, 3)
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~r/"ex\.apply".*-> i64/s
+    refute rendered =~ ~r/"ex\.unbox"\([^\n]*\) : \(i64\) -> i64/
+  end
 end
