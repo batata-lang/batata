@@ -2070,6 +2070,17 @@ pub fn ex_term_handle_export(handle: i64) callconv(.c) i64 {
     return registerExported(lease.runtime, lease.word, lease.root_scalar);
 }
 
+/// Returns the runtime word pinned by an imported term handle.
+///
+/// The caller must keep the handle alive until the compiled invocation that
+/// consumes the word has returned. A stale handle returns -1.
+pub fn ex_term_handle_root_word(handle: i64) callconv(.c) i64 {
+    term_lock.lock();
+    defer term_lock.unlock();
+    const slot = term_slot_locked(handle) orelse return -1;
+    return slot.word;
+}
+
 pub fn ex_term_handle_destroy(handle: i64) callconv(.c) i64 {
     term_lock.lock();
     const initial = term_slot_locked(handle) orelse {
@@ -6956,6 +6967,7 @@ test "portable export survives source destroy and imports into an explicit targe
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
     const imported = ex_term_import(target_runtime, exported);
     try std.testing.expect(imported > 0);
+    try std.testing.expect(ex_term_handle_root_word(imported) > 0);
     try std.testing.expectEqual(@as(i64, -5), ex_term_handle_export(imported));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     const round_trip = ex_term_handle_export(imported);
@@ -6971,6 +6983,7 @@ test "portable export survives source destroy and imports into an explicit targe
 
     try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_destroy(target_runtime));
     try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(imported));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_handle_root_word(imported));
     try std.testing.expectEqual(@as(i64, -1), ex_term_handle_destroy(imported));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
     try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(round_trip));

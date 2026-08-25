@@ -27,7 +27,7 @@ defmodule Batata.Wings.Godot.Extension do
   def displayed_mesh_digest, do: ""
   def selected_triangle_indices, do: []
   def input_schema_digest, do: ""
-  def editor_state_snapshot, do: ""
+  def editor_state_snapshot(_state), do: ""
 
   def editor_pointer_button(
         _position,

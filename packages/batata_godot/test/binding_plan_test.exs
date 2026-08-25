@@ -139,7 +139,7 @@ defmodule Batata.Godot.BindingPlanTest do
         [{"BatataExample", []}],
         [{:snapshot, [args: [], returns: :string, state: :replace]}],
         {[], [], [], []},
-        snapshot: 0
+        snapshot: 1
       )
 
     assert [%BindingPlan.Method{state: :replace}] = plan.methods

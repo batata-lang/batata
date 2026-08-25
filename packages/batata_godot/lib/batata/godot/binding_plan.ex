@@ -333,13 +333,14 @@ defmodule Batata.Godot.BindingPlan do
     returns = options |> Keyword.fetch!(:returns) |> validate_type!(:return)
     outbound = Keyword.get(options, :outbound)
     state = Keyword.get(options, :state)
-    signature = {name, length(arguments)}
+    native_arity = length(arguments) + if(state == :replace, do: 1, else: 0)
+    signature = {name, native_arity}
 
-    if length(arguments) > @max_method_arity do
+    if native_arity > @max_method_arity do
       diagnostic!(
         "E_GODOT_METHOD_SIGNATURE_UNSUPPORTED",
-        "Godot methods support at most #{@max_method_arity} arguments",
-        %{method: name, arity: length(arguments), maximum: @max_method_arity}
+        "Godot methods and their implicit state support at most #{@max_method_arity} arguments",
+        %{method: name, arity: native_arity, maximum: @max_method_arity}
       )
     end
 
@@ -347,8 +348,8 @@ defmodule Batata.Godot.BindingPlan do
       diagnostic!(
         "E_GODOT_METHOD_FUNCTION_MISSING",
         "declared Godot method has no matching public Batata function",
-        %{function: "#{name}/#{length(arguments)}"},
-        [%{command: "define def #{name}(...) with the declared arity"}]
+        %{function: "#{name}/#{native_arity}"},
+        [%{command: "define the method with an implicit leading state argument"}]
       )
     end
 
@@ -381,7 +382,7 @@ defmodule Batata.Godot.BindingPlan do
       name: Atom.to_string(name),
       arguments: arguments,
       returns: returns,
-      symbol: Batata.Symbol.function(name, length(arguments)),
+      symbol: Batata.Symbol.function(name, native_arity),
       outbound: outbound,
       state: state
     }
