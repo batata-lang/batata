@@ -31,6 +31,7 @@ defmodule Batata.ObjC.Metadata do
 
     source
     |> Map.put("sdk", fetch_field!(manifest, "sdk", path))
+    |> Map.put("sdk_minimum", fetch_field!(manifest, "sdk_minimum", path))
     |> Map.put("sdk_digest", expected)
   end
 

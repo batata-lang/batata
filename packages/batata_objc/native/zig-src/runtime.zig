@@ -2,6 +2,8 @@
 
 const std = @import("std");
 pub const abi = @import("abi.zig");
+pub const block = @import("block.zig");
+pub const dispatch = @import("dispatch.zig");
 
 const handle_cap = 256;
 const pool_cap = 64;
@@ -202,6 +204,15 @@ pub export fn batata_objc_invoke_fenced(
     };
 }
 
+/// Schedules one declared callback on the AppKit main queue. The caller owns
+/// `context` until callback completion; arbitrary queues are not accepted.
+pub export fn batata_objc_dispatch_main(
+    context: dispatch.Context,
+    callback: dispatch.Callback,
+) callconv(.c) Status {
+    return if (dispatch.mainAsync(context, callback)) .ok else .invalid;
+}
+
 fn autoreleasedString(value: [*:0]const u8) abi.Id {
     const class = abi.objc_getClass("NSString");
     return abi.sendIdCString(class, abi.sel_registerName("stringWithUTF8String:"), value);
@@ -271,4 +282,66 @@ test "Objective-C exceptions stop at the C ABI fence" {
     try std.testing.expect(result.value == null);
     try std.testing.expectEqualStrings("BatataProbe", std.mem.span(result.name.?));
     try std.testing.expectEqualStrings("closed Objective-C exception", std.mem.span(result.reason.?));
+}
+
+const WrongThreadHandleProbe = struct {
+    handle: u64,
+    status: Status = .invalid,
+
+    fn run(self: *WrongThreadHandleProbe) void {
+        var object: abi.Id = null;
+        self.status = batata_objc_handle_resolve(self.handle, &object);
+    }
+};
+
+test "main-thread object handles reject worker access" {
+    const pool = batata_objc_pool_push();
+    defer _ = batata_objc_pool_pop(pool);
+    const string = autoreleasedString("main-only");
+    const handle = batata_objc_handle_create(string, .borrowed, true);
+    try std.testing.expect(handle != 0);
+
+    var probe = WrongThreadHandleProbe{ .handle = handle };
+    const thread = try std.Thread.spawn(.{}, WrongThreadHandleProbe.run, .{&probe});
+    thread.join();
+    try std.testing.expectEqual(Status.wrong_thread, probe.status);
+    try std.testing.expectEqual(Status.ok, batata_objc_handle_destroy(handle));
+}
+
+test "runtime oracle resolves every AppKit MVP selector family" {
+    try std.testing.expect(abi.batata_objc_ns_application_delegate_protocol() != null);
+
+    const Specification = struct { class: [*:0]const u8, name: [*:0]const u8, class_method: bool };
+    const specifications = [_]Specification{
+        .{ .class = "NSObject", .name = "alloc", .class_method = true },
+        .{ .class = "NSObject", .name = "init", .class_method = false },
+        .{ .class = "NSString", .name = "stringWithUTF8String:", .class_method = true },
+        .{ .class = "NSApplication", .name = "sharedApplication", .class_method = true },
+        .{ .class = "NSApplication", .name = "setDelegate:", .class_method = false },
+        .{ .class = "NSApplication", .name = "setActivationPolicy:", .class_method = false },
+        .{ .class = "NSApplication", .name = "activateIgnoringOtherApps:", .class_method = false },
+        .{ .class = "NSApplication", .name = "run", .class_method = false },
+        .{ .class = "NSApplication", .name = "stop:", .class_method = false },
+        .{ .class = "NSWindow", .name = "initWithContentRect:styleMask:backing:defer:", .class_method = false },
+        .{ .class = "NSWindow", .name = "contentView", .class_method = false },
+        .{ .class = "NSWindow", .name = "setReleasedWhenClosed:", .class_method = false },
+        .{ .class = "NSView", .name = "setFrame:", .class_method = false },
+        .{ .class = "NSView", .name = "addSubview:", .class_method = false },
+        .{ .class = "NSTextField", .name = "labelWithString:", .class_method = true },
+        .{ .class = "NSButton", .name = "buttonWithTitle:target:action:", .class_method = true },
+        .{ .class = "NSButton", .name = "performClick:", .class_method = false },
+    };
+
+    for (specifications) |specification| {
+        const class = abi.objc_getClass(specification.class);
+        try std.testing.expect(class != null);
+        const sel = abi.sel_registerName(specification.name);
+        const method = if (specification.class_method)
+            abi.class_getClassMethod(class, sel)
+        else
+            abi.class_getInstanceMethod(class, sel);
+        try std.testing.expect(method != null);
+        const encoding = abi.method_getTypeEncoding(method) orelse return error.TypeEncodingMissing;
+        try std.testing.expect(std.mem.span(encoding).len > 0);
+    }
 }

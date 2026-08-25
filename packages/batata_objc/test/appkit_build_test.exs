@@ -17,9 +17,11 @@ defmodule Batata.ObjC.AppKitBuildTest do
 
   alias Batata.ObjC
   alias Batata.ObjC.AppKitBuildTest.Application
+  alias Batata.ObjC.Platform
   alias Beaver.MLIR.Context
 
   @moduletag :appkit
+  @moduletag :darwin
   @moduletag timeout: 180_000
 
   @tag :tmp_dir
@@ -49,7 +51,7 @@ defmodule Batata.ObjC.AppKitBuildTest do
 
     receipt = output.receipt |> File.read!() |> JSON.decode!()
     assert receipt["smoke"]
-    assert receipt["target"] == "aarch64-macos"
+    assert receipt["target"] == Platform.host!().target
     assert length(receipt["artifacts"]) == 4
   end
 end

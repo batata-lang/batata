@@ -22,7 +22,7 @@ defmodule Batata.ObjC.Build do
     validate_options!(options)
     platform = Platform.get!(plan.target)
     {zig, zig_version} = resolve_zig!(options[:zig])
-    sdk_root = resolve_sdk!(plan.sdk)
+    {sdk_root, sdk_version} = resolve_sdk!(plan.sdk_minimum)
     root = package_root()
     output_dir = Path.expand(output_dir)
     File.mkdir_p!(output_dir)
@@ -63,9 +63,10 @@ defmodule Batata.ObjC.Build do
         "binding_plan_digest" => BindingPlan.digest(plan),
         "minimum_macos" => plan.minimum_macos,
         "schema" => 1,
-        "sdk" => plan.sdk,
+        "metadata_sdk" => plan.sdk,
+        "sdk" => sdk_version,
         "sdk_digest" => plan.sdk_digest,
-        "sdk_root" => sdk_root,
+        "sdk_minimum" => plan.sdk_minimum,
         "target" => plan.target,
         "zig" => zig_version
       })
@@ -88,7 +89,7 @@ defmodule Batata.ObjC.Build do
     binding = Batata.ObjC.appkit_plan(application.module)
     platform = Platform.get!(binding.target)
     {zig, zig_version} = resolve_zig!(options[:zig])
-    sdk_root = resolve_sdk!(binding.sdk)
+    {sdk_root, sdk_version} = resolve_sdk!(binding.sdk_minimum)
     output_dir = Path.expand(output_dir)
     native_dir = Path.join(output_dir, ".batata/native")
     contents = Path.join([output_dir, "#{application.name}.app", "Contents"])
@@ -127,8 +128,10 @@ defmodule Batata.ObjC.Build do
         "binding_plan_digest" => BindingPlan.digest(binding),
         "minimum_macos" => binding.minimum_macos,
         "schema" => 1,
-        "sdk" => binding.sdk,
+        "metadata_sdk" => binding.sdk,
+        "sdk" => sdk_version,
         "sdk_digest" => binding.sdk_digest,
+        "sdk_minimum" => binding.sdk_minimum,
         "smoke" => Keyword.get(options, :smoke, false),
         "target" => binding.target,
         "zig" => zig_version
@@ -311,6 +314,7 @@ defmodule Batata.ObjC.Build do
       {output, 0} ->
         required = [
           "BATATA_OBJC_CALLBACK did_finish_launching",
+          "BATATA_OBJC_MAIN_QUEUE",
           "BATATA_OBJC_CALLBACK button_pressed",
           "BATATA_OBJC_CALLBACK should_terminate=true",
           "BATATA_OBJC_CLEAN_EXIT"
@@ -365,20 +369,20 @@ defmodule Batata.ObjC.Build do
 
   defp atom_word(atom), do: (16 + :erlang.phash2(atom)) * 8 + 1
 
-  defp resolve_sdk!(expected_version) do
+  defp resolve_sdk!(minimum_version) do
     with xcrun when is_binary(xcrun) <- System.find_executable("xcrun"),
          {version, 0} <- System.cmd(xcrun, ["--sdk", "macosx", "--show-sdk-version"]),
          {root, 0} <- System.cmd(xcrun, ["--sdk", "macosx", "--show-sdk-path"]) do
       version = String.trim(version)
       root = String.trim(root)
 
-      if version == expected_version and File.dir?(root) do
-        root
+      if version_at_least?(version, minimum_version) and File.dir?(root) do
+        {root, version}
       else
         raise Diagnostic,
           code: "E_OBJC_SDK_DRIFT",
-          message: "installed macOS SDK does not match the binding plan",
-          context: %{expected: expected_version, actual: version, sdk_root: root},
+          message: "installed macOS SDK is below the binding plan compatibility floor",
+          context: %{minimum: minimum_version, actual: version, sdk_root: root},
           actions: [%{command: "review and regenerate the Objective-C metadata manifest"}]
       end
     else
@@ -389,6 +393,20 @@ defmodule Batata.ObjC.Build do
           context: %{result: inspect(result)},
           actions: [%{command: "install Xcode and select it with xcode-select"}]
     end
+  end
+
+  defp version_at_least?(actual, minimum) do
+    version_tuple(actual) >= version_tuple(minimum)
+  end
+
+  defp version_tuple(version) do
+    version
+    |> String.split(".")
+    |> Enum.map(&String.to_integer/1)
+    |> then(fn
+      [major, minor] -> {major, minor, 0}
+      [major, minor, patch] -> {major, minor, patch}
+    end)
   end
 
   defp ensure_artifact!(path) do

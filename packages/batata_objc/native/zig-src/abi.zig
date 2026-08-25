@@ -8,6 +8,7 @@ const builtin = @import("builtin");
 pub const Id = ?*anyopaque;
 pub const Class = ?*anyopaque;
 pub const Sel = ?*anyopaque;
+pub const Method = ?*anyopaque;
 pub const Bool = i8;
 pub const Integer = isize;
 pub const UInteger = usize;
@@ -40,6 +41,10 @@ pub extern fn objc_registerClassPair(class: Class) void;
 pub extern fn objc_getProtocol(name: [*:0]const u8) ?*anyopaque;
 pub extern fn class_addProtocol(class: Class, protocol: ?*anyopaque) Bool;
 pub extern fn class_addMethod(class: Class, selector: Sel, implementation: *const anyopaque, types: [*:0]const u8) Bool;
+pub extern fn class_getClassMethod(class: Class, selector: Sel) Method;
+pub extern fn class_getInstanceMethod(class: Class, selector: Sel) Method;
+pub extern fn method_getTypeEncoding(method: Method) ?[*:0]const u8;
+pub extern fn batata_objc_ns_application_delegate_protocol() ?*anyopaque;
 
 pub inline fn sendId0(receiver: Id, selector: Sel) Id {
     return @extern(*const fn (Id, Sel) callconv(.c) Id, .{ .name = "objc_msgSend" })(receiver, selector);

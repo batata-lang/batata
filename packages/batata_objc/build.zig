@@ -21,6 +21,10 @@ pub fn build(b: *std.Build) void {
         .file = b.path("native/objc-exception.m"),
         .flags = &.{"-fobjc-exceptions"},
     });
+    module.addCSourceFile(.{
+        .file = b.path("native/appkit-protocol.m"),
+        .flags = &.{},
+    });
 
     const library = b.addLibrary(.{
         .name = "batata_objc",
@@ -49,6 +53,10 @@ pub fn build(b: *std.Build) void {
     tests.root_module.addCSourceFile(.{
         .file = b.path("native/objc-exception.m"),
         .flags = &.{"-fobjc-exceptions"},
+    });
+    tests.root_module.addCSourceFile(.{
+        .file = b.path("native/appkit-protocol.m"),
+        .flags = &.{},
     });
     tests.root_module.addCSourceFile(.{
         .file = b.path("native/test/exception-probe.m"),
@@ -120,6 +128,10 @@ fn addAppKitApplication(
     executable.root_module.addCSourceFile(.{
         .file = b.path("native/objc-exception.m"),
         .flags = &.{"-fobjc-exceptions"},
+    });
+    executable.root_module.addCSourceFile(.{
+        .file = b.path("native/appkit-protocol.m"),
+        .flags = &.{},
     });
     configureAppleModule(b, executable.root_module);
 
