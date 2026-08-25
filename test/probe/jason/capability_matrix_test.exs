@@ -50,6 +50,10 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["stdlib.list_flatten"]["status"] == "executable"
     assert capabilities["stdlib.list_flatten"]["gate"] == "codegen_pattern_mapper_test"
     assert capabilities["stdlib.list_flatten"]["scope"] =~ "proper nested lists"
+
+    assert capabilities["stdlib.binary_copy"]["status"] == "executable"
+    assert capabilities["stdlib.binary_copy"]["gate"] == "stdlib_test"
+    assert capabilities["stdlib.binary_copy"]["scope"] =~ ":binary.copy/2 excluded"
     assert capabilities["pattern.multi_head_cons"]["status"] == "executable"
     assert capabilities["pattern.multi_head_cons"]["gate"] == "codegen_pattern_mapper_test"
     assert capabilities["pattern.multi_head_cons"]["scope"] =~ "collapse_static/1"

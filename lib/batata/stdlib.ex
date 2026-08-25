@@ -228,6 +228,7 @@ defmodule Batata.Stdlib.Binary do
 
   @class_map %{
     {:binary, :at, 2} => :native_term,
+    {:binary, :copy, 1} => :native_term,
     {:binary, :match, 2} => :native_term,
     {Binary, :part, 3} => :unsupported
   }
@@ -447,6 +448,7 @@ defmodule Batata.Stdlib do
                   {Keyword, :get, 2},
                   {Keyword, :get, 3},
                   {:erlang, :split_binary, 2},
+                  {:binary, :copy, 1},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
                   {:lists, :reverse, 2}
@@ -480,6 +482,7 @@ defmodule Batata.Stdlib do
 
   @allocating_mfas MapSet.new([
                      {Kernel, :spawn, 1},
+                     {:binary, :copy, 1},
                      {Binary, :part, 3},
                      {MapSet, :new, 1},
                      {MapSet, :put, 2},
