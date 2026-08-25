@@ -19,6 +19,7 @@
     {"id": "map.update_exact", "status": "executable", "gate": "execute_test", "scope": "literal atom keys, BEAM evaluation order, immutable replacement, typed KeyError and BadMapError"},
     {"id": "dispatch.non_exhaustive", "status": "executable", "gate": "execute_test"},
     {"id": "string.dynamic_binary", "status": "executable", "gate": "decoder_subset_test"},
+    {"id": "string.dynamic_utf8_construction", "status": "executable", "gate": "execute_test", "scope": "dynamic Unicode scalar values encoded to canonical 1-4 byte UTF-8 with mixed byte segments and explicit invalid-codepoint raises"},
     {"id": "string.interpolation", "status": "executable", "gate": "execute_test", "scope": "integer, binary, and compile-known atom terms"},
     {"id": "string.concat", "status": "executable", "gate": "execute_test", "scope": "binary operands"},
     {"id": "string.printable", "status": "executable", "gate": "stdlib_test", "scope": "String.printable?/1 including invalid UTF-8 and non-binary FunctionClauseError"},

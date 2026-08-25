@@ -1815,6 +1815,27 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "constructs dynamic utf8 segments with native result parity", %{ctx: ctx} do
+    source = """
+    defmodule NativeUtf8Construction do
+      def encode(codepoint), do: <<codepoint::utf8>>
+
+      def main() do
+        {encode(0x24), encode(0xE9), encode(0x20AC), encode(0x1F642),
+         <<91, 0xE9::utf8, 93>>}
+      end
+    end
+    """
+
+    expected =
+      source
+      |> Kernel.<>("\nNativeUtf8Construction.main()")
+      |> Code.eval_string()
+      |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "executes predicates over scalar integers and empty lists", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

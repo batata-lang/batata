@@ -38,9 +38,17 @@ defmodule Batata.LiftTest do
                           "ex.return"
                         ] ++ @result_accessor_ops
 
-  defp lift!(source, ctx) do
+  defp lift!(source, ctx) when is_binary(source) do
     source
     |> Frontend.from_source()
+    |> Lift.module_to_ir(ctx: ctx)
+    |> Beaver.Deferred.resolve(ctx)
+    |> MLIR.verify!()
+  end
+
+  defp lift!(ast, ctx) do
+    ast
+    |> Frontend.from_ast()
     |> Lift.module_to_ir(ctx: ctx)
     |> Beaver.Deferred.resolve(ctx)
     |> MLIR.verify!()
@@ -495,6 +503,51 @@ defmodule Batata.LiftTest do
     assert "ex.binary_utf8_width" in names
     assert "ex.binary_utf8_get" in names
     assert "ex.binary_slice" in names
+  end
+
+  test "lifts dynamic utf8 binary construction through byte iodata", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def encode(codepoint), do: <<91, codepoint::utf8, 93>>
+          def main(), do: encode(0x1F642)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.div" in names
+    assert "ex.rem" in names
+    assert "ex.binary" in names
+    assert "ex.iodata_to_binary" in names
+    assert "ex.raise" in names
+    refute "ex.unbound" in names
+  end
+
+  test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
+    codepoint = Macro.var(:codepoint, nil)
+
+    quoted_binary =
+      quote generated: true do
+        <<unquote(codepoint)::utf8>>
+      end
+
+    module =
+      lift!(
+        quote do
+          defmodule Math do
+            def encode(unquote(codepoint)), do: unquote(quoted_binary)
+            def main, do: encode(0x1F642)
+          end
+        end,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.iodata_to_binary" in names
+    refute "ex.unbound" in names
   end
 
   test "lifts multi-clause functions into a case dispatch", %{ctx: ctx} do
