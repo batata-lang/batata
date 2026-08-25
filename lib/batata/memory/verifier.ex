@@ -48,5 +48,14 @@ defmodule Batata.Memory.Verifier do
        do: "E_MEMORY_CALLEE_SUMMARY_MISSING"
 
   defp diagnostic_code(:allocation_bound_missing), do: "E_MEMORY_BOUND_MISSING"
+
+  defp diagnostic_code(kind)
+       when kind in [
+              :allocation_precondition_missing,
+              :loop_bound_missing,
+              :recursion_bound_missing
+            ],
+       do: "E_MEMORY_PRECONDITION_MISSING"
+
   defp diagnostic_code(_kind), do: "E_MEMORY_EFFECT_UNKNOWN"
 end

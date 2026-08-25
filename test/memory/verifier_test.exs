@@ -2,7 +2,7 @@ defmodule Batata.Memory.VerifierTest do
   use Batata.Case, async: true
 
   alias Batata.Memory
-  alias Batata.Memory.{DiagnosticError, Plan}
+  alias Batata.Memory.{Bound, DiagnosticError, Plan, Receipt}
 
   @source """
   defmodule MemorySample do
@@ -24,9 +24,9 @@ defmodule Batata.Memory.VerifierTest do
     assert %Plan{policy: :report} = plan
     assert plan.compiler_version == "0.1.0"
     assert String.starts_with?(plan.dependency_lock, "sha256:")
-    assert Enum.any?(plan.effects, &(&1.classification == :may_allocate))
-    assert Enum.any?(plan.obligations, &(&1.kind == :allocation_bound_missing))
-    assert Enum.any?(plan.obligations, &(&1.kind == :callee_summary_missing))
+    assert Enum.any?(plan.effects, &(&1.classification == :exact))
+    assert Enum.any?(plan.obligations, &(&1.kind == :allocation_precondition_missing))
+    refute Enum.any?(plan.obligations, &(&1.kind == :callee_summary_missing))
     refute Enum.any?(plan.obligations, &(&1.kind == :external_summary_missing))
   end
 
@@ -78,5 +78,80 @@ defmodule Batata.Memory.VerifierTest do
     assert_raise ArgumentError, ~r/memory_policy must be/, fn ->
       Batata.compile(@source, ctx, memory_policy: :warn)
     end
+  end
+
+  test "runtime quota closes dynamic sites while constructors retain exact layouts", %{ctx: ctx} do
+    source = """
+    defmodule ClosedMemory do
+      def main(), do: {{1, 2}, [3, 4], %{answer: 42}, <<1, 2, 3>>}
+    end
+    """
+
+    plan =
+      source
+      |> Batata.compile(ctx)
+      |> Memory.analyze(
+        module: ClosedMemory,
+        source: source,
+        policy: :strict,
+        quota_bytes: 67_108_864
+      )
+
+    assert plan.obligations == []
+    assert {:ok, 67_108_864} = Bound.evaluate(plan.maximum_memory)
+    assert Enum.any?(plan.effects, &(&1.classification == :guarded))
+
+    exact_operations =
+      plan.effects
+      |> Enum.filter(&(&1.classification == :exact))
+      |> Enum.map(& &1.context["operation"])
+
+    assert "ex.tuple" in exact_operations
+    assert "ex.list" in exact_operations
+    assert "ex.map" in exact_operations
+    assert "ex.binary" in exact_operations
+
+    receipt = Receipt.from_plan!(plan)
+    assert receipt.maximum_memory == "67108864"
+    assert Receipt.verify(receipt, plan) == :ok
+  end
+
+  test "recursive allocation requires and consumes a finite iteration contract", %{ctx: ctx} do
+    source = """
+    defmodule RecursiveMemory do
+      def build(), do: [1 | build()]
+      def main(), do: build()
+    end
+    """
+
+    module = Batata.compile(source, ctx)
+
+    open_plan =
+      Memory.analyze(module,
+        module: RecursiveMemory,
+        source: source,
+        policy: :report,
+        quota_bytes: 67_108_864
+      )
+
+    recursion = Enum.find(open_plan.obligations, &(&1.kind == :recursion_bound_missing))
+    assert recursion
+
+    variable = recursion.strategies |> hd() |> Map.fetch!("variable")
+
+    closed_plan =
+      Memory.analyze(module,
+        module: RecursiveMemory,
+        source: source,
+        policy: :strict,
+        quota_bytes: 67_108_864,
+        contracts: %{variable => 4}
+      )
+
+    assert closed_plan.obligations == []
+
+    assert Enum.any?(closed_plan.effects, fn effect ->
+             effect.classification == :parametric and variable in Bound.variables(effect.size)
+           end)
   end
 end

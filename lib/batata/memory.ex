@@ -23,7 +23,7 @@ defmodule Batata.Memory do
     |> Base.encode16(case: :lower)
   end
 
-  @doc "Analyzes verified `ex` IR and returns its deterministic M0 memory plan."
+  @doc "Analyzes verified `ex` IR and returns its deterministic memory plan."
   @spec analyze(Beaver.MLIR.Module.t(), keyword()) :: Batata.Memory.Plan.t()
   defdelegate analyze(module, opts), to: Batata.Memory.Analyzer
 
@@ -31,11 +31,8 @@ defmodule Batata.Memory do
   @spec verify!(Beaver.MLIR.Module.t(), keyword()) :: :disabled | Batata.Memory.Plan.t()
   defdelegate verify!(module, opts), to: Batata.Memory.Verifier
 
-  @doc "Writes deterministic M0 plan and diagnostic artifacts."
-  @spec write_artifacts!(Path.t(), Batata.Memory.Plan.t()) :: %{
-          memory_plan: Path.t(),
-          memory_diagnostics: Path.t()
-        }
+  @doc "Writes deterministic plan, diagnostic, and optional receipt artifacts."
+  @spec write_artifacts!(Path.t(), Batata.Memory.Plan.t()) :: map()
   defdelegate write_artifacts!(output_dir, plan), to: Batata.Memory.Artifacts, as: :write!
 
   @doc false
