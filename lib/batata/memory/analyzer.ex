@@ -18,6 +18,7 @@ defmodule Batata.Memory.Analyzer do
     Obligation,
     Plan,
     Region,
+    RuntimeQuota,
     Site,
     Summary
   }
@@ -58,7 +59,7 @@ defmodule Batata.Memory.Analyzer do
     module_name = Keyword.fetch!(opts, :module)
     source = Keyword.fetch!(opts, :source)
     contracts = validate_contracts!(Keyword.get(opts, :contracts, %{}))
-    quota_bytes = validate_quota!(Keyword.get(opts, :quota_bytes))
+    quota_bytes = opts |> Keyword.get(:quota_bytes) |> RuntimeQuota.validate!()
 
     all_facts = operation_facts(module)
     facts_by_function = Enum.group_by(all_facts, & &1.function)
@@ -94,8 +95,8 @@ defmodule Batata.Memory.Analyzer do
     {regions, reset_points, reset_obligations} =
       Region.descriptors(effects, operation_sequences(all_facts, reachable))
 
-    obligations = obligations ++ reset_obligations
-    maximum_memory = total_bound(effects, quota_bytes)
+    {maximum_memory, quota_obligations} = total_bound(effects, contracts, quota_bytes)
+    obligations = obligations ++ reset_obligations ++ quota_obligations
 
     Plan.new!(
       policy: policy,
@@ -108,6 +109,7 @@ defmodule Batata.Memory.Analyzer do
       preconditions: preconditions(contracts),
       regions: regions,
       reset_points: reset_points,
+      runtime_limits: [RuntimeQuota.descriptor(quota_bytes)],
       runtime_guards: runtime_guards(effects, quota_bytes)
     )
   end
@@ -296,12 +298,50 @@ defmodule Batata.Memory.Analyzer do
     end
   end
 
-  defp total_bound(effects, quota_bytes) do
+  defp total_bound(effects, contracts, quota_bytes) do
     known = effects |> Enum.map(& &1.size) |> Enum.reject(&is_nil/1) |> Bound.add()
+    effective_limit = RuntimeQuota.effective_bytes(quota_bytes)
 
-    if is_integer(quota_bytes) and Enum.any?(effects, &(&1.classification == :guarded)),
-      do: Bound.maximum([known, Bound.constant(quota_bytes)]),
-      else: known
+    quota_obligations =
+      case Bound.evaluate(known, contracts) do
+        {:ok, bytes} when bytes > effective_limit ->
+          [quota_obligation(effects, bytes, effective_limit)]
+
+        _within_limit_or_open ->
+          []
+      end
+
+    maximum =
+      if is_integer(quota_bytes) and Enum.any?(effects, &(&1.classification == :guarded)),
+        do: Bound.constant(quota_bytes),
+        else: known
+
+    {maximum, quota_obligations}
+  end
+
+  defp quota_obligation(effects, required_bytes, effective_limit) do
+    site =
+      effects
+      |> Enum.reject(&(&1.classification == :none))
+      |> Enum.min_by(& &1.site.id)
+      |> Map.fetch!(:site)
+
+    Obligation.new!(
+      kind: :runtime_quota_exceeded,
+      site: site,
+      missing_fact: "the proved allocation bound must fit the native execution-arena limit",
+      context: %{
+        "effective_limit_bytes" => Integer.to_string(effective_limit),
+        "required_bytes" => Integer.to_string(required_bytes)
+      },
+      strategies: [
+        %{
+          "action" => "set-runtime-quota",
+          "maximum_bytes" => Integer.to_string(RuntimeQuota.hard_limit_bytes())
+        },
+        %{"action" => "reduce-memory-bound"}
+      ]
+    )
   end
 
   defp preconditions(contracts) do
@@ -312,19 +352,8 @@ defmodule Batata.Memory.Analyzer do
     |> Enum.sort_by(& &1["variable"])
   end
 
-  defp runtime_guards(effects, quota_bytes) do
-    if is_integer(quota_bytes) and Enum.any?(effects, &(&1.classification == :guarded)) do
-      [
-        %{
-          "failure_effect" => "arena_oom",
-          "id" => "execution-arena-quota",
-          "maximum_bytes" => Integer.to_string(quota_bytes)
-        }
-      ]
-    else
-      []
-    end
-  end
+  defp runtime_guards(_effects, nil), do: []
+  defp runtime_guards(_effects, quota_bytes), do: [RuntimeQuota.guard(quota_bytes)]
 
   defp operation_facts(module) do
     module
@@ -581,16 +610,6 @@ defmodule Batata.Memory.Analyzer do
 
   defp validate_contracts!(contracts),
     do: raise(ArgumentError, "memory_contracts must be a map, got: #{inspect(contracts)}")
-
-  defp validate_quota!(nil), do: nil
-  defp validate_quota!(bytes) when is_integer(bytes) and bytes >= 0, do: bytes
-
-  defp validate_quota!(bytes),
-    do:
-      raise(
-        ArgumentError,
-        "memory_quota_bytes must be a non-negative integer or nil, got: #{inspect(bytes)}"
-      )
 
   defp valid_contract?(value), do: is_integer(value) and value >= 0
 

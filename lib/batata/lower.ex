@@ -7,9 +7,13 @@ defmodule Batata.Lower do
   standard `arith-to-llvm` and `func-to-llvm` passes for the lowering phase.
   """
 
+  alias Batata.Memory.RuntimeQuota
+  alias Beaver.Changeset
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Plan
+  alias Beaver.MLIR.IRRewriter
+  alias Beaver.MLIR.RewriterBase
   alias Beaver.Walker
 
   defmodule Error do
@@ -22,8 +26,12 @@ defmodule Batata.Lower do
 
   The module is converted in place and returned.
   """
-  @spec to_func(MLIR.Module.t()) :: MLIR.Module.t()
-  def to_func(module) do
+  @runtime_quota_symbol "ex.term.runtime_set_arena_limit"
+
+  @spec to_func(MLIR.Module.t(), keyword()) :: MLIR.Module.t()
+  def to_func(module, opts \\ []) do
+    quota_bytes = opts |> Keyword.get(:memory_quota_bytes) |> RuntimeQuota.validate!()
+    if is_integer(quota_bytes), do: inject_runtime_quota!(module, quota_bytes)
     Plan.run!(ExConversion.plan(), module)
   end
 
@@ -38,7 +46,7 @@ defmodule Batata.Lower do
   """
   @spec to_llvm(MLIR.Module.t(), MLIR.Context.t(), keyword()) :: MLIR.Module.t()
   def to_llvm(module, ctx, opts \\ []) do
-    module = to_func(module)
+    module = to_func(module, opts)
     request_c_wrappers? = Keyword.get(opts, :c_interface, false)
 
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionArithToLLVMConversionPass/0)
@@ -70,6 +78,106 @@ defmodule Batata.Lower do
     run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertFuncToLLVMPass/0)
 
     module
+  end
+
+  defp inject_runtime_quota!(module, quota_bytes) do
+    owner = MLIR.Operation.from_module(module)
+    body = MLIR.Module.body(module)
+    runtime_creates = operations_named(body, "ex.runtime_create")
+
+    IRRewriter.with_rewriter(owner, fn rewriter ->
+      ensure_runtime_quota_declaration(rewriter, body, module)
+      Enum.each(runtime_creates, &inject_runtime_quota_call(rewriter, &1, quota_bytes))
+    end)
+  end
+
+  defp inject_runtime_quota_call(rewriter, runtime_create, quota_bytes) do
+    RewriterBase.with_insertion_point(rewriter, {:after, runtime_create}, fn ->
+      quota = quota_constant(runtime_create, quota_bytes)
+      RewriterBase.insert(rewriter, quota)
+      RewriterBase.set_insertion_point_after(rewriter, quota)
+      RewriterBase.insert(rewriter, quota_call(runtime_create, quota))
+    end)
+  end
+
+  defp ensure_runtime_quota_declaration(rewriter, body, module) do
+    unless Enum.any?(operations_named(body, "func.func"), &symbol?(&1, @runtime_quota_symbol)) do
+      owner = MLIR.Operation.from_module(module)
+
+      declaration =
+        %Changeset{
+          name: "func.func",
+          context: MLIR.context(owner),
+          location: MLIR.Location.unknown(ctx: MLIR.context(owner))
+        }
+        |> Changeset.add_argument(sym_name: MLIR.Attribute.string(@runtime_quota_symbol))
+        |> Changeset.add_argument(sym_visibility: MLIR.Attribute.string("private"))
+        |> Changeset.add_argument(
+          function_type: MLIR.Type.function([MLIR.Type.i64(), MLIR.Type.i64()], [MLIR.Type.i64()])
+        )
+        |> Changeset.add_argument(MLIR.CAPI.mlirRegionCreate())
+        |> MLIR.Operation.create()
+
+      RewriterBase.with_insertion_point(rewriter, {:end, body}, fn ->
+        RewriterBase.insert(rewriter, declaration)
+      end)
+    end
+  end
+
+  defp quota_constant(runtime_create, quota_bytes) do
+    %Changeset{
+      name: "arith.constant",
+      context: MLIR.context(runtime_create),
+      location: MLIR.Operation.location(runtime_create)
+    }
+    |> Changeset.add_argument(value: MLIR.Attribute.integer(MLIR.Type.i64(), quota_bytes))
+    |> Changeset.add_result(MLIR.Type.i64())
+    |> MLIR.Operation.create()
+  end
+
+  defp quota_call(runtime_create, quota) do
+    %Changeset{
+      name: "func.call",
+      context: MLIR.context(runtime_create),
+      location: MLIR.Operation.location(runtime_create)
+    }
+    |> Changeset.add_argument([
+      MLIR.Operation.result(runtime_create, 0),
+      MLIR.Operation.result(quota, 0)
+    ])
+    |> Changeset.add_argument(
+      callee:
+        MLIR.Attribute.flat_symbol_ref(@runtime_quota_symbol, ctx: MLIR.context(runtime_create))
+    )
+    |> Changeset.add_result(MLIR.Type.i64())
+    |> MLIR.Operation.create()
+  end
+
+  defp operations_named(body, name) do
+    body
+    |> Walker.operations()
+    |> Enum.flat_map(&all_operations/1)
+    |> Enum.filter(&(MLIR.Operation.name(&1) == name))
+  end
+
+  defp all_operations(operation) do
+    {_, operations} =
+      Walker.postwalk(operation, [], fn
+        %MLIR.Operation{} = op, acc -> {op, [op | acc]}
+        entity, acc -> {entity, acc}
+      end)
+
+    Enum.reverse(operations)
+  end
+
+  defp symbol?(operation, expected) do
+    case MLIR.Operation.fetch(operation, "sym_name") do
+      {:ok, attribute} ->
+        attribute |> MLIR.CAPI.mlirStringAttrGetValue() |> MLIR.to_string() == expected
+
+      :error ->
+        false
+    end
   end
 
   # Asks func-to-llvm to emit a C interface wrapper (`_mlir_ciface_*`) only for

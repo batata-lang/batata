@@ -11,6 +11,7 @@ defmodule Batata do
   """
 
   alias Batata.Lower
+  alias Batata.Memory.{Plan, RuntimeQuota}
   alias Beaver.MLIR
   alias Beaver.Native
   alias Beaver.Native.I64
@@ -33,6 +34,7 @@ defmodule Batata do
           MLIR.Module.t()
   def compile(source, ctx, opts \\ []) do
     validate_reduction_budget!(opts[:reduction_budget])
+    RuntimeQuota.validate!(opts[:memory_quota_bytes])
 
     {snapshot, atom_table} =
       case source do
@@ -181,7 +183,10 @@ defmodule Batata do
     module =
       source
       |> compile(ctx, opts)
-      |> Lower.to_llvm(ctx, c_interface: true)
+      |> Lower.to_llvm(ctx,
+        c_interface: true,
+        memory_quota_bytes: opts[:memory_quota_bytes]
+      )
       |> MLIR.verify!()
 
     jit = MLIR.ExecutionEngine.create!(module, execution_engine_opts(module))
@@ -501,6 +506,7 @@ defmodule Batata do
         }
   def build(source, output_dir, ctx, opts \\ []) do
     validate_reduction_budget!(opts[:reduction_budget])
+    RuntimeQuota.validate!(opts[:memory_quota_bytes])
 
     snapshot =
       source
@@ -533,7 +539,7 @@ defmodule Batata do
 
     module =
       ex_module
-      |> Batata.Lower.to_llvm(ctx)
+      |> Batata.Lower.to_llvm(ctx, memory_quota_bytes: opts[:memory_quota_bytes])
       |> MLIR.verify!()
 
     File.mkdir_p!(output_dir)
@@ -553,7 +559,7 @@ defmodule Batata do
     memory_artifacts =
       case memory_plan do
         :disabled -> %{}
-        %Batata.Memory.Plan{} = plan -> Batata.Memory.write_artifacts!(output_dir, plan)
+        %Plan{} = plan -> Batata.Memory.write_artifacts!(output_dir, plan)
       end
 
     artifact_paths =

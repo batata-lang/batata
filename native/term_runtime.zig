@@ -56,6 +56,7 @@ const arena_chunk_words = 64 * 1024;
 // former 32 MiB heap without making long-running bump allocation unbounded.
 const arena_chunk_cap = 128;
 const arena_hard_limit_words = arena_chunk_cap * arena_chunk_words;
+pub const arena_hard_limit_bytes = arena_hard_limit_words * @sizeOf(i64);
 const arena_owner_unassigned = std.math.maxInt(u32);
 
 fn word_tag(word: i64) usize {
@@ -420,6 +421,7 @@ const Runtime = struct {
     arena_chunk_count: usize = 0,
     arena_capacity_words: usize = 0,
     arena_used_words: std.atomic.Value(usize) = .init(0),
+    arena_limit_bytes: usize = arena_hard_limit_bytes,
     arena_epoch: u32 = 1,
     processes: []*Process = &.{},
     process_cap: usize = default_process_cap,
@@ -989,8 +991,30 @@ fn reset_arena(instance: *Runtime) void {
     instance.allocation_failed.store(false, .release);
 }
 
+fn reserve_arena_words(instance: *Runtime, count: usize) bool {
+    const limit_words = instance.arena_limit_bytes / @sizeOf(i64);
+    var used = instance.arena_used_words.load(.acquire);
+    while (true) {
+        if (used > limit_words or count > limit_words - used) {
+            instance.allocation_failed.store(true, .release);
+            return false;
+        }
+        used = instance.arena_used_words.cmpxchgWeak(
+            used,
+            used + count,
+            .acq_rel,
+            .acquire,
+        ) orelse return true;
+    }
+}
+
+fn release_arena_words(instance: *Runtime, count: usize) void {
+    _ = instance.arena_used_words.fetchSub(count, .acq_rel);
+}
+
 fn alloc_words(count: usize) ?[*]i64 {
     const instance = runtime();
+    if (!reserve_arena_words(instance, count)) return null;
 
     if (arena_cached_runtime == instance and
         arena_cached_epoch == instance.arena_epoch and
@@ -1002,7 +1026,6 @@ fn alloc_words(count: usize) ?[*]i64 {
             if (chunk.bump + count <= words.len) {
                 const start = chunk.bump;
                 chunk.bump += count;
-                _ = instance.arena_used_words.fetchAdd(count, .acq_rel);
                 return words[start..][0..count].ptr;
             }
         }
@@ -1018,7 +1041,6 @@ fn alloc_words(count: usize) ?[*]i64 {
         if (chunk.owner == arena_owner_unassigned and count <= words.len) {
             chunk.owner = arena_worker_id;
             chunk.bump = count;
-            _ = instance.arena_used_words.fetchAdd(count, .acq_rel);
             arena_cached_runtime = instance;
             arena_cached_epoch = instance.arena_epoch;
             arena_cached_chunk = index;
@@ -1027,22 +1049,24 @@ fn alloc_words(count: usize) ?[*]i64 {
     }
 
     if (instance.arena_chunk_count >= arena_chunk_cap) {
+        release_arena_words(instance, count);
         instance.allocation_failed.store(true, .release);
         return null;
     }
     const word_count = @max(count, arena_chunk_words);
     if (instance.arena_capacity_words + word_count > arena_hard_limit_words) {
+        release_arena_words(instance, count);
         instance.allocation_failed.store(true, .release);
         return null;
     }
     const words = std.heap.page_allocator.alloc(i64, word_count) catch {
+        release_arena_words(instance, count);
         instance.allocation_failed.store(true, .release);
         return null;
     };
     index = instance.arena_chunk_count;
     instance.arena_chunk_count += 1;
     instance.arena_capacity_words += word_count;
-    _ = instance.arena_used_words.fetchAdd(count, .acq_rel);
     instance.arena_chunks[index] = .{
         .words = words,
         .bump = count,
@@ -1129,6 +1153,27 @@ pub fn ex_term_runtime_enter(handle: i64) callconv(.c) i64 {
     return 0;
 }
 
+/// Configures the per-execution arena quota while the runtime is idle.
+/// Returns -1 for a stale handle, -2 while active/pinned, and -3 for an
+/// invalid byte limit. The allocator accounts in whole i64 words, so a
+/// non-aligned byte limit is enforced by rounding its usable portion down.
+pub fn ex_term_runtime_set_arena_limit(handle: i64, bytes: i64) callconv(.c) i64 {
+    if (bytes < 0) return -3;
+    const limit: usize = @intCast(bytes);
+    if (limit > arena_hard_limit_bytes) return -3;
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    const instance = slot.runtime.?;
+    instance.lifecycle_lock.lock();
+    defer instance.lifecycle_lock.unlock();
+    if (instance.lifecycle_phase != .idle or
+        instance.outstanding_results.load(.acquire) != 0 or
+        instance.outstanding_terms.load(.acquire) != 0) return -2;
+    instance.arena_limit_bytes = limit;
+    return 0;
+}
+
 /// Leaves the explicit instance and restores the thread-owned compatibility
 /// runtime on the next ABI call.
 pub fn ex_term_runtime_leave() callconv(.c) i64 {
@@ -1207,6 +1252,13 @@ pub fn ex_term_runtime_arena_high_water(handle: i64) callconv(.c) i64 {
     const slot = runtime_slot_locked(handle) orelse return -1;
     const instance = slot.runtime.?;
     return @intCast(instance.arena_used_words.load(.acquire) * @sizeOf(i64));
+}
+
+pub fn ex_term_runtime_arena_limit(handle: i64) callconv(.c) i64 {
+    runtime_lock.lock();
+    defer runtime_lock.unlock();
+    const slot = runtime_slot_locked(handle) orelse return -1;
+    return @intCast(slot.runtime.?.arena_limit_bytes);
 }
 
 pub fn ex_term_runtime_oom(handle: i64) callconv(.c) i64 {
@@ -6575,6 +6627,35 @@ test "arena OOM is distinct from nil and exposes usage metrics" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_chunks(runtime_handle));
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_bytes(runtime_handle));
     try std.testing.expectEqual(@as(i64, -2), ex_term_result_create(runtime_handle, nil_word));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
+}
+
+test "runtime arena quota fails closed and survives execution reset" {
+    const runtime_handle = ex_term_runtime_create();
+    const quota_bytes: i64 = 16;
+
+    try std.testing.expectEqual(@as(i64, -3), ex_term_runtime_set_arena_limit(runtime_handle, -1));
+    try std.testing.expectEqual(
+        @as(i64, -3),
+        ex_term_runtime_set_arena_limit(runtime_handle, @as(i64, @intCast(arena_hard_limit_bytes)) + 1),
+    );
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_set_arena_limit(runtime_handle, quota_bytes));
+    try std.testing.expectEqual(quota_bytes, ex_term_runtime_arena_limit(runtime_handle));
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, -2), ex_term_runtime_set_arena_limit(runtime_handle, 8));
+    try std.testing.expect(alloc_words(2) != null);
+    try std.testing.expect(alloc_words(1) == null);
+    try std.testing.expectEqual(quota_bytes, ex_term_runtime_arena_high_water(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_runtime_oom(runtime_handle));
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_arena_high_water(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_oom(runtime_handle));
+    try std.testing.expectEqual(quota_bytes, ex_term_runtime_arena_limit(runtime_handle));
+    try std.testing.expect(alloc_words(2) != null);
+
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(runtime_handle));
 }

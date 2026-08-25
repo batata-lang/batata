@@ -129,6 +129,44 @@ defmodule Batata.Memory.VerifierTest do
 
     assert [%{"verified" => true, "site_id" => reset_site}] = plan.reset_points
     assert String.starts_with?(reset_site, "mem://")
+
+    assert [limit] = plan.runtime_limits
+    assert limit["effective_bytes"] == "67108864"
+    assert limit["enforcement"] == "native-runtime"
+
+    assert [%{"failure_effect" => "arena_oom", "maximum_bytes" => "67108864"}] =
+             Enum.map(plan.runtime_guards, &Map.drop(&1, ["id"]))
+  end
+
+  test "strict analysis rejects a proved demand above the physical quota", %{ctx: ctx} do
+    source = """
+    defmodule QuotaExceeded do
+      def main(), do: {1, 2, 3, 4}
+    end
+    """
+
+    error =
+      assert_raise DiagnosticError, fn ->
+        Batata.compile(source, ctx,
+          memory_policy: :strict,
+          memory_quota_bytes: 8,
+          memory_dependency_lock: "sha256:test-lock"
+        )
+      end
+
+    decoded = error |> Exception.message() |> JSON.decode!()
+    assert decoded["code"] == "E_MEMORY_QUOTA_EXCEEDED"
+    assert decoded["obstruction"]["kind"] == "runtime_quota_exceeded"
+    assert decoded["obstruction"]["context"]["required_bytes"] > 8
+  end
+
+  test "quota validation is independent from analysis policy", %{ctx: ctx} do
+    assert_raise ArgumentError, ~r/no greater than 67108864/, fn ->
+      Batata.compile(@source, ctx,
+        memory_policy: :disabled,
+        memory_quota_bytes: 67_108_865
+      )
+    end
   end
 
   test "recursive allocation requires and consumes a finite iteration contract", %{ctx: ctx} do

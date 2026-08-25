@@ -58,6 +58,7 @@ defmodule Batata.Memory.Verifier do
        do: "E_MEMORY_PRECONDITION_MISSING"
 
   defp diagnostic_code(:reset_boundary_unverified), do: "E_MEMORY_RESET_UNVERIFIED"
+  defp diagnostic_code(:runtime_quota_exceeded), do: "E_MEMORY_QUOTA_EXCEEDED"
 
   defp diagnostic_code(_kind), do: "E_MEMORY_EFFECT_UNKNOWN"
 end

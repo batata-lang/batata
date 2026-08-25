@@ -18,6 +18,7 @@ defmodule Batata.Memory.Receipt do
     :memory_plan_hash,
     :maximum_memory,
     assurance: :bounded,
+    runtime_limits: [],
     runtime_guards: [],
     unproven_obligations: []
   ]
@@ -29,7 +30,7 @@ defmodule Batata.Memory.Receipt do
     receipt = struct!(__MODULE__, opts)
 
     unless receipt.assurance == :bounded do
-      raise ArgumentError, "batata-memory-receipt/1 requires :bounded assurance"
+      raise ArgumentError, "batata-memory-receipt/2 requires :bounded assurance"
     end
 
     unless receipt.unproven_obligations == [] do
@@ -51,8 +52,9 @@ defmodule Batata.Memory.Receipt do
       "dependency_lock" => receipt.dependency_lock,
       "maximum_memory" => receipt.maximum_memory,
       "memory_plan_hash" => receipt.memory_plan_hash,
+      "runtime_limits" => receipt.runtime_limits,
       "runtime_guards" => receipt.runtime_guards,
-      "schema" => "batata-memory-receipt/1",
+      "schema" => "batata-memory-receipt/2",
       "source_hash" => receipt.source_hash,
       "unproven_obligations" => receipt.unproven_obligations
     }
@@ -88,6 +90,7 @@ defmodule Batata.Memory.Receipt do
       dependency_lock: plan.dependency_lock,
       memory_plan_hash: "sha256:" <> Plan.digest(plan),
       maximum_memory: Integer.to_string(maximum),
+      runtime_limits: plan.runtime_limits,
       runtime_guards: plan.runtime_guards
     )
   end
@@ -108,6 +111,7 @@ defmodule Batata.Memory.Receipt do
          [] <- plan.obligations,
          {:ok, maximum} <- Bound.evaluate(plan.maximum_memory, contracts),
          true <- receipt.maximum_memory == Integer.to_string(maximum),
+         true <- receipt.runtime_limits == plan.runtime_limits,
          true <- receipt.runtime_guards == plan.runtime_guards do
       :ok
     else
@@ -124,15 +128,16 @@ defmodule Batata.Memory.Receipt do
       when is_binary(receipt_json) and is_binary(plan_json) do
     with {:ok, receipt} <- decode_canonical(receipt_json),
          {:ok, plan} <- decode_canonical(plan_json),
-         true <- receipt["schema"] == "batata-memory-receipt/1",
+         true <- receipt["schema"] == "batata-memory-receipt/2",
          true <- receipt["assurance"] == "bounded",
-         true <- plan["schema"] == "batata-memory-plan/3",
+         true <- plan["schema"] == "batata-memory-plan/4",
          [] <- receipt["unproven_obligations"],
          [] <- plan["obligations"],
          true <- receipt["source_hash"] == plan["source_hash"],
          true <- receipt["compiler_version"] == plan["compiler_version"],
          true <- receipt["dependency_lock"] == plan["dependency_lock"],
          true <- receipt["memory_plan_hash"] == "sha256:" <> Memory.digest(plan),
+         true <- receipt["runtime_limits"] == plan["runtime_limits"],
          true <- receipt["runtime_guards"] == plan["runtime_guards"],
          {:ok, maximum} <- Bound.evaluate_map(plan["maximum_memory"], contracts_from(plan)),
          true <- receipt["maximum_memory"] == Integer.to_string(maximum) do

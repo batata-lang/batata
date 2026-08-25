@@ -158,6 +158,29 @@ defmodule Batata.Memory.SchemaTest do
              {:error, :receipt_mismatch}
   end
 
+  test "runtime limits are bound into plan and receipt hashes" do
+    limit = %{
+      "effective_bytes" => "4096",
+      "enforcement" => "native-runtime",
+      "hard_limit_bytes" => "67108864",
+      "id" => "execution-arena",
+      "scope" => "per-runtime-execution"
+    }
+
+    plan = plan(maximum_memory: Bound.constant(64), runtime_limits: [limit])
+    receipt = Receipt.from_plan!(plan)
+
+    assert JSON.decode!(Plan.canonical_json(plan))["schema"] == "batata-memory-plan/4"
+    assert JSON.decode!(Receipt.canonical_json(receipt))["schema"] == "batata-memory-receipt/2"
+    assert receipt.runtime_limits == [limit]
+    assert Receipt.verify(receipt, plan) == :ok
+
+    changed = put_in(limit["effective_bytes"], "8192")
+
+    assert Receipt.verify(receipt, %{plan | runtime_limits: [changed]}) ==
+             {:error, :receipt_mismatch}
+  end
+
   test "reset verification fails closed on missing or reordered lifecycle operations" do
     assert Region.verify_reset_sequence([
              "ex.runtime_enter",

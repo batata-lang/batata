@@ -155,4 +155,34 @@ defmodule Batata.AOTTest do
     {stdout, 0} = System.cmd(binary, [])
     assert stdout == "45\n"
   end
+
+  @tag :tmp_dir
+  test "AOT returns its stable OOM exit code when the arena quota is exhausted", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output =
+      Batata.build(
+        """
+        defmodule QuotaAOT do
+          def main(), do: [1]
+        end
+        """,
+        tmp_dir,
+        ctx,
+        memory_quota_bytes: 0
+      )
+
+    binary = Path.join(tmp_dir, "run_quota")
+
+    {_, 0} =
+      System.cmd(
+        "zig",
+        ["cc", output.driver, output.archive, output.runtime_lib, "-lc", "-o", binary],
+        stderr_to_stdout: true
+      )
+
+    {stdout, 6} = System.cmd(binary, [], stderr_to_stdout: true)
+    assert stdout == ""
+  end
 end

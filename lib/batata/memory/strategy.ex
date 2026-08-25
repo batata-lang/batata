@@ -17,6 +17,13 @@ defmodule Batata.Memory.Strategy do
       "recompute" => "full-plan"
     },
     %{
+      "id" => "reduce-memory-bound",
+      "available" => true,
+      "changes" => "source-or-layout-policy",
+      "preconditions" => ["the recomputed allocation bound fits the native hard limit"],
+      "recompute" => "full-plan"
+    },
+    %{
       "id" => "classify-intrinsic",
       "available" => true,
       "changes" => "compiler-summary",
