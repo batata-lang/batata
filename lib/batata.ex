@@ -216,6 +216,14 @@ defmodule Batata do
     term_kind = invoke_i64(jit, "__batata_result_term_kind", [handle, word])
     reason = materialize_word(jit, handle, word, term_kind, literal_atom_table(source))
 
+    if kind == 7 do
+      raise TryClauseError, term: reason
+    else
+      materialize_known_exception(kind, reason, source)
+    end
+  end
+
+  defp materialize_known_exception(kind, reason, source) do
     case {kind, reason} do
       {1, term} ->
         raise CaseClauseError, term: term

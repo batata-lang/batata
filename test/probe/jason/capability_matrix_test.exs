@@ -74,6 +74,10 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["control.if_unused_alias"]["gate"] == "unused_branch_alias_test"
     assert capabilities["control.if_unused_alias"]["scope"] =~ "proven unread"
 
+    assert capabilities["control.try_catch_else"]["status"] == "executable"
+    assert capabilities["control.try_catch_else"]["gate"] == "execute_test"
+    assert capabilities["control.try_catch_else"]["scope"] =~ "TryClauseError"
+
     assert capabilities["call.scalar_result_inference"]["status"] == "executable"
 
     assert capabilities["call.scalar_result_inference"]["gate"] ==

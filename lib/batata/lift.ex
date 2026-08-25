@@ -383,6 +383,15 @@ defmodule Batata.Lift do
         {:case, _, [_value, [do: clauses]]} = node, found? ->
           {node, found? or not Enum.any?(clauses, &clause_catch_all?/1)}
 
+        {:try, _, [options]} = node, found? when is_list(options) ->
+          else_clauses = Keyword.get(options, :else)
+
+          non_exhaustive_else? =
+            is_list(else_clauses) and
+              not Enum.any?(else_clauses, &clause_catch_all?/1)
+
+          {node, found? or non_exhaustive_else?}
+
         node, found? ->
           {node, found?}
       end)
@@ -4195,11 +4204,12 @@ defmodule Batata.Lift do
   # `try do body catch pattern -> handler end`: the body region runs normally;
   # a `throw` longjmps back and the catch region matches the thrown value.
   defp lift_expr({:try, _, [options]}, ctx, block, env) do
-    if Enum.any?([:rescue, :after, :else], &Keyword.has_key?(options, &1)) do
-      raise Error, "only try/catch is supported in the current slice"
+    if Enum.any?([:rescue, :after], &Keyword.has_key?(options, &1)) do
+      raise Error, "only try/catch with optional else is supported in the current slice"
     end
 
     body = Keyword.fetch!(options, :do)
+    else_clauses = Keyword.get(options, :else)
 
     catch_clauses =
       options
@@ -4213,6 +4223,25 @@ defmodule Batata.Lift do
 
     {body_value, body_env} = lift_block(List.wrap(body), ctx, body_block, env)
     body_value = lift_value(body_value, ctx, body_block, body_env)
+
+    body_value =
+      if else_clauses do
+        lift_case(
+          box_try_else_results(else_clauses),
+          body_value,
+          body_env,
+          ctx,
+          body_block,
+          term_case?: true,
+          untag_int_binds: true,
+          failure_kind: 7
+        )
+      else
+        body_value
+      end
+
+    body_value =
+      if else_clauses, do: box_if_scalar(body_value, ctx, body_block), else: body_value
 
     create_op(
       "ex.yield",
@@ -4230,6 +4259,9 @@ defmodule Batata.Lift do
 
     catch_value =
       lift_term_case(catch_clauses, thrown, env, ctx, catch_block, untag_int_binds: true)
+
+    catch_value =
+      if else_clauses, do: box_if_scalar(catch_value, ctx, catch_block), else: catch_value
 
     create_op(
       "ex.yield",
@@ -4251,6 +4283,12 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     {try_op |> MLIR.Operation.results() |> Enum.to_list() |> hd(), env}
+  end
+
+  defp lift_expr({:__batata_box_try_else__, _, [body]}, ctx, block, env) do
+    {value, env} = lift_expr(body, ctx, block, env)
+    value = value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
+    {value, env}
   end
 
   # Tuple literal AST: `{a, b, c}` parses to `{:{}, meta, [a, b, c]}` for
@@ -5166,6 +5204,12 @@ defmodule Batata.Lift do
 
       clause ->
         [clause]
+    end)
+  end
+
+  defp box_try_else_results(clauses) do
+    Enum.map(clauses, fn {:->, metadata, [patterns, body]} ->
+      {:->, metadata, [patterns, {:__batata_box_try_else__, metadata, [body]}]}
     end)
   end
 
