@@ -91,8 +91,17 @@ jobs:
             mix test --warnings-as-errors --max-cases 1
           '
 
+      - name: Checkout pinned Wings3D oracle
+        uses: actions/checkout@v4
+        with:
+          repository: dgud/wings
+          ref: e12ef3ce267c4d9ecb33d4845bdc9275f1a4b433
+          path: wings-oracle-source
+
       - name: Test Batata Wings package
         working-directory: scripts/native_deps
+        env:
+          WINGS_ORACLE_PATH: ${{ github.workspace }}/wings-oracle-source
         run: |
           mix batata.native exec -- bash -c '
             cd packages/batata_wings

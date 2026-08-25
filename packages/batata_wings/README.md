@@ -25,3 +25,8 @@ Mesh JSON is canonical: textual map keys and integer entity IDs are sorted,
 and SHA-256 digests are computed from the resulting UTF-8 bytes. Invalid
 identity surfaces raise `Batata.Wings.Diagnostic` with stable `E_WINGS_*`
 codes instead of producing a partial mesh.
+
+Set `WINGS_ORACLE_PATH` to a clean checkout at the pinned upstream commit to
+run the differential Catmull-Clark test. The adapter compiles only the required
+upstream Erlang modules together with headless translation/progress stubs; it
+does not start wx or OpenGL.
