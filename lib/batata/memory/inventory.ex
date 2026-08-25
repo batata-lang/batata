@@ -148,6 +148,7 @@ defmodule Batata.Memory.Inventory do
     ex.send
     ex.string_printable
     ex.string_to_atom
+    ex.string_to_existing_atom
     ex.string_to_int
     ex.sub
     ex.term_eq

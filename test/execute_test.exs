@@ -1087,6 +1087,49 @@ defmodule Batata.ExecuteTest do
     assert_raise SystemLimitError, fn -> Batata.execute(too_long, ctx) end
   end
 
+  test "resolves compile-known and runtime-interned existing atoms", %{ctx: ctx} do
+    source = """
+    defmodule NativeStringToExistingAtom do
+      def existing(name), do: String.to_existing_atom(name)
+
+      def main() do
+        dynamic = String.to_atom("runtime" <> "_existing")
+        {existing("alpha"), existing("alpha") == :alpha,
+         existing("runtime_existing"), existing("runtime_existing") == dynamic}
+      end
+    end
+    """
+
+    assert {:alpha, 1, :runtime_existing, 1} == Batata.execute(source, ctx)
+  end
+
+  test "dispatches direct String.to_existing_atom/1 captures", %{ctx: ctx} do
+    source = """
+    defmodule CapturedStringToExistingAtom do
+      def main() do
+        convert = &String.to_existing_atom/1
+        {convert.("captured_existing"), :captured_existing}
+      end
+    end
+    """
+
+    assert {:captured_existing, :captured_existing} == Batata.execute(source, ctx)
+  end
+
+  test "rejects invalid String.to_existing_atom/1 inputs and misses", %{ctx: ctx} do
+    cases = [
+      "String.to_existing_atom(42)",
+      "String.to_existing_atom(<<255>>)",
+      ~S|String.to_existing_atom(String.duplicate("a", 256))|,
+      ~S|String.to_existing_atom("definitely_missing_existing_atom")|
+    ]
+
+    Enum.each(cases, fn expression ->
+      source = "defmodule InvalidStringToExistingAtom do\n  def main(), do: #{expression}\nend"
+      assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+    end)
+  end
+
   test "concatenates values within the supported binary domain", %{ctx: ctx} do
     assert {"leftright", "value", "three-parts"} ==
              Batata.execute(

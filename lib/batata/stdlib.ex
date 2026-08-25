@@ -307,6 +307,7 @@ defmodule Batata.Stdlib.String do
     {String, :length, 1} => :native_term,
     {String, :printable?, 1} => :native_term,
     {String, :to_atom, 1} => :native_term,
+    {String, :to_existing_atom, 1} => :native_term,
     {String, :to_integer, 1} => :native_term,
     {String, :to_float, 1} => :native_term
   }
@@ -446,6 +447,7 @@ defmodule Batata.Stdlib do
                   {:erlang, :float_to_binary, 2},
                   {String, :printable?, 1},
                   {String, :to_atom, 1},
+                  {String, :to_existing_atom, 1},
                   {List, :duplicate, 2},
                   {List, :flatten, 1},
                   {Keyword, :get, 2},
