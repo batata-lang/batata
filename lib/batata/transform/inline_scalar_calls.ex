@@ -91,6 +91,14 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp retype_apply!(apply) do
     owner = owner_func(apply)
     args = apply |> Walker.operands() |> Enum.to_list()
+    [old_result] = apply |> Walker.results() |> Enum.to_list()
+
+    redundant_unboxes =
+      old_result
+      |> Walker.uses()
+      |> Enum.map(&MLIR.OpOperand.owner/1)
+      |> Enum.filter(&(MLIR.Operation.name(&1) == "ex.unbox"))
+
     {:ok, arg_count} = apply |> MLIR.Operation.fetch(:arg_count)
     {:ok, segment_sizes_attr} = apply |> MLIR.Operation.fetch(:operandSegmentSizes)
 
@@ -108,14 +116,24 @@ defmodule Batata.Transform.InlineScalarCalls do
     IRRewriter.with_rewriter(owner, fn rewriter ->
       RewriterBase.with_insertion_point(rewriter, {:before, apply}, fn ->
         RewriterBase.insert(rewriter, new_apply)
-        [old_result] = apply |> Walker.results() |> Enum.to_list()
         [new_result] = new_apply |> Walker.results() |> Enum.to_list()
+
+        replace_redundant_unboxes(rewriter, redundant_unboxes, new_result)
+
         RewriterBase.replace(rewriter, old_result, new_result)
         RewriterBase.erase_op(rewriter, apply)
       end)
     end)
 
     :ok
+  end
+
+  defp replace_redundant_unboxes(rewriter, unboxes, new_result) do
+    Enum.each(unboxes, fn unbox ->
+      [unboxed_result] = unbox |> Walker.results() |> Enum.to_list()
+      RewriterBase.replace(rewriter, unboxed_result, new_result)
+      RewriterBase.erase_op(rewriter, unbox)
+    end)
   end
 
   defp action(call, callees) do
