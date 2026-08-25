@@ -1742,6 +1742,30 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "executes literal binary prefix patterns with native parity", %{ctx: ctx} do
+    source = """
+    defmodule NativeLiteralBinaryPattern do
+      def decode(<<"rue", rest::bits>>), do: {:matched, rest}
+      def decode(<<"", rest::bits>>), do: {:empty, rest}
+
+      def exact(<<"ok">>), do: :exact
+      def exact(_), do: :mismatch
+
+      def main() do
+        {decode("rue!"), decode("ru!"), exact("ok"), exact("ok!"), exact("no")}
+      end
+    end
+    """
+
+    expected =
+      source
+      |> Kernel.<>("\nNativeLiteralBinaryPattern.main()")
+      |> Code.eval_string()
+      |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "rejects invalid utf8 sequences with fall-through", %{ctx: ctx} do
     assert 0 ==
              Batata.execute(

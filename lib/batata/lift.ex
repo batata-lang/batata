@@ -8777,10 +8777,10 @@ defmodule Batata.Lift do
 
     case rest do
       [] ->
-        {Enum.map(segs, &binary_segment!/1), nil}
+        {Enum.flat_map(segs, &binary_segments!/1), nil}
 
       [{:"::", _, [rest_pat, {kind, _, nil}]}] when kind in [:binary, :bits] ->
-        {Enum.map(segs, &binary_segment!/1), rest_pat}
+        {Enum.flat_map(segs, &binary_segments!/1), rest_pat}
 
       _ ->
         raise Error, "binary rest segment must be the last segment: #{inspect(segments)}"
@@ -8791,6 +8791,12 @@ defmodule Batata.Lift do
     do: true
 
   defp binary_rest_segment?(_segment), do: false
+
+  defp binary_segments!(segment) when is_binary(segment) do
+    for <<byte <- segment>>, do: {:byte, byte}
+  end
+
+  defp binary_segments!(segment), do: [binary_segment!(segment)]
 
   defp binary_segment!({:"::", _, [pat, 8]}), do: {:byte, pat}
   defp binary_segment!({:"::", _, [pat, 16]}), do: {:uint16, pat}
