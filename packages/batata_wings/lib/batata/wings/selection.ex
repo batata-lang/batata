@@ -33,6 +33,32 @@ defmodule Batata.Wings.Selection do
     new!(mesh, face_ids, generation, selection.revision + 1)
   end
 
+  @spec update!(t(), Mesh.t(), non_neg_integer(), :replace | :add | :remove | :toggle | :clear, [
+          Mesh.face_id()
+        ]) ::
+          t()
+  def update!(%__MODULE__{} = selection, %Mesh{} = mesh, generation, operation, face_ids \\ []) do
+    validate!(selection, mesh, generation)
+    incoming = normalize_ids!(face_ids)
+    validate_faces!(mesh, incoming)
+
+    updated =
+      case operation do
+        :replace -> incoming
+        :add -> Enum.sort(Enum.uniq(selection.face_ids ++ incoming))
+        :remove -> selection.face_ids -- incoming
+        :toggle -> toggle(selection.face_ids, incoming)
+        :clear -> []
+        _ -> invalid_selection!(face_ids, [], "unknown selection operation #{inspect(operation)}")
+      end
+
+    if updated == selection.face_ids do
+      selection
+    else
+      bind!(selection, mesh, generation, updated)
+    end
+  end
+
   @spec validate!(t(), Mesh.t(), non_neg_integer()) :: t()
   def validate!(%__MODULE__{} = selection, %Mesh{} = mesh, generation) do
     digest = Batata.Wings.digest(mesh)
@@ -94,6 +120,12 @@ defmodule Batata.Wings.Selection do
     if missing != [] do
       invalid_selection!(face_ids, missing, "selection references missing faces")
     end
+  end
+
+  defp toggle(current, incoming) do
+    Enum.reduce(incoming, current, fn face, selected ->
+      if face in selected, do: selected -- [face], else: Enum.sort([face | selected])
+    end)
   end
 
   defp invalid_selection!(face_ids, missing, message) do
