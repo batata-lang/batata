@@ -58,7 +58,7 @@ defmodule Batata.ObjC.BindingPlan do
     :f64,
     :cgfloat
   ]
-  @opaque_types [:class, :selector]
+  @opaque_types [:class, :cstring, :selector]
   @struct_types [:point, :size, :rect]
   @identifier ~r/^[A-Za-z_][A-Za-z0-9_]*$/
   @symbol ~r/^[A-Za-z_][A-Za-z0-9_]*$/
@@ -69,6 +69,7 @@ defmodule Batata.ObjC.BindingPlan do
     :target,
     :minimum_macos,
     :sdk,
+    :sdk_minimum,
     :sdk_digest,
     :frameworks,
     :classes,
@@ -87,7 +88,7 @@ defmodule Batata.ObjC.BindingPlan do
   @doc "Builds and validates a closed binding plan from a metadata manifest."
   @spec new!(module(), map(), keyword()) :: t()
   def new!(module, manifest, options \\ []) when is_atom(module) and is_map(manifest) do
-    target = Keyword.get(options, :target, host_target())
+    target = Keyword.get_lazy(options, :target, &host_target/0)
     minimum_macos = Keyword.get(options, :minimum_macos, "14.0")
 
     validate_target!(target)
@@ -123,6 +124,7 @@ defmodule Batata.ObjC.BindingPlan do
       target: target,
       minimum_macos: minimum_macos,
       sdk: Map.fetch!(manifest, "sdk"),
+      sdk_minimum: Map.fetch!(manifest, "sdk_minimum"),
       sdk_digest: Map.fetch!(manifest, "sdk_digest"),
       frameworks: frameworks,
       classes: classes,
@@ -142,6 +144,7 @@ defmodule Batata.ObjC.BindingPlan do
       "module" => Atom.to_string(plan.module),
       "schema" => plan.schema,
       "sdk" => plan.sdk,
+      "sdk_minimum" => plan.sdk_minimum,
       "sdk_digest" => plan.sdk_digest,
       "selectors" => Enum.map(plan.selectors, &selector_map/1),
       "target" => plan.target
@@ -175,7 +178,7 @@ defmodule Batata.ObjC.BindingPlan do
   end
 
   defp validate_manifest_keys!(manifest) do
-    required = ~w(callbacks classes frameworks sdk sdk_digest selectors)
+    required = ~w(callbacks classes frameworks sdk sdk_digest sdk_minimum selectors)
     keys = Map.keys(manifest)
     missing = required -- keys
     unknown = keys -- required
@@ -188,6 +191,7 @@ defmodule Batata.ObjC.BindingPlan do
     end
 
     validate_version!(Map.fetch!(manifest, "sdk"), :sdk)
+    validate_version!(Map.fetch!(manifest, "sdk_minimum"), :sdk_minimum)
 
     digest = Map.fetch!(manifest, "sdk_digest")
 

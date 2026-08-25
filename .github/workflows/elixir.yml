@@ -91,6 +91,20 @@ jobs:
             mix test --warnings-as-errors --max-cases 1
           '
 
+      - name: Test Batata Objective-C schema package
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_objc
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors
+          '
+
       - name: Checkout pinned Wings3D oracle
         uses: actions/checkout@v4
         with:
@@ -463,6 +477,77 @@ jobs:
             echo "Crash report: $report"
             sed -n '1,260p' "$report"
           done
+
+  objc-appkit:
+    name: AppKit ${{ matrix.target }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Mix package managers
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Install pinned LLVM on macOS Intel
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          archive="$RUNNER_TEMP/llvm.tar.gz"
+          directory="$RUNNER_TEMP/llvm"
+          curl --fail --location --retry 3 \
+            'https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-941a04e6-macos-x64-1.tar.gz' \
+            --output "$archive"
+          printf '%s  %s\n' '35162b654e2780dd99f31eb7dc9ce6fe2833407b1a40a7afa021e4cf5fe3f767' "$archive" | shasum -a 256 -c -
+          mkdir -p "$directory"
+          tar -xzf "$archive" -C "$directory"
+          llvm_config="$(find "$directory" -type f -path '*/bin/llvm-config' -print -quit)"
+          test -n "$llvm_config"
+          echo "BATATA_MACOS_INTEL_LLVM_CONFIG=$llvm_config" >> "$GITHUB_ENV"
+
+      - name: Configure pinned native dependencies
+        working-directory: scripts/native_deps
+        run: |
+          if [ "${{ matrix.target }}" = x86_64-apple-darwin ]; then
+            mix batata.native setup --llvm-config "$BATATA_MACOS_INTEL_LLVM_CONFIG"
+          else
+            mix batata.native setup
+          fi
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build and execute Batata AppKit vertical slice
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_objc
+            export BATATA_PATH=../..
+            export BATATA_OBJC_APPKIT_SMOKE=1
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            zig build test
+            mix test --warnings-as-errors --include appkit --max-cases 1
+          '
 
   package:
     runs-on: ubuntu-22.04

@@ -17,6 +17,7 @@ var button: abi.Id = null;
 var runtime_handle: i64 = 0;
 var callback_failed = false;
 var should_terminate = false;
+var smoke_finished: std.atomic.Value(bool) = .init(false);
 
 fn cString(comptime value: []const u8) [*:0]const u8 {
     return @ptrCast((value ++ "\x00").ptr);
@@ -118,11 +119,37 @@ fn didFinishBody(_: ?*anyopaque) callconv(.c) ?*anyopaque {
     abi.sendVoidBool(application, selector("activateIgnoringOtherApps:"), 1);
 
     if (options.smoke) {
-        abi.sendVoidId(button, selector("performClick:"), null);
-        const result = abi.sendBoolId(resolveHandle(delegate_handle), selector("applicationShouldTerminateAfterLastWindowClosed:"), application);
-        if (result != 0) abi.sendVoidId(application, selector("stop:"), null);
+        if (objc_runtime.batata_objc_dispatch_main(null, smokeAction) != .ok) {
+            callback_failed = true;
+            std.debug.print("E_OBJC_MAIN_QUEUE_UNAVAILABLE\n", .{});
+        }
     }
     return null;
+}
+
+fn smokeAction(_: ?*anyopaque) callconv(.c) void {
+    if (acquireMainThread() == null) {
+        callback_failed = true;
+        std.debug.print("E_OBJC_MAIN_THREAD_REQUIRED callback=smokeAction\n", .{});
+        abi.sendVoidId(application, selector("stop:"), null);
+        return;
+    }
+    std.debug.print("BATATA_OBJC_MAIN_QUEUE\n", .{});
+    abi.sendVoidId(button, selector("performClick:"), null);
+    const result = abi.sendBoolId(resolveHandle(delegate_handle), selector("applicationShouldTerminateAfterLastWindowClosed:"), application);
+    if (result == 0) {
+        callback_failed = true;
+        std.debug.print("E_OBJC_TERMINATION_REJECTED\n", .{});
+    }
+    abi.sendVoidId(application, selector("stop:"), null);
+}
+
+fn smokeWatchdog() void {
+    _ = @extern(*const fn (c_uint) callconv(.c) c_uint, .{ .name = "sleep" })(15);
+    if (!smoke_finished.load(.acquire)) {
+        std.debug.print("E_OBJC_APPKIT_SMOKE_TIMEOUT seconds=15\n", .{});
+        std.process.exit(24);
+    }
 }
 
 fn didFinish(_: abi.Id, _: abi.Sel, _: abi.Id) callconv(.c) void {
@@ -176,19 +203,37 @@ fn resolveHandle(handle: u64) abi.Id {
 }
 
 fn createDelegate(_: MainThread) ?abi.Id {
-    const superclass = abi.objc_getClass("NSObject") orelse return null;
-    const class = abi.objc_allocateClassPair(superclass, "BatataAppDelegate", 0) orelse
-        abi.objc_getClass("BatataAppDelegate") orelse return null;
-
-    if (abi.objc_getClass("BatataAppDelegate") == null) {
-        if (abi.class_addMethod(class, selector("applicationDidFinishLaunching:"), @ptrCast(&didFinish), "v@:@") == 0) return null;
-        if (abi.class_addMethod(class, selector("applicationShouldTerminateAfterLastWindowClosed:"), @ptrCast(&applicationShouldTerminate), "B@:@") == 0) return null;
-        if (abi.class_addMethod(class, selector("batataButtonPressed:"), @ptrCast(&buttonPressed), "v@:@") == 0) return null;
-        if (abi.objc_getProtocol("NSApplicationDelegate")) |protocol| {
-            if (abi.class_addProtocol(class, protocol) == 0) return null;
-        } else return null;
-        abi.objc_registerClassPair(class);
+    const class_name = "BatataAppDelegate";
+    if (abi.objc_getClass(class_name)) |registered| {
+        return abi.sendId0(abi.sendId0(registered, selector("alloc")), selector("init"));
     }
+
+    const superclass = abi.objc_getClass("NSObject") orelse return null;
+    const class = abi.objc_allocateClassPair(superclass, class_name, 0) orelse {
+        std.debug.print("E_OBJC_DELEGATE_REGISTRATION stage=allocate\n", .{});
+        return null;
+    };
+    if (abi.class_addMethod(class, selector("applicationDidFinishLaunching:"), @ptrCast(&didFinish), "v@:@") == 0) {
+        std.debug.print("E_OBJC_DELEGATE_REGISTRATION stage=did_finish_method\n", .{});
+        return null;
+    }
+    if (abi.class_addMethod(class, selector("applicationShouldTerminateAfterLastWindowClosed:"), @ptrCast(&applicationShouldTerminate), "B@:@") == 0) {
+        std.debug.print("E_OBJC_DELEGATE_REGISTRATION stage=termination_method\n", .{});
+        return null;
+    }
+    if (abi.class_addMethod(class, selector("batataButtonPressed:"), @ptrCast(&buttonPressed), "v@:@") == 0) {
+        std.debug.print("E_OBJC_DELEGATE_REGISTRATION stage=button_method\n", .{});
+        return null;
+    }
+    const protocol = abi.batata_objc_ns_application_delegate_protocol() orelse {
+        std.debug.print("E_OBJC_DELEGATE_REGISTRATION stage=protocol_lookup\n", .{});
+        return null;
+    };
+    if (abi.class_addProtocol(class, protocol) == 0) {
+        std.debug.print("E_OBJC_DELEGATE_REGISTRATION stage=protocol_attach\n", .{});
+        return null;
+    }
+    abi.objc_registerClassPair(class);
 
     return abi.sendId0(abi.sendId0(class, selector("alloc")), selector("init"));
 }
@@ -206,6 +251,9 @@ pub fn main() u8 {
     if (runtime_handle <= 0) return 19;
     defer _ = term_runtime.ex_term_runtime_destroy(runtime_handle);
 
+    application = abi.sendId0(abi.objc_getClass("NSApplication"), selector("sharedApplication"));
+    if (application == null) return 22;
+
     const delegate = createDelegate(mt) orelse return 20;
     delegate_handle = objc_runtime.batata_objc_handle_create(delegate, .retained, true);
     if (delegate_handle == 0) {
@@ -214,11 +262,17 @@ pub fn main() u8 {
     }
     defer _ = objc_runtime.batata_objc_handle_destroy(delegate_handle);
 
-    application = abi.sendId0(abi.objc_getClass("NSApplication"), selector("sharedApplication"));
-    if (application == null) return 22;
     _ = abi.sendBoolInteger(application, selector("setActivationPolicy:"), 0);
     abi.sendVoidId(application, selector("setDelegate:"), delegate);
+    if (options.smoke) {
+        const watchdog = std.Thread.spawn(.{}, smokeWatchdog, .{}) catch {
+            std.debug.print("E_OBJC_APPKIT_SMOKE_WATCHDOG_UNAVAILABLE\n", .{});
+            return 24;
+        };
+        watchdog.detach();
+    }
     abi.sendVoid0(application, selector("run"));
+    smoke_finished.store(true, .release);
     abi.sendVoidId(application, selector("setDelegate:"), null);
 
     if (window_handle != 0) {

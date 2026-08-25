@@ -1,7 +1,9 @@
 defmodule Batata.ObjC.NativeRuntimeTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Batata.ObjC
+
+  @moduletag :darwin
 
   @tag :native
   test "builds a receipted host adapter", %{test: test} do
@@ -23,5 +25,19 @@ defmodule Batata.ObjC.NativeRuntimeTest do
     effects = artifact.memory_effects |> File.read!() |> JSON.decode!()
     assert Enum.any?(effects, &(&1["escape"] == "caller_must_root_argument"))
     assert Enum.any?(effects, &(&1["allocation"] == "transfer_owned"))
+  end
+
+  @tag :native
+  test "builds and receipts the x86_64 ABI without claiming execution", %{test: test} do
+    output = Path.join(System.tmp_dir!(), "#{test}-#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf(output) end)
+
+    plan = ObjC.appkit_plan(__MODULE__, target: "x86_64-macos")
+    artifact = ObjC.build_runtime(plan, output)
+    receipt = artifact.platform_receipt |> File.read!() |> JSON.decode!()
+
+    assert receipt["target"] == "x86_64-macos"
+    assert receipt["archive"]["sha256"] =~ ~r/^[0-9a-f]{64}$/
+    assert File.regular?(artifact.archive)
   end
 end
