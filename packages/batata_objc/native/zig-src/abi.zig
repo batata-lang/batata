@@ -35,6 +35,11 @@ pub extern fn objc_release(value: Id) void;
 pub extern fn objc_autoreleasePoolPush() ?*anyopaque;
 pub extern fn objc_autoreleasePoolPop(pool: ?*anyopaque) void;
 pub extern fn pthread_main_np() c_int;
+pub extern fn objc_allocateClassPair(superclass: Class, name: [*:0]const u8, extra_bytes: usize) Class;
+pub extern fn objc_registerClassPair(class: Class) void;
+pub extern fn objc_getProtocol(name: [*:0]const u8) ?*anyopaque;
+pub extern fn class_addProtocol(class: Class, protocol: ?*anyopaque) Bool;
+pub extern fn class_addMethod(class: Class, selector: Sel, implementation: *const anyopaque, types: [*:0]const u8) Bool;
 
 pub inline fn sendId0(receiver: Id, selector: Sel) Id {
     return @extern(*const fn (Id, Sel) callconv(.c) Id, .{ .name = "objc_msgSend" })(receiver, selector);
@@ -56,8 +61,24 @@ pub inline fn sendVoidId(receiver: Id, selector: Sel, value: Id) void {
     @extern(*const fn (Id, Sel, Id) callconv(.c) void, .{ .name = "objc_msgSend" })(receiver, selector, value);
 }
 
+pub inline fn sendIdId(receiver: Id, selector: Sel, value: Id) Id {
+    return @extern(*const fn (Id, Sel, Id) callconv(.c) Id, .{ .name = "objc_msgSend" })(receiver, selector, value);
+}
+
+pub inline fn sendBoolId(receiver: Id, selector: Sel, value: Id) Bool {
+    return @extern(*const fn (Id, Sel, Id) callconv(.c) Bool, .{ .name = "objc_msgSend" })(receiver, selector, value);
+}
+
+pub inline fn sendBoolInteger(receiver: Id, selector: Sel, value: Integer) Bool {
+    return @extern(*const fn (Id, Sel, Integer) callconv(.c) Bool, .{ .name = "objc_msgSend" })(receiver, selector, value);
+}
+
 pub inline fn sendVoidBool(receiver: Id, selector: Sel, value: Bool) void {
     @extern(*const fn (Id, Sel, Bool) callconv(.c) void, .{ .name = "objc_msgSend" })(receiver, selector, value);
+}
+
+pub inline fn sendVoidRect(receiver: Id, selector: Sel, value: Rect) void {
+    @extern(*const fn (Id, Sel, Rect) callconv(.c) void, .{ .name = "objc_msgSend" })(receiver, selector, value);
 }
 
 pub inline fn sendIdRectUSizeUSizeBool(

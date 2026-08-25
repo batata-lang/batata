@@ -3,4 +3,5 @@
 /doc/
 /.zig-cache/
 /zig-out/
+/tmp/
 /erl_crash.dump

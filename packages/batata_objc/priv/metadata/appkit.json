@@ -1,6 +1,6 @@
 {
   "sdk": "26.4",
-  "sdk_digest": "sha256:76f9b1d03470e84b95b6e7658c434917881b0013f2ed0e3f9d63c89470f27376",
+  "sdk_digest": "sha256:12dd7494e2b4b3a1e449d4e06c31dd60cf31b70bb1f9b65d31ce9dd9917619e6",
   "source": {
     "frameworks": ["Foundation", "AppKit"],
     "classes": [
@@ -41,9 +41,9 @@
       {"class": "NSMenuItem", "name": "setSubmenu:", "kind": "instance", "arguments": [{"object": "NSMenu"}], "returns": "void", "ownership": "none", "nullable": false, "thread": "main"}
     ],
     "callbacks": [
-      {"protocol": "NSApplicationDelegate", "selector": "applicationDidFinishLaunching:", "arguments": [{"object": "NSNotification"}], "returns": "void", "symbol": "batata_objc_application_did_finish_launching", "thread": "main"},
-      {"protocol": "NSApplicationDelegate", "selector": "applicationShouldTerminateAfterLastWindowClosed:", "arguments": [{"object": "NSApplication"}], "returns": "bool", "symbol": "batata_objc_should_terminate_after_last_window_closed", "thread": "main"},
-      {"protocol": "BatataActionTarget", "selector": "batataButtonPressed:", "arguments": [{"object": "NSObject"}], "returns": "void", "symbol": "batata_objc_button_pressed", "thread": "main"}
+      {"protocol": "NSApplicationDelegate", "selector": "applicationDidFinishLaunching:", "arguments": [{"object": "NSNotification"}], "returns": "void", "symbol": "__batata_fn_6469645f66696e6973685f6c61756e6368696e67_0", "thread": "main"},
+      {"protocol": "NSApplicationDelegate", "selector": "applicationShouldTerminateAfterLastWindowClosed:", "arguments": [{"object": "NSApplication"}], "returns": "bool", "symbol": "__batata_fn_73686f756c645f7465726d696e617465_0", "thread": "main"},
+      {"protocol": "BatataActionTarget", "selector": "batataButtonPressed:", "arguments": [{"object": "NSObject"}], "returns": "void", "symbol": "__batata_fn_627574746f6e5f70726573736564_0", "thread": "main"}
     ]
   }
 }
