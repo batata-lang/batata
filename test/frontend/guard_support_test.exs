@@ -31,4 +31,29 @@ defmodule Batata.Frontend.GuardSupportTest do
     refute GuardSupport.supported?(quote(do: value <= byte_size(data)))
     refute GuardSupport.supported?(quote(do: value in [1, :inf]))
   end
+
+  test "classifies canonical escaped unit ranges without admitting stepped or malformed ranges" do
+    byte = {:byte, [], nil}
+
+    for range <- [0..31, 31..0//-1] do
+      guard = {:in, [], [byte, Macro.escape(range)]}
+      assert GuardSupport.supported?(guard)
+      assert GuardSupport.compiler_supported?(guard)
+    end
+
+    refute GuardSupport.compiler_supported?({:in, [], [byte, Macro.escape(0..10//2)]})
+
+    refute GuardSupport.compiler_supported?(
+             {:in, [],
+              [
+                byte,
+                {:%{}, [], [__struct__: Range, first: 0, last: 31, step: 1, extra: true]}
+              ]}
+           )
+
+    refute GuardSupport.compiler_supported?(
+             {:in, [],
+              [byte, {:%{}, [], [__struct__: Range, first: 0, last: :thirty_one, step: 1]}]}
+           )
+  end
 end

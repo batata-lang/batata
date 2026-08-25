@@ -124,9 +124,13 @@ whole-branch reference count proves the binding is never read. The selected
 RHS still evaluates and supplies the expression value; ordinary assignments
 and subsequently read underscore bindings remain closed because branch SSA
 environments are not merged. This crosses `_in_bs = false` in
-`Jason.Formatter.pp_byte/6`. The whole-corpus frontier is now the generated
-byte-dispatch range guard `byte in 0..31`. String-key and other unsupported map
-keys remain rejected.
+`Jason.Formatter.pp_byte/6`. Canonical escaped `%Range{}` values with integer
+bounds and a unit step now reuse the executable integer-membership lowering;
+descending unit ranges retain the same closed-interval semantics, while
+stepped and malformed ranges remain rejected. This crosses the generated
+byte-dispatch guard `byte in 0..31`. The whole-corpus frontier is now the
+16-bit binary segment `int1::16` in `Jason.Encode`. String-key and other
+unsupported map keys remain rejected.
 This lane still makes no execution claim for module-level generation; the
 reducer, protocol-callback, literal-dispatch, bounded string-fold, positive
 list-duplication, and no-return case evidence comes from compiler-owned
