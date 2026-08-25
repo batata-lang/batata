@@ -9,7 +9,7 @@ defmodule Batata.Memory.Analyzer do
   """
 
   alias Batata.Memory
-  alias Batata.Memory.{Bound, Effect, Inventory, Obligation, Plan, Site, Summary}
+  alias Batata.Memory.{Bound, Effect, Inventory, Lifetime, Obligation, Plan, Site, Summary}
   alias Beaver.MLIR
   alias Beaver.Walker
 
@@ -29,7 +29,9 @@ defmodule Batata.Memory.Analyzer do
           operands: non_neg_integer(),
           callee: String.t() | nil,
           location: String.t(),
-          loop_depth: non_neg_integer()
+          loop_depth: non_neg_integer(),
+          lifetime: Lifetime.t(),
+          results: non_neg_integer()
         }
 
   @doc "Analyzes a verified `ex` module under `:report` or `:strict` policy."
@@ -54,6 +56,7 @@ defmodule Batata.Memory.Analyzer do
     graph = call_graph(reachable, facts_by_function, local_symbols)
     recursive = recursive_functions(graph)
     invocations = invocation_counts(roots, graph, recursive)
+    return_lifetimes = return_lifetime_fixed_point(all_facts, reachable, local_symbols)
 
     analysis_opts = [contracts: contracts, quota_bytes: quota_bytes, recursive: recursive]
 
@@ -67,6 +70,7 @@ defmodule Batata.Memory.Analyzer do
           module_name,
           local_symbols,
           invocations,
+          return_lifetimes,
           analysis_opts
         )
       end)
@@ -94,6 +98,7 @@ defmodule Batata.Memory.Analyzer do
          module_name,
          local_symbols,
          invocations,
+         return_lifetimes,
          opts
        ) do
     inventory = Inventory.intrinsic(fact.operation)
@@ -111,12 +116,19 @@ defmodule Batata.Memory.Analyzer do
 
     multiplicity = length(facts) * Map.get(invocations, fact.function, 1)
 
+    lifetime =
+      facts
+      |> Enum.map(&resolve_return_lifetime(&1, return_lifetimes))
+      |> Lifetime.merge()
+
     context = %{
       "callee_scope" => callee_scope,
       "function_invocations" => Map.get(invocations, fact.function, 1),
       "loop_depth" => fact.loop_depth,
+      "lifetime_strategy" => lifetime.strategy,
       "multiplicity" => multiplicity,
-      "operation" => fact.operation
+      "operation" => fact.operation,
+      "value_ids" => value_ids(site, facts)
     }
 
     summary = summarize(fact, site, local_symbols, Keyword.fetch!(opts, :recursive), opts)
@@ -133,6 +145,8 @@ defmodule Batata.Memory.Analyzer do
         provenance: if(summary.provenance, do: summary.provenance, else: provenance),
         size: size,
         region: if(summary.classification == :none, do: :immediate, else: :execution_arena),
+        escape: lifetime.escape,
+        lifetime: lifetime.lifetime,
         failure: summary.failure,
         callee: fact.callee,
         context: context
@@ -324,7 +338,9 @@ defmodule Batata.Memory.Analyzer do
         operands: Enum.count(Walker.operands(op)),
         callee: if(operation == "ex.call", do: attribute_string(op, "callee")),
         location: op |> MLIR.Operation.location() |> MLIR.to_string(),
-        loop_depth: enclosing_loop_depth(op)
+        loop_depth: enclosing_loop_depth(op),
+        lifetime: Lifetime.infer(op, function),
+        results: Enum.count(Walker.results(op))
       }
     end
   end
@@ -337,6 +353,11 @@ defmodule Batata.Memory.Analyzer do
       "operation" => fact.operation,
       "signature" => fact.signature
     }
+  end
+
+  defp value_ids(site, facts) do
+    result_count = facts |> Enum.map(& &1.results) |> Enum.max(fn -> 0 end)
+    Enum.map(0..(result_count - 1)//1, &"#{site.id}/value/#{&1}")
   end
 
   defp structural_signature(op) do
@@ -464,6 +485,29 @@ defmodule Batata.Memory.Analyzer do
       Map.update(acc, callee, caller_count * calls, &(&1 + caller_count * calls))
     end)
   end
+
+  defp return_lifetime_fixed_point(all_facts, reachable, local_symbols) do
+    calls =
+      Enum.filter(all_facts, fn fact ->
+        fact.operation == "ex.call" and is_binary(fact.callee) and
+          MapSet.member?(reachable, fact.function) and MapSet.member?(local_symbols, fact.callee)
+      end)
+
+    Enum.reduce(1..max(MapSet.size(reachable), 1), %{}, fn _, previous ->
+      Enum.reduce(calls, previous, fn call, lifetimes ->
+        call_lifetime = resolve_return_lifetime(call, previous)
+
+        Map.update(lifetimes, call.callee, call_lifetime, fn current ->
+          Lifetime.merge([current, call_lifetime])
+        end)
+      end)
+    end)
+  end
+
+  defp resolve_return_lifetime(%{lifetime: %{escape: :return}, function: function}, lifetimes),
+    do: Map.get(lifetimes, function, Lifetime.for_escape(:return))
+
+  defp resolve_return_lifetime(%{lifetime: lifetime}, _lifetimes), do: lifetime
 
   defp function_arity(func) do
     func

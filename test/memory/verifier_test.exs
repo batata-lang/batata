@@ -111,6 +111,12 @@ defmodule Batata.Memory.VerifierTest do
     assert "ex.map" in exact_operations
     assert "ex.binary" in exact_operations
 
+    assert Enum.all?(Enum.filter(plan.effects, &(&1.classification == :exact)), fn effect ->
+             effect.escape == :result and effect.lifetime["scope"] == "pinned-execution" and
+               effect.context["lifetime_strategy"]["id"] == "pin-execution-arena" and
+               effect.context["value_ids"] != []
+           end)
+
     receipt = Receipt.from_plan!(plan)
     assert receipt.maximum_memory == "67108864"
     assert Receipt.verify(receipt, plan) == :ok
@@ -153,5 +159,32 @@ defmodule Batata.Memory.VerifierTest do
     assert Enum.any?(closed_plan.effects, fn effect ->
              effect.classification == :parametric and variable in Bound.variables(effect.size)
            end)
+  end
+
+  test "message payloads select the quiescence-checked execution-arena strategy", %{ctx: ctx} do
+    source = """
+    defmodule MessageMemory do
+      def main() do
+        pid = self()
+        send(pid, {1, 2})
+      end
+    end
+    """
+
+    plan =
+      source
+      |> Batata.compile(ctx)
+      |> Memory.analyze(
+        module: MessageMemory,
+        source: source,
+        policy: :report,
+        quota_bytes: 67_108_864
+      )
+
+    tuple = Enum.find(plan.effects, &(&1.context["operation"] == "ex.tuple"))
+
+    assert tuple.escape == :process_send
+    assert tuple.lifetime == %{"end" => "execution-quiescence", "scope" => "actor-message"}
+    assert tuple.context["lifetime_strategy"]["id"] == "retain-in-execution-arena"
   end
 end
