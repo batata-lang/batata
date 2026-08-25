@@ -91,6 +91,20 @@ jobs:
             mix test --warnings-as-errors --max-cases 1
           '
 
+      - name: Test Batata Wings package
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_wings
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors --max-cases 1
+          '
+
       - name: Upload concurrent runtime traces
         if: always()
         uses: actions/upload-artifact@v4
