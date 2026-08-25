@@ -2,7 +2,7 @@ defmodule Batata.Memory.Plan do
   @moduledoc "Canonical collection of memory effects and residual obligations."
 
   alias Batata.Memory
-  alias Batata.Memory.{Bound, Effect, Obligation}
+  alias Batata.Memory.{Bound, Effect, Obligation, Region}
 
   @enforce_keys [:policy, :source_hash, :compiler_version, :dependency_lock]
   defstruct [
@@ -14,6 +14,8 @@ defmodule Batata.Memory.Plan do
     effects: [],
     obligations: [],
     preconditions: [],
+    regions: [],
+    reset_points: [],
     runtime_guards: []
   ]
 
@@ -26,6 +28,8 @@ defmodule Batata.Memory.Plan do
           effects: [Effect.t()],
           obligations: [Obligation.t()],
           preconditions: [map()],
+          regions: [Region.t()],
+          reset_points: [map()],
           runtime_guards: [map()]
         }
 
@@ -33,7 +37,7 @@ defmodule Batata.Memory.Plan do
   def new!(opts) when is_list(opts) do
     plan = struct!(__MODULE__, opts)
 
-    if valid_header?(plan) and valid_analysis?(plan) and valid_runtime?(plan),
+    if valid_header?(plan) and valid_analysis?(plan) and valid_regions?(plan),
       do: plan,
       else: raise(ArgumentError, "invalid memory plan fields")
   end
@@ -49,7 +53,10 @@ defmodule Batata.Memory.Plan do
       Enum.all?(plan.obligations, &is_struct(&1, Obligation)) and is_list(plan.preconditions)
   end
 
-  defp valid_runtime?(plan), do: is_list(plan.runtime_guards)
+  defp valid_regions?(plan) do
+    Enum.all?(plan.regions, &is_struct(&1, Region)) and is_list(plan.reset_points) and
+      is_list(plan.runtime_guards)
+  end
 
   @spec canonical_map(t()) :: map()
   def canonical_map(%__MODULE__{} = plan) do
@@ -65,8 +72,10 @@ defmodule Batata.Memory.Plan do
         |> Enum.sort_by(&{get_in(&1, ["site", "id"]), &1["kind"]}),
       "policy" => Atom.to_string(plan.policy),
       "preconditions" => Enum.sort_by(plan.preconditions, & &1["variable"]),
+      "regions" => plan.regions |> Enum.map(&Region.to_map/1) |> Enum.sort_by(& &1["id"]),
+      "reset_points" => Enum.sort_by(plan.reset_points, & &1["id"]),
       "runtime_guards" => Enum.sort_by(plan.runtime_guards, & &1["id"]),
-      "schema" => "batata-memory-plan/2",
+      "schema" => "batata-memory-plan/3",
       "source_hash" => plan.source_hash
     }
   end
