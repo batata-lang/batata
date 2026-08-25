@@ -1,0 +1,12 @@
+.{
+    .name = .batata_objc,
+    .version = "0.1.0-dev",
+    .fingerprint = 0xee67f8ae2c6d61b8,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "native",
+    },
+}

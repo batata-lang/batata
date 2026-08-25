@@ -10,6 +10,11 @@ nullability and thread requirements. A canonical binding plan and SHA-256
 digest make every accepted boundary replayable. Unknown SDK metadata, ABI,
 ownership or callback signatures are errors instead of dynamic fallbacks.
 
+The native boundary uses typed `objc_msgSend` signatures, generation-checked
+object handles, same-thread autorelease tokens and a checked-in Objective-C
+exception fence. Every external selector also receives a deterministic memory
+effect summary; unknown effects cannot silently pass Batata's memory verifier.
+
 Inside the Batata monorepo:
 
 ```sh

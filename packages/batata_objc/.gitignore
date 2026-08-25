@@ -1,4 +1,6 @@
 /_build/
 /deps/
 /doc/
+/.zig-cache/
+/zig-out/
 /erl_crash.dump
