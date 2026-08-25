@@ -29,6 +29,13 @@ const fun_arity_marker: u64 = @as(u64, 1) << 61;
 const tag_float: usize = 7;
 const tag_runtime_local: usize = 7;
 
+// Dynamic atoms occupy the high half of the atom payload space, disjoint from
+// Batata's non-negative compile-time literal hashes. Their names live in the
+// owning runtime and are intentionally not portable through codec v1.
+const dynamic_atom_marker: u64 = @as(u64, 1) << 60;
+const dynamic_atom_index_mask: u64 = dynamic_atom_marker - 1;
+const dynamic_atom_cap: usize = 1024;
+
 const tag_mask: usize = 7;
 const tag_shift: u6 = 3;
 const runtime_local_marker: u64 = @as(u64, 1) << 60;
@@ -78,6 +85,20 @@ fn is_int(word: i64) bool {
 
 fn is_atom(word: i64) bool {
     return word_tag(word) == tag_atom;
+}
+
+fn dynamic_atom_index(word: i64) ?usize {
+    if (!is_atom(word)) return null;
+    const payload = @as(u64, @bitCast(word)) >> tag_shift;
+    if (payload & dynamic_atom_marker == 0) return null;
+    const index = payload & dynamic_atom_index_mask;
+    if (index >= dynamic_atom_cap) return null;
+    return @intCast(index);
+}
+
+fn dynamic_atom_word(index: usize) i64 {
+    const payload = dynamic_atom_marker | @as(u64, @intCast(index));
+    return @bitCast((payload << tag_shift) | tag_atom);
 }
 
 fn runtime_local_word(kind: u64, data: u64) i64 {
@@ -409,6 +430,7 @@ const Runtime = struct {
     scheduler_lock: RuntimeMutex = .{},
     counter_lock: RuntimeMutex = .{},
     callback_lock: RuntimeMutex = .{},
+    atom_lock: RuntimeMutex = .{},
     configured_workers: std.atomic.Value(u32) = .init(1),
     active_actors: std.atomic.Value(u32) = .init(0),
     max_active_actors: std.atomic.Value(u32) = .init(0),
@@ -440,6 +462,8 @@ const Runtime = struct {
     monitor_ref_counter: i64 = 0,
     callbacks: [beam_callback_cap]?*const fn (i64) callconv(.c) i64 =
         [_]?*const fn (i64) callconv(.c) i64{null} ** beam_callback_cap,
+    dynamic_atom_names: [dynamic_atom_cap]i64 = [_]i64{0} ** dynamic_atom_cap,
+    dynamic_atom_count: usize = 0,
 
     fn deinit(self: *Runtime) void {
         for (self.arena_chunks[0..self.arena_chunk_count]) |chunk| {
@@ -1431,6 +1455,7 @@ pub fn ex_term_result_root_kind(handle: i64) callconv(.c) i64 {
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
     if (runtime_owns_word(slot.runtime.?, slot.word)) return @intCast(word_tag(slot.word));
+    if (dynamic_atom_index(slot.word) != null) return tag_atom;
     if (runtime_local_kind(slot.word) != null) return -1;
     return 0;
 }
@@ -1447,6 +1472,20 @@ pub fn ex_term_result_term_kind(handle: i64, word: i64) callconv(.c) i64 {
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
     return result_term_kind_locked(slot, word);
+}
+
+/// Returns the runtime-owned binary name for a dynamic atom, or nil for a
+/// literal, stale, foreign, or otherwise invalid atom word.
+pub fn ex_term_result_atom_name(handle: i64, word: i64) callconv(.c) i64 {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return nil_word;
+    const index = dynamic_atom_index(word) orelse return nil_word;
+    const instance = slot.runtime.?;
+    instance.atom_lock.lock();
+    defer instance.atom_lock.unlock();
+    if (index >= instance.dynamic_atom_count) return nil_word;
+    return instance.dynamic_atom_names[index];
 }
 
 pub fn ex_term_result_term_length(handle: i64, word: i64) callconv(.c) i64 {
@@ -1533,7 +1572,11 @@ fn encodedTermSize(instance: *Runtime, word: i64, root_scalar: bool, depth: usiz
     if (depth > exported_max_depth) return error.Limit;
     if (root_scalar) return 1 + @sizeOf(i64);
     return switch (word_tag(word)) {
-        tag_int, tag_atom => 1 + @sizeOf(i64),
+        tag_int => 1 + @sizeOf(i64),
+        tag_atom => if (dynamic_atom_index(word) == null)
+            1 + @sizeOf(i64)
+        else
+            error.Unsupported,
         tag_tuple => blk: {
             const len = try containerLength(instance, word, 1);
             var size: usize = 1 + @sizeOf(u32);
@@ -1881,7 +1924,7 @@ fn decodedWords(decoder: *Decoder, depth: usize, root: bool) CodecError!usize {
         },
         codec_atom => blk: {
             const word = try decoder.readI64();
-            if (word_tag(word) != tag_atom) return error.Invalid;
+            if (word_tag(word) != tag_atom or dynamic_atom_index(word) != null) return error.Invalid;
             break :blk 0;
         },
         codec_tuple => blk: {
@@ -4405,6 +4448,43 @@ pub fn ex_term_binary_utf8_length(binary: i64) callconv(.c) i64 {
     return count;
 }
 
+fn binaries_equal(left: i64, right: i64) bool {
+    const left_len = binary_len(left);
+    if (left_len != binary_len(right)) return false;
+    for (0..left_len) |index| {
+        if (binary_bytes(left)[index] != binary_bytes(right)[index]) return false;
+    }
+    return true;
+}
+
+/// Interns a UTF-8 binary in the current runtime's bounded atom table.
+/// Returns integer-zero for invalid input/UTF-8 and tagged integer one when
+/// either BEAM's 255-codepoint name limit or the runtime table cap is hit.
+pub fn ex_term_string_to_atom(binary: i64) callconv(.c) i64 {
+    if (word_tag(binary) != tag_binary) return 0;
+    const len: i64 = @intCast(binary_len(binary));
+    var codepoints: usize = 0;
+    var cursor: i64 = 0;
+    while (cursor < len) {
+        const decoded = utf8_at(binary, cursor) orelse return 0;
+        cursor += decoded.width;
+        codepoints += 1;
+        if (codepoints > 255) return 1 << @intCast(tag_shift);
+    }
+
+    const instance = runtime();
+    instance.atom_lock.lock();
+    defer instance.atom_lock.unlock();
+    for (instance.dynamic_atom_names[0..instance.dynamic_atom_count], 0..) |name, index| {
+        if (binaries_equal(name, binary)) return dynamic_atom_word(index);
+    }
+    if (instance.dynamic_atom_count >= dynamic_atom_cap) return 1 << @intCast(tag_shift);
+    const index = instance.dynamic_atom_count;
+    instance.dynamic_atom_names[index] = binary;
+    instance.dynamic_atom_count += 1;
+    return dynamic_atom_word(index);
+}
+
 fn printable_codepoint(cp: i64) bool {
     return (cp >= 0x20 and cp <= 0x7E) or
         cp == '\n' or cp == '\r' or cp == '\t' or cp == 0x0B or
@@ -4923,6 +5003,33 @@ test "string to float preserves finite binary64 values and rejects invalid synta
         const parsed = ex_term_string_to_float(test_binary_from_string(invalid));
         try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(parsed));
     }
+}
+
+test "string to atom validates UTF-8 and interns within the runtime" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const alpha = ex_term_string_to_atom(test_binary_from_string("alpha"));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(alpha));
+    try std.testing.expect(dynamic_atom_index(alpha) != null);
+    try std.testing.expectEqual(alpha, ex_term_string_to_atom(test_binary_from_string("alpha")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(ex_term_string_to_atom(test_binary_from_string("λ"))));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_atom(ex_term_string_to_atom(test_binary_from_string(""))));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_to_atom(42 << @intCast(tag_shift)));
+
+    const invalid = alloc_binary(1).?;
+    const invalid_word = word_from_ptr(invalid, tag_binary);
+    binary_bytes(invalid_word)[0] = 0xFF;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_to_atom(invalid_word));
+
+    const oversized = alloc_binary(256).?;
+    const oversized_word = word_from_ptr(oversized, tag_binary);
+    @memset(binary_bytes(oversized_word)[0..256], 'a');
+    try std.testing.expectEqual(@as(i64, 8), ex_term_string_to_atom(oversized_word));
 }
 
 test "short float formatting matches Erlang decimal and exponent boundaries" {

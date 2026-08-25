@@ -135,6 +135,7 @@ defmodule Batata.Memory.Inventory do
     ex.result_exception_reason
     ex.result_root_kind
     ex.result_root_word
+    ex.result_atom_name
     ex.result_term_get
     ex.result_term_kind
     ex.result_term_length
@@ -146,6 +147,7 @@ defmodule Batata.Memory.Inventory do
     ex.self
     ex.send
     ex.string_printable
+    ex.string_to_atom
     ex.string_to_int
     ex.sub
     ex.term_eq

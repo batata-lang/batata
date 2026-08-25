@@ -71,6 +71,7 @@ defmodule Batata.Lower do
         "__batata_result_exception_kind",
         "__batata_result_exception_reason",
         "__batata_result_term_kind",
+        "__batata_result_atom_name",
         "__batata_result_term_length",
         "__batata_result_term_get",
         "__batata_result_arena_capacity_bytes",

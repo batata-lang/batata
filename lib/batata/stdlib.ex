@@ -306,6 +306,7 @@ defmodule Batata.Stdlib.String do
     {String, :duplicate, 2} => :native_term,
     {String, :length, 1} => :native_term,
     {String, :printable?, 1} => :native_term,
+    {String, :to_atom, 1} => :native_term,
     {String, :to_integer, 1} => :native_term,
     {String, :to_float, 1} => :native_term
   }
@@ -444,6 +445,7 @@ defmodule Batata.Stdlib do
                   {:erlang, :binary_to_float, 1},
                   {:erlang, :float_to_binary, 2},
                   {String, :printable?, 1},
+                  {String, :to_atom, 1},
                   {List, :duplicate, 2},
                   {List, :flatten, 1},
                   {Keyword, :get, 2},
@@ -495,6 +497,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
                      {Atom, :to_string, 1},
+                     {String, :to_atom, 1},
                      {Date, :to_iso8601, 1},
                      {DateTime, :to_iso8601, 1},
                      {NaiveDateTime, :to_iso8601, 1},

@@ -335,8 +335,16 @@ defmodule Batata do
         raise ArgumentError, message: message
 
       _ ->
-        raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
+        materialize_extended_exception(kind, reason)
     end
+  end
+
+  defp materialize_extended_exception(8, message) when is_binary(message) do
+    raise SystemLimitError, message: message
+  end
+
+  defp materialize_extended_exception(kind, reason) do
+    raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
   end
 
   defp materialize_result(jit, handle, source) do
@@ -359,9 +367,18 @@ defmodule Batata do
   defp materialize_word(_jit, _handle, word, 0, _atoms), do: div(word, 8)
   defp materialize_word(_jit, _handle, 1, 1, _atoms), do: nil
 
-  defp materialize_word(_jit, _handle, word, 1, atoms) do
+  defp materialize_word(jit, handle, word, 1, atoms) do
     Map.get_lazy(atoms, word, fn ->
-      raise ResultError, "unknown native atom word #{word}"
+      name_word = invoke_i64(jit, "__batata_result_atom_name", [handle, word])
+      name_kind = invoke_i64(jit, "__batata_result_term_kind", [handle, name_word])
+
+      if name_kind == 5 do
+        jit
+        |> materialize_word(handle, name_word, name_kind, atoms)
+        |> String.to_atom()
+      else
+        raise ResultError, "unknown native atom word #{word}"
+      end
     end)
   end
 
@@ -748,6 +765,7 @@ defmodule Batata do
     extern int64_t __batata_result_root_kind(int64_t);
     extern int64_t __batata_result_root_word(int64_t);
     extern int64_t __batata_result_term_kind(int64_t, int64_t);
+    extern int64_t __batata_result_atom_name(int64_t, int64_t);
     extern int64_t __batata_result_term_length(int64_t, int64_t);
     extern int64_t __batata_result_term_get(int64_t, int64_t, int64_t);
 
@@ -756,6 +774,11 @@ defmodule Batata do
       if (kind == 0) return printf("%lld", (long long)(word / 8)) < 0 ? -1 : 0;
       if (kind == 1) {
         if (word == 1) return printf("nil") < 0 ? -1 : 0;
+        int64_t name = __batata_result_atom_name(handle, word);
+        if (name != 1) {
+          if (putchar(':') == EOF) return -1;
+          return print_term(handle, name, 5);
+        }
         return printf("#Atom<%lld>", (long long)word) < 0 ? -1 : 0;
       }
       if (kind == 6) return -1;

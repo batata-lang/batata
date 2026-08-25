@@ -1031,6 +1031,62 @@ defmodule Batata.ExecuteTest do
     assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
   end
 
+  test "interns String.to_atom/1 names with literal identity", %{ctx: ctx} do
+    source = """
+    defmodule NativeStringToAtom do
+      def convert(name), do: String.to_atom(name)
+
+      def main() do
+        first = convert("dynamic" <> "_key")
+        second = convert("dynamic_key")
+        alpha = convert("alpha")
+        {alpha, alpha == :alpha, first, first == second, convert("λ"), convert("")}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nNativeStringToAtom.main()") |> Code.eval_string() |> elem(0)
+    expected = expected |> put_elem(1, 1) |> put_elem(3, 1)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "dispatches direct String.to_atom/1 captures", %{ctx: ctx} do
+    source = """
+    defmodule CapturedStringToAtom do
+      def main() do
+        convert = &String.to_atom/1
+        convert.("captured_atom")
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == :captured_atom
+  end
+
+  test "rejects invalid String.to_atom/1 inputs", %{ctx: ctx} do
+    non_binary = """
+    defmodule NonBinaryStringToAtom do
+      def main(), do: String.to_atom(42)
+    end
+    """
+
+    invalid_utf8 = """
+    defmodule InvalidUtf8StringToAtom do
+      def main(), do: String.to_atom(<<255>>)
+    end
+    """
+
+    too_long = """
+    defmodule LongStringToAtom do
+      def main(), do: String.to_atom(String.duplicate("a", 256))
+    end
+    """
+
+    assert_raise ArgumentError, fn -> Batata.execute(non_binary, ctx) end
+    assert_raise ArgumentError, fn -> Batata.execute(invalid_utf8, ctx) end
+    assert_raise SystemLimitError, fn -> Batata.execute(too_long, ctx) end
+  end
+
   test "concatenates values within the supported binary domain", %{ctx: ctx} do
     assert {"leftright", "value", "three-parts"} ==
              Batata.execute(

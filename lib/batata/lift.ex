@@ -2391,6 +2391,7 @@ defmodule Batata.Lift do
     {"__batata_result_exception_kind", "ex.result_exception_kind", 1},
     {"__batata_result_exception_reason", "ex.result_exception_reason", 1},
     {"__batata_result_term_kind", "ex.result_term_kind", 2},
+    {"__batata_result_atom_name", "ex.result_atom_name", 2},
     {"__batata_result_term_length", "ex.result_term_length", 2},
     {"__batata_result_term_get", "ex.result_term_get", 3},
     {"__batata_term_export", "ex.term_export", 2},
@@ -5858,6 +5859,12 @@ defmodule Batata.Lift do
     {lower_atom_to_string(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
   end
 
+  defp lift_stdlib_call(String, :to_atom, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = value |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {lower_string_to_atom(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
+  end
+
   defp lift_stdlib_call(Kernel, :inspect, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = box_term(value, ctx, block)
@@ -6834,6 +6841,16 @@ defmodule Batata.Lift do
     create_op("ex.raise", [reason, lit(6, ctx, block)], [ex_type("term", ctx)], ctx, block)
   end
 
+  defp raise_system_limit_error(message, ctx, block) do
+    bytes =
+      message
+      |> :binary.bin_to_list()
+      |> Enum.map(fn byte -> box_term(lit(byte, ctx, block), ctx, block) end)
+
+    reason = create_term_op("ex.binary", bytes, ctx, block)
+    create_op("ex.raise", [reason, lit(8, ctx, block)], [ex_type("term", ctx)], ctx, block)
+  end
+
   defp lower_list_flatten(value, ctx, block) do
     i64 = integer_type(ctx)
     dyn = ex_type("term", ctx)
@@ -7587,6 +7604,87 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_string_to_atom(value, known_atoms, ctx, block) do
+    dyn = ex_type("term", ctx)
+
+    clauses =
+      known_atoms
+      |> Enum.sort_by(fn {word, _atom} -> word end)
+      |> Enum.map(fn {word, atom} ->
+        {name, _env} = lift_expr(Atom.to_string(atom), ctx, block, %{})
+        equal? = create_op("ex.term_eq", [value, name], [MLIR.Type.i64()], ctx, block)
+
+        {equal?, fn b -> create_op("ex.to_word", [lit(word, ctx, b)], [dyn], ctx, b) end}
+      end)
+      |> Kernel.++([{nil, fn b -> lower_dynamic_string_to_atom(value, ctx, b) end}])
+
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    Enum.each(clauses, fn {guard, body_fn} ->
+      clause_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(region, clause_block)
+      clause_args = if guard, do: [guard], else: []
+      create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, clause_block)
+      result = body_fn.(clause_block)
+
+      create_op(
+        "ex.yield",
+        [result, operandSegmentSizes: segment_sizes([1])],
+        [],
+        ctx,
+        clause_block
+      )
+    end)
+
+    case_op =
+      %Beaver.SSA{
+        op: "ex.case",
+        ip: block,
+        ctx: ctx,
+        arguments: [value, operandSegmentSizes: segment_sizes([1])],
+        results: [dyn],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [region] end
+      }
+      |> MLIR.Operation.create()
+
+    case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_dynamic_string_to_atom(value, ctx, block) do
+    dyn = ex_type("term", ctx)
+    i64 = integer_type(ctx)
+    interned = create_op("ex.string_to_atom", [value], [dyn], ctx, block)
+    raw = create_op("ex.unbox", [interned], [i64], ctx, block)
+    atom? = create_op("ex.is_atom", [interned], [MLIR.Type.i64()], ctx, block)
+    atom_i1 = create_op("arith.trunci", [atom?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(atom_i1, ctx, block, [i64], fn _b -> [raw] end, fn b ->
+        limit? = cmp(raw, lit(8, ctx, b), "eq", ctx, b)
+        limit_i1 = create_op("arith.trunci", [limit?], [MLIR.Type.i1()], ctx, b)
+
+        build_scf_if(
+          limit_i1,
+          ctx,
+          b,
+          [i64],
+          fn lb ->
+            [
+              raise_system_limit_error("a system limit has been reached", ctx, lb)
+              |> unbox(ctx, lb)
+            ]
+          end,
+          fn eb ->
+            [raise_argument_error("invalid String.to_atom/1 argument", ctx, eb) |> unbox(ctx, eb)]
+          end
+        )
+      end)
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
   end
 
   defp lower_kernel_inspect(value, mode, known_atoms, ctx, block) do

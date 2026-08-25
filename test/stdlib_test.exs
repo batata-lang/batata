@@ -40,6 +40,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({String, :printable?, 1}) == :native_term
+      assert Stdlib.class({String, :to_atom, 1}) == :native_term
       assert Stdlib.class({String, :duplicate, 2}) == :native_term
       assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
       assert Stdlib.class({Integer, :to_string, 2}) == :native_term
@@ -64,6 +65,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Atom, :to_string, 1})
       assert Stdlib.may_raise?({String.Chars, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
+      assert Stdlib.may_raise?({String, :to_atom, 1})
       assert Stdlib.may_raise?({List, :duplicate, 2})
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({DateTime, :to_iso8601, 1})
@@ -182,6 +184,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Atom, :to_string, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({String, :to_atom, 1}) == %{
                purity: :pure,
                allocation: :may_allocate,
                preemption: :none,
