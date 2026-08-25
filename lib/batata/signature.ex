@@ -53,6 +53,91 @@ defmodule Batata.Signature do
     fixed_point(definitions, initial)
   end
 
+  @doc false
+  def infer_results(definitions, no_return_functions \\ MapSet.new()) do
+    groups = Enum.group_by(definitions, &{&1.name, &1.arity})
+    infer_results_fixed_point(groups, no_return_functions, MapSet.new())
+  end
+
+  defp infer_results_fixed_point(groups, no_return_functions, proven) do
+    next =
+      Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
+        clauses = Enum.flat_map(definitions, & &1.clauses)
+
+        if clauses != [] and
+             Enum.all?(clauses, &scalar_result?(&1.body_ast, acc, no_return_functions)) do
+          MapSet.put(acc, signature)
+        else
+          acc
+        end
+      end)
+
+    if next == proven,
+      do: proven,
+      else: infer_results_fixed_point(groups, no_return_functions, next)
+  end
+
+  defp scalar_result?(ast, proven, no_return_functions) do
+    result_kind(ast, proven, no_return_functions) == :scalar
+  end
+
+  defp result_kind(integer, _proven, _no_return_functions) when is_integer(integer),
+    do: :scalar
+
+  defp result_kind({:-, _, [integer]}, _proven, _no_return_functions)
+       when is_integer(integer),
+       do: :scalar
+
+  defp result_kind({:__block__, _, expressions}, proven, no_return_functions)
+       when expressions != [],
+       do: expressions |> List.last() |> result_kind(proven, no_return_functions)
+
+  defp result_kind({:case, _, [_value, [do: clauses]]}, proven, no_return_functions)
+       when is_list(clauses) do
+    clauses
+    |> Enum.map(&clause_result_kind(&1, proven, no_return_functions))
+    |> combine_result_kinds()
+  end
+
+  defp result_kind({:throw, _, [_value]}, _proven, _no_return_functions),
+    do: :no_return
+
+  defp result_kind({name, _, arguments}, proven, no_return_functions)
+       when is_atom(name) and is_list(arguments) do
+    signature = {name, length(arguments)}
+
+    cond do
+      MapSet.member?(no_return_functions, signature) ->
+        :no_return
+
+      MapSet.member?(proven, signature) ->
+        :scalar
+
+      name in [:+, :-, :*, :div, :rem] and
+          Enum.all?(arguments, &(result_kind(&1, proven, no_return_functions) == :scalar)) ->
+        :scalar
+
+      true ->
+        :unknown
+    end
+  end
+
+  defp result_kind(_ast, _proven, _no_return_functions), do: :unknown
+
+  defp clause_result_kind({:->, _, [_patterns, body]}, proven, no_return_functions),
+    do: result_kind(body, proven, no_return_functions)
+
+  defp clause_result_kind(_clause, _proven, _no_return_functions), do: :unknown
+
+  defp combine_result_kinds(kinds) do
+    cond do
+      kinds == [] -> :unknown
+      Enum.all?(kinds, &(&1 == :no_return)) -> :no_return
+      Enum.all?(kinds, &(&1 in [:scalar, :no_return])) -> :scalar
+      true -> :unknown
+    end
+  end
+
   defp merge_trailing_integer_pattern_modes(modes, definitions) do
     Enum.reduce(definitions, modes, fn %Frontend.Definition{
                                          name: name,

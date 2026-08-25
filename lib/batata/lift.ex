@@ -33,6 +33,7 @@ defmodule Batata.Lift do
   @struct_schema_key {__MODULE__, :struct_schema}
   @arg_modes_key {__MODULE__, :arg_modes}
   @no_return_functions_key {__MODULE__, :no_return_functions}
+  @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @current_function_key {__MODULE__, :current_function}
   @min_scalar_integer -9_223_372_036_854_775_808
   @max_scalar_integer 9_223_372_036_854_775_807
@@ -80,11 +81,15 @@ defmodule Batata.Lift do
       schemas =
         if mod.struct_schema, do: Map.put(schemas, mod.name, mod.struct_schema), else: schemas
 
+      no_return_functions = infer_no_return_functions(definitions)
+
       module_env = %{
         @known_atoms_key => known_atoms,
         @struct_schema_key => schemas,
         @arg_modes_key => Batata.Signature.infer(definitions),
-        @no_return_functions_key => infer_no_return_functions(definitions)
+        @no_return_functions_key => no_return_functions,
+        @scalar_result_functions_key =>
+          Batata.Signature.infer_results(definitions, no_return_functions)
       }
 
       groups =
@@ -4262,6 +4267,11 @@ defmodule Batata.Lift do
 
       arg_values = adapt_call_arguments(name, arg_values, env, ctx, block)
 
+      result_type =
+        if MapSet.member?(Map.fetch!(env, @scalar_result_functions_key), {name, length(args)}),
+          do: integer_type(ctx),
+          else: ex_type("term", ctx)
+
       {
         create_op(
           "ex.call",
@@ -4271,7 +4281,7 @@ defmodule Batata.Lift do
               arity: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
               operandSegmentSizes: segment_sizes(arg_segment_sizes(length(args)))
             ],
-          [ex_type("term", ctx)],
+          [result_type],
           ctx,
           block
         ),
