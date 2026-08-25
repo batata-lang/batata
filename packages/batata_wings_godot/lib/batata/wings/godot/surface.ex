@@ -1,14 +1,15 @@
 defmodule Batata.Wings.Godot.Surface do
   @moduledoc "A closed fixed-point ArrayMesh surface descriptor."
 
-  alias Batata.Wings.{CanonicalJSON, Mesh}
+  alias Batata.Wings.{CanonicalJSON, Mesh, Selection}
 
-  @enforce_keys [:vertices, :indices, :scale]
+  @enforce_keys [:vertices, :indices, :triangle_faces, :scale]
   defstruct @enforce_keys
 
   @type t :: %__MODULE__{
           vertices: [{integer(), integer(), integer()}],
           indices: [non_neg_integer()],
+          triangle_faces: [Mesh.face_id()],
           scale: pos_integer()
         }
 
@@ -32,19 +33,45 @@ defmodule Batata.Wings.Godot.Surface do
         quantize!(position, scale, tolerance)
       end)
 
-    indices =
+    triangles =
       mesh.faces
       |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.flat_map(fn {_face, vertices} -> triangulate!(vertices) end)
-      |> Enum.map(&Map.fetch!(vertex_indices, &1))
+      |> Enum.flat_map(fn {face, vertices} ->
+        vertices
+        |> triangulate!()
+        |> Enum.map(&{face, &1})
+      end)
 
-    %__MODULE__{vertices: vertices, indices: indices, scale: scale}
+    indices =
+      Enum.flat_map(triangles, fn {_face, triangle} ->
+        Enum.map(triangle, &Map.fetch!(vertex_indices, &1))
+      end)
+
+    %__MODULE__{
+      vertices: vertices,
+      indices: indices,
+      triangle_faces: Enum.map(triangles, &elem(&1, 0)),
+      scale: scale
+    }
   end
 
   @doc "Returns the term consumed by Batata.Godot's closed surface codec."
   @spec descriptor(t()) :: {list(), list(), pos_integer()}
   def descriptor(%__MODULE__{} = surface) do
     {surface.vertices, surface.indices, surface.scale}
+  end
+
+  @doc "Returns triangle indices for a selection without changing canonical geometry."
+  @spec selection_indices(t(), Selection.t()) :: [non_neg_integer()]
+  def selection_indices(%__MODULE__{} = surface, %Selection{} = selection) do
+    selected = MapSet.new(selection.face_ids)
+
+    surface.indices
+    |> Enum.chunk_every(3)
+    |> Enum.zip(surface.triangle_faces)
+    |> Enum.flat_map(fn {triangle, face} ->
+      if MapSet.member?(selected, face), do: triangle, else: []
+    end)
   end
 
   @doc false
@@ -67,6 +94,7 @@ defmodule Batata.Wings.Godot.Surface do
     canonical = %{
       "indices" => surface.indices,
       "scale" => surface.scale,
+      "triangle_faces" => surface.triangle_faces,
       "vertices" => Enum.map(surface.vertices, &Tuple.to_list/1)
     }
 
@@ -75,13 +103,13 @@ defmodule Batata.Wings.Godot.Surface do
       "index_count" => length(surface.indices),
       "scale" => surface.scale,
       "triangle_count" => div(length(surface.indices), 3),
+      "triangle_face_digest" => surface.triangle_faces |> CanonicalJSON.encode!() |> digest(),
       "vertex_count" => length(surface.vertices)
     }
   end
 
   defp triangulate!([first, second, third | rest]) do
-    triangles = [[first, second, third] | triangulate_fan(first, third, rest)]
-    List.flatten(triangles)
+    [[first, second, third] | triangulate_fan(first, third, rest)]
   end
 
   defp triangulate!(vertices) do
