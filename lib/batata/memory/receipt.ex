@@ -2,6 +2,7 @@ defmodule Batata.Memory.Receipt do
   @moduledoc "A bounded-memory proof receipt; inventory-only M0 plans cannot create one."
 
   alias Batata.Memory
+  alias Batata.Memory.{Bound, Plan}
 
   @enforce_keys [
     :source_hash,
@@ -60,6 +61,60 @@ defmodule Batata.Memory.Receipt do
   @spec canonical_json(t()) :: String.t()
   def canonical_json(%__MODULE__{} = receipt),
     do: receipt |> canonical_map() |> Memory.canonical_json()
+
+  @doc "Builds a receipt only from a closed plan with an evaluable maximum."
+  @spec from_plan!(Plan.t(), map()) :: t()
+  def from_plan!(plan, contracts \\ %{})
+
+  def from_plan!(%Plan{obligations: []} = plan, contracts) do
+    maximum =
+      case plan.maximum_memory do
+        %Bound{} = bound ->
+          case Bound.evaluate(bound, contracts) do
+            {:ok, bytes} ->
+              bytes
+
+            {:error, missing} ->
+              raise ArgumentError, "memory receipt has unresolved contracts: #{inspect(missing)}"
+          end
+
+        nil ->
+          raise ArgumentError, "memory receipt requires a closed maximum_memory bound"
+      end
+
+    new!(
+      source_hash: plan.source_hash,
+      compiler_version: plan.compiler_version,
+      dependency_lock: plan.dependency_lock,
+      memory_plan_hash: "sha256:" <> Plan.digest(plan),
+      maximum_memory: Integer.to_string(maximum),
+      runtime_guards: plan.runtime_guards
+    )
+  end
+
+  def from_plan!(%Plan{obligations: obligations}, _contracts) do
+    raise ArgumentError,
+          "memory receipt requires zero unproven obligations, got: #{length(obligations)}"
+  end
+
+  @doc "Verifies a receipt against a canonical plan without compiler process state."
+  @spec verify(t(), Plan.t(), map()) :: :ok | {:error, atom()}
+  def verify(%__MODULE__{} = receipt, %Plan{} = plan, contracts \\ %{}) do
+    with true <- receipt.source_hash == plan.source_hash,
+         true <- receipt.compiler_version == plan.compiler_version,
+         true <- receipt.dependency_lock == plan.dependency_lock,
+         true <- receipt.memory_plan_hash == "sha256:" <> Plan.digest(plan),
+         [] <- plan.obligations,
+         {:ok, maximum} <- Bound.evaluate(plan.maximum_memory, contracts),
+         true <- receipt.maximum_memory == Integer.to_string(maximum),
+         true <- receipt.runtime_guards == plan.runtime_guards do
+      :ok
+    else
+      false -> {:error, :receipt_mismatch}
+      [_ | _] -> {:error, :unproven_obligations}
+      {:error, _missing} -> {:error, :unresolved_contracts}
+    end
+  end
 
   defp valid_non_negative_integer_string?(value) when is_binary(value) do
     case Integer.parse(value) do

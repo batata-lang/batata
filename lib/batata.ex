@@ -71,7 +71,9 @@ defmodule Batata do
       module: snapshot.name,
       source: source,
       policy: Keyword.get(opts, :memory_policy, :disabled),
-      dependency_lock: opts[:memory_dependency_lock]
+      dependency_lock: opts[:memory_dependency_lock],
+      contracts: Keyword.get(opts, :memory_contracts, %{}),
+      quota_bytes: opts[:memory_quota_bytes]
     )
 
     module
@@ -524,7 +526,9 @@ defmodule Batata do
         module: snapshot.name,
         source: source,
         policy: Keyword.get(opts, :memory_policy, :disabled),
-        dependency_lock: opts[:memory_dependency_lock]
+        dependency_lock: opts[:memory_dependency_lock],
+        contracts: Keyword.get(opts, :memory_contracts, %{}),
+        quota_bytes: opts[:memory_quota_bytes]
       )
 
     module =

@@ -2,7 +2,34 @@ defmodule Batata.Memory.SchemaTest do
   use ExUnit.Case, async: true
 
   alias Batata.Memory
-  alias Batata.Memory.{DiagnosticError, Effect, Obligation, Plan, Receipt, Site}
+  alias Batata.Memory.{Bound, DiagnosticError, Effect, Obligation, Plan, Receipt, Site}
+
+  test "symbolic bounds normalize and evaluate deterministically" do
+    bound =
+      Bound.add([
+        Bound.constant(8),
+        Bound.multiply([Bound.variable("input:items"), Bound.constant(16)]),
+        Bound.constant(8)
+      ])
+
+    assert Bound.variables(bound) == ["input:items"]
+    assert Bound.evaluate(bound, %{"input:items" => 3}) == {:ok, 64}
+    assert Bound.evaluate(bound) == {:error, ["input:items"]}
+
+    assert Bound.canonical_map(bound) == %{
+             "op" => "sum",
+             "terms" => [
+               %{"bytes" => "16", "op" => "constant"},
+               %{
+                 "op" => "product",
+                 "terms" => [
+                   %{"bytes" => "16", "op" => "constant"},
+                   %{"name" => "input:items", "op" => "variable"}
+                 ]
+               }
+             ]
+           }
+  end
 
   test "canonical JSON sorts keys and rejects ambiguous scalar domains" do
     assert Memory.canonical_json(%{"a" => %{a: nil, b: true}, z: [2, 1]}) ==
@@ -100,6 +127,23 @@ defmodule Batata.Memory.SchemaTest do
     assert_raise ArgumentError, ~r/non-negative integer string/, fn ->
       Receipt.new!(Keyword.put(fields, :maximum_memory, "016"))
     end
+  end
+
+  test "receipt verifies against a closed plan without compiler process state" do
+    plan =
+      plan(
+        maximum_memory: Bound.add([Bound.constant(16), Bound.variable("input:bytes")]),
+        preconditions: [%{"maximum_bytes" => "48", "variable" => "input:bytes"}]
+      )
+
+    contracts = %{"input:bytes" => 48}
+    receipt = Receipt.from_plan!(plan, contracts)
+
+    assert receipt.maximum_memory == "64"
+    assert Receipt.verify(receipt, plan, contracts) == :ok
+
+    assert Receipt.verify(receipt, %{plan | source_hash: hash("different")}, contracts) ==
+             {:error, :receipt_mismatch}
   end
 
   defp site(name) do

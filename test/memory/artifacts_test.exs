@@ -60,4 +60,28 @@ defmodule Batata.Memory.ArtifactsTest do
 
     refute File.exists?(output_dir)
   end
+
+  @tag :tmp_dir
+  test "closed strict build emits a replayable bounded receipt", %{ctx: ctx, tmp_dir: tmp_dir} do
+    output =
+      Batata.build(
+        "defmodule ClosedReceipt do\n def main(), do: {1, 2}\nend",
+        tmp_dir,
+        ctx,
+        memory_policy: :strict,
+        memory_quota_bytes: 67_108_864
+      )
+
+    assert output.memory_receipt == Memory.Artifacts.receipt_path(tmp_dir)
+
+    receipt = output.memory_receipt |> File.read!() |> JSON.decode!()
+    plan = output.memory_plan |> File.read!() |> JSON.decode!()
+
+    assert receipt["assurance"] == "bounded"
+    assert receipt["maximum_memory"] == "67108864"
+    assert receipt["memory_plan_hash"] == "sha256:" <> Memory.digest(plan)
+
+    index = output.artifact_index |> File.read!() |> JSON.decode!()
+    assert Enum.any?(index["files"], &(&1["path"] == "memory-receipt.json"))
+  end
 end

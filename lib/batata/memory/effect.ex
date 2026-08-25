@@ -1,7 +1,7 @@
 defmodule Batata.Memory.Effect do
   @moduledoc "Allocation and lifetime facts attached to one stable memory site."
 
-  alias Batata.Memory.Site
+  alias Batata.Memory.{Bound, Site}
 
   @classifications [:none, :may_allocate, :exact, :bounded, :parametric, :guarded, :unknown]
 
@@ -71,9 +71,12 @@ defmodule Batata.Memory.Effect do
       "provenance" => stringify(effect.provenance),
       "region" => stringify(effect.region),
       "site" => Site.to_map(effect.site),
-      "size" => effect.size
+      "size" => encode_size(effect.size)
     }
   end
+
+  defp encode_size(%Bound{} = bound), do: Bound.canonical_map(bound)
+  defp encode_size(size), do: size
 
   defp stringify(nil), do: nil
   defp stringify(value) when is_atom(value), do: Atom.to_string(value)
