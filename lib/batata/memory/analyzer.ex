@@ -9,7 +9,19 @@ defmodule Batata.Memory.Analyzer do
   """
 
   alias Batata.Memory
-  alias Batata.Memory.{Bound, Effect, Inventory, Lifetime, Obligation, Plan, Site, Summary}
+
+  alias Batata.Memory.{
+    Bound,
+    Effect,
+    Inventory,
+    Lifetime,
+    Obligation,
+    Plan,
+    Region,
+    Site,
+    Summary
+  }
+
   alias Beaver.MLIR
   alias Beaver.Walker
 
@@ -78,6 +90,11 @@ defmodule Batata.Memory.Analyzer do
       |> Enum.unzip()
 
     obligations = Enum.reject(obligations, &is_nil/1)
+
+    {regions, reset_points, reset_obligations} =
+      Region.descriptors(effects, operation_sequences(all_facts, reachable))
+
+    obligations = obligations ++ reset_obligations
     maximum_memory = total_bound(effects, quota_bytes)
 
     Plan.new!(
@@ -89,6 +106,8 @@ defmodule Batata.Memory.Analyzer do
       effects: effects,
       obligations: obligations,
       preconditions: preconditions(contracts),
+      regions: regions,
+      reset_points: reset_points,
       runtime_guards: runtime_guards(effects, quota_bytes)
     )
   end
@@ -144,7 +163,7 @@ defmodule Batata.Memory.Analyzer do
         classification: control_classification(summary.classification, fact, opts),
         provenance: if(summary.provenance, do: summary.provenance, else: provenance),
         size: size,
-        region: if(summary.classification == :none, do: :immediate, else: :execution_arena),
+        region: Region.kind_for(summary.classification, lifetime.escape),
         escape: lifetime.escape,
         lifetime: lifetime.lifetime,
         failure: summary.failure,
@@ -433,6 +452,16 @@ defmodule Batata.Memory.Analyzer do
 
       {function, edges}
     end)
+  end
+
+  defp operation_sequences(all_facts, reachable) do
+    all_facts
+    |> Enum.filter(&MapSet.member?(reachable, &1.function))
+    |> Enum.group_by(& &1.function)
+    |> Enum.map(fn {function, facts} ->
+      %{function: function, operations: Enum.map(facts, & &1.operation)}
+    end)
+    |> Enum.sort_by(& &1.function)
   end
 
   defp recursive_functions(graph) do

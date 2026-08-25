@@ -120,6 +120,15 @@ defmodule Batata.Memory.VerifierTest do
     receipt = Receipt.from_plan!(plan)
     assert receipt.maximum_memory == "67108864"
     assert Receipt.verify(receipt, plan) == :ok
+
+    assert Enum.any?(plan.regions, fn region ->
+             region.kind == :execution and
+               region.physical_backend == "segmented-bump-execution-arena" and
+               region.reset["verified"]
+           end)
+
+    assert [%{"verified" => true, "site_id" => reset_site}] = plan.reset_points
+    assert String.starts_with?(reset_site, "mem://")
   end
 
   test "recursive allocation requires and consumes a finite iteration contract", %{ctx: ctx} do
@@ -186,5 +195,10 @@ defmodule Batata.Memory.VerifierTest do
     assert tuple.escape == :process_send
     assert tuple.lifetime == %{"end" => "execution-quiescence", "scope" => "actor-message"}
     assert tuple.context["lifetime_strategy"]["id"] == "retain-in-execution-arena"
+
+    assert Enum.any?(plan.regions, fn region ->
+             region.kind == :actor and "cross-actor-retention" in region.capabilities and
+               region.physical_backend == "segmented-bump-execution-arena"
+           end)
   end
 end

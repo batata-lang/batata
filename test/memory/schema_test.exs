@@ -2,7 +2,7 @@ defmodule Batata.Memory.SchemaTest do
   use ExUnit.Case, async: true
 
   alias Batata.Memory
-  alias Batata.Memory.{Bound, DiagnosticError, Effect, Obligation, Plan, Receipt, Site}
+  alias Batata.Memory.{Bound, DiagnosticError, Effect, Obligation, Plan, Receipt, Region, Site}
 
   test "symbolic bounds normalize and evaluate deterministically" do
     bound =
@@ -144,6 +144,23 @@ defmodule Batata.Memory.SchemaTest do
 
     assert Receipt.verify(receipt, %{plan | source_hash: hash("different")}, contracts) ==
              {:error, :receipt_mismatch}
+  end
+
+  test "reset verification fails closed on missing or reordered lifecycle operations" do
+    assert Region.verify_reset_sequence([
+             "ex.runtime_enter",
+             "ex.process_table_reset",
+             "ex.result_create",
+             "ex.runtime_leave"
+           ]) == :ok
+
+    assert {:error, _reason} =
+             Region.verify_reset_sequence([
+               "ex.runtime_enter",
+               "ex.result_create",
+               "ex.process_table_reset",
+               "ex.runtime_leave"
+             ])
   end
 
   defp site(name) do
