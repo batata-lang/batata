@@ -3597,6 +3597,56 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "try applies else only to normal completion", %{ctx: ctx} do
+    source = """
+    defmodule TryElse do
+      def normal() do
+        try do
+          7
+        catch
+          _ -> 0
+        else
+          value when is_integer(value) -> value + 1
+        end
+      end
+
+      def thrown() do
+        try do
+          throw(9)
+        catch
+          value when is_integer(value) -> value + 2
+        else
+          value when is_integer(value) -> value + 100
+        end
+      end
+
+      def main(), do: {normal(), thrown()}
+    end
+    """
+
+    expected = source |> Kernel.<>("\nTryElse.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "raises TryClauseError when no else clause matches", %{ctx: ctx} do
+    source = """
+    defmodule UnmatchedTryElse do
+      def main() do
+        try do
+          :unexpected
+        catch
+          _ -> :caught
+        else
+          :expected -> :ok
+        end
+      end
+    end
+    """
+
+    error = assert_raise TryClauseError, fn -> Batata.execute(source, ctx) end
+    assert error.term == :unexpected
+  end
+
   test "throw unwinds through nested function calls", %{ctx: ctx} do
     assert 8 ==
              Batata.execute(
