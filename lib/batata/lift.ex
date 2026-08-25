@@ -7004,7 +7004,10 @@ defmodule Batata.Lift do
 
   defp native_term_call(:binary, :at, [binary, index], ctx, block) do
     index = create_op("ex.to_int", [index], [integer_type(ctx)], ctx, block)
-    create_op("ex.binary_get", [binary, index], [ex_type("term", ctx)], ctx, block)
+
+    binary
+    |> then(&create_op("ex.binary_get", [&1, index], [ex_type("term", ctx)], ctx, block))
+    |> then(&create_op("ex.to_int", [&1], [integer_type(ctx)], ctx, block))
   end
 
   defp native_term_call(:binary, :copy, [binary], ctx, block) do

@@ -563,6 +563,23 @@ defmodule Batata.LiftTest do
     assert MLIR.to_string(module, generic: true) =~ ~r/"ex\.tuple_get".*"ex\.to_int"/s
   end
 
+  test "refines :binary.at results to scalar integers", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def byte(binary, position), do: :binary.at(binary, position) + 1
+          def main(), do: byte("A", 0)
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~r/"ex\.binary_get".*"ex\.to_int".*"ex\.add"/s
+    refute rendered =~ ~r/"ex\.add"\([^\n]*!ex\.term/
+  end
+
   test "preserves scalar values assigned to hygienic macro variables", %{ctx: ctx} do
     variable = {:value, [generated: true], Batata.GeneratedMacro}
 
