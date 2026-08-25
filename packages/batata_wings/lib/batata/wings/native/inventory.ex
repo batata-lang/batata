@@ -22,7 +22,8 @@ defmodule Batata.Wings.Native.Inventory do
     {Batata.Wings.Operation.Move, "lib/batata/wings/operation/move.ex"},
     {Batata.Wings.EditorState, "lib/batata/wings/editor_state.ex"},
     {Batata.Wings.EditCommand, "lib/batata/wings/edit_command.ex"},
-    {Batata.Wings.Editor, "lib/batata/wings/editor.ex"}
+    {Batata.Wings.Editor, "lib/batata/wings/editor.ex"},
+    {Batata.Wings.Native.Kernel, "lib/batata/wings/native/kernel.ex"}
   ]
 
   @schema 1
