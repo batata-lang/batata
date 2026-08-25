@@ -36,6 +36,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Keyword, :get, 3}) == :native_term
       assert Stdlib.class({Map, :size, 1}) == :native_term
       assert Stdlib.class({Map, :to_list, 1}) == :native_term
+      assert Stdlib.class({:maps, :from_list, 1}) == :native_term
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
       assert Stdlib.class({String, :printable?, 1}) == :native_term
@@ -76,6 +77,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({:erlang, :float_to_binary, 2})
       assert Stdlib.may_raise?({:erlang, :split_binary, 2})
       assert Stdlib.may_raise?({:binary, :copy, 1})
+      assert Stdlib.may_raise?({:maps, :from_list, 1})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
     end
@@ -93,6 +95,13 @@ defmodule Batata.StdlibTest do
                allocation: :may_allocate,
                preemption: :none,
                reductions: :constant
+             }
+
+      assert Stdlib.metadata({:maps, :from_list, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :per_element
              }
 
       assert Stdlib.metadata({Enum, :reduce, 3}) == %{
@@ -226,6 +235,37 @@ defmodule Batata.StdlibTest do
       """
 
       assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+    end
+
+    test "builds maps from proper pair lists with last duplicate winning", %{ctx: ctx} do
+      source = """
+      defmodule MapsFromList do
+        def main() do
+          from_list = &:maps.from_list/1
+          {:maps.from_list([]), from_list.([{:a, 1}, {:b, 2}, {:a, 3}])}
+        end
+      end
+      """
+
+      expected = source |> Kernel.<>("\nMapsFromList.main()") |> Code.eval_string() |> elem(0)
+      assert Batata.execute(source, ctx) == expected
+    end
+
+    test "raises ArgumentError for malformed :maps.from_list/1 inputs", %{ctx: ctx} do
+      for input <- [
+            ":not_a_list",
+            "%{already: :a_map}",
+            "[{:ok, 1}, :invalid]",
+            "[{:ok, 1} | :improper]"
+          ] do
+        source = """
+        defmodule InvalidMapsFromList do
+          def main(), do: :maps.from_list(#{input})
+        end
+        """
+
+        assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+      end
     end
 
     test "matches List.flatten/1 for nested proper lists", %{ctx: ctx} do
