@@ -15,6 +15,12 @@ object handles, same-thread autorelease tokens and a checked-in Objective-C
 exception fence. Every external selector also receives a deterministic memory
 effect summary; unknown effects cannot silently pass Batata's memory verifier.
 
+The AppKit slice generates a complete `.app` bundle and closes one real event
+loop: `NSApplicationDelegate.applicationDidFinishLaunching:`, `NSWindow`, a
+label and button, AppKit target-action into compiled Batata, termination policy,
+and deterministic release. The smoke launches the executable under the active
+WindowServer and requires all callback markers plus a clean exit.
+
 Inside the Batata monorepo:
 
 ```sh
