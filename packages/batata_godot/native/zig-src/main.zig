@@ -768,7 +768,7 @@ fn writePackedVector3ArrayResult(
     var storage: [16]u8 align(8) = undefined;
     api.packed_vector3_array_constructor(&storage, null);
     defer api.packed_vector3_array_destructor(&storage);
-    if (!fillPackedVector3Array(result_word, &storage)) {
+    if (!fillPackedVector3Array(result_word, &storage, 1.0)) {
         return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.packed_vector3_array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
     }
     api.packed_vector3_array_to_variant(return_variant, &storage);
@@ -788,7 +788,8 @@ fn writePackedInt32ArrayResult(
     api.packed_int32_array_to_variant(return_variant, &storage);
 }
 
-fn fillPackedVector3Array(result_word: i64, storage: godot.TypePtr) bool {
+fn fillPackedVector3Array(result_word: i64, storage: godot.TypePtr, scale: f32) bool {
+    if (!std.math.isFinite(scale) or scale <= 0) return false;
     if (term_runtime.ex_term_is_list(result_word) == 0) return false;
     const length = term_runtime.ex_term_list_length(result_word);
     if (length < 0 or length > max_packed_elements or !resizeBuiltin(api.packed_vector3_array_resize, storage, length)) return false;
@@ -800,7 +801,7 @@ fn fillPackedVector3Array(result_word: i64, storage: godot.TypePtr) bool {
         var vector: godot.Vector3 = undefined;
         inline for (0..3) |component| {
             const term = term_runtime.ex_term_tuple_get(tuple, component);
-            const value = termNumberToF32(term) orelse return false;
+            const value = (termNumberToF32(term) orelse return false) / scale;
             switch (component) {
                 0 => vector.x = value,
                 1 => vector.y = value,
@@ -862,7 +863,18 @@ fn writeArrayMeshSurfaceResult(
 }
 
 fn fillSurfaceArrays(result_word: i64, arrays: godot.TypePtr) bool {
-    if (term_runtime.ex_term_is_tuple(result_word) == 0 or term_runtime.ex_term_tuple_length(result_word) != 2) return false;
+    if (term_runtime.ex_term_is_tuple(result_word) == 0) return false;
+    const descriptor_length = term_runtime.ex_term_tuple_length(result_word);
+    if (descriptor_length != 2 and descriptor_length != 3) return false;
+    const scale: f32 = if (descriptor_length == 2)
+        1.0
+    else blk: {
+        const term = term_runtime.ex_term_tuple_get(result_word, 2);
+        if (term_runtime.ex_term_is_integer(term) == 0) return false;
+        const value = term_runtime.ex_term_to_int(term);
+        if (value <= 0 or value > 1_000_000) return false;
+        break :blk @floatFromInt(value);
+    };
 
     var vertices: [16]u8 align(8) = undefined;
     var indices: [16]u8 align(8) = undefined;
@@ -870,7 +882,7 @@ fn fillSurfaceArrays(result_word: i64, arrays: godot.TypePtr) bool {
     defer api.packed_vector3_array_destructor(&vertices);
     api.packed_int32_array_constructor(&indices, null);
     defer api.packed_int32_array_destructor(&indices);
-    if (!fillPackedVector3Array(term_runtime.ex_term_tuple_get(result_word, 0), &vertices) or
+    if (!fillPackedVector3Array(term_runtime.ex_term_tuple_get(result_word, 0), &vertices, scale) or
         !fillPackedInt32Array(term_runtime.ex_term_tuple_get(result_word, 1), &indices) or
         !resizeBuiltin(api.array_resize, arrays, mesh_array_slots)) return false;
 

@@ -58,8 +58,9 @@ The closed value surface is `nil`, `:bool`, `:int`, `:float`, `:string`,
 `:string_name`, `:vector2`, `:vector3`, `:packed_vector3_array`,
 `:packed_int32_array`, `:array_mesh_surface`, and `{:object, "ClassName"}`.
 Packed arrays own native copies on both sides of the call. An
-`:array_mesh_surface` is exactly `{vertices, triangle_indices}` and is encoded
-as a 13-slot Godot mesh array with only `ARRAY_VERTEX` and `ARRAY_INDEX` set;
+`:array_mesh_surface` is `{vertices, triangle_indices}` or the replay-safe
+fixed-point form `{integer_vertices, triangle_indices, positive_scale}`. It is
+encoded as a 13-slot Godot mesh array with only `ARRAY_VERTEX` and `ARRAY_INDEX` set;
 it is return-only and is not an arbitrary `Array` escape hatch.
 
 `godot_outbound :array_mesh_surface` admits one pinned method bind:

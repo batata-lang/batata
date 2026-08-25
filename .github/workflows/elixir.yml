@@ -114,6 +114,22 @@ jobs:
             mix test --warnings-as-errors --max-cases 1
           '
 
+      - name: Test Batata Wings Godot vertical slice
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_wings_godot
+            export BATATA_PATH=../..
+            export BATATA_GODOT_PATH=../batata_godot
+            export BATATA_WINGS_PATH=../batata_wings
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors --max-cases 1
+          '
+
       - name: Upload concurrent runtime traces
         if: always()
         uses: actions/upload-artifact@v4
