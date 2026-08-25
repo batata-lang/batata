@@ -137,6 +137,11 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
 | `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | owner-only retention of the sole initialized, quiescent execution result; 0 registry full, -1 unbound/not ready/foreign, -2 OOM, -3 duplicate ownership; failures preserve the runtime |
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | atomically release a live result pin and its runtime; -1 stale, -2 during execution/export or while another term pin remains; busy is side-effect free |
+| `ex.term.result_arena_capacity_bytes` | `(handle: i64) -> i64` | retained runtime arena capacity in bytes, or -1 for a stale result |
+| `ex.term.result_arena_chunks` | `(handle: i64) -> i64` | retained runtime arena segment count, or -1 for a stale result |
+| `ex.term.result_arena_high_water` | `(handle: i64) -> i64` | retained execution allocation high-water in bytes, or -1 for a stale result |
+| `ex.term.result_arena_limit` | `(handle: i64) -> i64` | retained execution quota in bytes, or -1 for a stale result |
+| `ex.term.result_oom` | `(handle: i64) -> i64` | 1 when the retained execution observed OOM, 0 otherwise, or -1 for a stale result |
 | `ex.term.result_root_kind` | `(handle: i64) -> i64` | return a heap-backed root's tag, 0 for a scalar root, or -1 for stale/runtime-local values |
 | `ex.term.result_root_word` | `(handle: i64) -> i64` | return the retained root word, or -1 for a stale handle |
 | `ex.term.result_exception_kind` | `(handle: i64) -> i64` | return the retained entry actor's exception discriminator, zero for no exception |

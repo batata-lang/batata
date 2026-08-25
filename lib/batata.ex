@@ -11,7 +11,7 @@ defmodule Batata do
   """
 
   alias Batata.Lower
-  alias Batata.Memory.{Plan, RuntimeQuota}
+  alias Batata.Memory.{Calibration, Plan, RuntimeQuota}
   alias Beaver.MLIR
   alias Beaver.Native
   alias Beaver.Native.I64
@@ -172,6 +172,23 @@ defmodule Batata do
     :global.trans(lock, fn -> execute_isolated(source, ctx, opts) end)
   end
 
+  @doc """
+  Executes `main` and returns the value together with proof-calibrated native
+  arena telemetry. Memory analysis defaults to `:report` for this API.
+  """
+  @spec execute_with_memory_report(String.t(), MLIR.Context.t(), keyword()) :: map()
+  def execute_with_memory_report(source, ctx, opts \\ []) do
+    lock = {{__MODULE__, :execution_engine}, self()}
+
+    :global.trans(lock, fn ->
+      execute_with_memory_report_isolated(
+        source,
+        ctx,
+        Keyword.put_new(opts, :memory_policy, :report)
+      )
+    end)
+  end
+
   # MLIR's process-global execution-engine symbol registry can resolve the
   # identically named C wrappers from a concurrently active engine. Keep the
   # complete engine lifetime atomic so a result handle is always inspected by
@@ -189,6 +206,36 @@ defmodule Batata do
       )
       |> MLIR.verify!()
 
+    execute_lowered(module, source, nil)
+  end
+
+  defp execute_with_memory_report_isolated(source, ctx, opts) do
+    module = compile(source, ctx, opts)
+    snapshot = Batata.Frontend.from_source(source)
+
+    plan =
+      Batata.Memory.analyze(module,
+        module: snapshot.name,
+        source: source,
+        policy: Keyword.fetch!(opts, :memory_policy),
+        dependency_lock: opts[:memory_dependency_lock],
+        contracts: Keyword.get(opts, :memory_contracts, %{}),
+        quota_bytes: opts[:memory_quota_bytes]
+      )
+
+    module =
+      module
+      |> Lower.to_llvm(ctx,
+        c_interface: true,
+        memory_quota_bytes: opts[:memory_quota_bytes],
+        memory_telemetry: true
+      )
+      |> MLIR.verify!()
+
+    execute_lowered(module, source, plan)
+  end
+
+  defp execute_lowered(module, source, plan) do
     jit = MLIR.ExecutionEngine.create!(module, execution_engine_opts(module))
 
     try do
@@ -203,9 +250,23 @@ defmodule Batata do
       end
 
       try do
-        case invoke_i64(jit, "__batata_result_exception_kind", [handle]) do
-          0 -> materialize_result(jit, handle, source)
-          kind -> materialize_exception(jit, handle, kind, source)
+        telemetry = if plan, do: result_memory_telemetry(jit, handle)
+
+        result =
+          case invoke_i64(jit, "__batata_result_exception_kind", [handle]) do
+            0 -> materialize_result(jit, handle, source)
+            kind -> materialize_exception(jit, handle, kind, source)
+          end
+
+        if plan do
+          %{
+            calibration: Calibration.compare!(plan, telemetry),
+            plan: plan,
+            result: result,
+            telemetry: telemetry
+          }
+        else
+          result
         end
       after
         invoke_i64(jit, "__batata_result_destroy", [handle])
@@ -214,6 +275,17 @@ defmodule Batata do
       MLIR.ExecutionEngine.destroy(jit)
       MLIR.Module.destroy(module)
     end
+  end
+
+  defp result_memory_telemetry(jit, handle) do
+    %{
+      "arena_capacity_bytes" => invoke_i64(jit, "__batata_result_arena_capacity_bytes", [handle]),
+      "arena_chunks" => invoke_i64(jit, "__batata_result_arena_chunks", [handle]),
+      "arena_high_water_bytes" => invoke_i64(jit, "__batata_result_arena_high_water", [handle]),
+      "arena_limit_bytes" => invoke_i64(jit, "__batata_result_arena_limit", [handle]),
+      "oom" => invoke_i64(jit, "__batata_result_oom", [handle]) == 1,
+      "typed_failure" => nil
+    }
   end
 
   defp materialize_exception(jit, handle, kind, source) do

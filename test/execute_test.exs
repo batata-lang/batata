@@ -2,6 +2,7 @@ defmodule Batata.ExecuteTest do
   use Batata.Case, async: true
 
   alias Batata
+  alias Batata.Memory.Plan
 
   test "executes a compiled module through the JIT", %{ctx: ctx} do
     assert 3 ==
@@ -3642,5 +3643,25 @@ defmodule Batata.ExecuteTest do
         memory_quota_bytes: 0
       )
     end
+  end
+
+  test "JIT calibrates the proved maximum against result-owned native telemetry", %{ctx: ctx} do
+    report =
+      Batata.execute_with_memory_report(
+        """
+        defmodule CalibratedJIT do
+          def main(), do: {1, [2, 3]}
+        end
+        """,
+        ctx,
+        memory_quota_bytes: 4_096
+      )
+
+    assert report.result == {1, [2, 3]}
+    assert report.telemetry["arena_high_water_bytes"] > 0
+    assert report.telemetry["arena_high_water_bytes"] <= 4_096
+    assert report.telemetry["arena_limit_bytes"] == 4_096
+    assert report.calibration["status"] == "matched"
+    assert report.calibration["plan_hash"] == "sha256:" <> Plan.digest(report.plan)
   end
 end

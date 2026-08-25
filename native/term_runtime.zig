@@ -851,6 +851,30 @@ fn result_slot_locked(handle: i64) ?*ResultSlot {
     return slot;
 }
 
+const ResultMemorySnapshot = struct {
+    arena_capacity_bytes: usize,
+    arena_chunks: usize,
+    arena_high_water_bytes: usize,
+    arena_limit_bytes: usize,
+    oom: bool,
+};
+
+fn result_memory_snapshot(handle: i64) ?ResultMemorySnapshot {
+    result_lock.lock();
+    defer result_lock.unlock();
+    const slot = result_slot_locked(handle) orelse return null;
+    const instance = slot.runtime.?;
+    instance.heap_lock.lock();
+    defer instance.heap_lock.unlock();
+    return .{
+        .arena_capacity_bytes = instance.arena_capacity_words * @sizeOf(i64),
+        .arena_chunks = instance.arena_chunk_count,
+        .arena_high_water_bytes = instance.arena_used_words.load(.acquire) * @sizeOf(i64),
+        .arena_limit_bytes = instance.arena_limit_bytes,
+        .oom = instance.allocation_failed.load(.acquire),
+    };
+}
+
 fn runtime_owns_word(instance: *Runtime, word: i64) bool {
     const tag = word_tag(word);
     if (tag < tag_tuple or tag > tag_float) return false;
@@ -1362,6 +1386,31 @@ pub fn ex_term_result_destroy(handle: i64) callconv(.c) i64 {
     if (owned_runtime == instance) owned_runtime = null;
     instance.deinit();
     return 0;
+}
+
+pub fn ex_term_result_arena_capacity_bytes(handle: i64) callconv(.c) i64 {
+    const snapshot = result_memory_snapshot(handle) orelse return -1;
+    return @intCast(snapshot.arena_capacity_bytes);
+}
+
+pub fn ex_term_result_arena_chunks(handle: i64) callconv(.c) i64 {
+    const snapshot = result_memory_snapshot(handle) orelse return -1;
+    return @intCast(snapshot.arena_chunks);
+}
+
+pub fn ex_term_result_arena_high_water(handle: i64) callconv(.c) i64 {
+    const snapshot = result_memory_snapshot(handle) orelse return -1;
+    return @intCast(snapshot.arena_high_water_bytes);
+}
+
+pub fn ex_term_result_arena_limit(handle: i64) callconv(.c) i64 {
+    const snapshot = result_memory_snapshot(handle) orelse return -1;
+    return @intCast(snapshot.arena_limit_bytes);
+}
+
+pub fn ex_term_result_oom(handle: i64) callconv(.c) i64 {
+    const snapshot = result_memory_snapshot(handle) orelse return -1;
+    return if (snapshot.oom) 1 else 0;
 }
 
 /// Classifies the root. Untagged scalar returns remain scalar even when their
@@ -6530,9 +6579,18 @@ test "host result handles retain terms and reject stale generations" {
     try std.testing.expectEqual(@as(i64, 3), ex_term_result_term_length(handle, tuple));
     try std.testing.expectEqual(@as(i64, 16), ex_term_result_term_get(handle, tuple, 1));
     try std.testing.expectEqual(@as(i64, tag_int), ex_term_result_term_kind(handle, 16));
+    try std.testing.expect(ex_term_result_arena_capacity_bytes(handle) > 0);
+    try std.testing.expect(ex_term_result_arena_chunks(handle) > 0);
+    try std.testing.expect(ex_term_result_arena_high_water(handle) > 0);
+    try std.testing.expectEqual(
+        @as(i64, @intCast(arena_hard_limit_bytes)),
+        ex_term_result_arena_limit(handle),
+    );
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_oom(handle));
 
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
     try std.testing.expectEqual(@as(i64, -1), ex_term_result_root_kind(handle));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_result_arena_high_water(handle));
     try std.testing.expectEqual(@as(i64, -1), ex_term_result_destroy(handle));
 }
 
