@@ -6928,6 +6928,32 @@ defmodule Batata.Lift do
     create_op("ex.binary_get", [binary, index], [ex_type("term", ctx)], ctx, block)
   end
 
+  defp native_term_call(:binary, :copy, [binary], ctx, block) do
+    i64 = integer_type(ctx)
+    binary? = create_op("ex.is_binary", [binary], [i64], ctx, block)
+    valid = create_op("arith.trunci", [binary?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          copied =
+            create_op("ex.binary_slice", [binary, lit(0, ctx, b)], [ex_type("term", ctx)], ctx, b)
+
+          [unbox(copied, ctx, b)]
+        end,
+        fn b ->
+          [raise_argument_error("invalid :binary.copy/1 argument", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
   defp native_term_call(module, :list_to_binary, [value], ctx, block)
        when module in [Kernel, :erlang],
        do: create_op("ex.binary_from_list", [value], [ex_type("term", ctx)], ctx, block)

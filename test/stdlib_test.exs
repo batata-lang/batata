@@ -19,6 +19,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:erlang, :float_to_binary, 2}) == :native_term
       assert Stdlib.class({:erlang, :split_binary, 2}) == :native_term
       assert Stdlib.class({:binary, :at, 2}) == :native_term
+      assert Stdlib.class({:binary, :copy, 1}) == :native_term
       assert Stdlib.class({:binary, :match, 2}) == :native_term
       assert Stdlib.class({Date, :to_iso8601, 1}) == :native_term
       assert Stdlib.class({DateTime, :to_iso8601, 1}) == :native_term
@@ -74,6 +75,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({:erlang, :binary_to_float, 1})
       assert Stdlib.may_raise?({:erlang, :float_to_binary, 2})
       assert Stdlib.may_raise?({:erlang, :split_binary, 2})
+      assert Stdlib.may_raise?({:binary, :copy, 1})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
     end
@@ -82,6 +84,13 @@ defmodule Batata.StdlibTest do
       assert Stdlib.metadata({Kernel, :byte_size, 1}) == %{
                purity: :pure,
                allocation: :none,
+               preemption: :none,
+               reductions: :constant
+             }
+
+      assert Stdlib.metadata({:binary, :copy, 1}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
                preemption: :none,
                reductions: :constant
              }
@@ -193,6 +202,30 @@ defmodule Batata.StdlibTest do
       assert 3 == execute("Kernel.length([1, 2, 3])", ctx)
       assert 56 == execute("List.first([7, 8])", ctx)
       assert 1 == execute("Kernel.is_list([1])", ctx)
+    end
+
+    test "copies binaries through direct and captured :binary.copy/1 calls", %{ctx: ctx} do
+      source = """
+      defmodule BinaryCopy do
+        def main() do
+          copy = &:binary.copy/1
+          {:binary.copy(<<>>), :binary.copy(<<65, 0, 255>>), copy.("Jason")}
+        end
+      end
+      """
+
+      expected = source |> Kernel.<>("\nBinaryCopy.main()") |> Code.eval_string() |> elem(0)
+      assert Batata.execute(source, ctx) == expected
+    end
+
+    test "raises ArgumentError when :binary.copy/1 receives a non-binary", %{ctx: ctx} do
+      source = """
+      defmodule InvalidBinaryCopy do
+        def main(), do: :binary.copy(:not_a_binary)
+      end
+      """
+
+      assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
     end
 
     test "matches List.flatten/1 for nested proper lists", %{ctx: ctx} do
