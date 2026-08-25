@@ -5,6 +5,7 @@ defmodule Batata.NativeDeps.Runner do
   alias Batata.NativeDeps.Command
   alias Batata.NativeDeps.Receipt
   alias Batata.NativeDeps.Resolver
+  alias Batata.NativeDeps.Subprocess
 
   def doctor!(opts \\ []) do
     context = context!(opts)
@@ -30,14 +31,12 @@ defmodule Batata.NativeDeps.Runner do
   def run_command!(command, args, opts \\ []) do
     context = context!(opts)
 
-    {output, status} =
-      System.cmd(command, args,
+    status =
+      Subprocess.run!(command, args,
         cd: NativeDeps.root(opts),
-        env: context.env,
-        stderr_to_stdout: true
+        env: context.env
       )
 
-    IO.binwrite(output)
     if status != 0, do: Mix.raise("#{command} failed with status #{status}")
   end
 
