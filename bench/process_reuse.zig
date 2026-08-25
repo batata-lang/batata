@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_output = @import("json_output");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -17,6 +18,18 @@ const runtime = @import("runtime");
 const iterations: usize = 1_000_000;
 const cap: i64 = 8;
 
+const BenchmarkReport = struct {
+    spawns: usize,
+    cap: i64,
+    reuse_success: usize,
+    reuse_last_index: usize,
+    reuse_peak_runnable: i64,
+    reuse_elapsed_us: u64,
+    no_reuse_last_index: usize,
+    no_reuse_failures: usize,
+    no_reuse_elapsed_us: u64,
+};
+
 fn pid_index(pid: i64) usize {
     const payload = @as(u64, @bitCast(pid)) >> 3;
     return @intCast((payload & 0xFFFFFF) - 1);
@@ -32,7 +45,7 @@ fn short_lived(pid: i64) callconv(.c) i64 {
     return pid;
 }
 
-pub fn main() void {
+pub fn main() !void {
     // Reuse mode: spawn -> claim -> complete, repeatedly. The completed slot
     // is recycled, so every spawn succeeds and the table never fills.
     const handle = runtime.ex_term_runtime_create();
@@ -77,20 +90,15 @@ pub fn main() void {
     const baseline_us = now_ns() - baseline_start;
     _ = runtime.ex_term_runtime_destroy(handle2);
 
-    std.debug.print(
-        \\{{"spawns": {d}, "cap": {d}, "reuse_success": {d},
-        \\ "reuse_last_index": {d}, "reuse_peak_runnable": {d}, "reuse_elapsed_us": {d},
-        \\ "no_reuse_last_index": {d}, "no_reuse_failures": {d}, "no_reuse_elapsed_us": {d}}}
-        \\
-    , .{
-        iterations,
-        cap,
-        spawned,
-        reuse_last_index,
-        peak_runnable,
-        reuse_us,
-        no_reuse_last_index,
-        failures,
-        baseline_us / 1000,
+    try json_output.writeStderr("", BenchmarkReport{
+        .spawns = iterations,
+        .cap = cap,
+        .reuse_success = spawned,
+        .reuse_last_index = reuse_last_index,
+        .reuse_peak_runnable = peak_runnable,
+        .reuse_elapsed_us = reuse_us,
+        .no_reuse_last_index = no_reuse_last_index,
+        .no_reuse_failures = failures,
+        .no_reuse_elapsed_us = baseline_us / 1000,
     });
 }

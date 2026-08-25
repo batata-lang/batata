@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_output = @import("json_output");
 const c = @cImport({
     @cInclude("time.h");
 });
@@ -12,6 +13,21 @@ const Result = struct {
     max_active: i64,
     migrations: i64,
     thread_ids: [actor_count]i64,
+};
+
+const BenchmarkReport = struct {
+    actors: usize,
+    iterations_per_actor: usize,
+    one_worker_ns: u64,
+    two_worker_ns: u64,
+    four_worker_ns: u64,
+    two_worker_speedup: f64,
+    four_worker_speedup: f64,
+    two_worker_max_active: i64,
+    four_worker_max_active: i64,
+    two_worker_migrations: i64,
+    four_worker_migrations: i64,
+    four_worker_thread_ids: [actor_count]i64,
 };
 
 fn now_ns() u64 {
@@ -32,7 +48,7 @@ fn cpu_actor(pid: i64) callconv(.c) i64 {
 fn run(worker_count: i64) Result {
     const handle = runtime.ex_term_runtime_create();
     _ = runtime.ex_term_runtime_enter(handle);
-    _ = runtime.ex_term_process_table_reset();
+    _ = runtime.ex_term_process_table_reset(actor_count);
     for (1..actor_count) |_| _ = runtime.ex_term_spawn(1);
 
     const start = now_ns();
@@ -55,7 +71,7 @@ fn run(worker_count: i64) Result {
     return result;
 }
 
-pub fn main() void {
+pub fn main() !void {
     work_iterations = 500_000;
     _ = run(2);
     work_iterations = 30_000_000;
@@ -66,29 +82,18 @@ pub fn main() void {
     const speedup_two = @as(f64, @floatFromInt(one.elapsed_ns)) / @as(f64, @floatFromInt(two.elapsed_ns));
     const speedup_four = @as(f64, @floatFromInt(one.elapsed_ns)) / @as(f64, @floatFromInt(four.elapsed_ns));
 
-    std.debug.print(
-        "{{\"actors\":{d},\"iterations_per_actor\":{d}," ++
-            "\"one_worker_ns\":{d},\"two_worker_ns\":{d},\"four_worker_ns\":{d}," ++
-            "\"two_worker_speedup\":{d:.3},\"four_worker_speedup\":{d:.3}," ++
-            "\"two_worker_max_active\":{d},\"four_worker_max_active\":{d}," ++
-            "\"two_worker_migrations\":{d},\"four_worker_migrations\":{d}," ++
-            "\"four_worker_thread_ids\":[{d},{d},{d},{d}]}}\n",
-        .{
-            actor_count,
-            work_iterations,
-            one.elapsed_ns,
-            two.elapsed_ns,
-            four.elapsed_ns,
-            speedup_two,
-            speedup_four,
-            two.max_active,
-            four.max_active,
-            two.migrations,
-            four.migrations,
-            four.thread_ids[0],
-            four.thread_ids[1],
-            four.thread_ids[2],
-            four.thread_ids[3],
-        },
-    );
+    try json_output.writeStderr("", BenchmarkReport{
+        .actors = actor_count,
+        .iterations_per_actor = work_iterations,
+        .one_worker_ns = one.elapsed_ns,
+        .two_worker_ns = two.elapsed_ns,
+        .four_worker_ns = four.elapsed_ns,
+        .two_worker_speedup = speedup_two,
+        .four_worker_speedup = speedup_four,
+        .two_worker_max_active = two.max_active,
+        .four_worker_max_active = four.max_active,
+        .two_worker_migrations = two.migrations,
+        .four_worker_migrations = four.migrations,
+        .four_worker_thread_ids = four.thread_ids,
+    });
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const json_output = @import("json_output");
 const runtime = @import("runtime");
 const c = @cImport({
     @cInclude("stdlib.h");
@@ -93,6 +94,34 @@ const Report = struct {
     retained_exported_peak_bytes: usize = 0,
     retained_exported_final_bytes: usize = 0,
     source_runtime_destroyed: bool = false,
+};
+
+const PressureSnapshot = struct {
+    arena_capacity_bytes: usize,
+    arena_chunks: usize,
+    arena_high_water_bytes: usize,
+    aggregate_high_water_bytes: usize,
+    arena_capacity_growth_bytes: usize,
+    cycles: usize,
+    exports: usize,
+    imports: usize,
+    iterations: usize,
+    lifecycle_closed: bool,
+    oom: bool,
+    quota_bytes: i64,
+    pin_reset_rejections: usize,
+    post_pin_resets: usize,
+    resets: usize,
+    retained_exported_final_bytes: usize,
+    retained_exported_peak_bytes: usize,
+    runtime_count: usize,
+    rss_available: bool,
+    rss_peak_bytes: u64,
+    scale: usize,
+    seed: u64,
+    source_runtime_destroyed: bool,
+    workers: i64,
+    workload: []const u8,
 };
 
 const WorkerPressureState = struct {
@@ -367,47 +396,33 @@ test "deterministic selected memory-pressure workload emits a replay snapshot" {
         return error.InvalidWorkload;
     const rss_peak = peakRssBytes();
 
-    std.debug.print(
-        "BATATA_PRESSURE {{\"arena_capacity_bytes\":{d},\"arena_chunks\":{d}," ++
-            "\"arena_high_water_bytes\":{d},\"aggregate_high_water_bytes\":{d}," ++
-            "\"arena_capacity_growth_bytes\":{d},\"cycles\":{d}," ++
-            "\"exports\":{d},\"imports\":{d},\"iterations\":{d}," ++
-            "\"lifecycle_closed\":{},\"oom\":{},\"quota_bytes\":{d}," ++
-            "\"pin_reset_rejections\":{d},\"post_pin_resets\":{d}," ++
-            "\"resets\":{d},\"retained_exported_final_bytes\":{d}," ++
-            "\"retained_exported_peak_bytes\":{d},\"runtime_count\":{d}," ++
-            "\"rss_available\":{},\"rss_peak_bytes\":{d}," ++
-            "\"scale\":{d},\"seed\":{d},\"source_runtime_destroyed\":{}," ++
-            "\"workers\":{d}," ++
-            "\"workload\":\"{s}\"}}\n",
-        .{
-            report.arena_capacity_bytes,
-            report.arena_chunks,
-            report.arena_high_water_bytes,
-            report.aggregate_high_water_bytes,
-            report.arena_capacity_growth_bytes,
-            config.cycles,
-            report.exports,
-            report.imports,
-            config.iterations,
-            report.lifecycle_closed,
-            report.oom,
-            config.quota_bytes,
-            report.pin_reset_rejections,
-            report.post_pin_resets,
-            report.resets,
-            report.retained_exported_final_bytes,
-            report.retained_exported_peak_bytes,
-            report.runtime_count,
-            rss_peak != null,
-            rss_peak orelse 0,
-            config.scale,
-            config.seed,
-            report.source_runtime_destroyed,
-            config.workers,
-            config.workload,
-        },
-    );
+    try json_output.writeStderr("BATATA_PRESSURE ", PressureSnapshot{
+        .arena_capacity_bytes = report.arena_capacity_bytes,
+        .arena_chunks = report.arena_chunks,
+        .arena_high_water_bytes = report.arena_high_water_bytes,
+        .aggregate_high_water_bytes = report.aggregate_high_water_bytes,
+        .arena_capacity_growth_bytes = report.arena_capacity_growth_bytes,
+        .cycles = config.cycles,
+        .exports = report.exports,
+        .imports = report.imports,
+        .iterations = config.iterations,
+        .lifecycle_closed = report.lifecycle_closed,
+        .oom = report.oom,
+        .quota_bytes = config.quota_bytes,
+        .pin_reset_rejections = report.pin_reset_rejections,
+        .post_pin_resets = report.post_pin_resets,
+        .resets = report.resets,
+        .retained_exported_final_bytes = report.retained_exported_final_bytes,
+        .retained_exported_peak_bytes = report.retained_exported_peak_bytes,
+        .runtime_count = report.runtime_count,
+        .rss_available = rss_peak != null,
+        .rss_peak_bytes = rss_peak orelse 0,
+        .scale = config.scale,
+        .seed = config.seed,
+        .source_runtime_destroyed = report.source_runtime_destroyed,
+        .workers = config.workers,
+        .workload = config.workload,
+    });
 
     try std.testing.expect(report.arena_high_water_bytes <= @as(usize, @intCast(config.quota_bytes)));
     try std.testing.expect(report.lifecycle_closed);
