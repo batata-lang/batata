@@ -11,7 +11,7 @@ defmodule Batata.Wings.Editor do
     Topology
   }
 
-  alias Batata.Wings.Operation.Move
+  alias Batata.Wings.Operation.{Extrude, Move}
   alias Batata.Wings.Topology.Build
 
   @spec execute!(EditorState.t(), EditCommand.t()) :: {EditorState.t(), EditResult.t()}
@@ -21,6 +21,7 @@ defmodule Batata.Wings.Editor do
     case command.operation do
       :select -> select(state, command)
       :move -> move(state, command)
+      :extrude -> extrude(state, command)
       operation -> unsupported!(state, command, operation)
     end
   end
@@ -51,6 +52,35 @@ defmodule Batata.Wings.Editor do
     {mesh, delta, changed} =
       Move.apply!(state.mesh, face_ids, command.arguments, command.quota_bytes)
 
+    updated =
+      if changed do
+        generation = state.geometry_generation + 1
+        selection = Selection.new!(mesh, face_ids, generation, state.selection_revision)
+
+        %{
+          state
+          | mesh: mesh,
+            selection: selection,
+            geometry_generation: generation
+        }
+      else
+        state
+      end
+
+    finish(state, updated, command, delta, changed)
+  end
+
+  defp extrude(state, command) do
+    face_ids = Map.get(command.arguments, "face_ids", state.selection.face_ids)
+    Selection.new!(state.mesh, face_ids, state.geometry_generation)
+
+    {mesh, delta, changed} =
+      Extrude.apply!(state.mesh, face_ids, command.arguments, command.quota_bytes)
+
+    commit_geometry(state, command, mesh, face_ids, delta, changed)
+  end
+
+  defp commit_geometry(state, command, mesh, face_ids, delta, changed) do
     updated =
       if changed do
         generation = state.geometry_generation + 1
