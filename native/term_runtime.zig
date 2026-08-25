@@ -551,6 +551,17 @@ pub fn runtimeSoakForceOom(handle: i64) bool {
     return alloc_words(arena_hard_limit_words + 1) == null;
 }
 
+pub fn exportedSoakBytes() usize {
+    if (comptime !builtin.is_test) return 0;
+    exported_lock.lock();
+    defer exported_lock.unlock();
+    var total: usize = 0;
+    for (exported_slots) |slot| {
+        if (slot.bytes) |bytes| total += bytes.len;
+    }
+    return total;
+}
+
 // Deterministic lifecycle interleavings are controlled by one test-only gate.
 // `builtin.is_test` is a compile-time constant, so calls and storage disappear
 // entirely from shared/static Release builds.

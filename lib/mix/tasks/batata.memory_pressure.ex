@@ -6,6 +6,7 @@ defmodule Mix.Tasks.Batata.MemoryPressure do
 
       mix batata.memory_pressure --workload quota-boundary \
         --quota-bytes 65536 --iterations 4097 --seed 263 \
+        --scale 1 --workers 1 --runtimes 2 --cycles 2 \
         --output _build/memory_pressure/report.json
   """
 
@@ -17,6 +18,10 @@ defmodule Mix.Tasks.Batata.MemoryPressure do
     workload: :string,
     quota_bytes: :integer,
     iterations: :integer,
+    scale: :integer,
+    workers: :integer,
+    runtimes: :integer,
+    cycles: :integer,
     seed: :integer,
     output: :string
   ]

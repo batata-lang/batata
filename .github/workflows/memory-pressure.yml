@@ -1,0 +1,126 @@
+name: Memory pressure
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: Workload name or all
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - composite-arena
+          - quota-boundary
+          - reset-reuse
+          - export-import
+          - multi-runtime
+      quota_bytes:
+        description: Per-runtime native arena quota
+        required: true
+        default: "8388608"
+      iterations:
+        description: Allocation iterations
+        required: true
+        default: "100000"
+      seed:
+        description: Deterministic replay seed
+        required: true
+        default: "263"
+      scale:
+        description: Iteration multiplier
+        required: true
+        default: "1"
+      workers:
+        description: Worker count for a single selected workload
+        required: true
+        default: "1"
+      runtimes:
+        description: Concurrent runtime count for multi-runtime
+        required: true
+        default: "4"
+      cycles:
+        description: Re-entry cycles for reset-reuse
+        required: true
+        default: "1000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: memory-pressure-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pressure:
+    strategy:
+      fail-fast: false
+      matrix:
+        workload: ${{ fromJSON((github.event_name == 'schedule' || inputs.workload == 'all') && '["composite-arena","quota-boundary","reset-reuse","export-import","multi-runtime"]' || format('["{0}"]', inputs.workload)) }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Mix package managers
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Configure pinned native dependencies
+        working-directory: scripts/native_deps
+        run: mix batata.native setup
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Run selected pressure workload
+        working-directory: scripts/native_deps
+        env:
+          INPUT_QUOTA: ${{ inputs.quota_bytes }}
+          INPUT_ITERATIONS: ${{ inputs.iterations }}
+          INPUT_SEED: ${{ inputs.seed }}
+          INPUT_SCALE: ${{ inputs.scale }}
+          INPUT_WORKERS: ${{ inputs.workers }}
+          INPUT_RUNTIMES: ${{ inputs.runtimes }}
+          INPUT_CYCLES: ${{ inputs.cycles }}
+          WORKLOAD: ${{ matrix.workload }}
+        run: |
+          quota="${INPUT_QUOTA:-8388608}"
+          iterations="${INPUT_ITERATIONS:-100000}"
+          seed="${INPUT_SEED:-263}"
+          scale="${INPUT_SCALE:-1}"
+          workers="${INPUT_WORKERS:-1}"
+          runtimes="${INPUT_RUNTIMES:-4}"
+          cycles="${INPUT_CYCLES:-1000}"
+          if [ "$WORKLOAD" != multi-runtime ]; then runtimes=2; fi
+          if [ "$WORKLOAD" != reset-reuse ]; then cycles=2; fi
+          if [ "$WORKLOAD" = multi-runtime ] || [ "$WORKLOAD" = export-import ]; then workers=1; fi
+          mix batata.native run -- batata.memory_pressure \
+            --workload "$WORKLOAD" \
+            --quota-bytes "$quota" \
+            --iterations "$iterations" \
+            --seed "$seed" \
+            --scale "$scale" \
+            --workers "$workers" \
+            --runtimes "$runtimes" \
+            --cycles "$cycles" \
+            --output "_build/memory_pressure/$WORKLOAD.json"
+
+      - name: Upload replay artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-pressure-${{ matrix.workload }}
+          path: _build/memory_pressure
+          if-no-files-found: error

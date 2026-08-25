@@ -103,6 +103,28 @@ jobs:
         working-directory: scripts/native_deps
         run: mix batata.native exec -- bash scripts/runtime-soak.sh _build/runtime_soak 1 0x6101
 
+      - name: Run bounded memory-pressure PR gate
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native run -- batata.memory_pressure \
+            --workload quota-boundary \
+            --quota-bytes 65536 \
+            --iterations 4097 \
+            --scale 1 \
+            --workers 1 \
+            --runtimes 2 \
+            --cycles 2 \
+            --seed 263 \
+            --output _build/memory_pressure/pr-gate.json
+
+      - name: Upload memory-pressure PR gate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-pressure-pr-gate
+          path: _build/memory_pressure
+          if-no-files-found: error
+
       - name: Upload runtime soak report
         if: always()
         uses: actions/upload-artifact@v4

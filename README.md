@@ -349,6 +349,33 @@ Batata.Memory.verify_receipt(
 )
 ```
 
+The same quota is enforced by the native segmented arena for JIT and AOT
+artifacts. A deterministic pressure runner records the selected workload,
+seed, quota, iteration count, toolchain, native high-water mark, lifecycle
+counters, raw-log hash, and replay environment in canonical JSON:
+
+```sh
+mix batata.memory_pressure --workload quota-boundary \
+  --quota-bytes 65536 --iterations 4097 --seed 263 \
+  --scale 1 --workers 1 --runtimes 2 --cycles 2 \
+  --output _build/memory_pressure/report.json
+```
+
+Available workloads are `composite-arena`, `quota-boundary`, `reset-reuse`,
+`export-import`, and `multi-runtime`. `Batata.execute_with_memory_report/3`
+also binds result-owned native telemetry to the canonical proof hash and
+fails closed if the observed high-water mark or effective runtime quota
+contradicts the memory plan.
+
+`scale`, `workers`, `runtimes`, and `cycles` are explicit replay dimensions.
+The native snapshot keeps used high-water separate from rounded segment
+capacity, reports peak RSS where the host exposes `getrusage`, records
+retained portable-export bytes before and after destruction, and proves
+that result/term pins reject reset until their leases are released. The
+export/import workload also verifies that its portable copy survives result-
+owned source-runtime destruction. Source, runtime, dependency-lock, and compiler identities are hashed into the
+artifact rather than inferred from the machine that later reads it.
+
 Plans distinguish logical register, lexical, actor, execution, and persistent
 regions from physical storage. Today lexical/actor/execution regions honestly
 map to the segmented bump execution arena, while portable exports use retained

@@ -4,7 +4,7 @@ defmodule Batata.Memory.Pressure do
   alias Batata.Memory
   alias Batata.Memory.RuntimeQuota
 
-  @workloads ~w(composite-arena quota-boundary)
+  @workloads ~w(composite-arena quota-boundary reset-reuse export-import multi-runtime)
 
   @spec run!(keyword()) :: map()
   def run!(opts \\ []) do
@@ -12,6 +12,10 @@ defmodule Batata.Memory.Pressure do
     workload = Keyword.get(opts, :workload, "composite-arena")
     seed = validate_integer!(Keyword.get(opts, :seed, 0x107), :seed, 0)
     iterations = validate_integer!(Keyword.get(opts, :iterations, 4_097), :iterations, 1)
+    scale = validate_integer!(Keyword.get(opts, :scale, 1), :scale, 1)
+    workers = validate_integer!(Keyword.get(opts, :workers, 1), :workers, 1, 64)
+    runtimes = validate_integer!(Keyword.get(opts, :runtimes, 2), :runtimes, 1, 8)
+    cycles = validate_integer!(Keyword.get(opts, :cycles, 2), :cycles, 1)
     quota_bytes = opts |> Keyword.get(:quota_bytes, 65_536) |> RuntimeQuota.validate!()
     output = Keyword.get(opts, :output, Path.join(root, "_build/memory_pressure/report.json"))
 
@@ -23,9 +27,13 @@ defmodule Batata.Memory.Pressure do
         )
 
     env = %{
+      "BATATA_PRESSURE_CYCLES" => Integer.to_string(cycles),
       "BATATA_PRESSURE_ITERATIONS" => Integer.to_string(iterations),
       "BATATA_PRESSURE_QUOTA_BYTES" => Integer.to_string(quota_bytes),
+      "BATATA_PRESSURE_RUNTIMES" => Integer.to_string(runtimes),
+      "BATATA_PRESSURE_SCALE" => Integer.to_string(scale),
       "BATATA_PRESSURE_SEED" => Integer.to_string(seed),
+      "BATATA_PRESSURE_WORKERS" => Integer.to_string(workers),
       "BATATA_PRESSURE_WORKLOAD" => workload
     }
 
@@ -45,12 +53,14 @@ defmodule Batata.Memory.Pressure do
         stderr_to_stdout: true
       )
 
+    write!(output <> ".log", log)
     snapshot = parse_snapshot!(log)
     status = if exit_code == 0, do: "passed", else: "failed"
 
     artifact = %{
       "command" => ["zig" | args],
       "exit_code" => exit_code,
+      "hashes" => source_hashes(root),
       "log_sha256" => sha256(log),
       "native_snapshot" => snapshot,
       "replay_env" => env,
@@ -61,7 +71,6 @@ defmodule Batata.Memory.Pressure do
 
     artifact = Map.put(artifact, "artifact_fingerprint", Memory.digest(artifact))
     write!(output, Memory.canonical_json(artifact) <> "\n")
-    write!(output <> ".log", log)
 
     if exit_code != 0, do: raise("memory-pressure workload failed; replay artifact: #{output}")
     artifact
@@ -72,7 +81,8 @@ defmodule Batata.Memory.Pressure do
          {:ok, snapshot} <- JSON.decode(json) do
       snapshot
     else
-      _ -> raise "native pressure log did not contain one BATATA_PRESSURE snapshot"
+      _ ->
+        raise "native pressure log did not contain one BATATA_PRESSURE snapshot:\n#{log}"
     end
   end
 
@@ -81,6 +91,26 @@ defmodule Batata.Memory.Pressure do
 
   defp validate_integer!(value, name, minimum),
     do: raise(ArgumentError, "#{name} must be an integer >= #{minimum}, got: #{inspect(value)}")
+
+  defp validate_integer!(value, _name, minimum, maximum)
+       when is_integer(value) and value >= minimum and value <= maximum,
+       do: value
+
+  defp validate_integer!(value, name, minimum, maximum) do
+    raise ArgumentError,
+          "#{name} must be an integer in #{minimum}..#{maximum}, got: #{inspect(value)}"
+  end
+
+  defp source_hashes(root) do
+    %{
+      "compiler" => to_string(Application.spec(:batata, :vsn) || "unknown"),
+      "dependency_lock" => file_hash(Path.join(root, "native-deps.lock")),
+      "pressure_workload" => file_hash(Path.join(root, "native/memory_pressure_test.zig")),
+      "term_runtime" => file_hash(Path.join(root, "native/term_runtime.zig"))
+    }
+  end
+
+  defp file_hash(path), do: path |> File.read!() |> sha256()
 
   defp zig_version(zig) do
     case System.cmd(zig, ["version"], stderr_to_stdout: true) do
