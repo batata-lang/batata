@@ -67,11 +67,13 @@ it is return-only and is not an arbitrary `Array` escape hatch.
 `ArrayMesh.add_surface_from_arrays`, hash `1796411378` in Godot 4.6.2. A method
 using `outbound: :array_mesh_surface` returns the closed descriptor from Batata
 and the adapter constructs the `ArrayMesh`. Undeclared or unknown outbound
-calls fail during plan construction. Each GDExtension object owns a persistent
-Term Runtime handle and generation until teardown; repeated calls re-enter the
-same isolated runtime, while invocation-scoped object capabilities remain
-generation checked. The instance also reserves an owned portable-state handle
-for the state contract and destroys it before quiescent runtime teardown.
+calls fail during plan construction. Each GDExtension object owns an isolated
+Term Runtime handle and generation until teardown; repeated ordinary calls
+re-enter that runtime, while invocation-scoped object capabilities remain
+generation checked. A method declared with `state: :replace` must return
+`{new_state, public_result}`. The adapter deep-exports `new_state`, replaces the
+instance-owned portable root only after the export succeeds, rotates to a
+fresh execution runtime, and destroys the root before quiescent teardown.
 
 Other Arrays, Dictionaries, closures, PIDs, and references remain rejected.
 Failures use

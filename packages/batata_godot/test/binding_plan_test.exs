@@ -45,7 +45,7 @@ defmodule Batata.Godot.BindingPlanTest do
     assert json == Batata.Godot.canonical_json(Example)
 
     assert Batata.Godot.digest(Example) ==
-             "7192f63a57b94dd75d5951c883c0974863886fe2eeb9e6c6af1476a9ab516037"
+             "5b6c2894c54d81c4491b7a9444caa3c600290561e5bd29c2e901df2a12d3342a"
   end
 
   test "unsupported Variant types fail closed with a recovery action" do
@@ -129,6 +129,37 @@ defmodule Batata.Godot.BindingPlanTest do
 
     assert error.code == "E_GODOT_METHOD_FUNCTION_MISSING"
     assert error.context.function == "missing/1"
+  end
+
+  test "portable instance state replacement is explicit and canonical" do
+    plan =
+      BindingPlan.new!(
+        Example,
+        [],
+        [{"BatataExample", []}],
+        [{:snapshot, [args: [], returns: :string, state: :replace]}],
+        {[], [], [], []},
+        snapshot: 0
+      )
+
+    assert [%BindingPlan.Method{state: :replace}] = plan.methods
+
+    assert get_in(BindingPlan.canonical_map(plan), ["methods", Access.at(0), "state"]) ==
+             "replace"
+
+    error =
+      assert_raise Diagnostic, fn ->
+        BindingPlan.new!(
+          Example,
+          [],
+          [{"BatataExample", []}],
+          [{:snapshot, [args: [], returns: :string, state: :mutable]}],
+          {[], [], [], []},
+          snapshot: 0
+        )
+      end
+
+    assert error.code == "E_GODOT_EDITOR_STATE_UNAVAILABLE"
   end
 
   test "duplicate method signatures fail before native generation" do
