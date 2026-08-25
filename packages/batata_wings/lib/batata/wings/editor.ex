@@ -11,7 +11,7 @@ defmodule Batata.Wings.Editor do
     Topology
   }
 
-  alias Batata.Wings.Operation.{Extrude, Move}
+  alias Batata.Wings.Operation.{Bevel, Extrude, Inset, Move}
   alias Batata.Wings.Topology.Build
 
   @spec execute!(EditorState.t(), EditCommand.t()) :: {EditorState.t(), EditResult.t()}
@@ -22,6 +22,8 @@ defmodule Batata.Wings.Editor do
       :select -> select(state, command)
       :move -> move(state, command)
       :extrude -> extrude(state, command)
+      :inset -> geometry_operation(state, command, Inset)
+      :bevel -> geometry_operation(state, command, Bevel)
       operation -> unsupported!(state, command, operation)
     end
   end
@@ -76,6 +78,16 @@ defmodule Batata.Wings.Editor do
 
     {mesh, delta, changed} =
       Extrude.apply!(state.mesh, face_ids, command.arguments, command.quota_bytes)
+
+    commit_geometry(state, command, mesh, face_ids, delta, changed)
+  end
+
+  defp geometry_operation(state, command, module) do
+    face_ids = Map.get(command.arguments, "face_ids", state.selection.face_ids)
+    Selection.new!(state.mesh, face_ids, state.geometry_generation)
+
+    {mesh, delta, changed} =
+      module.apply!(state.mesh, face_ids, command.arguments, command.quota_bytes)
 
     commit_geometry(state, command, mesh, face_ids, delta, changed)
   end
