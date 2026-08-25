@@ -411,9 +411,10 @@ JSON object with 1/2/4-worker timings, speedups, maximum concurrent actors,
 migrations, and actor thread IDs):
 
 ```sh
-zig run -O ReleaseFast --dep runtime \
+zig run -O ReleaseFast --dep runtime --dep json_output \
   -Mroot=bench/multicore_runtime.zig \
-  -Mruntime=native/term_runtime.zig -lc
+  -Mruntime=native/term_runtime.zig \
+  -Mjson_output=native/json_output.zig -lc
 ```
 
 This benchmark isolates invocation cost: it does not include Elixir parsing,
@@ -436,6 +437,7 @@ workload (one JSON object with spawn count, per-cap reuse success, peak
 concurrent actors, and the no-recycling failure baseline):
 
 ```sh
-zig run -O ReleaseFast --dep runtime \
-  -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig -lc
+zig run -O ReleaseFast --dep runtime --dep json_output \
+  -Mroot=bench/process_reuse.zig -Mruntime=native/term_runtime.zig \
+  -Mjson_output=native/json_output.zig -lc
 ```

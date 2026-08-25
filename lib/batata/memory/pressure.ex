@@ -41,8 +41,11 @@ defmodule Batata.Memory.Pressure do
       "test",
       "--dep",
       "runtime",
+      "--dep",
+      "json_output",
       "-Mroot=native/memory_pressure_test.zig",
       "-Mruntime=native/term_runtime.zig",
+      "-Mjson_output=native/json_output.zig",
       "-lc"
     ]
 
