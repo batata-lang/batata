@@ -96,8 +96,7 @@ defmodule Batata.Wings.Selection do
 
   @spec digest(t()) :: binary()
   def digest(%__MODULE__{} = selection) do
-    selection
-    |> canonical_map()
+    %{"face_ids" => selection.face_ids, "mode" => Atom.to_string(selection.mode)}
     |> CanonicalJSON.encode!()
     |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)

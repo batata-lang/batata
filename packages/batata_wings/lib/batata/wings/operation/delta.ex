@@ -23,19 +23,25 @@ defmodule Batata.Wings.Operation.Delta do
       end)
 
     edges = edge_remap(source, target, vertices)
-    faces = Map.new(source_mesh.faces, fn {face_id, _vertices} -> {face_id, [face_id]} end)
+
+    faces =
+      Map.new(source_mesh.faces, fn {face_id, _vertices} ->
+        {face_id, if(Map.has_key?(target_mesh.faces, face_id), do: [face_id], else: [])}
+      end)
+
     mapped_edges = edges |> Map.values() |> List.flatten() |> MapSet.new()
 
     created_edges = target.edges |> Map.keys() |> Enum.reject(&MapSet.member?(mapped_edges, &1))
     deleted_edges = edges |> Enum.filter(&(elem(&1, 1) == [])) |> Enum.map(&elem(&1, 0))
     deleted_vertices = Map.keys(source_mesh.vertices) -- Map.keys(target_mesh.vertices)
+    deleted_faces = faces |> Enum.filter(&(elem(&1, 1) == [])) |> Enum.map(&elem(&1, 0))
 
     IdentityDelta.new!(
       vertices,
       edges,
       faces,
       %{vertices: created_vertices, edges: created_edges, faces: created_faces},
-      %{vertices: deleted_vertices, edges: deleted_edges, faces: []}
+      %{vertices: deleted_vertices, edges: deleted_edges, faces: deleted_faces}
     )
   end
 

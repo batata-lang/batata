@@ -6,6 +6,7 @@ defmodule Batata.Wings.Editor do
     EditCommand,
     EditorState,
     EditResult,
+    History,
     IdentityDelta,
     Selection,
     Topology
@@ -24,6 +25,8 @@ defmodule Batata.Wings.Editor do
       :extrude -> extrude(state, command)
       :inset -> geometry_operation(state, command, Inset)
       :bevel -> geometry_operation(state, command, Bevel)
+      :undo -> history_operation(state, command, :undo)
+      :redo -> history_operation(state, command, :redo)
       operation -> unsupported!(state, command, operation)
     end
   end
@@ -92,6 +95,16 @@ defmodule Batata.Wings.Editor do
     commit_geometry(state, command, mesh, face_ids, delta, changed)
   end
 
+  defp history_operation(state, command, operation) do
+    {restored, delta} =
+      case operation do
+        :undo -> History.undo!(state, EditCommand.digest(command))
+        :redo -> History.redo!(state, EditCommand.digest(command))
+      end
+
+    finish(state, restored, command, delta, true, false)
+  end
+
   defp commit_geometry(state, command, mesh, face_ids, delta, changed) do
     updated =
       if changed do
@@ -111,9 +124,17 @@ defmodule Batata.Wings.Editor do
     finish(state, updated, command, delta, changed)
   end
 
-  defp finish(previous, candidate, command, delta, changed) do
+  defp finish(previous, candidate, command, delta, changed, record_history \\ true) do
     receipt = receipt(previous, candidate, command, delta, changed)
-    committed = %{candidate | last_receipt: receipt}
+
+    history =
+      if record_history and changed and command.operation != :select do
+        History.push!(candidate.history, previous, EditCommand.digest(command), receipt)
+      else
+        candidate.history
+      end
+
+    committed = %{candidate | history: history, last_receipt: receipt}
     {committed, EditResult.new!(committed, delta, receipt, changed)}
   end
 
