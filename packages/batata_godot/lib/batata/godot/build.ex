@@ -207,6 +207,47 @@ defmodule Batata.Godot.Build do
     end
   end
 
+  @doc "Replays the same typed ClassDB smoke while Godot is running in editor mode."
+  @spec editor_smoke_load!(Path.t(), Path.t() | nil, map() | [map()] | nil) :: :ok
+  def editor_smoke_load!(output_dir, godot \\ nil, invocation \\ nil)
+      when is_binary(output_dir) do
+    smoke_load!(output_dir, godot, invocation)
+    enable_editor_plugins!(output_dir)
+    godot = resolve_godot!(godot)
+
+    case System.cmd(
+           godot,
+           [
+             "--headless",
+             "--editor",
+             "--path",
+             output_dir,
+             "--quit-after",
+             "120"
+           ],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        if editor_load_error?(output) do
+          diagnostic!(
+            "E_GODOT_LOAD_FAILED",
+            "Godot editor reported a GDExtension loading error",
+            %{output: output},
+            [%{command: "inspect the editor-mode ClassDB smoke output"}]
+          )
+        end
+
+        :ok
+
+      {output, status} ->
+        diagnostic!(
+          "E_GODOT_LOAD_FAILED",
+          "Godot editor-mode smoke exited unsuccessfully",
+          %{exit_status: status, output: output}
+        )
+    end
+  end
+
   defp smoke_contract_source(binding_plan) do
     properties =
       binding_plan["properties"]
@@ -616,9 +657,10 @@ defmodule Batata.Godot.Build do
     Enum.map_join(plan.methods, ";", fn method ->
       arguments = Enum.map_join(method.arguments, ",", &value_type_name/1)
       outbound = method.outbound && Atom.to_string(method.outbound)
+      state = method.state && Atom.to_string(method.state)
 
       Enum.join(
-        [method.name, method.symbol, arguments, value_type_name(method.returns), outbound],
+        [method.name, method.symbol, arguments, value_type_name(method.returns), outbound, state],
         "|"
       )
     end)
@@ -783,6 +825,42 @@ defmodule Batata.Godot.Build do
     Enum.any?(
       [
         "ERROR:",
+        "Failed loading GDExtension",
+        "Can't open GDExtension",
+        "GDExtension dynamic library not found",
+        "Entry symbol not found"
+      ],
+      &String.contains?(output, &1)
+    )
+  end
+
+  defp enable_editor_plugins!(output_dir) do
+    plugins =
+      output_dir
+      |> Path.join("addons/*/plugin.cfg")
+      |> Path.wildcard()
+      |> Enum.map(&Path.relative_to(&1, output_dir))
+      |> Enum.map(&"res://#{&1}")
+      |> Enum.sort()
+
+    if plugins != [] do
+      encoded = Enum.map_join(plugins, ", ", &JSON.encode!/1)
+
+      File.write!(
+        Path.join(output_dir, "project.godot"),
+        "\n[editor_plugins]\nenabled=PackedStringArray(#{encoded})\n",
+        [:append]
+      )
+    end
+  end
+
+  defp editor_load_error?(output) do
+    Enum.any?(
+      [
+        "E_GODOT_",
+        "SCRIPT ERROR",
+        "Parse Error",
+        "Failed to load script",
         "Failed loading GDExtension",
         "Can't open GDExtension",
         "GDExtension dynamic library not found",

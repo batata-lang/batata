@@ -50,4 +50,9 @@ defmodule Batata.Godot do
   @doc "Replays a built extension through Godot 4.6.2 headless loading."
   @spec smoke_load!(Path.t(), Path.t() | nil) :: :ok
   def smoke_load!(output_dir, godot \\ nil), do: Build.smoke_load!(output_dir, godot)
+
+  @doc "Replays a built extension through pinned Godot headless editor mode."
+  @spec editor_smoke_load!(Path.t(), Path.t() | nil, map() | [map()] | nil) :: :ok
+  def editor_smoke_load!(output_dir, godot \\ nil, invocation \\ nil),
+    do: Build.editor_smoke_load!(output_dir, godot, invocation)
 end

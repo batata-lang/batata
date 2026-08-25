@@ -20,7 +20,7 @@ defmodule Batata.Godot.BindingPlan do
   defmodule Method do
     @moduledoc "A Batata function exposed as a typed Godot method."
     @enforce_keys [:name, :arguments, :returns, :symbol]
-    defstruct [:name, :arguments, :returns, :symbol, :outbound]
+    defstruct [:name, :arguments, :returns, :symbol, :outbound, :state]
 
     @type value_type ::
             nil
@@ -40,7 +40,8 @@ defmodule Batata.Godot.BindingPlan do
             arguments: [value_type()],
             returns: value_type(),
             symbol: String.t(),
-            outbound: atom() | nil
+            outbound: atom() | nil,
+            state: :replace | nil
           }
   end
 
@@ -75,7 +76,7 @@ defmodule Batata.Godot.BindingPlan do
     defstruct @enforce_keys
   end
 
-  @schema 3
+  @schema 4
   @supported_types [
     nil,
     :bool,
@@ -106,7 +107,7 @@ defmodule Batata.Godot.BindingPlan do
     :reloadable
   ]
   @class_keys [:base]
-  @method_keys [:args, :returns, :outbound]
+  @method_keys [:args, :returns, :outbound, :state]
   @property_keys [:type, :getter, :setter]
   @signal_keys [:args]
   @virtuals %{_ready: {[], nil}, _process: {[:float], nil}}
@@ -331,6 +332,7 @@ defmodule Batata.Godot.BindingPlan do
     arguments = options |> Keyword.fetch!(:args) |> validate_types!(:arguments)
     returns = options |> Keyword.fetch!(:returns) |> validate_type!(:return)
     outbound = Keyword.get(options, :outbound)
+    state = Keyword.get(options, :state)
     signature = {name, length(arguments)}
 
     if length(arguments) > @max_method_arity do
@@ -367,12 +369,21 @@ defmodule Batata.Godot.BindingPlan do
       )
     end
 
+    unless state in [nil, :replace] do
+      diagnostic!(
+        "E_GODOT_EDITOR_STATE_UNAVAILABLE",
+        "method state policy is outside the closed portable-root protocol",
+        %{method: name, state: inspect(state), supported: [:replace]}
+      )
+    end
+
     %Method{
       name: Atom.to_string(name),
       arguments: arguments,
       returns: returns,
       symbol: Batata.Symbol.function(name, length(arguments)),
-      outbound: outbound
+      outbound: outbound,
+      state: state
     }
   rescue
     error in KeyError ->
@@ -664,6 +675,7 @@ defmodule Batata.Godot.BindingPlan do
       "name" => method.name,
       "returns" => value_type_name(method.returns),
       "outbound" => method.outbound && Atom.to_string(method.outbound),
+      "state" => method.state && Atom.to_string(method.state),
       "symbol" => method.symbol
     }
   end
@@ -685,6 +697,8 @@ defmodule Batata.Godot.BindingPlan do
       json_string(method.symbol),
       ",\"outbound\":",
       if(method.outbound, do: json_string(Atom.to_string(method.outbound)), else: "null"),
+      ",\"state\":",
+      if(method.state, do: json_string(Atom.to_string(method.state)), else: "null"),
       "}"
     ]
   end

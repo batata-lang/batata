@@ -31,6 +31,7 @@ const ValueType = enum {
 };
 
 const Outbound = enum { none, array_mesh_surface };
+const StatePolicy = enum { none, replace };
 
 const MethodSpec = struct {
     name: []const u8,
@@ -41,6 +42,7 @@ const MethodSpec = struct {
     returns: ValueType,
     return_object_class: []const u8,
     outbound: Outbound,
+    state: StatePolicy,
 };
 
 const PropertySpec = struct {
@@ -141,6 +143,7 @@ fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
             const arguments = fields.next() orelse @compileError("Batata.Godot method spec is missing its arguments");
             const return_type = fields.next() orelse @compileError("Batata.Godot method spec is missing its return type");
             const outbound = fields.next() orelse @compileError("Batata.Godot method spec is missing its outbound operation");
+            const state = fields.next() orelse @compileError("Batata.Godot method spec is missing its state policy");
             if (fields.next() != null) @compileError("Batata.Godot method spec contains extra fields");
             if (name.len == 0 or function_symbol.len == 0) @compileError("Batata.Godot method names and symbols must not be empty");
             if (name.len >= method_name_storage_width) @compileError("Batata.Godot method names must contain fewer than 128 bytes");
@@ -166,6 +169,7 @@ fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
                 .returns = parseValueType(return_type),
                 .return_object_class = parseObjectClass(return_type),
                 .outbound = parseOutbound(outbound),
+                .state = parseStatePolicy(state),
             };
         }
         return result;
@@ -265,6 +269,7 @@ fn parseVirtuals(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec 
                 .returns = .nil_value,
                 .return_object_class = "",
                 .outbound = .none,
+                .state = .none,
             };
         }
         return result;
@@ -297,6 +302,12 @@ fn parseOutbound(comptime encoded: []const u8) Outbound {
     if (encoded.len == 0) return .none;
     if (std.mem.eql(u8, encoded, "array_mesh_surface")) return .array_mesh_surface;
     @compileError("Batata.Godot method spec contains an undeclared outbound operation: " ++ encoded);
+}
+
+fn parseStatePolicy(comptime encoded: []const u8) StatePolicy {
+    if (encoded.len == 0) return .none;
+    if (std.mem.eql(u8, encoded, "replace")) return .replace;
+    @compileError("Batata.Godot method state policy is not supported");
 }
 
 fn parseObjectClass(comptime encoded: []const u8) []const u8 {
@@ -480,6 +491,10 @@ fn methodCall(
     if (term_runtime.ex_term_runtime_enter(runtime_handle) != 0) {
         return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_RUNTIME_BUSY");
     }
+    if (term_runtime.ex_term_process_table_reset(256) != 1) {
+        leaveRuntime();
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_INSTANCE_STATE_UNAVAILABLE");
+    }
 
     var arguments = [_]i64{nil_word} ** max_method_arity;
     var object_leases = [_]ObjectLease{.{ .object = null }} ** max_method_arity;
@@ -558,7 +573,7 @@ fn methodCall(
     var caught: i64 = 0;
     var exception_kind: i64 = 0;
     const encoded_context: i64 = @bitCast(@as(u64, @intFromPtr(&invocation)));
-    const result_word = term_runtime.ex_term_protected_call(
+    const invocation_result = term_runtime.ex_term_protected_call(
         &invokeProtected,
         encoded_context,
         &caught,
@@ -570,45 +585,52 @@ fn methodCall(
         return failCall(call_error, .invalid_method, -1, @intCast(exception_kind), "E_GODOT_COMPILED_EXCEPTION");
     }
 
+    var result_word = invocation_result;
+    var state_word = invocation_result;
+    if (method.spec.state == .replace) {
+        if (term_runtime.ex_term_is_tuple(invocation_result) == 0 or
+            term_runtime.ex_term_tuple_length(invocation_result) != 2)
+        {
+            leaveRuntime();
+            return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_SHAPE_INVALID");
+        }
+        state_word = term_runtime.ex_term_tuple_get(invocation_result, 0);
+        result_word = term_runtime.ex_term_tuple_get(invocation_result, 1);
+    }
+
     if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value and method.spec.returns != .vector2_value and method.spec.returns != .vector3_value and method.spec.returns != .packed_vector3_array_value and method.spec.returns != .packed_int32_array_value and method.spec.returns != .array_mesh_surface_value and method.spec.returns != .object_value) {
-        leaveRuntime();
-        return writeImmediateResult(method.spec.returns, result_word, return_variant, call_error);
+        writeImmediateResult(method.spec.returns, result_word, return_variant, call_error);
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.returns == .string_value or method.spec.returns == .string_name_value) {
         writeTextResult(method.spec.returns, result_word, return_variant, call_error);
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.returns == .vector2_value or method.spec.returns == .vector3_value) {
         writeVectorResult(method.spec.returns, result_word, return_variant, call_error);
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.returns == .packed_vector3_array_value) {
         writePackedVector3ArrayResult(result_word, return_variant, call_error);
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.returns == .packed_int32_array_value) {
         writePackedInt32ArrayResult(result_word, return_variant, call_error);
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.returns == .array_mesh_surface_value) {
         writeArrayMeshSurfaceResult(result_word, return_variant, call_error);
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.outbound == .array_mesh_surface) {
         writeArrayMeshObjectResult(result_word, return_variant, call_error);
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (method.spec.returns == .object_value) {
@@ -621,8 +643,7 @@ fn methodCall(
             return_variant,
             call_error,
         );
-        leaveRuntime();
-        return;
+        return finishMethodCall(instance, method, state_word, call_error);
     }
 
     if (term_runtime.ex_term_is_float(result_word) == 0) {
@@ -631,8 +652,8 @@ fn methodCall(
     }
     const bits = term_runtime.ex_term_float_bits(result_word);
     var value: f64 = @bitCast(bits);
-    leaveRuntime();
     api.float_to_variant(return_variant, &value);
+    finishMethodCall(instance, method, state_word, call_error);
 }
 
 fn writeImmediateResult(
@@ -1071,6 +1092,55 @@ fn writeTextResult(
 
 fn leaveRuntime() void {
     _ = term_runtime.ex_term_runtime_leave();
+}
+
+fn finishMethodCall(
+    instance: *Instance,
+    method: *const MethodRuntime,
+    state_word: i64,
+    call_error: *godot.CallError,
+) void {
+    if (call_error.error_code != .ok or method.spec.state == .none) {
+        leaveRuntime();
+        return;
+    }
+
+    const result_handle = term_runtime.ex_term_result_create(instance.runtime_handle, state_word);
+    if (result_handle <= 0) {
+        leaveRuntime();
+        return switch (result_handle) {
+            -1 => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_PIN_UNINITIALIZED"),
+            -2 => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_PIN_OOM"),
+            -3 => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_PIN_DUPLICATE"),
+            else => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_PIN_EXHAUSTED"),
+        };
+    }
+    if (term_runtime.ex_term_runtime_leave() != 0) {
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_LEAVE_FAILED");
+    }
+
+    const exported = term_runtime.ex_term_export(result_handle, state_word);
+    const destroyed = term_runtime.ex_term_result_destroy(result_handle);
+    const replacement_runtime = term_runtime.ex_term_runtime_create();
+    if (exported <= 0 or destroyed != 0 or replacement_runtime <= 0) {
+        if (exported > 0) _ = term_runtime.ex_term_exported_destroy(exported);
+        if (replacement_runtime > 0) _ = term_runtime.ex_term_runtime_destroy(replacement_runtime);
+        instance.runtime_handle = 0;
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_EXPORT_FAILED");
+    }
+
+    if (instance.portable_state > 0 and
+        term_runtime.ex_term_exported_destroy(instance.portable_state) != 0)
+    {
+        _ = term_runtime.ex_term_exported_destroy(exported);
+        _ = term_runtime.ex_term_runtime_destroy(replacement_runtime);
+        instance.runtime_handle = 0;
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_STALE");
+    }
+
+    instance.runtime_handle = replacement_runtime;
+    instance.portable_state = exported;
+    instance.generation +%= 1;
 }
 
 fn failCall(call_error: *godot.CallError, error_code: godot.CallErrorType, argument: i32, expected: i32, comptime message: [:0]const u8) void {
