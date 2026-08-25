@@ -8457,7 +8457,14 @@ defmodule Batata.Lift do
 
   defp untag_int_bind({var, value}, integer_vars, ctx, block) do
     if MapSet.member?(integer_vars, var) do
-      {var, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
+      scalar =
+        if term_operand?(value) do
+          create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)
+        else
+          value
+        end
+
+      {var, scalar}
     else
       {var, value}
     end
@@ -8904,7 +8911,7 @@ defmodule Batata.Lift do
       Enum.reduce(segs, {[], [], lit(0, ctx, block)}, fn seg, {conds, binds, offset} ->
         case seg do
           {:byte, pat} ->
-            byte_value =
+            byte_word =
               create_op(
                 "ex.binary_get",
                 [value, offset],
@@ -8913,7 +8920,9 @@ defmodule Batata.Lift do
                 block
               )
 
-            {cond, pat_binds} = do_build_match(pat, byte_value, ctx, block, pattern_env)
+            byte = create_op("ex.to_int", [byte_word], [MLIR.Type.i64()], ctx, block)
+            {cond, pat_binds} = do_build_match(pat, byte_word, ctx, block, pattern_env)
+            pat_binds = Enum.map(pat_binds, fn {name, _boxed} -> {name, byte} end)
 
             next =
               create_op("ex.add", [offset, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)
@@ -8930,13 +8939,18 @@ defmodule Batata.Lift do
             width =
               create_op("ex.binary_utf8_width", [value, offset], [MLIR.Type.i64()], ctx, block)
 
-            codepoint =
+            codepoint_word =
               create_op("ex.binary_utf8_get", [value, offset], [ex_type("term", ctx)], ctx, block)
+
+            codepoint =
+              create_op("ex.to_int", [codepoint_word], [MLIR.Type.i64()], ctx, block)
 
             cond_w = cmp(width, 0, "ne", ctx, block)
 
             {pat_cond, pat_binds} =
-              do_build_match(pat, codepoint, ctx, block, pattern_env)
+              do_build_match(pat, codepoint_word, ctx, block, pattern_env)
+
+            pat_binds = Enum.map(pat_binds, fn {name, _boxed} -> {name, codepoint} end)
 
             next = create_op("ex.add", [offset, width], [MLIR.Type.i64()], ctx, block)
             {[cond_w, pat_cond | conds], pat_binds ++ binds, next}

@@ -524,6 +524,25 @@ defmodule Batata.LiftTest do
     assert "ex.binary_slice" in names
   end
 
+  test "refines byte and utf8 pattern bindings to scalar integers", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def byte(<<value::8>>), do: value + 1
+          def unicode(<<value::utf8>>), do: value - 1
+          def main(), do: 0
+        end
+        """,
+        ctx
+      )
+
+    assert MLIR.verify?(module)
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~r/"ex\.binary_get".*"ex\.to_int"/s
+    assert rendered =~ ~r/"ex\.binary_utf8_get".*"ex\.to_int"/s
+  end
+
   test "lifts dynamic utf8 binary construction through byte iodata", %{ctx: ctx} do
     module =
       lift!(
