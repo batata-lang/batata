@@ -5865,6 +5865,12 @@ defmodule Batata.Lift do
     {lower_string_to_atom(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
   end
 
+  defp lift_stdlib_call(String, :to_existing_atom, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = value |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {lower_string_to_existing_atom(value, Map.fetch!(env, @known_atoms_key), ctx, block), env}
+  end
+
   defp lift_stdlib_call(Kernel, :inspect, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = box_term(value, ctx, block)
@@ -7607,6 +7613,20 @@ defmodule Batata.Lift do
   end
 
   defp lower_string_to_atom(value, known_atoms, ctx, block) do
+    lower_string_atom_lookup(value, known_atoms, &lower_dynamic_string_to_atom/3, ctx, block)
+  end
+
+  defp lower_string_to_existing_atom(value, known_atoms, ctx, block) do
+    lower_string_atom_lookup(
+      value,
+      known_atoms,
+      &lower_dynamic_string_to_existing_atom/3,
+      ctx,
+      block
+    )
+  end
+
+  defp lower_string_atom_lookup(value, known_atoms, fallback, ctx, block) do
     dyn = ex_type("term", ctx)
 
     clauses =
@@ -7618,7 +7638,7 @@ defmodule Batata.Lift do
 
         {equal?, fn b -> create_op("ex.to_word", [lit(word, ctx, b)], [dyn], ctx, b) end}
       end)
-      |> Kernel.++([{nil, fn b -> lower_dynamic_string_to_atom(value, ctx, b) end}])
+      |> Kernel.++([{nil, fn b -> fallback.(value, ctx, b) end}])
 
     region = MLIR.CAPI.mlirRegionCreate()
 
@@ -7681,6 +7701,26 @@ defmodule Batata.Lift do
             [raise_argument_error("invalid String.to_atom/1 argument", ctx, eb) |> unbox(ctx, eb)]
           end
         )
+      end)
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
+  defp lower_dynamic_string_to_existing_atom(value, ctx, block) do
+    dyn = ex_type("term", ctx)
+    i64 = integer_type(ctx)
+    existing = create_op("ex.string_to_existing_atom", [value], [dyn], ctx, block)
+    raw = create_op("ex.unbox", [existing], [i64], ctx, block)
+    atom? = create_op("ex.is_atom", [existing], [MLIR.Type.i64()], ctx, block)
+    atom_i1 = create_op("arith.trunci", [atom?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(atom_i1, ctx, block, [i64], fn _b -> [raw] end, fn eb ->
+        [
+          raise_argument_error("invalid String.to_existing_atom/1 argument", ctx, eb)
+          |> unbox(ctx, eb)
+        ]
       end)
       |> hd()
 

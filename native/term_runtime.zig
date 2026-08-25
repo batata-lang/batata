@@ -4485,6 +4485,29 @@ pub fn ex_term_string_to_atom(binary: i64) callconv(.c) i64 {
     return dynamic_atom_word(index);
 }
 
+/// Looks up a UTF-8 binary in the current runtime's bounded atom table.
+/// Returns integer-zero for invalid input/UTF-8, overlong names, or misses.
+pub fn ex_term_string_to_existing_atom(binary: i64) callconv(.c) i64 {
+    if (word_tag(binary) != tag_binary) return 0;
+    const len: i64 = @intCast(binary_len(binary));
+    var codepoints: usize = 0;
+    var cursor: i64 = 0;
+    while (cursor < len) {
+        const decoded = utf8_at(binary, cursor) orelse return 0;
+        cursor += decoded.width;
+        codepoints += 1;
+        if (codepoints > 255) return 0;
+    }
+
+    const instance = runtime();
+    instance.atom_lock.lock();
+    defer instance.atom_lock.unlock();
+    for (instance.dynamic_atom_names[0..instance.dynamic_atom_count], 0..) |name, index| {
+        if (binaries_equal(name, binary)) return dynamic_atom_word(index);
+    }
+    return 0;
+}
+
 fn printable_codepoint(cp: i64) bool {
     return (cp >= 0x20 and cp <= 0x7E) or
         cp == '\n' or cp == '\r' or cp == '\t' or cp == 0x0B or
@@ -5030,6 +5053,36 @@ test "string to atom validates UTF-8 and interns within the runtime" {
     const oversized_word = word_from_ptr(oversized, tag_binary);
     @memset(binary_bytes(oversized_word)[0..256], 'a');
     try std.testing.expectEqual(@as(i64, 8), ex_term_string_to_atom(oversized_word));
+}
+
+test "string to existing atom only queries the runtime atom table" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const alpha_name = test_binary_from_string("alpha");
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_to_existing_atom(alpha_name));
+    const alpha = ex_term_string_to_atom(alpha_name);
+    try std.testing.expectEqual(alpha, ex_term_string_to_existing_atom(alpha_name));
+
+    const unicode_name = test_binary_from_string("λ");
+    const unicode = ex_term_string_to_atom(unicode_name);
+    try std.testing.expectEqual(unicode, ex_term_string_to_existing_atom(unicode_name));
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_to_existing_atom(42 << @intCast(tag_shift)));
+
+    const invalid = alloc_binary(1).?;
+    const invalid_word = word_from_ptr(invalid, tag_binary);
+    binary_bytes(invalid_word)[0] = 0xFF;
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_to_existing_atom(invalid_word));
+
+    const oversized = alloc_binary(256).?;
+    const oversized_word = word_from_ptr(oversized, tag_binary);
+    @memset(binary_bytes(oversized_word)[0..256], 'a');
+    try std.testing.expectEqual(@as(i64, 0), ex_term_string_to_existing_atom(oversized_word));
 }
 
 test "short float formatting matches Erlang decimal and exponent boundaries" {

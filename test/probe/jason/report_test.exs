@@ -296,9 +296,9 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert jason_link["unresolved_internal_dependencies"] == 14
 
     assert jason_link["unit_attempt"] == %{
-             "status" => "frontend_normalization_failure",
-             "reason_class" => "unsupported_stdlib_call",
-             "fingerprint" => "19a6adecf0d63c28e6dd0fa76c1f903ea958805c108f8467e340bfa96f21fa52"
+             "status" => "ir_verification_failure",
+             "reason_class" => "runtime_error",
+             "fingerprint" => "806a37e2db8823951a8f03eb594c696ff2c754023a3966396ca5907530ab8821"
            }
 
     assert decimal_link["runtime_slice"] == %{"removed_definition_count" => 0}
