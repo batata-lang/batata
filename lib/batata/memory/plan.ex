@@ -16,6 +16,7 @@ defmodule Batata.Memory.Plan do
     preconditions: [],
     regions: [],
     reset_points: [],
+    runtime_limits: [],
     runtime_guards: []
   ]
 
@@ -30,6 +31,7 @@ defmodule Batata.Memory.Plan do
           preconditions: [map()],
           regions: [Region.t()],
           reset_points: [map()],
+          runtime_limits: [map()],
           runtime_guards: [map()]
         }
 
@@ -55,7 +57,7 @@ defmodule Batata.Memory.Plan do
 
   defp valid_regions?(plan) do
     Enum.all?(plan.regions, &is_struct(&1, Region)) and is_list(plan.reset_points) and
-      is_list(plan.runtime_guards)
+      is_list(plan.runtime_limits) and is_list(plan.runtime_guards)
   end
 
   @spec canonical_map(t()) :: map()
@@ -74,8 +76,9 @@ defmodule Batata.Memory.Plan do
       "preconditions" => Enum.sort_by(plan.preconditions, & &1["variable"]),
       "regions" => plan.regions |> Enum.map(&Region.to_map/1) |> Enum.sort_by(& &1["id"]),
       "reset_points" => Enum.sort_by(plan.reset_points, & &1["id"]),
+      "runtime_limits" => Enum.sort_by(plan.runtime_limits, & &1["id"]),
       "runtime_guards" => Enum.sort_by(plan.runtime_guards, & &1["id"]),
-      "schema" => "batata-memory-plan/3",
+      "schema" => "batata-memory-plan/4",
       "source_hash" => plan.source_hash
     }
   end

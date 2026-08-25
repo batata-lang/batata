@@ -126,12 +126,14 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | symbol | signature | semantics |
 | --- | --- | --- |
 | `ex.term.runtime_create` | `() -> i64` | allocate an isolated runtime and return a generation-checked opaque handle; 0 when the bounded registry is full |
+| `ex.term.runtime_set_arena_limit` | `(handle: i64, bytes: i64) -> i64` | configure the idle runtime quota; 0 success, -1 stale, -2 active/pinned, -3 invalid or above the 64 MiB hard limit |
 | `ex.term.runtime_enter` | `(handle: i64) -> i64` | become the sole owner of an idle runtime; same-handle owner re-entry is a no-op; -1 stale, -2 busy/foreign binding/epoch exhausted |
 | `ex.term.runtime_leave` | `() -> i64` | return an owned execution to idle; -1 when unbound/not owner, -2 while joined workers remain |
 | `ex.term.runtime_destroy` | `(handle: i64) -> i64` | destroy an idle runtime with no result/term leases; -1 stale/foreign, -2 busy |
 | `ex.term.runtime_arena_bytes` | `(handle: i64) -> i64` | arena capacity currently reserved in bytes |
 | `ex.term.runtime_arena_chunks` | `(handle: i64) -> i64` | number of stable arena segments |
 | `ex.term.runtime_arena_high_water` | `(handle: i64) -> i64` | high-water allocation in bytes for the current execution |
+| `ex.term.runtime_arena_limit` | `(handle: i64) -> i64` | effective per-execution arena quota in bytes |
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
 | `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | owner-only retention of the sole initialized, quiescent execution result; 0 registry full, -1 unbound/not ready/foreign, -2 OOM, -3 duplicate ownership; failures preserve the runtime |
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | atomically release a live result pin and its runtime; -1 stale, -2 during execution/export or while another term pin remains; busy is side-effect free |

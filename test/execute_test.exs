@@ -3724,4 +3724,18 @@ defmodule Batata.ExecuteTest do
                ctx
              )
   end
+
+  test "JIT turns a physical arena quota breach into the typed OOM boundary", %{ctx: ctx} do
+    assert_raise Batata.ResultError, "native arena allocation failed", fn ->
+      Batata.execute(
+        """
+        defmodule QuotaJIT do
+          def main(), do: [1]
+        end
+        """,
+        ctx,
+        memory_quota_bytes: 0
+      )
+    end
+  end
 end
