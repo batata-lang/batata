@@ -144,6 +144,56 @@ defmodule Batata.Memory.Bound do
     end
   end
 
+  @doc "Evaluates the canonical JSON representation without reconstructing compiler structs."
+  @spec evaluate_map(map(), map()) :: {:ok, non_neg_integer()} | {:error, atom() | [String.t()]}
+  def evaluate_map(bound, contracts \\ %{}) when is_map(bound) and is_map(contracts) do
+    with {:ok, expression} <- from_map(bound) do
+      evaluate(expression, contracts)
+    end
+  end
+
+  defp from_map(%{"op" => "constant", "bytes" => bytes}) when is_binary(bytes) do
+    case Integer.parse(bytes) do
+      {value, ""} when value >= 0 ->
+        if Integer.to_string(value) == bytes,
+          do: {:ok, constant(value)},
+          else: {:error, :invalid_bound}
+
+      _ ->
+        {:error, :invalid_bound}
+    end
+  end
+
+  defp from_map(%{"op" => "variable", "name" => name}) when is_binary(name) and name != "",
+    do: {:ok, variable(name)}
+
+  defp from_map(%{"op" => op, "terms" => terms})
+       when op in ["sum", "product", "maximum"] and is_list(terms) do
+    with {:ok, decoded} <- decode_terms(terms) do
+      {:ok,
+       case op do
+         "sum" -> add(decoded)
+         "product" -> multiply(decoded)
+         "maximum" -> maximum(decoded)
+       end}
+    end
+  end
+
+  defp from_map(_bound), do: {:error, :invalid_bound}
+
+  defp decode_terms(terms) do
+    Enum.reduce_while(terms, {:ok, []}, fn term, {:ok, decoded} ->
+      case from_map(term) do
+        {:ok, expression} -> {:cont, {:ok, [expression | decoded]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, decoded} -> {:ok, Enum.reverse(decoded)}
+      error -> error
+    end
+  end
+
   defp evaluate_closed(%__MODULE__{op: :constant, value: value}, _contracts), do: value
   defp evaluate_closed(%__MODULE__{op: :variable, name: name}, contracts), do: contracts[name]
 

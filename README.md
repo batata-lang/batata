@@ -228,7 +228,7 @@ clock:
   monitors deliver ordered `DOWN` tuples, and `trap_exit` converts linked
   exits to `EXIT` tuples; `Process.exit/link/unlink/monitor/demonitor/flag`
   lower directly to this runtime contract;
-- terms are immutable and owned by the execution-wide 32 MiB arena, not by an
+- terms are immutable and owned by the execution-wide 64 MiB arena, not by an
   individual process. Sending therefore shares a stable term word without a
   deep copy: a sender may exit and its process slot may be recycled while a
   receiver still reads the term. Reset/destroy is the reclamation boundary;
@@ -327,6 +327,34 @@ Protocol consolidation starts with the native provider layer:
 - `Batata.Stdlib.Plan` carries the replacement class (`:native_term` /
   `:beamer_callback` / `:unsupported`) for an `{module, function, arity}`;
   `Batata.Stdlib.plan/1` mirrors the built-in registry as a plan.
+
+## Proof-carrying memory plans
+
+`Batata.compile/3` and `Batata.build/4` accept `memory_policy: :disabled |
+:report | :strict`. Analysis runs after information-preserving transforms and
+before Lower. Unknown allocation, control-flow, lifetime, external-call, or
+reset facts remain obligations; `:strict` rejects them before a native artifact
+is created.
+
+Dynamic sites can be closed with stable upper-bound variables reported by
+`memory-repair.json`, supplied through `memory_contracts`. An explicit
+`memory_quota_bytes` instead selects the typed `arena_oom` guard. A closed AOT
+build emits `memory-receipt.json`; it can be checked outside the compiler
+process with:
+
+```elixir
+Batata.Memory.verify_receipt(
+  File.read!("memory-receipt.json"),
+  File.read!("memory-plan.json")
+)
+```
+
+Plans distinguish logical register, lexical, actor, execution, and persistent
+regions from physical storage. Today lexical/actor/execution regions honestly
+map to the segmented bump execution arena, while portable exports use retained
+host storage. Receiver-local copying, a separate shared-immutable allocator,
+and refcounted large binaries remain unavailable catalog strategies rather than
+implicit fallbacks.
 
 ## Packages
 
