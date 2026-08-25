@@ -147,6 +147,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.result_exception_kind` | `(handle: i64) -> i64` | return the retained entry actor's exception discriminator, zero for no exception |
 | `ex.term.result_exception_reason` | `(handle: i64) -> i64` | return the retained entry actor's exception reason word |
 | `ex.term.result_term_kind` | `(handle: i64, word: i64) -> i64` | classify an immediate or a heap word owned by this result; -1 for stale/foreign words |
+| `ex.term.result_atom_name` | `(handle: i64, word: i64) -> i64` | runtime-owned binary name for a dynamic atom; nil otherwise |
 | `ex.term.result_term_length` | `(handle: i64, word: i64) -> i64` | container length under a live result, or -1 when invalid |
 | `ex.term.result_term_get` | `(handle: i64, word: i64, index: i64) -> i64` | indexed tuple/list/map/binary access while the result is live; -1 when invalid |
 | `ex.term.export` | `(result: i64, word: i64) -> i64` | deep-copy a result-owned graph under an exclusive export lease into independent host storage; 0 registry full, -1 stale/foreign, -2 OOM, -3 unsupported, -4 malformed/limit, -5 runtime not idle |
@@ -264,6 +265,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.int_to_string_base` | `(word: i64, base: i64) -> i64` | base 2..36 uppercase binary of a tagged integer term; nil for non-integers / invalid base |
 | `ex.term.int_to_hex` | `(word: i64) -> i64` | uppercase hexadecimal binary with `0x` prefix; nil for non-integers |
 | `ex.term.string_to_int` | `(binary: i64) -> i64` | scalar i64 parsed from a decimal binary (optionally signed); 0 for invalid input or overflow |
+| `ex.term.string_to_atom` | `(binary: i64) -> i64` | bounded runtime-local UTF-8 atom intern; integer-zero for invalid input, tagged integer one for limits |
 | `ex.term.float_to_binary_short` | `(float: i64) -> i64` | BEAM-compatible shortest round-trip binary for a finite boxed float; nil for invalid terms |
 | `ex.term.map_from_list` | `(list: i64) -> i64` | flat key/value list -> map |
 | `ex.term.map_put` | `(map: i64, key: i64, value: i64) -> i64` | insert or replace a dynamic map entry |
