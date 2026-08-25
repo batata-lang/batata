@@ -6,8 +6,15 @@ defmodule Batata.Wings.Provenance do
 
   @source_mapping %{
     "e3d/e3d_vec.erl" => "Batata.Wings.Vec3",
+    "src/wings_extrude_edge.erl" => "Batata.Wings.Operation.Bevel",
+    "src/wings_extrude_face.erl" => "Batata.Wings.Operation.Extrude",
     "src/wings_face.erl" => "Batata.Wings.Face",
+    "src/wings_face_cmd.erl" => "Batata.Wings.Operation.Extrude/Inset",
+    "src/wings_move.erl" => "Batata.Wings.Operation.Move",
+    "src/wings_pick.erl" => "Batata.Wings.Picking (behavior reference only)",
+    "src/wings_sel.erl" => "Batata.Wings.Selection",
     "src/wings_subdiv.erl" => "Batata.Wings.Subdivision",
+    "src/wings_undo.erl" => "Batata.Wings.History",
     "src/wings_vertex.erl" => "Batata.Wings.Vertex",
     "src/wings_we.erl" => "Batata.Wings.Topology",
     "src/wings_we_build.erl" => "Batata.Wings.Topology.Build"
