@@ -487,6 +487,8 @@ defmodule Batata do
       cc driver.c libMath.a -o run_math
   """
   @spec build(String.t(), Path.t(), MLIR.Context.t(), keyword()) :: %{
+          optional(:memory_plan) => Path.t(),
+          optional(:memory_diagnostics) => Path.t(),
           archive: Path.t(),
           driver: Path.t(),
           object: Path.t(),
@@ -517,12 +519,13 @@ defmodule Batata do
       ])
       |> MLIR.verify!()
 
-    Batata.Memory.verify!(ex_module,
-      module: snapshot.name,
-      source: source,
-      policy: Keyword.get(opts, :memory_policy, :disabled),
-      dependency_lock: opts[:memory_dependency_lock]
-    )
+    memory_plan =
+      Batata.Memory.verify!(ex_module,
+        module: snapshot.name,
+        source: source,
+        policy: Keyword.get(opts, :memory_policy, :disabled),
+        dependency_lock: opts[:memory_dependency_lock]
+      )
 
     module =
       ex_module
@@ -543,23 +546,37 @@ defmodule Batata do
     archive!(archive_path, object_path)
     File.write!(driver_path, driver_source())
 
+    memory_artifacts =
+      case memory_plan do
+        :disabled -> %{}
+        %Batata.Memory.Plan{} = plan -> Batata.Memory.write_artifacts!(output_dir, plan)
+      end
+
+    artifact_paths =
+      [archive_path, object_path, driver_path, runtime_lib_copy]
+      |> Kernel.++(Map.values(memory_artifacts))
+      |> Enum.sort()
+
     metadata =
       Batata.Export.write!(output_dir, snapshot.name,
         source: source,
-        artifact_paths: [archive_path, object_path, driver_path, runtime_lib_copy],
+        artifact_paths: artifact_paths,
         definitions: snapshot.definitions,
         entry_name: :main
       )
 
-    %{
-      archive: archive_path,
-      driver: driver_path,
-      object: object_path,
-      runtime_lib: runtime_lib_copy,
-      bundle: metadata.bundle,
-      artifact_index: metadata.artifact_index,
-      manifest: metadata.manifest
-    }
+    Map.merge(
+      %{
+        archive: archive_path,
+        driver: driver_path,
+        object: object_path,
+        runtime_lib: runtime_lib_copy,
+        bundle: metadata.bundle,
+        artifact_index: metadata.artifact_index,
+        manifest: metadata.manifest
+      },
+      memory_artifacts
+    )
   end
 
   defp rename_entry(%Batata.Frontend.Module{} = snapshot, entry) do
