@@ -35,6 +35,7 @@ defmodule Batata.Lift do
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @current_function_key {__MODULE__, :current_function}
+  @term_parameter_names_key {__MODULE__, :term_parameter_names}
   @min_scalar_integer -9_223_372_036_854_775_808
   @max_scalar_integer 9_223_372_036_854_775_807
   @min_term_integer -1_152_921_504_606_846_976
@@ -179,6 +180,8 @@ defmodule Batata.Lift do
   end
 
   defp no_return_ast?({:throw, _, [_value]}, _proven), do: true
+  defp no_return_ast?({:__batata_raise__, _kind, _reason}, _proven), do: true
+  defp no_return_ast?({:__batata_raise_scalar__, _kind, _reason}, _proven), do: true
 
   defp no_return_ast?({:__block__, _, expressions}, proven) when expressions != [],
     do: expressions |> List.last() |> no_return_ast?(proven)
@@ -1383,17 +1386,19 @@ defmodule Batata.Lift do
     arg_locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), length(patterns))
     block = MLIR.Block.create(arg_types, arg_locs)
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    modes = function_arg_modes(name, arity, module_env)
 
     env =
       block
       |> Walker.arguments()
       |> Enum.to_list()
-      |> Enum.zip(Enum.zip(patterns, function_arg_modes(name, arity, module_env)))
+      |> Enum.zip(Enum.zip(patterns, modes))
       |> Enum.reduce(module_env, fn {value, {pattern, mode}}, env ->
         inbound = inbound_definition_argument(value, mode, pattern, name, ctx, block)
         Map.put(env, param_name(pattern), inbound)
       end)
       |> Map.put(@current_function_key, name)
+      |> Map.put(@term_parameter_names_key, term_parameter_names(patterns, modes))
       |> Map.put(:__budget__, budget)
       |> Map.put(:__batch_size__, batch_size)
 
@@ -1632,6 +1637,18 @@ defmodule Batata.Lift do
       |> Enum.map(&tail_match(&1, tail_args, ctx, block, module_env))
       |> Enum.unzip()
 
+    term_parameter_names =
+      clause_bindss
+      |> List.flatten()
+      |> Enum.reduce(MapSet.new(), fn {parameter, value}, names ->
+        if term_operand?(value), do: MapSet.put(names, parameter), else: names
+      end)
+
+    function_env =
+      module_env
+      |> Map.put(@current_function_key, name)
+      |> Map.put(@term_parameter_names_key, term_parameter_names)
+
     failure_tail_names =
       Enum.map(1..(arity - 1), &String.to_atom("__batata_tail_arg_#{&1}"))
 
@@ -1651,7 +1668,7 @@ defmodule Batata.Lift do
       lift_case(
         clause_asts,
         arg1,
-        module_env,
+        function_env,
         ctx,
         block,
         Keyword.merge(
@@ -1679,7 +1696,7 @@ defmodule Batata.Lift do
         )
       )
 
-    insert_return(return_value, ctx, block, module_env)
+    insert_return(return_value, ctx, block, function_env)
 
     %Beaver.SSA{
       op: "ex.func",
@@ -3452,6 +3469,9 @@ defmodule Batata.Lift do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
 
+    [left_value, right_value] =
+      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
     {
       create_op("ex.add", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
       env
@@ -3462,6 +3482,9 @@ defmodule Batata.Lift do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
 
+    [left_value, right_value] =
+      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
     {
       create_op("ex.sub", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
       env
@@ -3471,6 +3494,9 @@ defmodule Batata.Lift do
   defp lift_expr({:*, _, [left, right]}, ctx, block, env) do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
+
+    [left_value, right_value] =
+      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
 
     {
       create_op("ex.mul", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
@@ -3702,14 +3728,17 @@ defmodule Batata.Lift do
   defp lift_expr({name, _, [left, right]}, ctx, block, env) when name in [:div, :rem] do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
-    ensure_refined_integer_operands!([left_value, right_value])
+
+    [left_value, right_value] =
+      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
     op = if name == :div, do: "ex.div", else: "ex.rem"
     {create_op(op, [left_value, right_value], [integer_type(ctx)], ctx, block), env}
   end
 
   defp lift_expr({:case, _, [scrutinee_ast, [do: clauses]]}, ctx, block, env) do
     {scrutinee, env} = lift_expr(scrutinee_ast, ctx, block, env)
-    {lift_case(clauses, scrutinee, env, ctx, block), env}
+    {lift_case(clauses, scrutinee, env, ctx, block, case_result_contract(scrutinee_ast)), env}
   end
 
   defp lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env) do
@@ -3729,7 +3758,8 @@ defmodule Batata.Lift do
     lift_block(expressions, ctx, block, env)
   end
 
-  defp lift_expr({:=, _, [{var, _, nil}, rhs]}, ctx, block, env) when is_atom(var) do
+  defp lift_expr({:=, _, [{var, _, context}, rhs]}, ctx, block, env)
+       when is_variable_ast(var, context) do
     {value, env} = lift_expr(rhs, ctx, block, env)
     {value, Map.put(env, var, value)}
   end
@@ -8176,7 +8206,15 @@ defmodule Batata.Lift do
   defp cmp_predicate(:>), do: "sgt"
   defp cmp_predicate(:>=), do: "sge"
 
-  defp lift_case(clauses, scrutinee, env, ctx, block, opts \\ []) do
+  # `:binary.match/2` returns either `:nomatch` or `{position, length}`; both
+  # tuple fields are integers. Preserve that stdlib result contract when a
+  # succeeding case pattern binds the fields.
+  defp case_result_contract({{:., _, [:binary, :match]}, _, [_binary, _patterns]}),
+    do: [scalar_tuple_indices: [0, 1]]
+
+  defp case_result_contract(_scrutinee), do: []
+
+  defp lift_case(clauses, scrutinee, env, ctx, block, opts) do
     term_case? =
       Keyword.get_lazy(opts, :term_case?, fn ->
         Enum.any?(clauses, &(clause_pattern(&1) |> term_pattern?()))
@@ -8323,6 +8361,8 @@ defmodule Batata.Lift do
         {match_cond, binds} =
           reconcile_term_bindings(match_cond, clause_binds, pattern_binds, ctx, block)
 
+        binds = refine_case_result_bindings(clause.pattern, binds, opts, ctx, block)
+
         guard_cond =
           case clause.guard do
             nil ->
@@ -8449,6 +8489,36 @@ defmodule Batata.Lift do
     |> Enum.zip(bindss)
     |> Enum.map(&untag_clause_int_binds(&1, ctx, block))
   end
+
+  defp refine_case_result_bindings(pattern, binds, opts, ctx, block) do
+    scalar_indices = Keyword.get(opts, :scalar_tuple_indices, [])
+
+    scalar_names =
+      pattern
+      |> tuple_pattern_elements()
+      |> Enum.with_index()
+      |> Enum.reduce(MapSet.new(), fn {element, index}, names ->
+        case {index in scalar_indices, pattern_variable_name(element)} do
+          {true, name} when is_atom(name) and name != :_ -> MapSet.put(names, name)
+          _ -> names
+        end
+      end)
+
+    Enum.map(binds, fn {name, value} ->
+      if MapSet.member?(scalar_names, name) and term_operand?(value) do
+        {name, create_op("ex.to_int", [value], [MLIR.Type.i64()], ctx, block)}
+      else
+        {name, value}
+      end
+    end)
+  end
+
+  defp tuple_pattern_elements({:{}, _, elements}) when is_list(elements), do: elements
+
+  defp tuple_pattern_elements(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3,
+    do: Tuple.to_list(tuple)
+
+  defp tuple_pattern_elements(_pattern), do: []
 
   defp untag_clause_int_binds({%{guard: guard}, binds}, ctx, block) do
     integer_vars = integer_guard_vars(guard)
@@ -8922,7 +8992,7 @@ defmodule Batata.Lift do
 
             byte = create_op("ex.to_int", [byte_word], [MLIR.Type.i64()], ctx, block)
             {cond, pat_binds} = do_build_match(pat, byte_word, ctx, block, pattern_env)
-            pat_binds = Enum.map(pat_binds, fn {name, _boxed} -> {name, byte} end)
+            pat_binds = bind_pattern_scalar(pat_binds, byte)
 
             next =
               create_op("ex.add", [offset, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)
@@ -8950,7 +9020,7 @@ defmodule Batata.Lift do
             {pat_cond, pat_binds} =
               do_build_match(pat, codepoint_word, ctx, block, pattern_env)
 
-            pat_binds = Enum.map(pat_binds, fn {name, _boxed} -> {name, codepoint} end)
+            pat_binds = bind_pattern_scalar(pat_binds, codepoint)
 
             next = create_op("ex.add", [offset, width], [MLIR.Type.i64()], ctx, block)
             {[cond_w, pat_cond | conds], pat_binds ++ binds, next}
@@ -8994,10 +9064,14 @@ defmodule Batata.Lift do
     {cond, pat_binds} =
       do_build_match(pat, box_term(value16, ctx, block), ctx, block, pattern_env)
 
-    pat_binds = Enum.map(pat_binds, fn {name, _boxed} -> {name, value16} end)
+    pat_binds = bind_pattern_scalar(pat_binds, value16)
     next = create_op("ex.add", [offset, lit(2, ctx, block)], [MLIR.Type.i64()], ctx, block)
 
     {cond, pat_binds, next}
+  end
+
+  defp bind_pattern_scalar(bindings, scalar) do
+    Enum.map(bindings, fn {name, _boxed} -> {name, scalar} end)
   end
 
   defp build_rest_bind(nil, _value, _offset, _ctx, _block, _pattern_env, _defer_rest?),
@@ -9347,6 +9421,64 @@ defmodule Batata.Lift do
     end
   end
 
+  defp refine_integer_operands!(asts, values, env, ctx, block) do
+    Enum.zip_with(asts, values, fn ast, value ->
+      cond do
+        not term_operand?(value) ->
+          value
+
+        term_parameter?(ast, env) ->
+          validated_integer_parameter(value, ctx, block)
+
+        deferred_scalar_call?(ast) ->
+          value
+
+        true ->
+          ensure_refined_integer_operands!([value])
+          value
+      end
+    end)
+  end
+
+  defp term_parameter?({name, _, context}, env) when is_variable_ast(name, context) do
+    env
+    |> Map.get(@term_parameter_names_key, MapSet.new())
+    |> MapSet.member?(name)
+  end
+
+  defp term_parameter?(_ast, _env), do: false
+
+  defp deferred_scalar_call?({name, _, arguments})
+       when is_atom(name) and is_list(arguments) and
+              name not in [:+, :-, :*, :div, :rem, :__block__],
+       do: true
+
+  defp deferred_scalar_call?({{:., _, [_callee]}, _, arguments}) when is_list(arguments),
+    do: true
+
+  defp deferred_scalar_call?(_ast), do: false
+
+  defp validated_integer_parameter(value, ctx, block) do
+    i64 = integer_type(ctx)
+    integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
+    integer_i1 = create_op("arith.trunci", [integer?], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      integer_i1,
+      ctx,
+      block,
+      [i64],
+      fn b -> [create_op("ex.to_int", [value], [i64], ctx, b)] end,
+      fn b ->
+        [
+          raise_argument_error("integer arithmetic requires integer operands", ctx, b)
+          |> unbox(ctx, b)
+        ]
+      end
+    )
+    |> hd()
+  end
+
   defp box_if_scalar(value, ctx, block) do
     if term_operand?(value), do: value, else: box_term(value, ctx, block)
   end
@@ -9625,6 +9757,18 @@ defmodule Batata.Lift do
 
   defp param_name({name, _, context}) when is_variable_ast(name, context), do: name
   defp param_name(pattern), do: raise(Error, "unsupported parameter pattern: #{inspect(pattern)}")
+
+  defp term_parameter_names(patterns, modes) do
+    patterns
+    |> Enum.zip(modes)
+    |> Enum.reduce(MapSet.new(), fn
+      {{name, _, context}, :term}, names when is_variable_ast(name, context) ->
+        MapSet.put(names, name)
+
+      _pattern_and_mode, names ->
+        names
+    end)
+  end
 
   defp function_arg_modes(name, arity, module_env) do
     module_env

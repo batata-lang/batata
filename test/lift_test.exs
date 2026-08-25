@@ -543,6 +543,60 @@ defmodule Batata.LiftTest do
     assert rendered =~ ~r/"ex\.binary_utf8_get".*"ex\.to_int"/s
   end
 
+  test "refines :binary.match tuple fields for arithmetic", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main() do
+            case :binary.match("abc", "b") do
+              :nomatch -> 0
+              {position, 1} -> position + 1
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    assert MLIR.verify?(module)
+    assert MLIR.to_string(module, generic: true) =~ ~r/"ex\.tuple_get".*"ex\.to_int"/s
+  end
+
+  test "preserves scalar values assigned to hygienic macro variables", %{ctx: ctx} do
+    variable = {:value, [generated: true], Batata.GeneratedMacro}
+
+    snapshot = %Frontend.Module{
+      name: GeneratedMacro,
+      definitions: [
+        %Frontend.Definition{
+          kind: :def,
+          name: :main,
+          arity: 0,
+          clauses: [
+            %Frontend.Clause{
+              patterns: [],
+              body_ast:
+                {:__block__, [],
+                 [
+                   {:=, [], [variable, {:+, [], [1, 2]}]},
+                   {:+, [], [variable, 3]}
+                 ]}
+            }
+          ]
+        }
+      ]
+    }
+
+    module =
+      snapshot
+      |> Lift.module_to_ir(ctx: ctx)
+      |> Beaver.Deferred.resolve(ctx)
+      |> MLIR.verify!()
+
+    refute MLIR.to_string(module, generic: true) =~ ~r/"ex\.add".*!ex\.term/
+  end
+
   test "lifts dynamic utf8 binary construction through byte iodata", %{ctx: ctx} do
     module =
       lift!(

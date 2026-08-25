@@ -158,6 +158,25 @@ defmodule Batata.TrailingLiteralDispatchTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "validates term-ABI parameters before fallback arithmetic", %{ctx: ctx} do
+    source = """
+    defmodule TrailingIntegerArithmeticOracle do
+      defp bump("fixed", 1), do: 10
+      defp bump(_label, depth), do: depth + 1
+
+      def main(), do: {bump("fixed", 1), bump("dynamic", 3)}
+    end
+    """
+
+    expected =
+      source
+      |> Kernel.<>("\nTrailingIntegerArithmeticOracle.main()")
+      |> Code.eval_string()
+      |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "preserves arguments when trailing integer clauses do not match", %{ctx: ctx} do
     source = """
     defmodule TrailingIntegerLiteralFailure do
