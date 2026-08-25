@@ -22,6 +22,13 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["map.update_exact"]["scope"] =~ "typed KeyError"
     assert capabilities["dispatch.non_exhaustive"]["status"] == "executable"
     assert capabilities["string.dynamic_binary"]["status"] == "executable"
+
+    assert capabilities["string.dynamic_utf8_construction"]["status"] == "executable"
+    assert capabilities["string.dynamic_utf8_construction"]["gate"] == "execute_test"
+
+    assert capabilities["string.dynamic_utf8_construction"]["scope"] =~
+             "invalid-codepoint raises"
+
     assert capabilities["string.interpolation"]["status"] == "executable"
     assert capabilities["string.interpolation"]["gate"] == "execute_test"
     assert capabilities["string.interpolation"]["scope"] =~ "compile-known atom"

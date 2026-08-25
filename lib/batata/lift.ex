@@ -3579,13 +3579,20 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:<<>>, _, segments}, ctx, block, env) do
-    if Enum.any?(segments, &interpolation_segment?/1) do
-      {values, env} = lift_interpolation_segments(segments, ctx, block, env)
-      iodata = create_term_op("ex.list", values, ctx, block)
-      {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
-    else
-      {values, env} = lift_operands_boxed(segments, ctx, block, env)
-      {create_term_op("ex.binary", values, ctx, block), env}
+    cond do
+      Enum.any?(segments, &utf8_construction_segment?/1) ->
+        {values, env} = lift_binary_construction_segments(segments, ctx, block, env)
+        iodata = create_term_op("ex.list", values, ctx, block)
+        {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+
+      Enum.any?(segments, &interpolation_segment?/1) ->
+        {values, env} = lift_interpolation_segments(segments, ctx, block, env)
+        iodata = create_term_op("ex.list", values, ctx, block)
+        {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+
+      true ->
+        {values, env} = lift_operands_boxed(segments, ctx, block, env)
+        {create_term_op("ex.binary", values, ctx, block), env}
     end
   end
 
@@ -4349,6 +4356,189 @@ defmodule Batata.Lift do
 
   defp interpolation_segment?({:"::", _, [_, {:binary, _, nil}]}), do: true
   defp interpolation_segment?(_segment), do: false
+
+  defp utf8_construction_segment?({:"::", _, [_, {:utf8, _, context}]})
+       when is_atom(context),
+       do: true
+
+  defp utf8_construction_segment?(_segment), do: false
+
+  # `ex.binary` consumes integer bytes, so a construction-side `value::utf8`
+  # segment must first expand its Unicode scalar value into a binary. Feed the
+  # resulting binary and any surrounding byte segments through iodata to keep
+  # mixed construction (`<<prefix, value::utf8, suffix>>`) well-defined.
+  defp lift_binary_construction_segments(segments, ctx, block, env) do
+    Enum.map_reduce(segments, env, fn
+      {:"::", _, [expression, {:utf8, _, context}]}, env when is_atom(context) ->
+        {value, env} = lift_expr(expression, ctx, block, env)
+        ensure_refined_integer_operands!([value])
+        {lower_utf8_construction(value, ctx, block), env}
+
+      segment, env ->
+        {value, env} = lift_expr(segment, ctx, block, env)
+        {box_term(lift_value(value, ctx, block, env), ctx, block), env}
+    end)
+  end
+
+  defp lower_utf8_construction(value, ctx, block) do
+    i64 = integer_type(ctx)
+    nonnegative_i1 = utf8_condition(value, 0, "sge", ctx, block)
+
+    encoded =
+      build_scf_if(
+        nonnegative_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [lower_nonnegative_utf8(value, ctx, b)] end,
+        fn b -> [raise_invalid_utf8_construction(ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [encoded], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lower_nonnegative_utf8(value, ctx, block) do
+    utf8_if_at_most(
+      value,
+      0x7F,
+      ctx,
+      block,
+      fn b ->
+        utf8_binary([value], ctx, b)
+      end,
+      fn b ->
+        utf8_if_at_most(
+          value,
+          0x7FF,
+          ctx,
+          b,
+          fn bb ->
+            utf8_binary(
+              [
+                utf8_add(0xC0, utf8_div(value, 64, ctx, bb), ctx, bb),
+                utf8_add(0x80, utf8_rem(value, 64, ctx, bb), ctx, bb)
+              ],
+              ctx,
+              bb
+            )
+          end,
+          fn bb ->
+            lower_wide_utf8(value, ctx, bb)
+          end
+        )
+      end
+    )
+  end
+
+  defp lower_wide_utf8(value, ctx, block) do
+    utf8_if_at_most(
+      value,
+      0xFFFF,
+      ctx,
+      block,
+      fn b ->
+        surrogate_start = cmp(value, 0xD800, "sge", ctx, b)
+        surrogate_end = cmp(value, 0xDFFF, "sle", ctx, b)
+
+        surrogate =
+          create_op("arith.andi", [surrogate_start, surrogate_end], [integer_type(ctx)], ctx, b)
+
+        surrogate_i1 = create_op("arith.trunci", [surrogate], [MLIR.Type.i1()], ctx, b)
+
+        build_scf_if(
+          surrogate_i1,
+          ctx,
+          b,
+          [integer_type(ctx)],
+          fn bb -> [raise_invalid_utf8_construction(ctx, bb)] end,
+          fn bb -> [utf8_three_byte_binary(value, ctx, bb)] end
+        )
+        |> hd()
+      end,
+      fn b ->
+        utf8_if_at_most(
+          value,
+          0x10FFFF,
+          ctx,
+          b,
+          fn bb ->
+            utf8_four_byte_binary(value, ctx, bb)
+          end,
+          fn bb ->
+            raise_invalid_utf8_construction(ctx, bb)
+          end
+        )
+      end
+    )
+  end
+
+  defp utf8_three_byte_binary(value, ctx, block) do
+    shifted = utf8_div(value, 64, ctx, block)
+
+    utf8_binary(
+      [
+        utf8_add(0xE0, utf8_div(value, 4096, ctx, block), ctx, block),
+        utf8_add(0x80, utf8_rem(shifted, 64, ctx, block), ctx, block),
+        utf8_add(0x80, utf8_rem(value, 64, ctx, block), ctx, block)
+      ],
+      ctx,
+      block
+    )
+  end
+
+  defp utf8_four_byte_binary(value, ctx, block) do
+    shifted_6 = utf8_div(value, 64, ctx, block)
+    shifted_12 = utf8_div(value, 4096, ctx, block)
+
+    utf8_binary(
+      [
+        utf8_add(0xF0, utf8_div(value, 262_144, ctx, block), ctx, block),
+        utf8_add(0x80, utf8_rem(shifted_12, 64, ctx, block), ctx, block),
+        utf8_add(0x80, utf8_rem(shifted_6, 64, ctx, block), ctx, block),
+        utf8_add(0x80, utf8_rem(value, 64, ctx, block), ctx, block)
+      ],
+      ctx,
+      block
+    )
+  end
+
+  defp utf8_if_at_most(value, limit, ctx, block, then_fn, else_fn) do
+    condition_i1 = utf8_condition(value, limit, "sle", ctx, block)
+
+    build_scf_if(
+      condition_i1,
+      ctx,
+      block,
+      [integer_type(ctx)],
+      fn b -> [then_fn.(b)] end,
+      fn b -> [else_fn.(b)] end
+    )
+    |> hd()
+  end
+
+  defp utf8_condition(value, limit, predicate, ctx, block) do
+    value
+    |> cmp(limit, predicate, ctx, block)
+    |> then(&create_op("arith.trunci", [&1], [MLIR.Type.i1()], ctx, block))
+  end
+
+  defp utf8_binary(bytes, ctx, block) do
+    bytes = Enum.map(bytes, &box_term(&1, ctx, block))
+    create_term_op("ex.binary", bytes, ctx, block) |> unbox(ctx, block)
+  end
+
+  defp utf8_add(left, right, ctx, block) when is_integer(left),
+    do: create_op("ex.add", [lit(left, ctx, block), right], [integer_type(ctx)], ctx, block)
+
+  defp utf8_div(value, divisor, ctx, block),
+    do: create_op("ex.div", [value, lit(divisor, ctx, block)], [integer_type(ctx)], ctx, block)
+
+  defp utf8_rem(value, divisor, ctx, block),
+    do: create_op("ex.rem", [value, lit(divisor, ctx, block)], [integer_type(ctx)], ctx, block)
+
+  defp raise_invalid_utf8_construction(ctx, block),
+    do: raise_argument_error("invalid UTF-8 codepoint", ctx, block) |> unbox(ctx, block)
 
   defp ast_has_assignment?(ast) do
     {_ast, found?} =
