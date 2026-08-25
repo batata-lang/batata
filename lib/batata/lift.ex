@@ -6914,6 +6914,32 @@ defmodule Batata.Lift do
   defp native_term_call(Map, :to_list, [value], ctx, block),
     do: create_op("ex.enumerable_to_list", [value], [ex_type("term", ctx)], ctx, block)
 
+  defp native_term_call(:maps, :from_list, [value], ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    input_list = create_op("ex.is_list", [value], [i64], ctx, block)
+    empty = create_term_op("ex.map", [], ctx, block)
+    result = create_op("ex.enumerable_into_map", [value, empty], [dyn], ctx, block)
+    result_map = create_op("ex.is_map", [result], [i64], ctx, block)
+    valid = create_op("arith.andi", [input_list, result_map], [i64], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [unbox(result, ctx, b)] end,
+        fn b ->
+          [raise_argument_error("invalid :maps.from_list/1 argument", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
   defp native_term_call(Tuple, :size, [value], ctx, block),
     do: create_op("ex.tuple_length", [value], [MLIR.Type.i64()], ctx, block)
 

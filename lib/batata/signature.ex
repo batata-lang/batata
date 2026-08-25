@@ -15,6 +15,7 @@ defmodule Batata.Signature do
     {Enum, :map, 2} => [:term, :term],
     {List, :duplicate, 2} => [:term, :scalar],
     {Map, :to_list, 1} => [:term],
+    {:maps, :from_list, 1} => [:term],
     {String, :duplicate, 2} => [:term, :scalar],
     {:binary, :at, 2} => [:term, :scalar],
     {:binary, :copy, 1} => [:term],
