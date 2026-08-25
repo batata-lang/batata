@@ -1634,7 +1634,7 @@ defmodule Batata.ExecuteTest do
         defmodule Math do
           def main() do
             case <<1, 2>> do
-              <<x::16>> -> 1
+              <<x::24>> -> 1
               _ -> 0
             end
           end

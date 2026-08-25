@@ -46,6 +46,8 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["pattern.multi_head_cons"]["status"] == "executable"
     assert capabilities["pattern.multi_head_cons"]["gate"] == "codegen_pattern_mapper_test"
     assert capabilities["pattern.multi_head_cons"]["scope"] =~ "collapse_static/1"
+    assert capabilities["pattern.binary_uint16"]["gate"] == "uint16_binary_pattern_test"
+    assert capabilities["pattern.binary_uint16"]["scope"] =~ "unsigned big-endian"
     assert capabilities["control.short_circuit_and"]["status"] == "executable"
     assert capabilities["control.short_circuit_and"]["gate"] == "execute_test"
 

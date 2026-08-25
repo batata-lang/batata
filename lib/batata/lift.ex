@@ -8486,6 +8486,12 @@ defmodule Batata.Lift do
 
             {[cond | conds], pat_binds ++ binds, next}
 
+          {:uint16, pat} ->
+            {cond, pat_binds, next} =
+              build_uint16_segment_match(pat, value, offset, ctx, block, pattern_env)
+
+            {[cond | conds], pat_binds ++ binds, next}
+
           {:utf8, pat} ->
             width =
               create_op("ex.binary_utf8_width", [value, offset], [MLIR.Type.i64()], ctx, block)
@@ -8517,6 +8523,33 @@ defmodule Batata.Lift do
 
     {combine([cond_bin, cond_len | Enum.reverse(conds) ++ [rest_cond]], ctx, block),
      Enum.reverse(binds) ++ rest_binds}
+  end
+
+  defp build_uint16_segment_match(pat, binary, offset, ctx, block, pattern_env) do
+    high_word =
+      create_op("ex.binary_get", [binary, offset], [ex_type("term", ctx)], ctx, block)
+
+    low_offset =
+      create_op("ex.add", [offset, lit(1, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    low_word =
+      create_op("ex.binary_get", [binary, low_offset], [ex_type("term", ctx)], ctx, block)
+
+    high = create_op("ex.to_int", [high_word], [MLIR.Type.i64()], ctx, block)
+    low = create_op("ex.to_int", [low_word], [MLIR.Type.i64()], ctx, block)
+
+    value16 =
+      high
+      |> then(&create_op("ex.mul", [&1, lit(256, ctx, block)], [MLIR.Type.i64()], ctx, block))
+      |> then(&create_op("ex.add", [&1, low], [MLIR.Type.i64()], ctx, block))
+
+    {cond, pat_binds} =
+      do_build_match(pat, box_term(value16, ctx, block), ctx, block, pattern_env)
+
+    pat_binds = Enum.map(pat_binds, fn {name, _boxed} -> {name, value16} end)
+    next = create_op("ex.add", [offset, lit(2, ctx, block)], [MLIR.Type.i64()], ctx, block)
+
+    {cond, pat_binds, next}
   end
 
   defp build_rest_bind(nil, _value, _offset, _ctx, _block, _pattern_env, _defer_rest?),
@@ -8560,6 +8593,7 @@ defmodule Batata.Lift do
   defp binary_rest_segment?(_segment), do: false
 
   defp binary_segment!({:"::", _, [pat, 8]}), do: {:byte, pat}
+  defp binary_segment!({:"::", _, [pat, 16]}), do: {:uint16, pat}
   defp binary_segment!({:"::", _, [pat, {:utf8, _, nil}]}), do: {:utf8, pat}
   defp binary_segment!(pat) when is_integer(pat), do: {:byte, pat}
   defp binary_segment!({name, _, nil} = pat) when is_atom(name), do: {:byte, pat}

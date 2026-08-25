@@ -128,9 +128,13 @@ environments are not merged. This crosses `_in_bs = false` in
 bounds and a unit step now reuse the executable integer-membership lowering;
 descending unit ranges retain the same closed-interval semantics, while
 stepped and malformed ranges remain rejected. This crosses the generated
-byte-dispatch guard `byte in 0..31`. The whole-corpus frontier is now the
-16-bit binary segment `int1::16` in `Jason.Encode`. String-key and other
-unsupported map keys remain rejected.
+byte-dispatch guard `byte in 0..31`. Bare `::16` binary patterns now compose
+two safe byte reads into the default unsigned big-endian integer and preserve
+exact-length, rest, literal, binding, guard, and fallback behavior. Signed,
+endian-qualified, and other bit widths remain unsupported. This crosses
+`int1::16` in `Jason.Encode`; the whole-corpus frontier is now an ordering
+comparison `<=` whose operands remain terms. String-key and other unsupported
+map keys remain rejected.
 This lane still makes no execution claim for module-level generation; the
 reducer, protocol-callback, literal-dispatch, bounded string-fold, positive
 list-duplication, and no-return case evidence comes from compiler-owned
