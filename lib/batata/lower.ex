@@ -27,12 +27,21 @@ defmodule Batata.Lower do
   The module is converted in place and returned.
   """
   @runtime_quota_symbol "ex.term.runtime_set_arena_limit"
+  @result_memory_accessors [
+    {"__batata_result_arena_capacity_bytes", "ex.term.result_arena_capacity_bytes"},
+    {"__batata_result_arena_chunks", "ex.term.result_arena_chunks"},
+    {"__batata_result_arena_high_water", "ex.term.result_arena_high_water"},
+    {"__batata_result_arena_limit", "ex.term.result_arena_limit"},
+    {"__batata_result_oom", "ex.term.result_oom"}
+  ]
 
   @spec to_func(MLIR.Module.t(), keyword()) :: MLIR.Module.t()
   def to_func(module, opts \\ []) do
     quota_bytes = opts |> Keyword.get(:memory_quota_bytes) |> RuntimeQuota.validate!()
     if is_integer(quota_bytes), do: inject_runtime_quota!(module, quota_bytes)
-    Plan.run!(ExConversion.plan(), module)
+    module = Plan.run!(ExConversion.plan(), module)
+    if Keyword.get(opts, :memory_telemetry, false), do: inject_result_memory_accessors!(module)
+    module
   end
 
   @doc """
@@ -64,6 +73,11 @@ defmodule Batata.Lower do
         "__batata_result_term_kind",
         "__batata_result_term_length",
         "__batata_result_term_get",
+        "__batata_result_arena_capacity_bytes",
+        "__batata_result_arena_chunks",
+        "__batata_result_arena_high_water",
+        "__batata_result_arena_limit",
+        "__batata_result_oom",
         "__batata_term_export",
         "__batata_term_import",
         "__batata_exported_clone",
@@ -98,6 +112,89 @@ defmodule Batata.Lower do
       RewriterBase.set_insertion_point_after(rewriter, quota)
       RewriterBase.insert(rewriter, quota_call(runtime_create, quota))
     end)
+  end
+
+  defp inject_result_memory_accessors!(module) do
+    owner = MLIR.Operation.from_module(module)
+    body = MLIR.Module.body(module)
+
+    IRRewriter.with_rewriter(owner, fn rewriter ->
+      Enum.each(
+        @result_memory_accessors,
+        &inject_result_memory_accessor(rewriter, body, owner, &1)
+      )
+    end)
+  end
+
+  defp inject_result_memory_accessor(rewriter, body, owner, {wrapper, native}) do
+    ensure_i64_declaration(rewriter, body, owner, native)
+
+    unless Enum.any?(operations_named(body, "func.func"), &symbol?(&1, wrapper)) do
+      insert_at_end(rewriter, body, i64_wrapper(owner, wrapper, native))
+    end
+  end
+
+  defp ensure_i64_declaration(rewriter, body, owner, symbol) do
+    unless Enum.any?(operations_named(body, "func.func"), &symbol?(&1, symbol)) do
+      i64 = MLIR.Type.i64(ctx: MLIR.context(owner))
+      declaration = func_operation(owner, symbol, [i64], [i64])
+
+      insert_at_end(rewriter, body, declaration)
+    end
+  end
+
+  defp insert_at_end(rewriter, body, operation) do
+    RewriterBase.with_insertion_point(rewriter, {:end, body}, fn ->
+      RewriterBase.insert(rewriter, operation)
+    end)
+  end
+
+  defp i64_wrapper(owner, wrapper, native) do
+    ctx = MLIR.context(owner)
+    location = MLIR.Location.unknown(ctx: ctx)
+    i64 = MLIR.Type.i64(ctx: ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+    block = MLIR.Block.create([i64], [location])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
+    [argument] = block |> Walker.arguments() |> Enum.to_list()
+
+    call =
+      %Changeset{name: "func.call", context: ctx, location: location}
+      |> Changeset.add_argument([argument])
+      |> Changeset.add_argument(callee: MLIR.Attribute.flat_symbol_ref(native, ctx: ctx))
+      |> Changeset.add_result(i64)
+      |> MLIR.Operation.create()
+
+    return =
+      %Changeset{name: "func.return", context: ctx, location: location}
+      |> Changeset.add_argument([MLIR.Operation.result(call, 0)])
+      |> MLIR.Operation.create()
+
+    MLIR.Block.append(block, call)
+    MLIR.Block.append(block, return)
+    func_operation(owner, wrapper, [i64], [i64], region)
+  end
+
+  defp func_operation(owner, symbol, arguments, results, region \\ nil) do
+    changeset =
+      %Changeset{
+        name: "func.func",
+        context: MLIR.context(owner),
+        location: MLIR.Location.unknown(ctx: MLIR.context(owner))
+      }
+      |> Changeset.add_argument(sym_name: MLIR.Attribute.string(symbol))
+      |> Changeset.add_argument(function_type: MLIR.Type.function(arguments, results))
+
+    changeset =
+      if region do
+        Changeset.add_argument(changeset, region)
+      else
+        changeset
+        |> Changeset.add_argument(sym_visibility: MLIR.Attribute.string("private"))
+        |> Changeset.add_argument(MLIR.CAPI.mlirRegionCreate())
+      end
+
+    MLIR.Operation.create(changeset)
   end
 
   defp ensure_runtime_quota_declaration(rewriter, body, module) do
