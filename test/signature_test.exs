@@ -41,6 +41,37 @@ defmodule Batata.SignatureTest do
            }
   end
 
+  test "infers direct, case, and transitive scalar results to a fixed point" do
+    value = {:value, [], nil}
+
+    literal = definition(:literal, [], 65)
+
+    branching =
+      definition(
+        :branching,
+        value,
+        {:case, [],
+         [
+           value,
+           [
+             do: [
+               {:->, [], [[0], 65]},
+               {:->, [], [[{:_, [], nil}], {:fail, [], [value]}]}
+             ]
+           ]
+         ]}
+      )
+
+    transitive = definition(:transitive, [], {:literal, [], []})
+    mixed = definition(:mixed, [], {:if, [], [true, [do: 1, else: :term]]})
+    recursive = definition(:recursive, [], {:recursive, [], []})
+
+    assert Batata.Signature.infer_results(
+             [transitive, recursive, mixed, branching, literal],
+             MapSet.new([{:fail, 1}])
+           ) == MapSet.new([{:branching, 1}, {:literal, 0}, {:transitive, 0}])
+  end
+
   defp definition(name, patterns, body) when is_list(patterns) do
     %Definition{
       kind: :defp,

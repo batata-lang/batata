@@ -298,7 +298,7 @@ defmodule Batata.Probe.Jason.ReportTest do
     assert jason_link["unit_attempt"] == %{
              "status" => "frontend_normalization_failure",
              "reason_class" => "lift_error",
-             "fingerprint" => "69e95b7610c61d0d706954c5d7b7cd2125918e3a803ef224ce928070d16893a4"
+             "fingerprint" => "226ae4c916b3aeb6db5a1867ed1ff27e149a0e48756c957c8bd06ff91cc6fcd7"
            }
 
     assert decimal_link["runtime_slice"] == %{"removed_definition_count" => 0}

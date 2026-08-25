@@ -64,6 +64,13 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["control.if_unused_alias"]["gate"] == "unused_branch_alias_test"
     assert capabilities["control.if_unused_alias"]["scope"] =~ "proven unread"
 
+    assert capabilities["call.scalar_result_inference"]["status"] == "executable"
+
+    assert capabilities["call.scalar_result_inference"]["gate"] ==
+             "scalar_result_inference_test"
+
+    assert capabilities["call.scalar_result_inference"]["scope"] =~ "recursive-uncertain"
+
     assert capabilities["struct.constructor"]["status"] == "executable"
     assert capabilities["struct.constructor"]["gate"] == "execute_test"
     assert capabilities["struct.constructor"]["scope"] =~ "current-module schemas"
