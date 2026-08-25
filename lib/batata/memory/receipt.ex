@@ -100,7 +100,8 @@ defmodule Batata.Memory.Receipt do
   @doc "Verifies a receipt against a canonical plan without compiler process state."
   @spec verify(t(), Plan.t(), map()) :: :ok | {:error, atom()}
   def verify(%__MODULE__{} = receipt, %Plan{} = plan, contracts \\ %{}) do
-    with true <- receipt.source_hash == plan.source_hash,
+    with %Bound{} <- plan.maximum_memory,
+         true <- receipt.source_hash == plan.source_hash,
          true <- receipt.compiler_version == plan.compiler_version,
          true <- receipt.dependency_lock == plan.dependency_lock,
          true <- receipt.memory_plan_hash == "sha256:" <> Plan.digest(plan),
@@ -113,7 +114,58 @@ defmodule Batata.Memory.Receipt do
       false -> {:error, :receipt_mismatch}
       [_ | _] -> {:error, :unproven_obligations}
       {:error, _missing} -> {:error, :unresolved_contracts}
+      nil -> {:error, :missing_maximum}
     end
+  end
+
+  @doc "Verifies canonical receipt and plan JSON bytes without compiler process state."
+  @spec verify_json(String.t(), String.t()) :: :ok | {:error, atom()}
+  def verify_json(receipt_json, plan_json)
+      when is_binary(receipt_json) and is_binary(plan_json) do
+    with {:ok, receipt} <- decode_canonical(receipt_json),
+         {:ok, plan} <- decode_canonical(plan_json),
+         true <- receipt["schema"] == "batata-memory-receipt/1",
+         true <- receipt["assurance"] == "bounded",
+         true <- plan["schema"] == "batata-memory-plan/3",
+         [] <- receipt["unproven_obligations"],
+         [] <- plan["obligations"],
+         true <- receipt["source_hash"] == plan["source_hash"],
+         true <- receipt["compiler_version"] == plan["compiler_version"],
+         true <- receipt["dependency_lock"] == plan["dependency_lock"],
+         true <- receipt["memory_plan_hash"] == "sha256:" <> Memory.digest(plan),
+         true <- receipt["runtime_guards"] == plan["runtime_guards"],
+         {:ok, maximum} <- Bound.evaluate_map(plan["maximum_memory"], contracts_from(plan)),
+         true <- receipt["maximum_memory"] == Integer.to_string(maximum) do
+      :ok
+    else
+      {:error, reason} when is_atom(reason) -> {:error, reason}
+      {:error, _missing} -> {:error, :unresolved_contracts}
+      [_ | _] -> {:error, :unproven_obligations}
+      false -> {:error, :receipt_mismatch}
+      _other -> {:error, :invalid_receipt}
+    end
+  rescue
+    _error -> {:error, :invalid_receipt}
+  end
+
+  defp decode_canonical(json) do
+    canonical = String.trim_trailing(json, "\n")
+
+    try do
+      decoded = JSON.decode!(canonical)
+
+      if Memory.canonical_json(decoded) == canonical,
+        do: {:ok, decoded},
+        else: {:error, :noncanonical_json}
+    rescue
+      _error -> {:error, :invalid_json}
+    end
+  end
+
+  defp contracts_from(plan) do
+    Map.new(plan["preconditions"], fn precondition ->
+      {precondition["variable"], String.to_integer(precondition["maximum_bytes"])}
+    end)
   end
 
   defp valid_non_negative_integer_string?(value) when is_binary(value) do

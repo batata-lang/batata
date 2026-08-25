@@ -2,7 +2,19 @@ defmodule Batata.Memory.SchemaTest do
   use ExUnit.Case, async: true
 
   alias Batata.Memory
-  alias Batata.Memory.{Bound, DiagnosticError, Effect, Obligation, Plan, Receipt, Region, Site}
+
+  alias Batata.Memory.{
+    Bound,
+    DiagnosticError,
+    Effect,
+    Obligation,
+    Plan,
+    Receipt,
+    Region,
+    Repair,
+    Site,
+    Strategy
+  }
 
   test "symbolic bounds normalize and evaluate deterministically" do
     bound =
@@ -163,6 +175,35 @@ defmodule Batata.Memory.SchemaTest do
              ])
   end
 
+  test "repair requests expose catalog strategies but require a full recomputation" do
+    site = site(:dynamic)
+
+    obligation =
+      Obligation.new!(
+        kind: :allocation_precondition_missing,
+        site: site,
+        missing_fact: "dynamic allocation bound",
+        strategies: [
+          %{"action" => "set-memory-contract", "variable" => "allocation-bytes:test"}
+        ]
+      )
+
+    open_plan = plan(obligations: [obligation])
+    request = Repair.canonical_map(open_plan)
+
+    assert request["full_recompute_required"]
+
+    assert get_in(request, ["obstructions", Access.at(0), "candidates", Access.at(0), "id"]) ==
+             "set-memory-contract"
+
+    assert Enum.any?(Strategy.catalog(), fn strategy ->
+             strategy["id"] == "use-refcounted-large-binary" and not strategy["available"]
+           end)
+
+    assert Repair.verify_recomputed(open_plan, open_plan, receipt_for(open_plan)) ==
+             {:error, :residual_obligations}
+  end
+
   defp site(name) do
     Site.structural!(
       module: Sample,
@@ -189,6 +230,16 @@ defmodule Batata.Memory.SchemaTest do
         compiler_version: "0.1.0",
         dependency_lock: hash("lock")
       ] ++ opts
+    )
+  end
+
+  defp receipt_for(plan) do
+    Receipt.new!(
+      source_hash: plan.source_hash,
+      compiler_version: plan.compiler_version,
+      dependency_lock: plan.dependency_lock,
+      memory_plan_hash: "sha256:" <> Plan.digest(plan),
+      maximum_memory: "0"
     )
   end
 

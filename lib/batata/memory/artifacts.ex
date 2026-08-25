@@ -2,11 +2,12 @@ defmodule Batata.Memory.Artifacts do
   @moduledoc "Deterministic memory-plan, diagnostic, and closed-proof artifacts."
 
   alias Batata.Memory
-  alias Batata.Memory.{DiagnosticError, Plan, Receipt, Verifier}
+  alias Batata.Memory.{DiagnosticError, Plan, Receipt, Repair, Verifier}
 
   @plan_filename "memory-plan.json"
   @diagnostics_filename "memory-diagnostics.json"
   @receipt_filename "memory-receipt.json"
+  @repair_filename "memory-repair.json"
 
   @doc "Path of the canonical memory plan inside an output directory."
   @spec plan_path(Path.t()) :: Path.t()
@@ -19,6 +20,10 @@ defmodule Batata.Memory.Artifacts do
   @doc "Path of a bounded receipt inside an output directory."
   @spec receipt_path(Path.t()) :: Path.t()
   def receipt_path(output_dir), do: Path.join(output_dir, @receipt_filename)
+
+  @doc "Path of a machine-readable repair request inside an output directory."
+  @spec repair_path(Path.t()) :: Path.t()
+  def repair_path(output_dir), do: Path.join(output_dir, @repair_filename)
 
   @doc "Writes M0 artifacts atomically and returns their paths."
   @spec write!(Path.t(), Plan.t()) :: map()
@@ -48,14 +53,14 @@ defmodule Batata.Memory.Artifacts do
       }) <> "\n"
     )
 
-    maybe_write_receipt(
+    maybe_write_proof_or_repair(
       %{memory_plan: plan_path, memory_diagnostics: diagnostics_path},
       output_dir,
       plan
     )
   end
 
-  defp maybe_write_receipt(paths, output_dir, %Plan{obligations: []} = plan) do
+  defp maybe_write_proof_or_repair(paths, output_dir, %Plan{obligations: []} = plan) do
     contracts =
       Map.new(plan.preconditions, fn precondition ->
         {precondition["variable"], String.to_integer(precondition["maximum_bytes"])}
@@ -67,7 +72,11 @@ defmodule Batata.Memory.Artifacts do
     Map.put(paths, :memory_receipt, path)
   end
 
-  defp maybe_write_receipt(paths, _output_dir, %Plan{}), do: paths
+  defp maybe_write_proof_or_repair(paths, output_dir, %Plan{} = plan) do
+    path = repair_path(output_dir)
+    write_atomic!(path, Repair.canonical_json(plan) <> "\n")
+    Map.put(paths, :memory_repair, path)
+  end
 
   defp write_atomic!(path, contents) do
     temporary = path <> ".tmp-" <> Integer.to_string(System.unique_integer([:positive]))

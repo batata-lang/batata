@@ -37,6 +37,13 @@ defmodule Batata.Memory.ArtifactsTest do
     indexed = Enum.map(index["files"], & &1["path"])
     assert "memory-plan.json" in indexed
     assert "memory-diagnostics.json" in indexed
+    assert "memory-repair.json" in indexed
+
+    repair = output.memory_repair |> File.read!() |> JSON.decode!()
+    assert repair["protocol"] == "batata-memory-repair/1"
+    assert repair["full_recompute_required"]
+    assert repair["obstructions"] != []
+    assert repair["submit"]["action"] == "recompile-full-plan"
 
     refute File.exists?(Path.join(tmp_dir, "memory-receipt.json"))
     refute Enum.any?(File.ls!(tmp_dir), &String.contains?(&1, "receipt"))
@@ -81,7 +88,19 @@ defmodule Batata.Memory.ArtifactsTest do
     assert receipt["maximum_memory"] == "67108864"
     assert receipt["memory_plan_hash"] == "sha256:" <> Memory.digest(plan)
 
+    assert Memory.verify_receipt(
+             File.read!(output.memory_receipt),
+             File.read!(output.memory_plan)
+           ) ==
+             :ok
+
+    tampered_plan = Map.put(plan, "source_hash", "tampered") |> Memory.canonical_json()
+
+    assert Memory.verify_receipt(File.read!(output.memory_receipt), tampered_plan) ==
+             {:error, :receipt_mismatch}
+
     index = output.artifact_index |> File.read!() |> JSON.decode!()
     assert Enum.any?(index["files"], &(&1["path"] == "memory-receipt.json"))
+    refute Map.has_key?(output, :memory_repair)
   end
 end

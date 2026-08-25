@@ -35,6 +35,14 @@ defmodule Batata.Memory do
   @spec write_artifacts!(Path.t(), Batata.Memory.Plan.t()) :: map()
   defdelegate write_artifacts!(output_dir, plan), to: Batata.Memory.Artifacts, as: :write!
 
+  @doc "Builds a canonical repair request from residual proof obligations."
+  @spec repair(Batata.Memory.Plan.t()) :: map()
+  defdelegate repair(plan), to: Batata.Memory.Repair, as: :canonical_map
+
+  @doc "Verifies canonical plan and receipt JSON outside the original compiler process."
+  @spec verify_receipt(String.t(), String.t()) :: :ok | {:error, atom()}
+  defdelegate verify_receipt(receipt_json, plan_json), to: Batata.Memory.Receipt, as: :verify_json
+
   @doc false
   @spec validate_policy!(term()) :: :disabled | :report | :strict
   def validate_policy!(policy) when policy in @policies, do: policy
