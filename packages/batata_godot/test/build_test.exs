@@ -5,6 +5,7 @@ defmodule Batata.Godot.BuildTest.Extension do
     initialization_level: :scene
 
   godot_class("BatataLoadSmoke", base: "RefCounted")
+  godot_outbound(:array_mesh_surface)
   godot_method(:add, args: [:int, :int], returns: :int)
   godot_method(:bool_identity, args: [:bool], returns: :bool)
   godot_method(:float_identity, args: [:float], returns: :float)
@@ -13,6 +14,19 @@ defmodule Batata.Godot.BuildTest.Extension do
   godot_method(:string_name_identity, args: [:string_name], returns: :string_name)
   godot_method(:vector2_identity, args: [:vector2], returns: :vector2)
   godot_method(:vector3_identity, args: [:vector3], returns: :vector3)
+
+  godot_method(:packed_vertices_identity,
+    args: [:packed_vector3_array],
+    returns: :packed_vector3_array
+  )
+
+  godot_method(:packed_indices_identity,
+    args: [:packed_int32_array],
+    returns: :packed_int32_array
+  )
+
+  godot_method(:surface_arrays, args: [], returns: :array_mesh_surface)
+  godot_method(:mesh, args: [], returns: {:object, "ArrayMesh"}, outbound: :array_mesh_surface)
 
   godot_method(:object_identity,
     args: [{:object, "RefCounted"}],
@@ -32,6 +46,10 @@ defmodule Batata.Godot.BuildTest.Extension do
   def string_name_identity(value), do: value
   def vector2_identity(value), do: value
   def vector3_identity(value), do: value
+  def packed_vertices_identity(value), do: value
+  def packed_indices_identity(value), do: value
+  def surface_arrays, do: nil
+  def mesh, do: nil
   def object_identity(value), do: value
   def get_answer, do: 42
   def set_answer(_value), do: nil
@@ -90,6 +108,10 @@ defmodule Batata.Godot.BuildTest do
             def string_name_identity(value), do: value
             def vector2_identity(value), do: value
             def vector3_identity(value), do: value
+            def packed_vertices_identity(value), do: value
+            def packed_indices_identity(value), do: value
+            def surface_arrays(), do: {[{0, 0, 0}, {1, 0, 0}, {0, 1, 0}], [0, 1, 2]}
+            def mesh(), do: {[{0, 0, 0}, {1, 0, 0}, {0, 1, 0}], [0, 1, 2]}
             def object_identity(value), do: value
             def get_answer(), do: 42
             def set_answer(_value), do: nil
@@ -99,7 +121,13 @@ defmodule Batata.Godot.BuildTest do
           tmp_dir,
           ctx,
           smoke: [
-            %{method: "add", arguments: [20, 22], expected: 42, repeat: 32},
+            %{
+              method: "add",
+              arguments: [20, 22],
+              expected: 42,
+              repeat: 32,
+              repeat_same: 32
+            },
             %{method: "bool_identity", arguments: [true], expected: true},
             %{method: "float_identity", arguments: [2.25], expected: 2.25},
             %{method: "nil_identity", arguments: [nil], expected: nil},
@@ -122,6 +150,26 @@ defmodule Batata.Godot.BuildTest do
               method: "vector3_identity",
               arguments: [[1.25, -2.5, 3.75]],
               expected: [1.25, -2.5, 3.75]
+            },
+            %{
+              method: "packed_vertices_identity",
+              arguments: [[[0.0, 0.5, 1.0], [2.0, 3.0, 4.0]]],
+              expected: [[0.0, 0.5, 1.0], [2.0, 3.0, 4.0]]
+            },
+            %{
+              method: "packed_indices_identity",
+              arguments: [[0, 1, 2, 2, 3, 0]],
+              expected: [0, 1, 2, 2, 3, 0]
+            },
+            %{
+              method: "mesh",
+              arguments: [],
+              expected: %{
+                array_mesh: %{
+                  vertices: [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                  indices: [0, 1, 2]
+                }
+              }
             },
             %{
               method: "object_identity",

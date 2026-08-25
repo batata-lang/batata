@@ -3,7 +3,8 @@ defmodule Batata.Godot.BindingPlan do
   Validated, canonical description of one generated GDExtension surface.
 
   The plan is intentionally closed: only types with an implemented ownership
-  policy may cross the boundary. The first slice accepts scalar values only.
+  policy may cross the boundary. Container support is limited to packed mesh
+  values and one fixed ArrayMesh surface descriptor.
   """
 
   alias Batata.Godot.Diagnostic
@@ -19,7 +20,7 @@ defmodule Batata.Godot.BindingPlan do
   defmodule Method do
     @moduledoc "A Batata function exposed as a typed Godot method."
     @enforce_keys [:name, :arguments, :returns, :symbol]
-    defstruct [:name, :arguments, :returns, :symbol]
+    defstruct [:name, :arguments, :returns, :symbol, :outbound]
 
     @type value_type ::
             nil
@@ -30,12 +31,29 @@ defmodule Batata.Godot.BindingPlan do
             | :string_name
             | :vector2
             | :vector3
+            | :packed_vector3_array
+            | :packed_int32_array
+            | :array_mesh_surface
             | {:object, String.t()}
     @type t :: %__MODULE__{
             name: String.t(),
             arguments: [value_type()],
             returns: value_type(),
-            symbol: String.t()
+            symbol: String.t(),
+            outbound: atom() | nil
+          }
+  end
+
+  defmodule Outbound do
+    @moduledoc "A compile-time-resolved, fixed Godot method-bind capability."
+    @enforce_keys [:operation, :class, :method, :hash]
+    defstruct @enforce_keys
+
+    @type t :: %__MODULE__{
+            operation: atom(),
+            class: String.t(),
+            method: String.t(),
+            hash: non_neg_integer()
           }
   end
 
@@ -57,8 +75,27 @@ defmodule Batata.Godot.BindingPlan do
     defstruct @enforce_keys
   end
 
-  @schema 2
-  @supported_types [nil, :bool, :int, :float, :string, :string_name, :vector2, :vector3]
+  @schema 3
+  @supported_types [
+    nil,
+    :bool,
+    :int,
+    :float,
+    :string,
+    :string_name,
+    :vector2,
+    :vector3,
+    :packed_vector3_array,
+    :packed_int32_array,
+    :array_mesh_surface
+  ]
+  @outbound_calls %{
+    array_mesh_surface: %{
+      class: "ArrayMesh",
+      method: "add_surface_from_arrays",
+      hash: 1_796_411_378
+    }
+  }
   @max_method_arity 8
   @initialization_levels [:core, :servers, :scene, :editor]
   @extension_keys [
@@ -69,7 +106,7 @@ defmodule Batata.Godot.BindingPlan do
     :reloadable
   ]
   @class_keys [:base]
-  @method_keys [:args, :returns]
+  @method_keys [:args, :returns, :outbound]
   @property_keys [:type, :getter, :setter]
   @signal_keys [:args]
   @virtuals %{_ready: {[], nil}, _process: {[:float], nil}}
@@ -86,6 +123,7 @@ defmodule Batata.Godot.BindingPlan do
     :initialization_level,
     :class,
     :methods,
+    :outbounds,
     :properties,
     :signals,
     :virtuals
@@ -102,21 +140,21 @@ defmodule Batata.Godot.BindingPlan do
           initialization_level: atom(),
           class: Class.t(),
           methods: [Method.t()],
+          outbounds: [Outbound.t()],
           properties: [Property.t()],
           signals: [Signal.t()],
           virtuals: [Virtual.t()]
         }
 
   @doc false
-  @spec new!(module(), keyword(), list(), list(), list(), list(), list(), list()) :: t()
+  @spec new!(module(), keyword(), list(), list(), {list(), list(), list(), list()}, list()) ::
+          t()
   def new!(
         module,
         extension_options,
         class_declarations,
         method_declarations,
-        property_declarations,
-        signal_declarations,
-        virtual_declarations,
+        {outbound_declarations, property_declarations, signal_declarations, virtual_declarations},
         definitions
       ) do
     extension_options = validate_options!(extension_options, @extension_keys, :extension)
@@ -145,7 +183,8 @@ defmodule Batata.Godot.BindingPlan do
       |> Keyword.get(:initialization_level, :scene)
       |> validate_initialization_level!()
 
-    methods = normalize_methods!(method_declarations, definitions)
+    outbounds = normalize_outbounds!(outbound_declarations)
+    methods = normalize_methods!(method_declarations, definitions, outbounds)
     properties = normalize_properties!(property_declarations, methods)
     signals = normalize_signals!(signal_declarations)
     virtuals = normalize_virtuals!(virtual_declarations, definitions)
@@ -160,6 +199,7 @@ defmodule Batata.Godot.BindingPlan do
       initialization_level: initialization_level,
       class: class,
       methods: methods,
+      outbounds: outbounds,
       properties: properties,
       signals: signals,
       virtuals: virtuals
@@ -176,6 +216,7 @@ defmodule Batata.Godot.BindingPlan do
       "extension" => plan.extension,
       "initialization_level" => Atom.to_string(plan.initialization_level),
       "methods" => Enum.map(plan.methods, &method_map/1),
+      "outbounds" => Enum.map(plan.outbounds, &outbound_map/1),
       "properties" => Enum.map(plan.properties, &property_map/1),
       "signals" => Enum.map(plan.signals, &signal_map/1),
       "virtuals" => Enum.map(plan.virtuals, &virtual_map/1),
@@ -189,6 +230,7 @@ defmodule Batata.Godot.BindingPlan do
   @spec canonical_json(t()) :: String.t()
   def canonical_json(%__MODULE__{} = plan) do
     methods = plan.methods |> Enum.map(&method_json/1) |> Enum.intersperse(",")
+    outbounds = plan.outbounds |> Enum.map(&outbound_json/1) |> Enum.intersperse(",")
     properties = plan.properties |> Enum.map(&property_json/1) |> Enum.intersperse(",")
     signals = plan.signals |> Enum.map(&signal_json/1) |> Enum.intersperse(",")
     virtuals = plan.virtuals |> Enum.map(&virtual_json/1) |> Enum.intersperse(",")
@@ -214,6 +256,8 @@ defmodule Batata.Godot.BindingPlan do
       json_string(plan.class.base),
       "},\"methods\":[",
       methods,
+      "],\"outbounds\":[",
+      outbounds,
       "],\"properties\":[",
       properties,
       "],\"signals\":[",
@@ -258,10 +302,10 @@ defmodule Batata.Godot.BindingPlan do
     )
   end
 
-  defp normalize_methods!(declarations, definitions) do
+  defp normalize_methods!(declarations, definitions, outbounds) do
     methods =
       declarations
-      |> Enum.map(&normalize_method!(&1, definitions))
+      |> Enum.map(&normalize_method!(&1, definitions, outbounds))
       |> Enum.sort_by(&{&1.name, length(&1.arguments)})
 
     duplicates =
@@ -281,11 +325,12 @@ defmodule Batata.Godot.BindingPlan do
     methods
   end
 
-  defp normalize_method!({name, options}, definitions) do
+  defp normalize_method!({name, options}, definitions, outbounds) do
     options = validate_options!(options, @method_keys, :method)
     name = validate_function_name!(name)
     arguments = options |> Keyword.fetch!(:args) |> validate_types!(:arguments)
     returns = options |> Keyword.fetch!(:returns) |> validate_type!(:return)
+    outbound = Keyword.get(options, :outbound)
     signature = {name, length(arguments)}
 
     if length(arguments) > @max_method_arity do
@@ -305,11 +350,29 @@ defmodule Batata.Godot.BindingPlan do
       )
     end
 
+    if outbound && not Enum.any?(outbounds, &(&1.operation == outbound)) do
+      diagnostic!(
+        "E_GODOT_OUTBOUND_CALL_UNDECLARED",
+        "method requests an outbound Godot call that was not declared",
+        %{method: name, operation: outbound},
+        [%{command: "add godot_outbound #{inspect(outbound)}"}]
+      )
+    end
+
+    if outbound == :array_mesh_surface and returns != {:object, "ArrayMesh"} do
+      diagnostic!(
+        "E_GODOT_METHOD_SIGNATURE_UNSUPPORTED",
+        "array_mesh_surface outbound methods must return an ArrayMesh object",
+        %{method: name, returns: inspect(returns)}
+      )
+    end
+
     %Method{
       name: Atom.to_string(name),
       arguments: arguments,
       returns: returns,
-      symbol: Batata.Symbol.function(name, length(arguments))
+      symbol: Batata.Symbol.function(name, length(arguments)),
+      outbound: outbound
     }
   rescue
     error in KeyError ->
@@ -318,6 +381,30 @@ defmodule Batata.Godot.BindingPlan do
         "Godot method declarations require args: and returns:",
         %{method: inspect(name), missing: error.key}
       )
+  end
+
+  defp normalize_outbounds!(declarations) do
+    declarations
+    |> Enum.uniq()
+    |> Enum.sort()
+    |> Enum.map(fn operation ->
+      case Map.fetch(@outbound_calls, operation) do
+        {:ok, call} ->
+          %Outbound{
+            operation: operation,
+            class: call.class,
+            method: call.method,
+            hash: call.hash
+          }
+
+        :error ->
+          diagnostic!(
+            "E_GODOT_OUTBOUND_CALL_UNDECLARED",
+            "outbound Godot operation is not part of the closed ABI",
+            %{operation: operation, supported: Map.keys(@outbound_calls)}
+          )
+      end
+    end)
   end
 
   defp normalize_properties!(declarations, methods) do
@@ -508,6 +595,14 @@ defmodule Batata.Godot.BindingPlan do
     )
   end
 
+  defp validate_type!(:array_mesh_surface, position) when position != :return do
+    diagnostic!(
+      "E_GODOT_PACKED_ARRAY_CODEC_MISSING",
+      "ArrayMesh surface descriptors are return-only closed values",
+      %{position: position, type: :array_mesh_surface}
+    )
+  end
+
   defp validate_type!(type, _position) when type in @supported_types, do: type
 
   defp validate_type!({:object, class_name}, _position) do
@@ -568,6 +663,7 @@ defmodule Batata.Godot.BindingPlan do
       "arguments" => Enum.map(method.arguments, &value_type_name/1),
       "name" => method.name,
       "returns" => value_type_name(method.returns),
+      "outbound" => method.outbound && Atom.to_string(method.outbound),
       "symbol" => method.symbol
     }
   end
@@ -587,6 +683,31 @@ defmodule Batata.Godot.BindingPlan do
       json_string(value_type_name(method.returns)),
       ",\"symbol\":",
       json_string(method.symbol),
+      ",\"outbound\":",
+      if(method.outbound, do: json_string(Atom.to_string(method.outbound)), else: "null"),
+      "}"
+    ]
+  end
+
+  defp outbound_map(%Outbound{} = outbound) do
+    %{
+      "class" => outbound.class,
+      "hash" => outbound.hash,
+      "method" => outbound.method,
+      "operation" => Atom.to_string(outbound.operation)
+    }
+  end
+
+  defp outbound_json(%Outbound{} = outbound) do
+    [
+      "{\"operation\":",
+      json_string(Atom.to_string(outbound.operation)),
+      ",\"class\":",
+      json_string(outbound.class),
+      ",\"method\":",
+      json_string(outbound.method),
+      ",\"hash\":",
+      Integer.to_string(outbound.hash),
       "}"
     ]
   end

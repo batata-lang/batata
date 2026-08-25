@@ -16,7 +16,10 @@ defmodule Example do
     compatibility_minimum: "4.6"
 
   godot_class "BatataExample", base: "RefCounted"
+  godot_outbound :array_mesh_surface
   godot_method :add, args: [:int, :int], returns: :int
+  godot_method :mesh, args: [], returns: {:object, "ArrayMesh"},
+    outbound: :array_mesh_surface
   godot_method :get_answer, returns: :int
   godot_method :set_answer, args: [:int]
   godot_property :answer, type: :int, getter: :get_answer, setter: :set_answer
@@ -52,10 +55,25 @@ closed `_ready`/`_process` virtual set, and Batata native symbols. Descriptor
 ordering and JSON field ordering are deterministic.
 
 The closed value surface is `nil`, `:bool`, `:int`, `:float`, `:string`,
-`:string_name`, `:vector2`, `:vector3`, and `{:object, "ClassName"}`. Strings
-are copied, while objects cross the boundary only through invocation-scoped,
-generation-checked capabilities. Containers, closures, PIDs, and references
-remain rejected. Failures use
+`:string_name`, `:vector2`, `:vector3`, `:packed_vector3_array`,
+`:packed_int32_array`, `:array_mesh_surface`, and `{:object, "ClassName"}`.
+Packed arrays own native copies on both sides of the call. An
+`:array_mesh_surface` is exactly `{vertices, triangle_indices}` and is encoded
+as a 13-slot Godot mesh array with only `ARRAY_VERTEX` and `ARRAY_INDEX` set;
+it is return-only and is not an arbitrary `Array` escape hatch.
+
+`godot_outbound :array_mesh_surface` admits one pinned method bind:
+`ArrayMesh.add_surface_from_arrays`, hash `1796411378` in Godot 4.6.2. A method
+using `outbound: :array_mesh_surface` returns the closed descriptor from Batata
+and the adapter constructs the `ArrayMesh`. Undeclared or unknown outbound
+calls fail during plan construction. Each GDExtension object owns a persistent
+Term Runtime handle and generation until teardown; repeated calls re-enter the
+same isolated runtime, while invocation-scoped object capabilities remain
+generation checked. The instance also reserves an owned portable-state handle
+for the state contract and destroys it before quiescent runtime teardown.
+
+Other Arrays, Dictionaries, closures, PIDs, and references remain rejected.
+Failures use
 `Batata.Godot.Diagnostic` with stable `E_GODOT_*` codes and JSON-ready context
 and recovery actions.
 

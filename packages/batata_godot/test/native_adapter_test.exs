@@ -27,10 +27,16 @@ defmodule Batata.Godot.NativeAdapterTest do
     assert source =~ "api.classdb_unregister_extension_class"
     assert source =~ "build_options.class_name"
     assert source =~ "build_options.base_class_name"
+    assert source =~ "packedVector3ArrayToTerm"
+    assert source =~ "writeArrayMeshObjectResult"
+    assert source =~ "E_GODOT_INSTANCE_STATE_STALE"
+    refute source =~ "ex_term_runtime_create();\n    if (runtime_handle <= 0 or"
 
     godot_abi = File.read!(Path.join(native_build_root(), "native/zig-src/godot.zig"))
     assert godot_abi =~ "GDExtensionClassCreationInfo5"
     assert godot_abi =~ "classdb_register_extension_class5"
+    assert godot_abi =~ "packed_vector3_array_operator_index"
+    assert godot_abi =~ "object_method_bind_ptrcall"
   end
 
   test "Batata runtime extension source resolves independently of package cwd" do
