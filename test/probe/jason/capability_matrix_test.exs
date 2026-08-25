@@ -76,6 +76,8 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
 
     assert capabilities["guard.byte_size"]["status"] == "executable"
     assert capabilities["guard.byte_size"]["gate"] == "guard_byte_size_test"
+    assert capabilities["guard.expanded_unit_range"]["gate"] == "generated_range_guard_test"
+    assert capabilities["guard.expanded_unit_range"]["scope"] =~ "step 1 or -1"
     assert capabilities["guard.is_function"]["status"] == "executable"
     assert capabilities["guard.is_function"]["gate"] == "execute_test"
     assert capabilities["guard.is_function"]["scope"] =~ "module-local"

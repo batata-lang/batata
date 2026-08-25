@@ -71,6 +71,20 @@ defmodule Batata.Frontend.GuardSupport do
     end
   end
 
+  def term_members({:%{}, _, fields}) when is_list(fields) do
+    with true <- Keyword.keyword?(fields),
+         true <- length(fields) == 4,
+         true <- Enum.sort(Keyword.keys(fields)) == Enum.sort([:__struct__, :first, :last, :step]),
+         {:ok, Range} <- Keyword.fetch(fields, :__struct__),
+         {:ok, first} when is_integer(first) <- Keyword.fetch(fields, :first),
+         {:ok, last} when is_integer(last) <- Keyword.fetch(fields, :last),
+         {:ok, step} when step in [1, -1] <- Keyword.fetch(fields, :step) do
+      {:integer_range, first, last}
+    else
+      _ -> nil
+    end
+  end
+
   def term_members(values) when is_list(values) do
     values = Enum.map(values, &term_literal/1)
 
