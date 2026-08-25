@@ -10,6 +10,10 @@ const base_class_name_z = build_options.base_class_name ++ "\x00";
 const max_method_arity = 8;
 const method_name_storage_width = 128;
 const nil_word: i64 = 1;
+const max_packed_elements: i64 = 4_000_000;
+const mesh_array_slots: i64 = 13;
+const mesh_array_vertex_slot: i64 = 0;
+const mesh_array_index_slot: i64 = 12;
 
 const ValueType = enum {
     nil_value,
@@ -20,8 +24,13 @@ const ValueType = enum {
     string_name_value,
     vector2_value,
     vector3_value,
+    packed_vector3_array_value,
+    packed_int32_array_value,
+    array_mesh_surface_value,
     object_value,
 };
+
+const Outbound = enum { none, array_mesh_surface };
 
 const MethodSpec = struct {
     name: []const u8,
@@ -31,6 +40,7 @@ const MethodSpec = struct {
     arity: usize,
     returns: ValueType,
     return_object_class: []const u8,
+    outbound: Outbound,
 };
 
 const PropertySpec = struct {
@@ -50,6 +60,12 @@ const method_specs = parseMethods(build_options.method_specs);
 const property_specs = parseProperties(build_options.property_specs);
 const signal_specs = parseSignals(build_options.signal_specs);
 const virtual_specs = parseVirtuals(build_options.virtual_specs);
+const has_array_mesh_outbound = blk: {
+    for (method_specs) |spec| {
+        if (spec.outbound == .array_mesh_surface) break :blk true;
+    }
+    break :blk false;
+};
 const Invoke = *const fn (*const [max_method_arity]i64) callconv(.c) i64;
 
 const MethodRuntime = struct {
@@ -59,6 +75,9 @@ const MethodRuntime = struct {
 
 const Instance = struct {
     magic: u64,
+    runtime_handle: i64,
+    portable_state: i64,
+    generation: u64,
 };
 
 const InvocationContext = struct {
@@ -100,6 +119,7 @@ var live_instances = std.atomic.Value(usize).init(0);
 var invocation_generation = std.atomic.Value(u64).init(1);
 var initialization_thread: std.Thread.Id = undefined;
 var class_registered = false;
+var array_mesh_add_surface_method: godot.MethodBindPtr = null;
 
 const binding_callbacks = godot.InstanceBindingCallbacks{
     .create_callback = null,
@@ -120,6 +140,7 @@ fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
             const function_symbol = fields.next() orelse @compileError("Batata.Godot method spec is missing its symbol");
             const arguments = fields.next() orelse @compileError("Batata.Godot method spec is missing its arguments");
             const return_type = fields.next() orelse @compileError("Batata.Godot method spec is missing its return type");
+            const outbound = fields.next() orelse @compileError("Batata.Godot method spec is missing its outbound operation");
             if (fields.next() != null) @compileError("Batata.Godot method spec contains extra fields");
             if (name.len == 0 or function_symbol.len == 0) @compileError("Batata.Godot method names and symbols must not be empty");
             if (name.len >= method_name_storage_width) @compileError("Batata.Godot method names must contain fewer than 128 bytes");
@@ -144,6 +165,7 @@ fn parseMethods(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec {
                 .arity = arity,
                 .returns = parseValueType(return_type),
                 .return_object_class = parseObjectClass(return_type),
+                .outbound = parseOutbound(outbound),
             };
         }
         return result;
@@ -242,6 +264,7 @@ fn parseVirtuals(comptime encoded: []const u8) [methodCount(encoded)]MethodSpec 
                 .arity = arity,
                 .returns = .nil_value,
                 .return_object_class = "",
+                .outbound = .none,
             };
         }
         return result;
@@ -263,8 +286,17 @@ fn parseValueType(comptime encoded: []const u8) ValueType {
     if (std.mem.eql(u8, encoded, "string_name")) return .string_name_value;
     if (std.mem.eql(u8, encoded, "vector2")) return .vector2_value;
     if (std.mem.eql(u8, encoded, "vector3")) return .vector3_value;
+    if (std.mem.eql(u8, encoded, "packed_vector3_array")) return .packed_vector3_array_value;
+    if (std.mem.eql(u8, encoded, "packed_int32_array")) return .packed_int32_array_value;
+    if (std.mem.eql(u8, encoded, "array_mesh_surface")) return .array_mesh_surface_value;
     if (std.mem.startsWith(u8, encoded, "object:") and encoded.len > "object:".len) return .object_value;
     @compileError("Batata.Godot method spec contains an unsupported Variant type: " ++ encoded);
+}
+
+fn parseOutbound(comptime encoded: []const u8) Outbound {
+    if (encoded.len == 0) return .none;
+    if (std.mem.eql(u8, encoded, "array_mesh_surface")) return .array_mesh_surface;
+    @compileError("Batata.Godot method spec contains an undeclared outbound operation: " ++ encoded);
 }
 
 fn parseObjectClass(comptime encoded: []const u8) []const u8 {
@@ -325,6 +357,9 @@ fn variantType(value_type: ValueType) godot.VariantType {
         .string_name_value => .string_name,
         .vector2_value => .vector2,
         .vector3_value => .vector3,
+        .packed_vector3_array_value => .packed_vector3_array,
+        .packed_int32_array_value => .packed_int32_array,
+        .array_mesh_surface_value => .array,
         .object_value => .object,
     };
 }
@@ -354,10 +389,22 @@ fn createInstance(class_userdata: ?*anyopaque, notify_postinitialize: godot.Bool
 
     const memory = api.mem_alloc2(@sizeOf(Instance), 0) orelse return null;
     const instance: *Instance = @ptrCast(@alignCast(memory));
-    instance.* = .{ .magic = instance_magic };
+    const runtime_handle = term_runtime.ex_term_runtime_create();
+    if (runtime_handle <= 0) {
+        api.mem_free2(memory, 0);
+        api.print_error("E_GODOT_INSTANCE_STATE_UNAVAILABLE", "Batata.Godot.createInstance", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+        return null;
+    }
+    instance.* = .{
+        .magic = instance_magic,
+        .runtime_handle = runtime_handle,
+        .portable_state = 0,
+        .generation = invocation_generation.fetchAdd(1, .acq_rel),
+    };
 
     const object = api.classdb_construct_object2(&base_class_name_storage) orelse {
         instance.magic = 0;
+        _ = term_runtime.ex_term_runtime_destroy(runtime_handle);
         api.mem_free2(memory, 0);
         return null;
     };
@@ -373,6 +420,15 @@ fn freeInstance(class_userdata: ?*anyopaque, class_instance: godot.ClassInstance
     const instance_ptr = class_instance orelse return;
     const instance: *Instance = @ptrCast(@alignCast(instance_ptr));
     if (instance.magic != instance_magic) return;
+    if (instance.portable_state > 0) {
+        _ = term_runtime.ex_term_exported_destroy(instance.portable_state);
+        instance.portable_state = 0;
+    }
+    if (term_runtime.ex_term_runtime_destroy(instance.runtime_handle) != 0) {
+        api.print_error("E_GODOT_INSTANCE_STATE_STALE", "Batata.Godot.freeInstance", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+    }
+    instance.runtime_handle = 0;
+    instance.generation +%= 1;
     instance.magic = 0;
     _ = live_instances.fetchSub(1, .acq_rel);
     api.mem_free2(instance, 0);
@@ -400,8 +456,8 @@ fn methodCall(
     const instance_opaque = class_instance orelse {
         return failCall(call_error, .instance_is_null, -1, 0, "E_GODOT_OBJECT_HANDLE_STALE");
     };
-    const instance: *const Instance = @ptrCast(@alignCast(instance_opaque));
-    if (instance.magic != instance_magic) {
+    const instance: *Instance = @ptrCast(@alignCast(instance_opaque));
+    if (instance.magic != instance_magic or instance.runtime_handle <= 0) {
         return failCall(call_error, .instance_is_null, -1, 0, "E_GODOT_OBJECT_HANDLE_STALE");
     }
 
@@ -420,9 +476,8 @@ fn methodCall(
         return failCall(call_error, .invalid_argument, 0, 0, "E_GODOT_METHOD_ARGUMENT_MISSING");
     }
 
-    const runtime_handle = term_runtime.ex_term_runtime_create();
-    if (runtime_handle <= 0 or term_runtime.ex_term_runtime_enter(runtime_handle) != 0) {
-        if (runtime_handle > 0) _ = term_runtime.ex_term_runtime_destroy(runtime_handle);
+    const runtime_handle = instance.runtime_handle;
+    if (term_runtime.ex_term_runtime_enter(runtime_handle) != 0) {
         return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_RUNTIME_BUSY");
     }
 
@@ -435,7 +490,7 @@ fn methodCall(
         const expected = method.spec.arguments[index];
         const actual = api.variant_get_type(source);
         if (actual != variantType(expected)) {
-            abandonRuntime(runtime_handle);
+            leaveRuntime();
             return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(variantType(expected)), "E_GODOT_METHOD_SIGNATURE_UNSUPPORTED");
         }
 
@@ -450,7 +505,7 @@ fn methodCall(
                 var value: i64 = 0;
                 api.int_from_variant(&value, @constCast(source));
                 if (value < -(@as(i64, 1) << 60) or value > (@as(i64, 1) << 60) - 1) {
-                    abandonRuntime(runtime_handle);
+                    leaveRuntime();
                     return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(godot.VariantType.int), "E_GODOT_INTEGER_OUT_OF_RANGE");
                 }
                 break :blk value;
@@ -461,7 +516,7 @@ fn methodCall(
                 break :blk term_runtime.ex_term_float_lit(@bitCast(value));
             },
             .string_value, .string_name_value => textVariantToTerm(expected, @constCast(source)) orelse {
-                abandonRuntime(runtime_handle);
+                leaveRuntime();
                 return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(variantType(expected)), "E_GODOT_STRING_CONVERSION_FAILED");
             },
             .vector2_value => blk: {
@@ -474,6 +529,18 @@ fn methodCall(
                 api.vector3_from_variant(&value, @constCast(source));
                 break :blk vectorToTerm(&.{ value.x, value.y, value.z });
             },
+            .packed_vector3_array_value => packedVector3ArrayToTerm(@constCast(source)) orelse {
+                leaveRuntime();
+                return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(godot.VariantType.packed_vector3_array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+            },
+            .packed_int32_array_value => packedInt32ArrayToTerm(@constCast(source)) orelse {
+                leaveRuntime();
+                return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(godot.VariantType.packed_int32_array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+            },
+            .array_mesh_surface_value => {
+                leaveRuntime();
+                return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(godot.VariantType.array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+            },
             .object_value => objectVariantToTerm(
                 @constCast(source),
                 method.spec.argument_object_classes[index],
@@ -481,7 +548,7 @@ fn methodCall(
                 &object_lease_count,
                 generation,
             ) orelse {
-                abandonRuntime(runtime_handle);
+                leaveRuntime();
                 return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(godot.VariantType.object), "E_GODOT_OBJECT_HANDLE_STALE");
             },
         };
@@ -499,24 +566,48 @@ fn methodCall(
     );
 
     if (caught != 0) {
-        abandonRuntime(runtime_handle);
+        leaveRuntime();
         return failCall(call_error, .invalid_method, -1, @intCast(exception_kind), "E_GODOT_COMPILED_EXCEPTION");
     }
 
-    if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value and method.spec.returns != .vector2_value and method.spec.returns != .vector3_value and method.spec.returns != .object_value) {
-        abandonRuntime(runtime_handle);
+    if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value and method.spec.returns != .vector2_value and method.spec.returns != .vector3_value and method.spec.returns != .packed_vector3_array_value and method.spec.returns != .packed_int32_array_value and method.spec.returns != .array_mesh_surface_value and method.spec.returns != .object_value) {
+        leaveRuntime();
         return writeImmediateResult(method.spec.returns, result_word, return_variant, call_error);
     }
 
     if (method.spec.returns == .string_value or method.spec.returns == .string_name_value) {
         writeTextResult(method.spec.returns, result_word, return_variant, call_error);
-        abandonRuntime(runtime_handle);
+        leaveRuntime();
         return;
     }
 
     if (method.spec.returns == .vector2_value or method.spec.returns == .vector3_value) {
         writeVectorResult(method.spec.returns, result_word, return_variant, call_error);
-        abandonRuntime(runtime_handle);
+        leaveRuntime();
+        return;
+    }
+
+    if (method.spec.returns == .packed_vector3_array_value) {
+        writePackedVector3ArrayResult(result_word, return_variant, call_error);
+        leaveRuntime();
+        return;
+    }
+
+    if (method.spec.returns == .packed_int32_array_value) {
+        writePackedInt32ArrayResult(result_word, return_variant, call_error);
+        leaveRuntime();
+        return;
+    }
+
+    if (method.spec.returns == .array_mesh_surface_value) {
+        writeArrayMeshSurfaceResult(result_word, return_variant, call_error);
+        leaveRuntime();
+        return;
+    }
+
+    if (method.spec.outbound == .array_mesh_surface) {
+        writeArrayMeshObjectResult(result_word, return_variant, call_error);
+        leaveRuntime();
         return;
     }
 
@@ -530,17 +621,17 @@ fn methodCall(
             return_variant,
             call_error,
         );
-        abandonRuntime(runtime_handle);
+        leaveRuntime();
         return;
     }
 
     if (term_runtime.ex_term_is_float(result_word) == 0) {
-        abandonRuntime(runtime_handle);
+        leaveRuntime();
         return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.float), "E_GODOT_RETURN_TYPE_MISMATCH");
     }
     const bits = term_runtime.ex_term_float_bits(result_word);
     var value: f64 = @bitCast(bits);
-    abandonRuntime(runtime_handle);
+    leaveRuntime();
     api.float_to_variant(return_variant, &value);
 }
 
@@ -571,6 +662,7 @@ fn writeImmediateResult(
         .float_value => unreachable,
         .string_value, .string_name_value => unreachable,
         .vector2_value, .vector3_value => unreachable,
+        .packed_vector3_array_value, .packed_int32_array_value, .array_mesh_surface_value => unreachable,
         .object_value => unreachable,
     }
 }
@@ -614,6 +706,227 @@ fn writeVectorResult(
         var vector = godot.Vector3{ .x = components[0], .y = components[1], .z = components[2] };
         api.vector3_to_variant(return_variant, &vector);
     }
+}
+
+fn packedVector3ArrayToTerm(source: godot.VariantPtr) ?i64 {
+    var storage: [16]u8 align(8) = undefined;
+    api.packed_vector3_array_from_variant(&storage, source);
+    defer api.packed_vector3_array_destructor(&storage);
+    const length = packedSize(api.packed_vector3_array_size, &storage) orelse return null;
+    if (length > max_packed_elements) return null;
+
+    var list = nil_word;
+    var index = length;
+    while (index != 0) {
+        index -= 1;
+        const raw = api.packed_vector3_array_operator_index_const(&storage, index) orelse return null;
+        const vector: *const godot.Vector3 = @ptrCast(@alignCast(raw));
+        list = term_runtime.ex_term_list_cons(vectorToTerm(&.{ vector.x, vector.y, vector.z }), list);
+    }
+    if (term_runtime.ex_term_list_length(list) != length) return null;
+    return list;
+}
+
+fn packedInt32ArrayToTerm(source: godot.VariantPtr) ?i64 {
+    var storage: [16]u8 align(8) = undefined;
+    api.packed_int32_array_from_variant(&storage, source);
+    defer api.packed_int32_array_destructor(&storage);
+    const length = packedSize(api.packed_int32_array_size, &storage) orelse return null;
+    if (length > max_packed_elements) return null;
+
+    var list = nil_word;
+    var index = length;
+    while (index != 0) {
+        index -= 1;
+        const raw = api.packed_int32_array_operator_index_const(&storage, index) orelse return null;
+        const value: *const i32 = @ptrCast(@alignCast(raw));
+        list = term_runtime.ex_term_list_cons(@as(i64, value.*) * 8, list);
+    }
+    if (term_runtime.ex_term_list_length(list) != length) return null;
+    return list;
+}
+
+fn packedSize(method: godot.PtrBuiltInMethod, value: godot.TypePtr) ?i64 {
+    var length: i64 = -1;
+    method(value, null, &length, 0);
+    if (length < 0) return null;
+    return length;
+}
+
+fn resizeBuiltin(method: godot.PtrBuiltInMethod, value: godot.TypePtr, length: i64) bool {
+    var result: i64 = -1;
+    const arguments = [_]godot.ConstTypePtr{&length};
+    method(value, &arguments, &result, 1);
+    return result == 0;
+}
+
+fn writePackedVector3ArrayResult(
+    result_word: i64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    var storage: [16]u8 align(8) = undefined;
+    api.packed_vector3_array_constructor(&storage, null);
+    defer api.packed_vector3_array_destructor(&storage);
+    if (!fillPackedVector3Array(result_word, &storage)) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.packed_vector3_array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+    }
+    api.packed_vector3_array_to_variant(return_variant, &storage);
+}
+
+fn writePackedInt32ArrayResult(
+    result_word: i64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    var storage: [16]u8 align(8) = undefined;
+    api.packed_int32_array_constructor(&storage, null);
+    defer api.packed_int32_array_destructor(&storage);
+    if (!fillPackedInt32Array(result_word, &storage)) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.packed_int32_array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+    }
+    api.packed_int32_array_to_variant(return_variant, &storage);
+}
+
+fn fillPackedVector3Array(result_word: i64, storage: godot.TypePtr) bool {
+    if (term_runtime.ex_term_is_list(result_word) == 0) return false;
+    const length = term_runtime.ex_term_list_length(result_word);
+    if (length < 0 or length > max_packed_elements or !resizeBuiltin(api.packed_vector3_array_resize, storage, length)) return false;
+
+    var current = result_word;
+    for (0..@as(usize, @intCast(length))) |index| {
+        const tuple = term_runtime.ex_term_list_head(current);
+        if (term_runtime.ex_term_is_tuple(tuple) == 0 or term_runtime.ex_term_tuple_length(tuple) != 3) return false;
+        var vector: godot.Vector3 = undefined;
+        inline for (0..3) |component| {
+            const term = term_runtime.ex_term_tuple_get(tuple, component);
+            const value = termNumberToF32(term) orelse return false;
+            switch (component) {
+                0 => vector.x = value,
+                1 => vector.y = value,
+                2 => vector.z = value,
+                else => unreachable,
+            }
+        }
+        const destination = api.packed_vector3_array_operator_index(storage, @intCast(index)) orelse return false;
+        const typed: *godot.Vector3 = @ptrCast(@alignCast(destination));
+        typed.* = vector;
+        current = term_runtime.ex_term_list_tail(current);
+    }
+    return current == nil_word;
+}
+
+fn termNumberToF32(term: i64) ?f32 {
+    if (term_runtime.ex_term_is_float(term) != 0) {
+        const value: f64 = @bitCast(term_runtime.ex_term_float_bits(term));
+        return @floatCast(value);
+    }
+    if (term_runtime.ex_term_is_integer(term) != 0) {
+        return @floatFromInt(term_runtime.ex_term_to_int(term));
+    }
+    return null;
+}
+
+fn fillPackedInt32Array(result_word: i64, storage: godot.TypePtr) bool {
+    if (term_runtime.ex_term_is_list(result_word) == 0) return false;
+    const length = term_runtime.ex_term_list_length(result_word);
+    if (length < 0 or length > max_packed_elements or !resizeBuiltin(api.packed_int32_array_resize, storage, length)) return false;
+
+    var current = result_word;
+    for (0..@as(usize, @intCast(length))) |index| {
+        const term = term_runtime.ex_term_list_head(current);
+        if (term_runtime.ex_term_is_integer(term) == 0) return false;
+        const value = term_runtime.ex_term_to_int(term);
+        if (value < std.math.minInt(i32) or value > std.math.maxInt(i32)) return false;
+        const destination = api.packed_int32_array_operator_index(storage, @intCast(index)) orelse return false;
+        const typed: *i32 = @ptrCast(@alignCast(destination));
+        typed.* = @intCast(value);
+        current = term_runtime.ex_term_list_tail(current);
+    }
+    return current == nil_word;
+}
+
+fn writeArrayMeshSurfaceResult(
+    result_word: i64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    var arrays: [8]u8 align(8) = undefined;
+    api.array_constructor(&arrays, null);
+    defer api.array_destructor(&arrays);
+    if (!fillSurfaceArrays(result_word, &arrays)) {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.array), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+    }
+
+    api.array_to_variant(return_variant, &arrays);
+}
+
+fn fillSurfaceArrays(result_word: i64, arrays: godot.TypePtr) bool {
+    if (term_runtime.ex_term_is_tuple(result_word) == 0 or term_runtime.ex_term_tuple_length(result_word) != 2) return false;
+
+    var vertices: [16]u8 align(8) = undefined;
+    var indices: [16]u8 align(8) = undefined;
+    api.packed_vector3_array_constructor(&vertices, null);
+    defer api.packed_vector3_array_destructor(&vertices);
+    api.packed_int32_array_constructor(&indices, null);
+    defer api.packed_int32_array_destructor(&indices);
+    if (!fillPackedVector3Array(term_runtime.ex_term_tuple_get(result_word, 0), &vertices) or
+        !fillPackedInt32Array(term_runtime.ex_term_tuple_get(result_word, 1), &indices) or
+        !resizeBuiltin(api.array_resize, arrays, mesh_array_slots)) return false;
+
+    var vertices_variant: [24]u8 align(8) = undefined;
+    var indices_variant: [24]u8 align(8) = undefined;
+    api.packed_vector3_array_to_variant(&vertices_variant, &vertices);
+    defer api.variant_destroy(&vertices_variant);
+    api.packed_int32_array_to_variant(&indices_variant, &indices);
+    defer api.variant_destroy(&indices_variant);
+    return replaceArraySlot(arrays, mesh_array_vertex_slot, &vertices_variant) and
+        replaceArraySlot(arrays, mesh_array_index_slot, &indices_variant);
+}
+
+fn replaceArraySlot(array: godot.TypePtr, index: i64, source: godot.ConstVariantPtr) bool {
+    const destination = api.array_operator_index(array, index) orelse return false;
+    api.variant_destroy(destination);
+    api.variant_new_copy(destination, source);
+    return true;
+}
+
+fn writeArrayMeshObjectResult(
+    result_word: i64,
+    return_variant: godot.VariantPtr,
+    call_error: *godot.CallError,
+) void {
+    const method_bind = array_mesh_add_surface_method orelse {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.object), "E_GODOT_OUTBOUND_CALL_UNDECLARED");
+    };
+
+    var class_name: [8]u8 align(8) = undefined;
+    api.string_name_new_with_latin1_chars(&class_name, "ArrayMesh", 0);
+    defer api.string_name_destructor(&class_name);
+    const mesh = api.classdb_construct_object2(&class_name) orelse {
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.object), "E_GODOT_INSTANCE_STATE_UNAVAILABLE");
+    };
+
+    var arrays: [8]u8 align(8) = undefined;
+    var blend_shapes: [8]u8 align(8) = undefined;
+    var lods: [8]u8 align(8) = undefined;
+    api.array_constructor(&arrays, null);
+    defer api.array_destructor(&arrays);
+    api.array_constructor(&blend_shapes, null);
+    defer api.array_destructor(&blend_shapes);
+    api.dictionary_constructor(&lods, null);
+    defer api.dictionary_destructor(&lods);
+    if (!fillSurfaceArrays(result_word, &arrays)) {
+        api.object_destroy(mesh);
+        return failCall(call_error, .invalid_method, -1, @intFromEnum(godot.VariantType.object), "E_GODOT_PACKED_ARRAY_CODEC_MISSING");
+    }
+
+    var primitive: i64 = 3;
+    var flags: i64 = 0;
+    const arguments = [_]godot.ConstTypePtr{ &primitive, &arrays, &blend_shapes, &lods, &flags };
+    api.object_method_bind_ptrcall(method_bind, mesh, &arguments, null);
+    var object = mesh;
+    api.object_to_variant(return_variant, @ptrCast(&object));
 }
 
 fn objectVariantToTerm(
@@ -744,9 +1057,8 @@ fn writeTextResult(
     }
 }
 
-fn abandonRuntime(runtime_handle: i64) void {
+fn leaveRuntime() void {
     _ = term_runtime.ex_term_runtime_leave();
-    _ = term_runtime.ex_term_runtime_destroy(runtime_handle);
 }
 
 fn failCall(call_error: *godot.CallError, error_code: godot.CallErrorType, argument: i32, expected: i32, comptime message: [:0]const u8) void {
@@ -782,19 +1094,18 @@ fn callVirtualWithData(
     const instance_opaque = class_instance orelse {
         return api.print_error("E_GODOT_OBJECT_HANDLE_STALE", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
     };
-    const instance: *const Instance = @ptrCast(@alignCast(instance_opaque));
-    if (instance.magic != instance_magic) {
+    const instance: *Instance = @ptrCast(@alignCast(instance_opaque));
+    if (instance.magic != instance_magic or instance.runtime_handle <= 0) {
         return api.print_error("E_GODOT_OBJECT_HANDLE_STALE", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
     }
     const runtime_opaque = virtual_userdata orelse return;
     const virtual_runtime: *const MethodRuntime = @ptrCast(@alignCast(runtime_opaque));
 
-    const runtime_handle = term_runtime.ex_term_runtime_create();
-    if (runtime_handle <= 0 or term_runtime.ex_term_runtime_enter(runtime_handle) != 0) {
-        if (runtime_handle > 0) _ = term_runtime.ex_term_runtime_destroy(runtime_handle);
+    const runtime_handle = instance.runtime_handle;
+    if (term_runtime.ex_term_runtime_enter(runtime_handle) != 0) {
         return api.print_error("E_GODOT_RUNTIME_BUSY", "Batata.Godot.callVirtualWithData", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
     }
-    defer abandonRuntime(runtime_handle);
+    defer leaveRuntime();
 
     var arguments = [_]i64{nil_word} ** max_method_arity;
     if (virtual_runtime.spec.arity == 1) {
@@ -834,6 +1145,18 @@ fn stringNameEquals(name: godot.ConstStringNamePtr, expected: []const u8) bool {
     return std.mem.eql(u8, bytes[0..@intCast(length)], expected);
 }
 
+fn resolveOutboundMethodBinds() bool {
+    if (!has_array_mesh_outbound) return true;
+    var class_name: [8]u8 align(8) = undefined;
+    var method_name: [8]u8 align(8) = undefined;
+    api.string_name_new_with_latin1_chars(&class_name, "ArrayMesh", 0);
+    defer api.string_name_destructor(&class_name);
+    api.string_name_new_with_latin1_chars(&method_name, "add_surface_from_arrays", 0);
+    defer api.string_name_destructor(&method_name);
+    array_mesh_add_surface_method = api.classdb_get_method_bind(&class_name, &method_name, 1_796_411_378);
+    return array_mesh_add_surface_method != null;
+}
+
 fn initialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(.c) void {
     _ = userdata;
     if (level != build_options.initialization_level or class_registered) return;
@@ -843,6 +1166,10 @@ fn initialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callconv(
     api.string_name_new_with_latin1_chars(&base_class_name_storage, @ptrCast(base_class_name_z.ptr), 1);
     api.string_name_new_with_latin1_chars(&empty_string_name_storage, "", 1);
     api.string_new_with_utf8_chars(&empty_string_storage, "");
+    if (!resolveOutboundMethodBinds()) {
+        api.print_error("E_GODOT_OUTBOUND_CALL_UNDECLARED", "Batata.Godot.initialize", "packages/batata_godot/native/zig-src/main.zig", 0, 0);
+        return;
+    }
 
     const creation_info = godot.ClassCreationInfo5{
         .is_virtual = 0,
@@ -970,6 +1297,7 @@ fn deinitialize(userdata: ?*anyopaque, level: godot.InitializationLevel) callcon
     }
     api.classdb_unregister_extension_class(library, &class_name_storage);
     api.string_destructor(&empty_string_storage);
+    array_mesh_add_surface_method = null;
     class_registered = false;
 }
 

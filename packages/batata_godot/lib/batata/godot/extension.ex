@@ -3,8 +3,8 @@ defmodule Batata.Godot.Extension do
   Declares one compile-time GDExtension binding surface.
 
   The declaration is converted into a validated `Batata.Godot.BindingPlan`
-  before the extension module finishes compiling. This first schema permits
-  one Godot class and scalar method signatures.
+  before the extension module finishes compiling. The schema permits one
+  Godot class, closed value codecs, and explicitly declared outbound calls.
   """
 
   alias Batata.Godot.BindingPlan
@@ -17,6 +17,7 @@ defmodule Batata.Godot.Extension do
           godot_class: 1,
           godot_class: 2,
           godot_method: 2,
+          godot_outbound: 1,
           godot_property: 2,
           godot_signal: 1,
           godot_signal: 2,
@@ -26,6 +27,7 @@ defmodule Batata.Godot.Extension do
       Module.register_attribute(__MODULE__, :batata_godot_extension_options, persist: false)
       Module.register_attribute(__MODULE__, :batata_godot_classes, accumulate: true)
       Module.register_attribute(__MODULE__, :batata_godot_methods, accumulate: true)
+      Module.register_attribute(__MODULE__, :batata_godot_outbounds, accumulate: true)
       Module.register_attribute(__MODULE__, :batata_godot_properties, accumulate: true)
       Module.register_attribute(__MODULE__, :batata_godot_signals, accumulate: true)
       Module.register_attribute(__MODULE__, :batata_godot_virtuals, accumulate: true)
@@ -44,6 +46,12 @@ defmodule Batata.Godot.Extension do
   defmacro godot_method(name, options) do
     quote do
       @batata_godot_methods {unquote(name), unquote(options)}
+    end
+  end
+
+  defmacro godot_outbound(operation) do
+    quote do
+      @batata_godot_outbounds unquote(operation)
     end
   end
 
@@ -70,6 +78,7 @@ defmodule Batata.Godot.Extension do
     extension_options = Module.get_attribute(module, :batata_godot_extension_options) || []
     classes = module |> Module.get_attribute(:batata_godot_classes) |> Enum.reverse()
     methods = module |> Module.get_attribute(:batata_godot_methods) |> Enum.reverse()
+    outbounds = module |> Module.get_attribute(:batata_godot_outbounds) |> Enum.reverse()
     properties = module |> Module.get_attribute(:batata_godot_properties) |> Enum.reverse()
     signals = module |> Module.get_attribute(:batata_godot_signals) |> Enum.reverse()
     virtuals = module |> Module.get_attribute(:batata_godot_virtuals) |> Enum.reverse()
@@ -81,9 +90,7 @@ defmodule Batata.Godot.Extension do
         extension_options,
         classes,
         methods,
-        properties,
-        signals,
-        virtuals,
+        {outbounds, properties, signals, virtuals},
         definitions
       )
 

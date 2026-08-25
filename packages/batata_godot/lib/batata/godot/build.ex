@@ -275,8 +275,10 @@ defmodule Batata.Godot.Build do
 
   defp render_smoke_invocation(invocation, index, class_name, methods) do
     repeat = Map.get(invocation, :repeat, 0)
+    repeat_same = Map.get(invocation, :repeat_same, 0)
 
-    unless is_integer(repeat) and repeat in 0..1_024 do
+    unless is_integer(repeat) and repeat in 0..1_024 and is_integer(repeat_same) and
+             repeat_same in 0..1_024 do
       invalid_smoke_invocation!(invocation)
     end
 
@@ -297,15 +299,7 @@ defmodule Batata.Godot.Build do
       |> then(&"[#{&1}]")
 
     expected = gdscript_value(invocation.expected, method_spec["returns"])
-
-    call = [
-      "  var result_#{index} = object.callv(#{method}, #{arguments})",
-      "  if result_#{index} != #{expected}:",
-      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: compiled Batata method returned an unexpected value\")",
-      "    quit(19)",
-      "    return",
-      ""
-    ]
+    call = smoke_assertion(invocation.expected, expected, method, arguments, index)
 
     repeated =
       if repeat == 0 do
@@ -328,7 +322,62 @@ defmodule Batata.Godot.Build do
         ]
       end
 
-    Enum.join(call ++ repeated, "\n")
+    repeated_same =
+      if repeat_same == 0 do
+        []
+      else
+        [
+          "  for repeat_same_#{index} in range(#{repeat_same}):",
+          "    var same_result_#{index} = object.callv(#{method}, #{arguments})",
+          "    if same_result_#{index} != #{expected}:",
+          "      push_error(\"E_GODOT_INSTANCE_STATE_STALE: persistent instance call returned an unexpected value\")",
+          "      quit(24)",
+          "      return",
+          ""
+        ]
+      end
+
+    Enum.join(call ++ repeated_same ++ repeated, "\n")
+  end
+
+  defp smoke_assertion(
+         %{array_mesh: %{vertices: vertices, indices: indices}},
+         _expected,
+         method,
+         arguments,
+         index
+       ) do
+    vertices = gdscript_value(vertices, "packed_vector3_array")
+    indices = gdscript_value(indices, "packed_int32_array")
+
+    [
+      "  var result_#{index} = object.callv(#{method}, #{arguments})",
+      "  if not (result_#{index} is ArrayMesh):",
+      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: outbound call did not return ArrayMesh\")",
+      "    quit(19)",
+      "    return",
+      "  if result_#{index}.get_surface_count() != 1:",
+      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: ArrayMesh surface count differs\")",
+      "    quit(19)",
+      "    return",
+      "  var arrays_#{index} = result_#{index}.surface_get_arrays(0)",
+      "  if arrays_#{index}[Mesh.ARRAY_VERTEX] != #{vertices} or arrays_#{index}[Mesh.ARRAY_INDEX] != #{indices}:",
+      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: ArrayMesh packed arrays differ: vertices=\" + str(arrays_#{index}[Mesh.ARRAY_VERTEX]) + \" indices=\" + str(arrays_#{index}[Mesh.ARRAY_INDEX]))",
+      "    quit(19)",
+      "    return",
+      ""
+    ]
+  end
+
+  defp smoke_assertion(_raw_expected, expected, method, arguments, index) do
+    [
+      "  var result_#{index} = object.callv(#{method}, #{arguments})",
+      "  if result_#{index} != #{expected}:",
+      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: compiled Batata method returned an unexpected value\")",
+      "    quit(19)",
+      "    return",
+      ""
+    ]
   end
 
   defp gdscript_value(value, "string_name") when is_binary(value),
@@ -341,7 +390,17 @@ defmodule Batata.Godot.Build do
        when is_number(x) and is_number(y) and is_number(z),
        do: "Vector3(#{JSON.encode!(x)},#{JSON.encode!(y)},#{JSON.encode!(z)})"
 
+  defp gdscript_value(values, "packed_vector3_array") when is_list(values) do
+    encoded = Enum.map_join(values, ",", &gdscript_value(&1, "vector3"))
+    "PackedVector3Array([#{encoded}])"
+  end
+
+  defp gdscript_value(values, "packed_int32_array") when is_list(values),
+    do: "PackedInt32Array(#{JSON.encode!(values)})"
+
   defp gdscript_value(:self, "object:" <> _class_name), do: "object"
+
+  defp gdscript_value(%{array_mesh: _descriptor}, "object:ArrayMesh"), do: "null"
 
   defp gdscript_value(value, _type), do: JSON.encode!(value)
 
@@ -556,7 +615,12 @@ defmodule Batata.Godot.Build do
   defp method_specs(%BindingPlan{} = plan) do
     Enum.map_join(plan.methods, ";", fn method ->
       arguments = Enum.map_join(method.arguments, ",", &value_type_name/1)
-      Enum.join([method.name, method.symbol, arguments, value_type_name(method.returns)], "|")
+      outbound = method.outbound && Atom.to_string(method.outbound)
+
+      Enum.join(
+        [method.name, method.symbol, arguments, value_type_name(method.returns), outbound],
+        "|"
+      )
     end)
   end
 

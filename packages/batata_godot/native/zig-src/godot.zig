@@ -12,6 +12,7 @@ pub const GetProcAddress = ?*const fn ([*:0]const u8) callconv(.c) InterfaceFunc
 pub const ClassLibraryPtr = ?*anyopaque;
 pub const ObjectPtr = ?*anyopaque;
 pub const ClassInstancePtr = ?*anyopaque;
+pub const MethodBindPtr = ?*anyopaque;
 pub const VariantPtr = ?*anyopaque;
 pub const ConstVariantPtr = ?*const anyopaque;
 pub const StringNamePtr = ?*anyopaque;
@@ -45,6 +46,10 @@ pub const VariantType = enum(c_int) {
     vector3 = 9,
     string_name = 21,
     object = 24,
+    dictionary = 27,
+    array = 28,
+    packed_int32_array = 30,
+    packed_vector3_array = 36,
 };
 
 pub const CallErrorType = enum(c_int) {
@@ -142,6 +147,15 @@ pub const TypeFromVariantConstructor = *const fn (TypePtr, VariantPtr) callconv(
 pub const GetVariantFromTypeConstructor = *const fn (VariantType) callconv(.c) ?VariantFromTypeConstructor;
 pub const GetVariantToTypeConstructor = *const fn (VariantType) callconv(.c) ?TypeFromVariantConstructor;
 pub const VariantNewNil = *const fn (VariantPtr) callconv(.c) void;
+pub const VariantNewCopy = *const fn (VariantPtr, ConstVariantPtr) callconv(.c) void;
+pub const VariantDestroy = *const fn (VariantPtr) callconv(.c) void;
+pub const PtrBuiltInMethod = *const fn (TypePtr, ?[*]const ConstTypePtr, TypePtr, c_int) callconv(.c) void;
+pub const VariantGetPtrBuiltInMethod = *const fn (VariantType, ConstStringNamePtr, Int) callconv(.c) ?PtrBuiltInMethod;
+pub const PackedArrayOperatorIndex = *const fn (TypePtr, Int) callconv(.c) TypePtr;
+pub const PackedArrayOperatorIndexConst = *const fn (ConstTypePtr, Int) callconv(.c) ConstTypePtr;
+pub const ArrayOperatorIndex = *const fn (TypePtr, Int) callconv(.c) VariantPtr;
+pub const ClassdbGetMethodBind = *const fn (ConstStringNamePtr, ConstStringNamePtr, Int) callconv(.c) MethodBindPtr;
+pub const ObjectMethodBindPtrcall = *const fn (MethodBindPtr, ObjectPtr, ?[*]const ConstTypePtr, TypePtr) callconv(.c) void;
 pub const ClassdbConstructObject2 = *const fn (ConstStringNamePtr) callconv(.c) ObjectPtr;
 pub const ObjectSetInstance = *const fn (ObjectPtr, ConstStringNamePtr, ClassInstancePtr) callconv(.c) void;
 pub const ObjectSetInstanceBinding = *const fn (ObjectPtr, ?*anyopaque, ?*anyopaque, *const InstanceBindingCallbacks) callconv(.c) void;
@@ -168,6 +182,8 @@ pub const Api = struct {
     string_from_string_name: PtrConstructor,
     variant_get_type: VariantGetType,
     variant_new_nil: VariantNewNil,
+    variant_new_copy: VariantNewCopy,
+    variant_destroy: VariantDestroy,
     bool_from_variant: TypeFromVariantConstructor,
     bool_to_variant: VariantFromTypeConstructor,
     int_from_variant: TypeFromVariantConstructor,
@@ -182,7 +198,32 @@ pub const Api = struct {
     vector2_to_variant: VariantFromTypeConstructor,
     vector3_from_variant: TypeFromVariantConstructor,
     vector3_to_variant: VariantFromTypeConstructor,
+    packed_int32_array_from_variant: TypeFromVariantConstructor,
+    packed_int32_array_to_variant: VariantFromTypeConstructor,
+    packed_int32_array_constructor: PtrConstructor,
+    packed_int32_array_destructor: PtrDestructor,
+    packed_int32_array_size: PtrBuiltInMethod,
+    packed_int32_array_resize: PtrBuiltInMethod,
+    packed_int32_array_operator_index: PackedArrayOperatorIndex,
+    packed_int32_array_operator_index_const: PackedArrayOperatorIndexConst,
+    packed_vector3_array_from_variant: TypeFromVariantConstructor,
+    packed_vector3_array_to_variant: VariantFromTypeConstructor,
+    packed_vector3_array_constructor: PtrConstructor,
+    packed_vector3_array_destructor: PtrDestructor,
+    packed_vector3_array_size: PtrBuiltInMethod,
+    packed_vector3_array_resize: PtrBuiltInMethod,
+    packed_vector3_array_operator_index: PackedArrayOperatorIndex,
+    packed_vector3_array_operator_index_const: PackedArrayOperatorIndexConst,
+    array_to_variant: VariantFromTypeConstructor,
+    array_constructor: PtrConstructor,
+    array_destructor: PtrDestructor,
+    array_resize: PtrBuiltInMethod,
+    array_operator_index: ArrayOperatorIndex,
+    dictionary_constructor: PtrConstructor,
+    dictionary_destructor: PtrDestructor,
     classdb_construct_object2: ClassdbConstructObject2,
+    classdb_get_method_bind: ClassdbGetMethodBind,
+    object_method_bind_ptrcall: ObjectMethodBindPtrcall,
     object_set_instance: ObjectSetInstance,
     object_set_instance_binding: ObjectSetInstanceBinding,
     object_destroy: ObjectDestroy,
@@ -202,20 +243,25 @@ pub const Api = struct {
         const get_to = resolveOne(GetVariantToTypeConstructor, get, "get_variant_to_type_constructor") orelse return null;
         const get_destructor = resolveOne(VariantGetPtrDestructor, get, "variant_get_ptr_destructor") orelse return null;
         const get_constructor = resolveOne(VariantGetPtrConstructor, get, "variant_get_ptr_constructor") orelse return null;
+        const get_builtin = resolveOne(VariantGetPtrBuiltInMethod, get, "variant_get_ptr_builtin_method") orelse return null;
+        const string_name_new = resolveOne(StringNameNewWithLatin1Chars, get, "string_name_new_with_latin1_chars") orelse return null;
+        const string_name_destroy = get_destructor(.string_name) orelse return null;
         return .{
             .mem_alloc2 = resolveOne(MemAlloc2, get, "mem_alloc2") orelse return null,
             .mem_free2 = resolveOne(MemFree2, get, "mem_free2") orelse return null,
             .print_error = resolveOne(PrintError, get, "print_error") orelse return null,
-            .string_name_new_with_latin1_chars = resolveOne(StringNameNewWithLatin1Chars, get, "string_name_new_with_latin1_chars") orelse return null,
+            .string_name_new_with_latin1_chars = string_name_new,
             .string_name_new_with_utf8_chars_and_len = resolveOne(StringNameNewWithUtf8CharsAndLen, get, "string_name_new_with_utf8_chars_and_len") orelse return null,
             .string_new_with_utf8_chars = resolveOne(StringNewWithUtf8Chars, get, "string_new_with_utf8_chars") orelse return null,
             .string_new_with_utf8_chars_and_len2 = resolveOne(StringNewWithUtf8CharsAndLen2, get, "string_new_with_utf8_chars_and_len2") orelse return null,
             .string_to_utf8_chars = resolveOne(StringToUtf8Chars, get, "string_to_utf8_chars") orelse return null,
             .string_destructor = get_destructor(.string) orelse return null,
-            .string_name_destructor = get_destructor(.string_name) orelse return null,
+            .string_name_destructor = string_name_destroy,
             .string_from_string_name = get_constructor(.string, 2) orelse return null,
             .variant_get_type = resolveOne(VariantGetType, get, "variant_get_type") orelse return null,
             .variant_new_nil = resolveOne(VariantNewNil, get, "variant_new_nil") orelse return null,
+            .variant_new_copy = resolveOne(VariantNewCopy, get, "variant_new_copy") orelse return null,
+            .variant_destroy = resolveOne(VariantDestroy, get, "variant_destroy") orelse return null,
             .bool_from_variant = get_to(.bool) orelse return null,
             .bool_to_variant = get_from(.bool) orelse return null,
             .int_from_variant = get_to(.int) orelse return null,
@@ -230,7 +276,32 @@ pub const Api = struct {
             .vector2_to_variant = get_from(.vector2) orelse return null,
             .vector3_from_variant = get_to(.vector3) orelse return null,
             .vector3_to_variant = get_from(.vector3) orelse return null,
+            .packed_int32_array_from_variant = get_to(.packed_int32_array) orelse return null,
+            .packed_int32_array_to_variant = get_from(.packed_int32_array) orelse return null,
+            .packed_int32_array_constructor = get_constructor(.packed_int32_array, 0) orelse return null,
+            .packed_int32_array_destructor = get_destructor(.packed_int32_array) orelse return null,
+            .packed_int32_array_size = resolveBuiltin(get_builtin, string_name_new, string_name_destroy, .packed_int32_array, "size", 3_173_160_232) orelse return null,
+            .packed_int32_array_resize = resolveBuiltin(get_builtin, string_name_new, string_name_destroy, .packed_int32_array, "resize", 848_867_239) orelse return null,
+            .packed_int32_array_operator_index = resolveOne(PackedArrayOperatorIndex, get, "packed_int32_array_operator_index") orelse return null,
+            .packed_int32_array_operator_index_const = resolveOne(PackedArrayOperatorIndexConst, get, "packed_int32_array_operator_index_const") orelse return null,
+            .packed_vector3_array_from_variant = get_to(.packed_vector3_array) orelse return null,
+            .packed_vector3_array_to_variant = get_from(.packed_vector3_array) orelse return null,
+            .packed_vector3_array_constructor = get_constructor(.packed_vector3_array, 0) orelse return null,
+            .packed_vector3_array_destructor = get_destructor(.packed_vector3_array) orelse return null,
+            .packed_vector3_array_size = resolveBuiltin(get_builtin, string_name_new, string_name_destroy, .packed_vector3_array, "size", 3_173_160_232) orelse return null,
+            .packed_vector3_array_resize = resolveBuiltin(get_builtin, string_name_new, string_name_destroy, .packed_vector3_array, "resize", 848_867_239) orelse return null,
+            .packed_vector3_array_operator_index = resolveOne(PackedArrayOperatorIndex, get, "packed_vector3_array_operator_index") orelse return null,
+            .packed_vector3_array_operator_index_const = resolveOne(PackedArrayOperatorIndexConst, get, "packed_vector3_array_operator_index_const") orelse return null,
+            .array_to_variant = get_from(.array) orelse return null,
+            .array_constructor = get_constructor(.array, 0) orelse return null,
+            .array_destructor = get_destructor(.array) orelse return null,
+            .array_resize = resolveBuiltin(get_builtin, string_name_new, string_name_destroy, .array, "resize", 848_867_239) orelse return null,
+            .array_operator_index = resolveOne(ArrayOperatorIndex, get, "array_operator_index") orelse return null,
+            .dictionary_constructor = get_constructor(.dictionary, 0) orelse return null,
+            .dictionary_destructor = get_destructor(.dictionary) orelse return null,
             .classdb_construct_object2 = resolveOne(ClassdbConstructObject2, get, "classdb_construct_object2") orelse return null,
+            .classdb_get_method_bind = resolveOne(ClassdbGetMethodBind, get, "classdb_get_method_bind") orelse return null,
+            .object_method_bind_ptrcall = resolveOne(ObjectMethodBindPtrcall, get, "object_method_bind_ptrcall") orelse return null,
             .object_set_instance = resolveOne(ObjectSetInstance, get, "object_set_instance") orelse return null,
             .object_set_instance_binding = resolveOne(ObjectSetInstanceBinding, get, "object_set_instance_binding") orelse return null,
             .object_destroy = resolveOne(ObjectDestroy, get, "object_destroy") orelse return null,
@@ -246,6 +317,20 @@ pub const Api = struct {
         };
     }
 };
+
+fn resolveBuiltin(
+    get_builtin: VariantGetPtrBuiltInMethod,
+    string_name_new: StringNameNewWithLatin1Chars,
+    string_name_destroy: PtrDestructor,
+    value_type: VariantType,
+    comptime method: [:0]const u8,
+    hash: Int,
+) ?PtrBuiltInMethod {
+    var name: [8]u8 align(8) = undefined;
+    string_name_new(&name, method.ptr, 0);
+    defer string_name_destroy(&name);
+    return get_builtin(value_type, &name, hash);
+}
 
 fn resolveOne(comptime T: type, get: *const fn ([*:0]const u8) callconv(.c) InterfaceFunctionPtr, comptime name: [:0]const u8) ?T {
     const raw = get(name.ptr) orelse return null;

@@ -45,7 +45,7 @@ defmodule Batata.Godot.BindingPlanTest do
     assert json == Batata.Godot.canonical_json(Example)
 
     assert Batata.Godot.digest(Example) ==
-             "722a23b1eae7e2d64f7ddf752d5e5b5f5d99af9bcf9da9322ed38ed69e400331"
+             "7192f63a57b94dd75d5951c883c0974863886fe2eeb9e6c6af1476a9ab516037"
   end
 
   test "unsupported Variant types fail closed with a recovery action" do
@@ -56,9 +56,7 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:consume, [args: [:dictionary], returns: nil]}],
-          [],
-          [],
-          [],
+          {[], [], [], []},
           consume: 1
         )
       end
@@ -82,9 +80,7 @@ defmodule Batata.Godot.BindingPlanTest do
           {:echo_vector3, [args: [:vector3], returns: :vector3]},
           {:echo_object, [args: [{:object, "RefCounted"}], returns: {:object, "RefCounted"}]}
         ],
-        [],
-        [],
-        [],
+        {[], [], [], []},
         echo_string: 1,
         echo_name: 1,
         echo_vector2: 1,
@@ -109,9 +105,7 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:echo_object, [args: [{:object, "bad class"}], returns: nil]}],
-          [],
-          [],
-          [],
+          {[], [], [], []},
           echo_object: 1
         )
       end
@@ -128,9 +122,7 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:missing, [args: [:int], returns: :int]}],
-          [],
-          [],
-          [],
+          {[], [], [], []},
           []
         )
       end
@@ -149,9 +141,7 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [declaration, declaration],
-          [],
-          [],
-          [],
+          {[], [], [], []},
           add: 2
         )
       end
@@ -168,9 +158,7 @@ defmodule Batata.Godot.BindingPlanTest do
           [],
           [{"BatataExample", []}],
           [{:wide, [args: List.duplicate(:int, 9), returns: :int]}],
-          [],
-          [],
-          [],
+          {[], [], [], []},
           wide: 9
         )
       end
@@ -181,7 +169,9 @@ defmodule Batata.Godot.BindingPlanTest do
 
   test "an extension requires exactly one class" do
     error =
-      assert_raise Diagnostic, fn -> BindingPlan.new!(Example, [], [], [], [], [], [], []) end
+      assert_raise Diagnostic, fn ->
+        BindingPlan.new!(Example, [], [], [], {[], [], [], []}, [])
+      end
 
     assert error.code == "E_GODOT_CLASS_MISSING"
   end
@@ -189,11 +179,66 @@ defmodule Batata.Godot.BindingPlanTest do
   test "unknown declaration options fail closed" do
     error =
       assert_raise Diagnostic, fn ->
-        BindingPlan.new!(Example, [dynamic: true], [{"BatataExample", []}], [], [], [], [], [])
+        BindingPlan.new!(
+          Example,
+          [dynamic: true],
+          [{"BatataExample", []}],
+          [],
+          {[], [], [], []},
+          []
+        )
       end
 
     assert error.code == "E_GODOT_OPTION_UNKNOWN"
     assert error.context.options == [:dynamic]
+  end
+
+  test "packed mesh values and declared ArrayMesh outbound calls are canonical" do
+    plan =
+      BindingPlan.new!(
+        Example,
+        [],
+        [{"BatataExample", []}],
+        [
+          {:vertices, [args: [], returns: :packed_vector3_array]},
+          {:indices, [args: [], returns: :packed_int32_array]},
+          {:mesh, [args: [], returns: {:object, "ArrayMesh"}, outbound: :array_mesh_surface]}
+        ],
+        {[:array_mesh_surface], [], [], []},
+        vertices: 0,
+        indices: 0,
+        mesh: 0
+      )
+
+    assert [%BindingPlan.Outbound{hash: 1_796_411_378}] = plan.outbounds
+    assert Enum.find(plan.methods, &(&1.name == "mesh")).outbound == :array_mesh_surface
+
+    assert BindingPlan.canonical_map(plan)["outbounds"] == [
+             %{
+               "class" => "ArrayMesh",
+               "hash" => 1_796_411_378,
+               "method" => "add_surface_from_arrays",
+               "operation" => "array_mesh_surface"
+             }
+           ]
+  end
+
+  test "outbound calls fail closed unless declared" do
+    error =
+      assert_raise Diagnostic, fn ->
+        BindingPlan.new!(
+          Example,
+          [],
+          [{"BatataExample", []}],
+          [
+            {:mesh, [args: [], returns: {:object, "ArrayMesh"}, outbound: :array_mesh_surface]}
+          ],
+          {[], [], [], []},
+          mesh: 0
+        )
+      end
+
+    assert error.code == "E_GODOT_OUTBOUND_CALL_UNDECLARED"
   end
 
   test "plain modules do not masquerade as extensions" do
