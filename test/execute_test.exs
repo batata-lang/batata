@@ -885,6 +885,23 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "uses :binary.match positions in integer arithmetic", %{ctx: ctx} do
+    assert 2 ==
+             Batata.execute(
+               """
+               defmodule NativeBinaryMatchPosition do
+                 def main() do
+                   case :binary.match("abc", "b") do
+                     :nomatch -> 0
+                     {position, 1} -> position + 1
+                   end
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "splits binaries at dynamic byte positions", %{ctx: ctx} do
     source = """
     defmodule NativeSplitBinary do
@@ -1620,6 +1637,20 @@ defmodule Batata.ExecuteTest do
                      _ -> 0
                    end
                  end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "executes arithmetic on byte and utf8 pattern bindings", %{ctx: ctx} do
+    assert 84 ==
+             Batata.execute(
+               """
+               defmodule Math do
+                 def byte(<<value::8>>), do: value + 1
+                 def unicode(<<value::utf8>>), do: value - 1
+                 def main(), do: byte(<<41>>) + unicode(<<43::utf8>>)
                end
                """,
                ctx
