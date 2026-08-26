@@ -24,7 +24,7 @@ defmodule Batata.WorktreeAddTest do
     target = Path.join(base, "ready")
 
     assert {output, 0} = run(repo, target, "feature/ready")
-    assert output =~ "Worktree ready: #{target}"
+    assert output =~ "Worktree ready: #{canonical_path(target)}"
     assert File.regular?(Path.join(target, ".ready"))
     assert git_output!(repo, ["-C", target, "branch", "--show-current"]) == "feature/ready"
   end
@@ -98,6 +98,11 @@ defmodule Batata.WorktreeAddTest do
   defp git_output!(repo, args) do
     {output, 0} = System.cmd("git", ["-C", repo | args], stderr_to_stdout: true)
     String.trim(output)
+  end
+
+  defp canonical_path(path) do
+    {parent, 0} = System.cmd("pwd", ["-P"], cd: Path.dirname(path))
+    Path.join(String.trim(parent), Path.basename(path))
   end
 
   defp git!(repo, args) do
