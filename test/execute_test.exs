@@ -4,6 +4,10 @@ defmodule Batata.ExecuteTest do
   alias Batata
   alias Batata.Memory.Plan
 
+  defmodule NativeRaisedError do
+    defexception [:message]
+  end
+
   test "executes a compiled module through the JIT", %{ctx: ctx} do
     assert 3 ==
              Batata.execute(
@@ -41,6 +45,21 @@ defmodule Batata.ExecuteTest do
                """,
                ctx
              )
+  end
+
+  test "raises a term-valued exception through the JIT boundary", %{ctx: ctx} do
+    source = """
+    defmodule Batata.ExecuteTest.NativeRaisedError do
+      defexception [:message]
+
+      def main() do
+        error = %__MODULE__{message: "native boom"}
+        raise error
+      end
+    end
+    """
+
+    assert_raise NativeRaisedError, "native boom", fn -> Batata.execute(source, ctx) end
   end
 
   test "JIT lifecycle materializes a composite result on repeated executions", %{ctx: ctx} do

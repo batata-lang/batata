@@ -343,6 +343,8 @@ defmodule Batata do
     raise SystemLimitError, message: message
   end
 
+  defp materialize_extended_exception(9, %{__exception__: true} = exception), do: raise(exception)
+
   defp materialize_extended_exception(kind, reason) do
     raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
   end
