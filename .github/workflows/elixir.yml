@@ -65,6 +65,20 @@ jobs:
         working-directory: scripts/native_deps
         run: mix batata.native test --warnings-as-errors --max-cases 1 --timeout 120000
 
+      - name: Test Batata Probe package
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_probe
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors
+          '
+
       - name: Install pinned Godot 4.6.2
         run: |
           mkdir -p "$RUNNER_TEMP/godot"
@@ -184,72 +198,6 @@ jobs:
         with:
           name: runtime-soak-report
           path: _build/runtime_soak
-          if-no-files-found: error
-
-      - name: Checkout pinned Jason probe corpus
-        uses: actions/checkout@v4
-        with:
-          repository: michalmuskala/jason
-          ref: 4ede42858eb19f80ec9e863aab52df466eab8608
-          path: jason-probe-source
-
-      - name: Run Jason compile probe
-        working-directory: scripts/native_deps
-        run: |
-          mix batata.native run -- batata.jason_probe \
-            --source jason-probe-source \
-            --output _build/jason_probe/report.json \
-            --baseline probe/jason/baseline.json \
-            --fail-on-regression
-
-      - name: Upload Jason probe report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: jason-probe-report
-          path: _build/jason_probe/report.json
-          if-no-files-found: error
-
-      - name: Checkout pinned Decimal probe corpus
-        uses: actions/checkout@v4
-        with:
-          repository: ericmj/decimal
-          ref: 592d59ac4474933f91cdc3e8e037f137f7e008b0
-          path: decimal-probe-source
-
-      - name: Run Decimal compile probe
-        working-directory: scripts/native_deps
-        run: |
-          mix batata.native run -- batata.decimal_probe \
-            --source decimal-probe-source \
-            --output _build/decimal_probe/report.json \
-            --baseline probe/decimal/baseline.json
-
-      - name: Run Jason and Decimal coverage dashboard
-        working-directory: scripts/native_deps
-        run: |
-          mix batata.native run -- batata.coverage \
-            --jason-source jason-probe-source \
-            --decimal-source decimal-probe-source \
-            --jason-raw-report _build/jason_probe/report.json \
-            --decimal-raw-report _build/decimal_probe/report.json \
-            --output _build/coverage/report.json \
-            --fail-on-regression
-
-      - name: Upload coverage dashboard
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: corpus-coverage-dashboard
-          path: _build/coverage/report.json
-          if-no-files-found: error
-
-      - name: Upload Decimal probe report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: decimal-probe-report
-          path: _build/decimal_probe/report.json
           if-no-files-found: error
 
       - name: Run process-reuse benchmark

@@ -53,7 +53,7 @@ defmodule Batata.MixProject do
     "An Elixir-to-native compiler built on Beaver and the ex dialect."
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(:test), do: ["lib", "test/support", "packages/batata_probe/lib"]
   defp elixirc_paths(_), do: ["lib"]
 
   defp package do
