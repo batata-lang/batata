@@ -168,4 +168,27 @@ defmodule Batata.TransformTest do
     assert rendered =~ ~r/"ex\.apply".*-> i64/s
     refute rendered =~ ~r/"ex\.unbox"\([^\n]*\) : \(i64\) -> i64/
   end
+
+  test "expands integer cases over :binary.at without mixed comparison operands", %{ctx: ctx} do
+    module =
+      Batata.compile(
+        """
+        defmodule BinaryDispatch do
+          def classify(binary, position) do
+            case :binary.at(binary, position) do
+              92 -> 1
+              34 -> 2
+              _ -> 0
+            end
+          end
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~s{"ex.binary_get"}
+    assert rendered =~ ~r/"ex\.binary_get".*"ex\.to_int"/s
+    refute rendered =~ ~r/"ex\.cmp"\([^\n]*!ex\.term/
+  end
 end
