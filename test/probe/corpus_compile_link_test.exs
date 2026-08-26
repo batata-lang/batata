@@ -150,6 +150,29 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
              CorpusCompileLink.run(tmp_dir)
   end
 
+  @tag :tmp_dir
+  test "qualifies private function captures selected at runtime", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "captured_private.ex", """
+    defmodule CapturedPrivate do
+      def apply_selected(kind, value) do
+        selected =
+          case kind do
+            :increment -> &increment/1
+            :double -> &double/1
+          end
+
+        selected.(value)
+      end
+
+      defp increment(value), do: value + 1
+      defp double(value), do: value * 2
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
   defp write_source(root, name, contents) do
     lib = Path.join(root, "lib")
     File.mkdir_p!(lib)

@@ -156,6 +156,18 @@ defmodule Batata.CompilationUnit do
 
   defp rewrite_ast(ast, module, symbols) do
     Macro.prewalk(ast, fn
+      {:&, capture_metadata, [{:/, slash_metadata, [{name, call_metadata, context}, arity]}]} =
+          capture
+      when is_atom(name) and is_integer(arity) ->
+        case Map.fetch(symbols, {module, name, arity}) do
+          {:ok, qualified} ->
+            {:&, capture_metadata,
+             [{:/, slash_metadata, [{qualified, call_metadata, context}, arity]}]}
+
+          :error ->
+            capture
+        end
+
       {:&, capture_metadata,
        [
          {:/, slash_metadata, [{{:., _, [module_ast, name]}, call_metadata, []}, arity]}
