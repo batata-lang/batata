@@ -8,10 +8,10 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
   Batata and the BEAM oracle.
   """
 
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   alias Batata
-  alias Batata.Test.JasonDecoderSubset
+  alias Batata.Jason.Test.DecoderSubset
 
   @cases [
     {"integer token", "12345", 12_345},
@@ -37,14 +37,14 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
     expected = Macro.escape(expected)
 
     test name, %{ctx: ctx} do
-      source = JasonDecoderSubset.source(unquote(input))
+      source = DecoderSubset.source(unquote(input))
       assert unquote(expected) == beam_result(source)
       assert unquote(expected) == Batata.execute(source, ctx)
     end
   end
 
   test "threads dynamic value/rest tuples through a recursive array parser", %{ctx: ctx} do
-    source = JasonDecoderSubset.cursor_source("[1,[2,3],true,null]")
+    source = DecoderSubset.cursor_source("[1,[2,3],true,null]")
     expected = [1, [2, 3], true, nil]
 
     assert expected == beam_result(source)
@@ -52,7 +52,7 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
   end
 
   test "constructs object entries from runtime parser values", %{ctx: ctx} do
-    source = JasonDecoderSubset.map_source(~s({"a":1,"b":true}))
+    source = DecoderSubset.map_source(~s({"a":1,"b":true}))
     expected = %{"a" => false, "b" => true}
 
     assert expected == beam_result(source)
@@ -60,7 +60,7 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
   end
 
   test "constructs escaped string bytes at runtime", %{ctx: ctx} do
-    source = JasonDecoderSubset.escape_source(~s("a\\n\\"b"))
+    source = DecoderSubset.escape_source(~s("a\\n\\"b"))
     expected = "b\"\na"
 
     assert expected == beam_result(source)
@@ -76,7 +76,7 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
 
   for {name, input, expected} <- @float_cases do
     test "decodes finite float: #{name}", %{ctx: ctx} do
-      source = JasonDecoderSubset.float_source(unquote(input))
+      source = DecoderSubset.float_source(unquote(input))
       expected = unquote(expected)
 
       assert <<expected::float-64-native>> == <<beam_result(source)::float-64-native>>
@@ -88,7 +88,7 @@ defmodule Batata.Probe.Jason.DecoderSubsetTest do
 
   for input <- @invalid_float_tokens do
     test "rejects invalid float syntax #{input}", %{ctx: ctx} do
-      source = JasonDecoderSubset.float_syntax_source(unquote(input))
+      source = DecoderSubset.float_syntax_source(unquote(input))
 
       refute beam_result(source)
       refute Batata.execute(source, ctx)

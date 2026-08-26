@@ -8,7 +8,7 @@ defmodule Batata.Probe.Jason.CodegenIntersperseTest do
   compiling as a unit.
   """
 
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   alias Batata
 

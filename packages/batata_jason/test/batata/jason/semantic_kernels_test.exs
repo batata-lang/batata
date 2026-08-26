@@ -7,7 +7,7 @@ defmodule Batata.Probe.Jason.SemanticKernelsTest do
   modules compile; the source inventory reports that boundary separately.
   """
 
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   alias Batata
 

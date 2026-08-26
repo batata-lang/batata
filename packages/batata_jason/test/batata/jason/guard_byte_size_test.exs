@@ -6,7 +6,7 @@ defmodule Batata.Probe.Jason.GuardByteSizeTest do
   Jason's original map-patterned `Jason.DecodeError.message/1` compiles.
   """
 
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   alias Batata
 

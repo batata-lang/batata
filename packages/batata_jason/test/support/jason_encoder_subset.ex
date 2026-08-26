@@ -1,4 +1,4 @@
-defmodule Batata.Test.JasonEncoderSubset do
+defmodule Batata.Jason.Test.EncoderSubset do
   @moduledoc false
 
   # Derived from Jason 1.4.5's encode/2 output boundary, which turns the

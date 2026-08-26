@@ -7,10 +7,10 @@ defmodule Batata.Probe.Jason.EncoderSubsetTest do
   and compare Batata with the BEAM oracle.
   """
 
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   alias Batata
-  alias Batata.Test.JasonEncoderSubset
+  alias Batata.Jason.Test.EncoderSubset
 
   @cases [
     {"nested object output", ["{", ["\"ok\"", ":", [?t, "rue"]], "}"], ~s({"ok":true})},
@@ -20,7 +20,7 @@ defmodule Batata.Probe.Jason.EncoderSubsetTest do
 
   for {name, iodata, expected} <- @cases do
     test name, %{ctx: ctx} do
-      source = JasonEncoderSubset.source(unquote(Macro.escape(iodata)))
+      source = EncoderSubset.source(unquote(Macro.escape(iodata)))
 
       assert unquote(expected) == beam_result(source)
       assert unquote(expected) == Batata.execute(source, ctx)

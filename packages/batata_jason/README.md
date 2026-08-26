@@ -1,11 +1,12 @@
-# Jason compile probe
+# Batata Jason
 
-Jason is an external semantic conformance corpus for Batata. It is not a JSON
-implementation or production dependency of Batata or Beaver.
+`batata_jason` owns Jason as an external semantic conformance corpus for
+Batata. It is an independent package, not a JSON implementation or a
+production dependency of the Batata compiler.
 
 The probe has two deliberately separate surfaces:
 
-- `mix batata.jason_probe` inventories unmodified Jason source at the current
+- `mix batata.jason.probe` inventories unmodified Jason source at the current
   parse/frontend boundary. It collects every blocker instead of stopping at
   the first unsupported form.
 - Structurally eligible modules also enter a non-executing compile-attempt
@@ -17,17 +18,17 @@ The probe has two deliberately separate surfaces:
 - The `dependency_frontier` records remote calls made by those eligible
   modules and distinguishes calls into the pinned corpus from external calls.
   It is measurement only; targets are not resolved or compiled together.
-- `test/probe/jason/semantic_kernels_test.exs` executes minimized,
+- `test/batata/jason/semantic_kernels_test.exs` executes minimized,
   Batata-owned kernels shaped like Jason's token, number, UTF-8, and escape
   scanners and compares their results with the BEAM implementation.
-- `test/probe/jason/decoder_subset_test.exs` executes a selected scalar JSON
+- `test/batata/jason/decoder_subset_test.exs` executes a selected scalar JSON
   decoder surface. Valid and invalid tokens exercise guarded byte/rest and
   UTF-8 scanner paths against a BEAM oracle; a representative number token
   also runs through the AOT gate.
 
 ## Pinned corpus
 
-[`source.json`](source.json) pins Jason `v1.4.5` to an exact commit. CI checks
+[`source.json`](priv/probe/source.json) pins Jason `v1.4.5` to an exact commit. CI checks
 out that commit explicitly; the probe does not rely on Jason being present as
 a transitive Kinda or development dependency.
 
@@ -36,10 +37,11 @@ To reproduce the inventory locally:
 ```sh
 git clone https://github.com/michalmuskala/jason.git /tmp/batata-jason
 git -C /tmp/batata-jason checkout 4ede42858eb19f80ec9e863aab52df466eab8608
-mix batata.jason_probe \
+cd packages/batata_jason
+BATATA_PATH=../.. BATATA_PROBE_PATH=../batata_probe mix batata.jason.probe \
   --source /tmp/batata-jason \
-  --output _build/jason_probe/report.json \
-  --baseline probe/jason/baseline.json \
+  --report _build/jason_probe/report.json \
+  --coverage _build/jason_probe/coverage.json \
   --fail-on-regression
 ```
 
@@ -224,7 +226,7 @@ surfaces. Those blockers must be measured independently of schema eligibility.
 `capabilities.json` is the semantic scorecard. Unlike raw accepted-definition
 counts, every `executable` row names an end-to-end gate; `shaped` rows name a
 scanner/IR probe; and every `blocked` row has one owning layer and a reason.
-JSONTestSuite is pinned separately under `probe/json_test_suite/source.json`
+JSONTestSuite is pinned separately under `priv/probe/json_test_suite/source.json`
 because it supplies data, not Elixir implementation source.
 
 The matrix also records the first blockers exposed by replacing whole-input

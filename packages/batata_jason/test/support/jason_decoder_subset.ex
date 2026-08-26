@@ -1,4 +1,4 @@
-defmodule Batata.Test.JasonDecoderSubset do
+defmodule Batata.Jason.Test.DecoderSubset do
   @moduledoc false
 
   def source(input) do
