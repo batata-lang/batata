@@ -57,8 +57,14 @@ fn reportException(result: objc_runtime.ExceptionResult) void {
         if (result.reason) |reason| std.mem.span(reason) else "unknown",
     });
     if (application != null) {
-        abi.sendVoidId(application, selector(if (options.smoke) "stop:" else "terminate:"), null);
+        if (options.smoke) finishSmokeProcess() else abi.sendVoidId(application, selector("terminate:"), null);
     }
+}
+
+fn finishSmokeProcess() noreturn {
+    smoke_finished.store(true, .release);
+    if (!callback_failed) std.debug.print("BATATA_OBJC_CLEAN_EXIT\n", .{});
+    std.process.exit(if (callback_failed) 23 else 0);
 }
 
 fn didFinishBody(_: ?*anyopaque) callconv(.c) ?*anyopaque {
@@ -131,8 +137,7 @@ fn smokeAction(_: ?*anyopaque) callconv(.c) void {
     if (acquireMainThread() == null) {
         callback_failed = true;
         std.debug.print("E_OBJC_MAIN_THREAD_REQUIRED callback=smokeAction\n", .{});
-        abi.sendVoidId(application, selector("stop:"), null);
-        return;
+        finishSmokeProcess();
     }
     std.debug.print("BATATA_OBJC_MAIN_QUEUE\n", .{});
     abi.sendVoidId(button, selector("performClick:"), null);
@@ -141,7 +146,7 @@ fn smokeAction(_: ?*anyopaque) callconv(.c) void {
         callback_failed = true;
         std.debug.print("E_OBJC_TERMINATION_REJECTED\n", .{});
     }
-    abi.sendVoidId(application, selector("stop:"), null);
+    finishSmokeProcess();
 }
 
 fn smokeWatchdog() void {
