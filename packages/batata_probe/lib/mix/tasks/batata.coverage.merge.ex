@@ -3,7 +3,7 @@ defmodule Mix.Tasks.Batata.Coverage.Merge do
 
   use Mix.Task
 
-  alias Batata.Probe.Coverage
+  alias Batata.Probe.CoverageDashboard
 
   @shortdoc "Merges precomputed Batata corpus coverage dashboards"
 
@@ -24,7 +24,7 @@ defmodule Mix.Tasks.Batata.Coverage.Merge do
       Mix.raise("at least one --input is required")
     end
 
-    Coverage.merge!(inputs, output)
+    CoverageDashboard.merge!(inputs, output)
     Mix.shell().info("coverage dashboard -> #{output}")
   end
 end

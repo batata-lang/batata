@@ -2,6 +2,7 @@ defmodule Batata.Probe.CoverageTest do
   use ExUnit.Case, async: true
 
   alias Batata.Probe.Coverage
+  alias Batata.Probe.CoverageDashboard
   alias Batata.Probe.Report
 
   @tag :tmp_dir
@@ -176,7 +177,9 @@ defmodule Batata.Probe.CoverageTest do
     File.write!(jason_path, JSON.encode!(jason))
     File.write!(decimal_path, JSON.encode!(decimal))
 
-    assert %{"corpora" => corpora} = Coverage.merge!([jason_path, decimal_path], output)
+    assert %{"corpora" => corpora} =
+             CoverageDashboard.merge!([jason_path, decimal_path], output)
+
     assert Map.keys(corpora) |> Enum.sort() == ["decimal", "jason"]
     assert JSON.decode!(File.read!(output))["corpora"] == corpora
   end
@@ -197,7 +200,7 @@ defmodule Batata.Probe.CoverageTest do
     File.write!(second, JSON.encode!(dashboard))
 
     assert_raise ArgumentError, ~r/duplicate coverage corpus same/, fn ->
-      Coverage.merge!([first, second], Path.join(tmp_dir, "merged.json"))
+      CoverageDashboard.merge!([first, second], Path.join(tmp_dir, "merged.json"))
     end
   end
 end
