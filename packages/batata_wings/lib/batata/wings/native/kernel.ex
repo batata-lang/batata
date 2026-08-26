@@ -1,11 +1,22 @@
 defmodule Batata.Wings.Native.Kernel do
+  # credo:disable-for-this-file Credo.Check.Refactor.Nesting
+  # credo:disable-for-this-file Credo.Check.Readability.ParenthesesOnZeroArityDefs
   @moduledoc false
 
-  def main(), do: {native_editor_smoke_code()}
+  def main(), do: {native_editor_smoke_code(), native_topology_edit_smoke_code()}
 
   def native_editor_smoke_code() do
     picked = editor_pointer_button(nil, 3, 0, 0, 5_000, 0, 0, -10)
     state_code(elem(picked, 0))
+  end
+
+  def native_topology_edit_smoke_code() do
+    selected = elem(select_face(cube_state(), 1, 0), 0)
+    extruded = elem(extrude_selected(selected, 250, 0, 4_096), 0)
+    individual = elem(extrude_individual_selected(extruded, 250, 1, 4_096), 0)
+    inset = elem(inset_selected(individual, 250, 2, 4_096), 0)
+    beveled = elem(bevel_selected(inset, 100, 50, 3, 4_096), 0)
+    layout_code(beveled)
   end
 
   def cube_state() do
@@ -48,9 +59,14 @@ defmodule Batata.Wings.Native.Kernel do
     {current, elem(boxed, 0)}
   end
 
+  def editor_layout_code(state) do
+    current = state_or_initial(state)
+    {current, layout_code(current)}
+  end
+
   def selected_triangle_indices(state) do
     current = state_or_initial(state)
-    {current, selection_indices(selection(current))}
+    {current, selection_indices(selection(current), faces(current))}
   end
 
   def editor_pointer_button(
@@ -113,40 +129,75 @@ defmodule Batata.Wings.Native.Kernel do
     {next, if(code == 0, do: generation(next), else: negative(code))}
   end
 
+  def editor_extrude(state, distance, expected_generation, quota_bytes)
+      when is_integer(distance) and is_integer(expected_generation) and is_integer(quota_bytes) do
+    current = state_or_initial(state)
+    result = extrude_selected(current, distance, expected_generation, quota_bytes)
+    next = elem(result, 0)
+    code = elem(result, 1)
+    {next, if(code == 0, do: generation(next), else: negative(code))}
+  end
+
+  def editor_extrude_individual(state, distance, expected_generation, quota_bytes)
+      when is_integer(distance) and is_integer(expected_generation) and is_integer(quota_bytes) do
+    current = state_or_initial(state)
+    result = extrude_individual_selected(current, distance, expected_generation, quota_bytes)
+    next = elem(result, 0)
+    code = elem(result, 1)
+    {next, if(code == 0, do: generation(next), else: negative(code))}
+  end
+
+  def editor_inset(state, ratio_milli, expected_generation, quota_bytes)
+      when is_integer(ratio_milli) and is_integer(expected_generation) and
+             is_integer(quota_bytes) do
+    current = state_or_initial(state)
+    result = inset_selected(current, ratio_milli, expected_generation, quota_bytes)
+    next = elem(result, 0)
+    code = elem(result, 1)
+    {next, if(code == 0, do: generation(next), else: negative(code))}
+  end
+
+  def editor_bevel(state, ratio_milli, width, expected_generation, quota_bytes)
+      when is_integer(ratio_milli) and is_integer(width) and
+             is_integer(expected_generation) and is_integer(quota_bytes) do
+    current = state_or_initial(state)
+    result = bevel_selected(current, ratio_milli, width, expected_generation, quota_bytes)
+    next = elem(result, 0)
+    code = elem(result, 1)
+    {next, if(code == 0, do: generation(next), else: negative(code))}
+  end
+
   def topology_stats(state) do
     vertices = elem(state, 1)
     faces = elem(state, 2)
-    vertex_count = list_count(vertices)
-    side_count = face_side_count(faces)
-    edge_count = half_even(side_count)
-    face_count = list_count(faces)
+    vertex_count = add_integer(length(vertices), 0)
+    face_count = add_integer(length(faces), 0)
+    side_count = mul_integer(face_count, 4)
+    edge_count = mul_integer(face_count, 2)
 
-    {valid_closed_layout(vertex_count, side_count, face_count), vertex_count, edge_count,
-     face_count, euler_characteristic(vertex_count, edge_count, face_count)}
+    {closed_boolean(valid_closed_layout(vertex_count, side_count, face_count)), vertex_count,
+     edge_count, face_count, euler_characteristic(vertex_count, edge_count, face_count)}
   end
 
-  def vertex_count(state), do: list_count(elem(state, 1))
-  def face_count(state), do: face_list_count(elem(state, 2), 0)
+  def vertex_count(state), do: length(elem(state, 1))
+  def face_count(state), do: length(elem(state, 2))
 
   def layout_code(state) do
-    encode_layout(list_count(elem(state, 1)), list_count(elem(state, 2)))
+    encode_layout(length(elem(state, 1)), length(elem(state, 2)))
   end
 
   def topology_code_for_state(state) do
-    vertices = elem(state, 1)
-    faces = elem(state, 2)
-    vertex_count = list_count(vertices)
-    side_count = face_side_count(faces)
-    edge_count = half_even(side_count)
-    face_count = list_count(faces)
+    encode_quad_topology(length(elem(state, 1)), length(elem(state, 2)))
+  end
 
-    encode_topology(
-      valid_closed_layout(vertex_count, side_count, face_count),
-      vertex_count,
-      edge_count,
-      face_count,
-      euler_characteristic(vertex_count, edge_count, face_count)
-    )
+  defp encode_quad_topology(vertex_count, face_count)
+       when is_integer(vertex_count) and is_integer(face_count) do
+    edge_count = face_count * 2
+    euler = vertex_count - edge_count + face_count
+
+    if vertex_count == face_count + 2,
+      do: vertex_count * 100_000 + edge_count * 1_000 + face_count * 10 + euler,
+      else: -1
   end
 
   def select_face(state, face_id, expected_generation)
@@ -209,6 +260,28 @@ defmodule Batata.Wings.Native.Kernel do
     end
   end
 
+  def extrude_selected(state, distance, expected_generation, quota_bytes)
+      when is_integer(distance) and is_integer(expected_generation) and is_integer(quota_bytes) do
+    edit_selected_quad(state, 0, distance, 0, expected_generation, quota_bytes)
+  end
+
+  def extrude_individual_selected(state, distance, expected_generation, quota_bytes)
+      when is_integer(distance) and is_integer(expected_generation) and is_integer(quota_bytes) do
+    edit_selected_quad(state, 0, distance, 0, expected_generation, quota_bytes)
+  end
+
+  def inset_selected(state, ratio_milli, expected_generation, quota_bytes)
+      when is_integer(ratio_milli) and is_integer(expected_generation) and
+             is_integer(quota_bytes) do
+    edit_selected_quad(state, ratio_milli, 0, 1, expected_generation, quota_bytes)
+  end
+
+  def bevel_selected(state, ratio_milli, width, expected_generation, quota_bytes)
+      when is_integer(ratio_milli) and is_integer(width) and
+             is_integer(expected_generation) and is_integer(quota_bytes) do
+    edit_selected_quad(state, ratio_milli, width, 2, expected_generation, quota_bytes)
+  end
+
   def generation(state), do: add_integer(elem(state, 0), 0)
   def vertices(state), do: elem(state, 1)
   def faces(state), do: elem(state, 2)
@@ -252,19 +325,16 @@ defmodule Batata.Wings.Native.Kernel do
     )
   end
 
-  defp face_side_count([]), do: 0
-
-  defp face_side_count([face | rest]) do
-    add_integer(list_count(elem(face, 1)), face_side_count(rest))
-  end
-
   defp valid_closed_layout(vertex_count, side_count, face_count) do
-    if vertex_count == 8 do
-      if side_count == 24, do: face_count == 6, else: false
+    if side_count == mul_integer(face_count, 4) do
+      if vertex_count == add_integer(face_count, 2), do: 1, else: 0
     else
-      false
+      0
     end
   end
+
+  defp closed_boolean(1), do: true
+  defp closed_boolean(_code), do: false
 
   defp selected_vertex_ids([], _selection, result), do: result
 
@@ -302,6 +372,258 @@ defmodule Batata.Wings.Native.Kernel do
     else
       [vertex | move_vertices(rest, selected, dx, dy, dz)]
     end
+  end
+
+  defp edit_selected_quad(
+         state,
+         ratio_milli,
+         distance,
+         operation,
+         expected_generation,
+         quota_bytes
+       ) do
+    face_id = single_selection_id(selection(state))
+    estimate = add_integer(estimate_bytes(vertices(state), faces(state)), 384)
+
+    if generation(state) != expected_generation do
+      {state, 1}
+    else
+      if face_id < 0 do
+        {state, 2}
+      else
+        if valid_edit_parameters(ratio_milli, distance, operation) == 0 do
+          {state, 6}
+        else
+          if estimate > quota_bytes do
+            {state, 3}
+          else
+            build_quad_edit(state, face_id, ratio_milli, distance, operation)
+          end
+        end
+      end
+    end
+  end
+
+  defp build_quad_edit(state, face_id, ratio_milli, distance, operation) do
+    old_vertices = vertices(state)
+    old_faces = faces(state)
+    source_face = find_face(old_faces, face_id)
+    source_ids = elem(source_face, 1)
+    first_vertex = length(old_vertices)
+
+    duplicate_ids = [
+      first_vertex,
+      add_integer(first_vertex, 1),
+      add_integer(first_vertex, 2),
+      add_integer(first_vertex, 3)
+    ]
+
+    center = quad_centroid(old_vertices, source_ids)
+
+    normal_offset =
+      axis_offset(old_vertices, source_ids, edit_normal_distance(operation, distance))
+
+    additions =
+      transformed_quad_vertices(
+        old_vertices,
+        source_ids,
+        duplicate_ids,
+        center,
+        ratio_milli,
+        normal_offset
+      )
+
+    candidate_vertices =
+      append_four_terms(
+        old_vertices,
+        list_at(additions, 0),
+        list_at(additions, 1),
+        list_at(additions, 2),
+        list_at(additions, 3)
+      )
+
+    cap_faces = replace_face(old_faces, face_id, duplicate_ids)
+    side_faces = quad_side_faces(source_ids, duplicate_ids, length(old_faces))
+
+    candidate_faces =
+      append_four_terms(
+        cap_faces,
+        list_at(side_faces, 0),
+        list_at(side_faces, 1),
+        list_at(side_faces, 2),
+        list_at(side_faces, 3)
+      )
+
+    commit_topology_edit(state, candidate_vertices, candidate_faces)
+  end
+
+  defp commit_topology_edit(state, candidate_vertices, candidate_faces) do
+    vertex_count = length(candidate_vertices)
+    face_count = length(candidate_faces)
+
+    if vertex_count == add_integer(face_count, 2) do
+      commit_candidate_if_in_range(state, candidate_vertices, candidate_faces)
+    else
+      {state, 7}
+    end
+  end
+
+  defp commit_candidate_if_in_range(state, candidate_vertices, candidate_faces)
+       when is_list(candidate_vertices) and is_list(candidate_faces) do
+    previous = state_snapshot(state)
+
+    next =
+      {increment(generation(state)), candidate_vertices, candidate_faces, selection(state),
+       [previous | elem(state, 4)], []}
+
+    if vertices_in_range(candidate_vertices), do: {next, 0}, else: {state, 4}
+  end
+
+  defp single_selection_id([]), do: -1
+
+  defp single_selection_id([face_id | rest]) when is_integer(face_id) do
+    single_selection_tail(rest, face_id)
+  end
+
+  defp single_selection_tail([], face_id) when is_integer(face_id), do: face_id + 0
+  defp single_selection_tail([_extra | _rest], _face_id), do: -1
+
+  defp valid_edit_parameters(ratio, distance, operation)
+       when is_integer(ratio) and is_integer(distance) and is_integer(operation) do
+    if operation == 0 do
+      positive_bounded_code(distance, 100_000)
+    else
+      if operation == 1 do
+        positive_bounded_code(ratio, 490)
+      else
+        if operation == 2 do
+          if positive_bounded_code(ratio, 490) == 1,
+            do: positive_bounded_code(distance, 100_000),
+            else: 0
+        else
+          0
+        end
+      end
+    end
+  end
+
+  defp positive_bounded_code(value, _maximum) when value <= 0, do: 0
+  defp positive_bounded_code(value, maximum) when value > maximum, do: 0
+  defp positive_bounded_code(_value, _maximum), do: 1
+
+  defp edit_normal_distance(0, distance), do: distance + 0
+  defp edit_normal_distance(1, _distance), do: 0
+  defp edit_normal_distance(2, width), do: negative(width)
+
+  defp quad_centroid(vertices, ids) do
+    first = vertex_xyz(find_vertex(vertices, list_at(ids, 0)))
+    second = vertex_xyz(find_vertex(vertices, list_at(ids, 1)))
+    third = vertex_xyz(find_vertex(vertices, list_at(ids, 2)))
+    fourth = vertex_xyz(find_vertex(vertices, list_at(ids, 3)))
+
+    {average_four(elem(first, 0), elem(second, 0), elem(third, 0), elem(fourth, 0)),
+     average_four(elem(first, 1), elem(second, 1), elem(third, 1), elem(fourth, 1)),
+     average_four(elem(first, 2), elem(second, 2), elem(third, 2), elem(fourth, 2))}
+  end
+
+  defp average_four(first, second, third, fourth)
+       when is_integer(first) and is_integer(second) and is_integer(third) and is_integer(fourth) do
+    div(add_integer(add_integer(first, second), add_integer(third, fourth)), 4)
+  end
+
+  defp axis_offset(vertices, ids, distance) do
+    first = vertex_xyz(find_vertex(vertices, list_at(ids, 0)))
+    second = vertex_xyz(find_vertex(vertices, list_at(ids, 1)))
+    third = vertex_xyz(find_vertex(vertices, list_at(ids, 2)))
+    normal = vector_cross(vector_sub(second, first), vector_sub(third, second))
+
+    dominant_axis_offset(
+      elem(normal, 0),
+      elem(normal, 1),
+      elem(normal, 2),
+      distance
+    )
+  end
+
+  defp dominant_axis_offset(x, y, z, distance) do
+    ax = absolute_integer(x)
+    ay = absolute_integer(y)
+    az = absolute_integer(z)
+
+    if ax >= ay do
+      if ax >= az,
+        do: {signed_distance(x, distance), 0, 0},
+        else: {0, 0, signed_distance(z, distance)}
+    else
+      if ay >= az,
+        do: {0, signed_distance(y, distance), 0},
+        else: {0, 0, signed_distance(z, distance)}
+    end
+  end
+
+  defp signed_distance(value, distance) when value < 0, do: negative(distance)
+  defp signed_distance(_value, distance), do: distance + 0
+
+  defp absolute_integer(value) when value < 0, do: negative(value)
+  defp absolute_integer(value), do: value + 0
+
+  defp transformed_quad_vertices(
+         vertices,
+         source_ids,
+         duplicate_ids,
+         center,
+         ratio_milli,
+         offset
+       ) do
+    [
+      transformed_vertex(vertices, source_ids, duplicate_ids, 0, center, ratio_milli, offset),
+      transformed_vertex(vertices, source_ids, duplicate_ids, 1, center, ratio_milli, offset),
+      transformed_vertex(vertices, source_ids, duplicate_ids, 2, center, ratio_milli, offset),
+      transformed_vertex(vertices, source_ids, duplicate_ids, 3, center, ratio_milli, offset)
+    ]
+  end
+
+  defp transformed_vertex(vertices, source_ids, duplicate_ids, index, center, ratio_milli, offset) do
+    source = find_vertex(vertices, list_at(source_ids, index))
+    point = vertex_xyz(source)
+    scaled = scale_toward_center(point, center, ratio_milli)
+
+    {list_at(duplicate_ids, index), add_integer(elem(scaled, 0), elem(offset, 0)),
+     add_integer(elem(scaled, 1), elem(offset, 1)), add_integer(elem(scaled, 2), elem(offset, 2))}
+  end
+
+  defp scale_toward_center(point, center, ratio_milli) do
+    keep = sub_integer(1_000, ratio_milli)
+
+    {scaled_component(elem(point, 0), elem(center, 0), keep),
+     scaled_component(elem(point, 1), elem(center, 1), keep),
+     scaled_component(elem(point, 2), elem(center, 2), keep)}
+  end
+
+  defp scaled_component(point, center, keep)
+       when is_integer(point) and is_integer(center) and is_integer(keep) do
+    add_integer(center, div(mul_integer(sub_integer(point, center), keep), 1_000))
+  end
+
+  defp replace_face([], _face_id, new_vertices) when is_list(new_vertices), do: []
+
+  defp replace_face([face | rest], face_id, new_vertices) when is_list(new_vertices) do
+    if elem(face, 0) == face_id,
+      do: [{face_id, new_vertices} | rest],
+      else: [face | replace_face(rest, face_id, new_vertices)]
+  end
+
+  defp quad_side_faces(source, duplicate, first_face) do
+    [
+      {first_face,
+       [list_at(source, 0), list_at(source, 1), list_at(duplicate, 1), list_at(duplicate, 0)]},
+      {add_integer(first_face, 1),
+       [list_at(source, 1), list_at(source, 2), list_at(duplicate, 2), list_at(duplicate, 1)]},
+      {add_integer(first_face, 2),
+       [list_at(source, 2), list_at(source, 3), list_at(duplicate, 3), list_at(duplicate, 2)]},
+      {add_integer(first_face, 3),
+       [list_at(source, 3), list_at(source, 0), list_at(duplicate, 0), list_at(duplicate, 3)]}
+    ]
   end
 
   defp commit_move(state, dx, dy, dz) do
@@ -353,45 +675,7 @@ defmodule Batata.Wings.Native.Kernel do
   defp state_or_initial(state) when is_tuple(state), do: state
 
   defp surface_descriptor(state) do
-    {surface_vertices(vertices(state)),
-     [
-       0,
-       3,
-       2,
-       0,
-       2,
-       1,
-       4,
-       5,
-       6,
-       4,
-       6,
-       7,
-       0,
-       1,
-       5,
-       0,
-       5,
-       4,
-       1,
-       2,
-       6,
-       1,
-       6,
-       5,
-       2,
-       3,
-       7,
-       2,
-       7,
-       6,
-       3,
-       0,
-       4,
-       3,
-       4,
-       7
-     ], 1_000}
+    {surface_vertices(vertices(state)), surface_indices(faces(state)), 1_000}
   end
 
   defp surface_vertices([]), do: []
@@ -400,16 +684,46 @@ defmodule Batata.Wings.Native.Kernel do
     [{elem(vertex, 1), elem(vertex, 2), elem(vertex, 3)} | surface_vertices(rest)]
   end
 
-  defp selection_indices([]), do: []
-  defp selection_indices([face_id | _rest]), do: face_selection_indices(face_id)
+  defp surface_indices([]), do: []
 
-  defp face_selection_indices(0), do: [0, 3, 2, 0, 2, 1]
-  defp face_selection_indices(1), do: [4, 5, 6, 4, 6, 7]
-  defp face_selection_indices(2), do: [0, 1, 5, 0, 5, 4]
-  defp face_selection_indices(3), do: [1, 2, 6, 1, 6, 5]
-  defp face_selection_indices(4), do: [2, 3, 7, 2, 7, 6]
-  defp face_selection_indices(5), do: [3, 0, 4, 3, 4, 7]
-  defp face_selection_indices(_face_id), do: []
+  defp surface_indices([face | rest]) do
+    prepend_face_triangles(elem(face, 1), surface_indices(rest))
+  end
+
+  defp prepend_face_triangles(vertices, tail) when is_list(vertices) and is_list(tail) do
+    first = list_at(vertices, 0)
+    second = list_at(vertices, 1)
+    third = list_at(vertices, 2)
+    fourth = list_at(vertices, 3)
+    tail = prepend_term(fourth, tail)
+    tail = prepend_term(third, tail)
+    tail = prepend_term(first, tail)
+    tail = prepend_term(third, tail)
+    tail = prepend_term(second, tail)
+    prepend_term(first, tail)
+  end
+
+  defp triangulate_face(vertices) when is_list(vertices) do
+    if length(vertices) == 4 do
+      triangulate_quad(vertices)
+    else
+      []
+    end
+  end
+
+  defp triangulate_quad(vertices) when is_list(vertices) do
+    first = list_at(vertices, 0)
+    second = list_at(vertices, 1)
+    third = list_at(vertices, 2)
+    fourth = list_at(vertices, 3)
+    [first, second, third, first, third, fourth]
+  end
+
+  defp selection_indices([], _faces), do: []
+
+  defp selection_indices([face_id | _rest], faces) do
+    triangulate_face(elem(find_face(faces, face_id), 1))
+  end
 
   defp apply_pick(state, face_id)
        when is_integer(face_id) and face_id >= 0 and face_id <= 5,
@@ -635,7 +949,9 @@ defmodule Batata.Wings.Native.Kernel do
   end
 
   defp list_at([value | _rest], 0), do: value
-  defp list_at([_value | rest], index), do: list_at(rest, index - 1)
+
+  defp list_at([_value | rest], index) when is_integer(index),
+    do: list_at(rest, index - 1)
 
   defp selection_code([]), do: 0
   defp selection_code([0 | _rest]), do: 0
@@ -655,10 +971,16 @@ defmodule Batata.Wings.Native.Kernel do
     if elem(face, 0) == face_id, do: true, else: face_exists(rest, face_id)
   end
 
-  defp find_vertex([], _vertex_id), do: {}
+  defp find_vertex([], vertex_id) when is_integer(vertex_id), do: {}
 
-  defp find_vertex([vertex | rest], vertex_id) do
+  defp find_vertex([vertex | rest], vertex_id) when is_integer(vertex_id) do
     if elem(vertex, 0) == vertex_id, do: vertex, else: find_vertex(rest, vertex_id)
+  end
+
+  defp find_face([], face_id) when is_integer(face_id), do: {}
+
+  defp find_face([face | rest], face_id) when is_integer(face_id) do
+    if elem(face, 0) == face_id, do: face, else: find_face(rest, face_id)
   end
 
   defp vertices_in_range([]), do: true
@@ -680,7 +1002,7 @@ defmodule Batata.Wings.Native.Kernel do
   defp coordinate_in_range(value) when is_integer(value), do: true
 
   defp estimate_bytes(vertices, faces) do
-    estimate_counts(list_count(vertices), list_count(faces))
+    estimate_counts(length(vertices), length(faces))
   end
 
   defp estimate_counts(vertex_count, face_count)
@@ -716,10 +1038,24 @@ defmodule Batata.Wings.Native.Kernel do
   defp encode_topology(true, vertices, edges, faces, euler)
        when is_integer(vertices) and is_integer(edges) and is_integer(faces) and
               is_integer(euler) do
-    vertices * 100_000 + edges * 1_000 + faces * 10 + euler
+    encode_topology_values(vertices, edges, faces, euler)
   end
 
   defp encode_topology(false, _vertices, _edges, _faces, _euler), do: -1
+
+  defp encode_topology(1, vertices, edges, faces, euler)
+       when is_integer(vertices) and is_integer(edges) and is_integer(faces) and
+              is_integer(euler) do
+    encode_topology_values(vertices, edges, faces, euler)
+  end
+
+  defp encode_topology(0, _vertices, _edges, _faces, _euler), do: -1
+
+  defp encode_topology_values(vertices, edges, faces, euler)
+       when is_integer(vertices) and is_integer(edges) and is_integer(faces) and
+              is_integer(euler) do
+    vertices * 100_000 + edges * 1_000 + faces * 10 + euler
+  end
 
   defp encode_layout(vertices, faces) when is_integer(vertices) and is_integer(faces) do
     vertices * 100 + faces
@@ -740,12 +1076,6 @@ defmodule Batata.Wings.Native.Kernel do
   defp mul_integer(left, right) when is_integer(left) and is_integer(right), do: left * right
   defp increment(value) when is_integer(value), do: value + 1
   defp negative(value) when is_integer(value), do: 0 - value
-  defp half_even(value), do: half_even(value, 0)
-  defp half_even(0, result), do: result
-
-  defp half_even(value, result) when is_integer(value) and is_integer(result) and value > 0 do
-    half_even(value - 2, result + 1)
-  end
 
   defp zero_vector_code(dx, dy, dz)
        when is_integer(dx) and is_integer(dy) and is_integer(dz) do
@@ -754,20 +1084,19 @@ defmodule Batata.Wings.Native.Kernel do
 
   defp greater_than(left, right) when left > right, do: true
   defp greater_than(_left, _right), do: false
-  defp list_count(values), do: list_count(values, 0)
-  defp list_count([], count), do: count
+  defp list_member([], value) when is_integer(value), do: false
 
-  defp list_count([_value | rest], count) when is_integer(count),
-    do: list_count(rest, count + 1)
-
-  defp face_list_count([], count), do: count
-
-  defp face_list_count([_value | rest], count) when is_integer(count),
-    do: face_list_count(rest, count + 1)
-
-  defp list_member([], _value), do: false
-
-  defp list_member([head | rest], value) do
+  defp list_member([head | rest], value) when is_integer(head) and is_integer(value) do
     if head == value, do: true, else: list_member(rest, value)
   end
+
+  defp append_four_terms([], first, second, third, fourth)
+       when is_tuple(first) and is_tuple(second) and is_tuple(third) and is_tuple(fourth),
+       do: [first, second, third, fourth]
+
+  defp append_four_terms([head | rest], first, second, third, fourth)
+       when is_tuple(first) and is_tuple(second) and is_tuple(third) and is_tuple(fourth),
+       do: [head | append_four_terms(rest, first, second, third, fourth)]
+
+  defp prepend_term(value, tail) when is_list(tail), do: [value | tail]
 end
