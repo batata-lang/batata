@@ -59,6 +59,18 @@ defmodule Batata.ScalarResultInferenceTest do
     end
   end
 
+  test "proves arithmetic helpers whose operands are scalar parameters", %{ctx: ctx} do
+    source = """
+    defmodule ParameterArithmeticFixture do
+      defp add(left, right) when is_integer(left) and is_integer(right), do: left + right
+      defp forwarded(left, right), do: add(left, right)
+      def main(), do: forwarded(20, 22)
+    end
+    """
+
+    assert Batata.execute(source, ctx) == 42
+  end
+
   defp beam_result(source) do
     [{module, _binary}] = Code.compile_string(source)
 

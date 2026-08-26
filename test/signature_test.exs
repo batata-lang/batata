@@ -72,6 +72,43 @@ defmodule Batata.SignatureTest do
            ) == MapSet.new([{:branching, 1}, {:literal, 0}, {:transitive, 0}])
   end
 
+  test "proves integer decoding only at explicit function boundaries" do
+    value = {:value, [], nil}
+    list = {:list, [], nil}
+    index = {:index, [], nil}
+
+    guarded =
+      definition(
+        :guarded,
+        value,
+        {:+, [], [value, 1]},
+        {:is_integer, [], [value]}
+      )
+
+    identity = definition(:identity, value, value)
+
+    list_at_zero = definition(:list_at, [{:|, [], [value, {:_, [], nil}]}, 0], value)
+
+    list_at_tail =
+      definition(
+        :list_at,
+        [{:|, [], [{:_, [], nil}, list]}, index],
+        {:list_at, [], [list, {:-, [], [index, 1]}]},
+        {:is_integer, [], [index]}
+      )
+
+    assert Batata.Signature.infer_integer_guards([
+             guarded,
+             identity,
+             list_at_zero,
+             list_at_tail
+           ]) == %{
+             {:guarded, 1} => [true],
+             {:identity, 1} => [false],
+             {:list_at, 2} => [false, true]
+           }
+  end
+
   defp definition(name, patterns, body) when is_list(patterns) do
     %Definition{
       kind: :defp,
@@ -83,5 +120,23 @@ defmodule Batata.SignatureTest do
 
   defp definition(name, pattern, body) do
     definition(name, [pattern], body)
+  end
+
+  defp definition(name, patterns, body, guard) when is_list(patterns) do
+    %Definition{
+      kind: :defp,
+      name: name,
+      arity: length(patterns),
+      clauses: [%Clause{patterns: patterns, guard_ast: guard, body_ast: body}]
+    }
+  end
+
+  defp definition(name, pattern, body, guard) do
+    %Definition{
+      kind: :defp,
+      name: name,
+      arity: 1,
+      clauses: [%Clause{patterns: [pattern], guard_ast: guard, body_ast: body}]
+    }
   end
 end

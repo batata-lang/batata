@@ -126,6 +126,21 @@ defmodule Batata.TransformTest do
     assert rendered =~ ~s{"ex.call"}
   end
 
+  test "decodes term integers before passing them to scalar callees", %{ctx: ctx} do
+    source = """
+    defmodule TupleScalarBoundary do
+      def add(left, right) when is_integer(left) and is_integer(right), do: left + right
+
+      def main() do
+        pair = {2, 3}
+        add(elem(pair, 0), elem(pair, 1))
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == 5
+  end
+
   test "preserves abstract !ex.term types across transform passes", %{ctx: ctx} do
     module =
       transform!(
