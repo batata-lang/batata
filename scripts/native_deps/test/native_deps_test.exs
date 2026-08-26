@@ -51,6 +51,7 @@ defmodule Batata.NativeDepsTest do
     cache: cache,
     opts: opts
   } do
+    make_repo!(root, %{"workspace.ex" => "first"})
     {beaver, kinda, _beaver_ref, _kinda_ref} = editable_repos!(root)
     llvm = fake_llvm!(root)
     zig = fake_zig!(root)
@@ -75,6 +76,14 @@ defmodule Batata.NativeDepsTest do
     assert env["BEAVER_KINDA_PATH"] == kinda
     assert env["LLVM_CONFIG_PATH"] == llvm
     assert env["ZIG_GLOBAL_CACHE_DIR"] == Path.join(cache, "zig-global")
+
+    File.write!(Path.join(root, "workspace.ex"), "second")
+    git!(root, ["add", "workspace.ex"])
+    git!(root, ["commit", "--quiet", "-m", "second"])
+    next_context = Runner.context!(Keyword.put(opts, :zig_path, zig))
+
+    assert Map.new(next_context.env)["MIX_BUILD_ROOT"] == env["MIX_BUILD_ROOT"]
+    refute next_context.report[:batata] == context.report[:batata]
   end
 
   test "materializes pinned Beaver and Kinda checkouts in the shared cache", %{
@@ -287,6 +296,19 @@ defmodule Batata.NativeDepsTest do
 
     File.write!(Path.join(repo, "tracked"), "dirty")
     assert Runner.source_identity(repo) == clean <> "-dirty"
+  end
+
+  test "workspace identity survives revisions but isolates paths", %{root: root} do
+    repo = Path.join(root, "repo")
+    make_repo!(repo, %{"tracked" => "first"})
+    identity = Runner.workspace_identity(repo)
+
+    File.write!(Path.join(repo, "tracked"), "second")
+    git!(repo, ["add", "tracked"])
+    git!(repo, ["commit", "--quiet", "-m", "second"])
+
+    assert Runner.workspace_identity(repo) == identity
+    refute Runner.workspace_identity(Path.join(root, "other")) == identity
   end
 
   defp fake_llvm!(root) do

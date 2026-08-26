@@ -27,6 +27,16 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Restore shared Mix compile cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .batata/deps
+            .batata/build/**/test/lib/*/ebin
+            .batata/build/**/test/lib/*/.mix
+            .batata/build/**/test/lib/*/consolidated
+          key: batata-mix-v2-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-otp27-elixir1.20-${{ hashFiles('mix.lock', 'packages/*/mix.lock', 'native-deps.lock') }}
+
       - name: Install Mix package managers
         run: |
           mix local.hex --force
@@ -245,6 +255,16 @@ jobs:
         with:
           version: 0.16.0
 
+      - name: Restore shared Mix compile cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .batata/deps
+            .batata/build/**/test/lib/*/ebin
+            .batata/build/**/test/lib/*/.mix
+            .batata/build/**/test/lib/*/consolidated
+          key: batata-mix-v2-${{ github.job }}-${{ matrix.corpus }}-${{ runner.os }}-${{ runner.arch }}-otp27-elixir1.20-${{ hashFiles('mix.lock', 'packages/*/mix.lock', 'native-deps.lock') }}
+
       - name: Cache pinned native downloads
         uses: actions/cache@v4
         with:
@@ -360,6 +380,16 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Restore shared Mix compile cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .batata/deps
+            .batata/build/**/test/lib/*/ebin
+            .batata/build/**/test/lib/*/.mix
+            .batata/build/**/test/lib/*/consolidated
+          key: batata-mix-v2-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-otp27-elixir1.20-${{ hashFiles('mix.lock', 'packages/*/mix.lock', 'native-deps.lock') }}
 
       - name: Configure MSVC toolchain
         if: runner.os == 'Windows'
@@ -569,6 +599,16 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Restore shared Mix compile cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .batata/deps
+            .batata/build/**/test/lib/*/ebin
+            .batata/build/**/test/lib/*/.mix
+            .batata/build/**/test/lib/*/consolidated
+          key: batata-mix-v2-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-otp27-elixir1.20-${{ hashFiles('mix.lock', 'packages/*/mix.lock', 'native-deps.lock') }}
 
       - name: Install Mix package managers
         run: |

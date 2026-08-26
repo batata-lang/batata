@@ -56,13 +56,14 @@ defmodule Batata.NativeDeps.Runner do
     zig_version = command!(zig, ["version"])
 
     root_identity = source_identity(root)
+    root_build_identity = workspace_identity(root)
     beaver_identity = source_identity(Keyword.fetch!(config, :beaver_path))
     kinda_identity = source_identity(Keyword.fetch!(config, :kinda_path))
 
     identity =
       NativeDeps.digest(
         [
-          root_identity,
+          root_build_identity,
           beaver_identity,
           kinda_identity,
           llvm_config,
@@ -124,7 +125,7 @@ defmodule Batata.NativeDeps.Runner do
 
   def source_identity(path) do
     canonical = canonical_path(path)
-    path_digest = NativeDeps.digest([canonical], 12)
+    path_identity = workspace_identity(canonical)
 
     case System.cmd("git", ["-C", canonical, "rev-parse", "HEAD"], stderr_to_stdout: true) do
       {revision, 0} ->
@@ -137,12 +138,20 @@ defmodule Batata.NativeDeps.Runner do
             "--untracked-files=normal"
           ])
 
-        "path-#{path_digest}-#{String.trim(revision)}" <>
+        "#{path_identity}-#{String.trim(revision)}" <>
           if(String.trim(dirty) == "", do: "", else: "-dirty")
 
       _ ->
-        "path-#{path_digest}-unversioned"
+        "#{path_identity}-unversioned"
     end
+  end
+
+  @doc false
+  def workspace_identity(path) do
+    path
+    |> canonical_path()
+    |> then(&NativeDeps.digest([&1], 12))
+    |> then(&"path-#{&1}")
   end
 
   defp canonical_path(path) do
