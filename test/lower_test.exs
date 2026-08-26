@@ -2,6 +2,7 @@ defmodule Batata.LowerTest do
   use Batata.Case, async: true
 
   alias Batata
+  alias Batata.Lower
 
   test "lowers the scalar slice from ex IR to func/arith and LLVM", %{ctx: ctx} do
     module =
@@ -71,6 +72,69 @@ defmodule Batata.LowerTest do
 
     assert index(rendered, "ex.term.runtime_set_arena_limit") <
              index(rendered, "ex.term.runtime_enter")
+  end
+
+  test "returns bounded native action summaries for ex conversion", %{ctx: ctx} do
+    module =
+      Batata.compile(
+        """
+        defmodule TracedTuple do
+          def main(), do: {1, 2}
+        end
+        """,
+        ctx
+      )
+
+    {module, receipt} = Lower.to_func_with_trace(module)
+
+    assert receipt["schema_version"] == 1
+    assert receipt["pipeline"] == "ex_to_func"
+    assert receipt["duration_ns"] >= 0
+    assert [%{"name" => "ex_conversion", "actions" => actions}] = receipt["stages"]
+
+    assert Enum.any?(actions, fn action ->
+             action["tag"] == "apply-conversion" and action["count"] == 1 and
+               action["duration_ns"] >= 0
+           end)
+
+    assert Enum.any?(actions, fn action ->
+             action["tag"] == "apply-pattern" and action["operation"] == "ex.tuple" and
+               action["count"] >= 1
+           end)
+
+    refute MLIR.to_string(module) =~ ~s{"ex.}
+    assert is_binary(JSON.encode!(receipt))
+  end
+
+  test "separates every native lowering pass in the trace receipt", %{ctx: ctx} do
+    module =
+      Batata.compile(
+        """
+        defmodule TracedMath do
+          def main(), do: 1 + 2
+        end
+        """,
+        ctx
+      )
+
+    {module, receipt} = Lower.to_llvm_with_trace(module, ctx)
+    stages = receipt["stages"]
+
+    assert Enum.map(stages, & &1["name"]) == [
+             "ex_conversion",
+             "arith_to_llvm",
+             "scf_to_cf",
+             "cf_to_llvm",
+             "func_to_llvm"
+           ]
+
+    for stage <- Enum.drop(stages, 1) do
+      assert [pass] = Enum.filter(stage["actions"], &(&1["tag"] == "pass-execution"))
+      assert pass["count"] == 1
+      assert pass["description"] =~ "Pass`"
+    end
+
+    assert MLIR.to_string(module) =~ "llvm.func"
   end
 
   defp index(text, pattern) do
