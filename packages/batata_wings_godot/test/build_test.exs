@@ -54,16 +54,24 @@ defmodule Batata.Wings.Godot.BuildTest do
       output = WingsGodot.build_editor_replay!(tmp_dir, ctx)
       receipt = output.editor_receipt |> File.read!() |> JSON.decode!()
 
-      assert receipt["operation"] == "editor_select_move_extrude_inset_bevel_undo_redo"
-      assert length(receipt["steps"]) == 13
+      assert receipt["operation"] == "native_pick_move_history_and_stale_rejection"
+      assert length(receipt["steps"]) == 5
       assert receipt["godot_api_version"] == "4.6.2"
-      assert receipt["undo_mesh_digest"] != receipt["displayed_mesh_digest"]
-      assert receipt["displayed_mesh_digest"] == output.mesh_digest
+      assert receipt["differential"]["matched"]
+      assert receipt["differential"]["before_state_code"] == 0
+      assert receipt["differential"]["after_state_code"] == 3_101_000
+      assert receipt["topology"]["after"]["closed"]
+      assert receipt["native_source"]["source_sha256"] == receipt["source_sha256"]
       assert receipt["event_schema"]["schema_version"] == 1
       assert receipt["selected_triangle_indices"] != []
-      assert receipt["portable_state"]["replacement_policy"] == "replace"
-      assert receipt["portable_state"]["bytes"] > 0
-      assert byte_size(receipt["portable_state"]["sha256"]) == 64
+
+      assert receipt["portable_state"]["replacement_policy"] ==
+               "deep_export_then_atomic_replace"
+
+      assert receipt["allocation"]["estimate_bytes"] <= receipt["allocation"]["quota_bytes"]
+      assert "editor_move/6" in receipt["functions"]
+      assert "editor_undo/2" in receipt["functions"]
+      assert "editor_redo/2" in receipt["functions"]
       assert File.read!(Path.join(tmp_dir, ".batata/editor-plugin-ready")) == "ready"
 
       assert File.read!(Path.join(tmp_dir, "project.godot")) =~

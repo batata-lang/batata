@@ -6,8 +6,14 @@ defmodule Batata.Wings.Native.Build do
 
   @functions [
     {:topology_code_for_state, 1},
+    {:editor_pointer_button, 8},
+    {:editor_move, 6},
+    {:editor_undo, 2},
+    {:editor_redo, 2},
     {:select_face, 3},
     {:move_selected, 6},
+    {:undo, 2},
+    {:redo, 2},
     {:generation, 1},
     {:vertices, 1},
     {:faces, 1},

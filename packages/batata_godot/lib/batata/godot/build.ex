@@ -414,7 +414,7 @@ defmodule Batata.Godot.Build do
     [
       "  var result_#{index} = object.callv(#{method}, #{arguments})",
       "  if result_#{index} != #{expected}:",
-      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: compiled Batata method returned an unexpected value\")",
+      "    push_error(\"E_GODOT_SMOKE_RESULT_MISMATCH: invocation #{index} returned \" + str(result_#{index}) + \" for \" + #{method})",
       "    quit(19)",
       "    return",
       ""

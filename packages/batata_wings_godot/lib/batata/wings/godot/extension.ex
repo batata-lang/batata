@@ -8,38 +8,65 @@ defmodule Batata.Wings.Godot.Extension do
 
   godot_class("BatataWingsMesh", base: "RefCounted")
   godot_outbound(:array_mesh_surface)
-  godot_method(:mesh, args: [], returns: {:object, "ArrayMesh"}, outbound: :array_mesh_surface)
-  godot_method(:state_generation, args: [], returns: :int)
-  godot_method(:displayed_mesh_digest, args: [], returns: :string)
-  godot_method(:selected_triangle_indices, args: [], returns: :packed_int32_array)
-  godot_method(:input_schema_digest, args: [], returns: :string)
-  godot_method(:editor_state_snapshot, args: [], returns: :string, state: :replace)
 
-  godot_method(:editor_pointer_button,
-    args: [:vector2, :int, :bool, :int, :vector3, :vector3, :int],
-    returns: :int
+  godot_method(:mesh,
+    args: [],
+    returns: {:object, "ArrayMesh"},
+    outbound: :array_mesh_surface,
+    state: :replace
   )
 
-  godot_method(:editor_key_chord, args: [:int, :int, :bool, :int], returns: :int)
+  godot_method(:state_generation, args: [], returns: :int, state: :replace)
+  godot_method(:displayed_mesh_code, args: [], returns: :int, state: :replace)
 
-  def mesh, do: nil
-  def state_generation, do: 0
-  def displayed_mesh_digest, do: ""
-  def selected_triangle_indices, do: []
-  def input_schema_digest, do: ""
-  def editor_state_snapshot(_state), do: ""
+  godot_method(:selected_triangle_indices,
+    args: [],
+    returns: :packed_int32_array,
+    state: :replace
+  )
+
+  godot_method(:editor_pointer_button,
+    args: [:int, :int, :int, :int, :int, :int, :int],
+    returns: :int,
+    state: :replace
+  )
+
+  godot_method(:editor_move,
+    args: [:int, :int, :int, :int, :int],
+    returns: :int,
+    state: :replace
+  )
+
+  godot_method(:editor_undo, args: [:int], returns: :int, state: :replace)
+  godot_method(:editor_redo, args: [:int], returns: :int, state: :replace)
+
+  def mesh(_state), do: nil
+  def state_generation(_state), do: 0
+  def displayed_mesh_code(_state), do: 0
+  def selected_triangle_indices(_state), do: []
 
   def editor_pointer_button(
-        _position,
-        _button,
-        _pressed,
-        _modifiers,
-        _ray_origin,
-        _ray_direction,
-        expected_generation
+        _state,
+        _event_word,
+        _origin_x,
+        _origin_y,
+        _origin_z,
+        _direction_x,
+        _direction_y,
+        _direction_z
       ),
-      do: expected_generation
+      do: 0
 
-  def editor_key_chord(_key, _modifiers, _pressed, expected_generation),
-    do: expected_generation
+  def editor_move(
+        _position,
+        _dx,
+        _dy,
+        _dz,
+        _expected_generation,
+        _quota_bytes
+      ),
+      do: 0
+
+  def editor_undo(_state, _expected_generation), do: 0
+  def editor_redo(_state, _expected_generation), do: 0
 end
