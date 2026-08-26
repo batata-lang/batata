@@ -1,4 +1,4 @@
-defmodule Batata.Test.DecimalSubset do
+defmodule Batata.Decimal.Test.Subset do
   @moduledoc false
 
   # These finite-number kernels preserve the arithmetic and guard shapes from

@@ -1,19 +1,22 @@
-# Decimal compile probe
+# Batata Decimal
 
-Decimal is a second external compile-coverage corpus for Batata. It is not a
-production dependency of Batata or Beaver, and the inventory does not claim
-that an accepted definition executes with Decimal semantics.
+`batata_decimal` owns Decimal as an independent external compile-coverage
+corpus for Batata. It is not a production dependency of the compiler, and the
+inventory does not claim that an accepted definition executes with Decimal
+semantics.
 
-[`source.json`](source.json) pins Decimal `v2.3.0` to commit
+[`source.json`](priv/probe/source.json) pins Decimal `v2.3.0` to commit
 `592d59ac4474933f91cdc3e8e037f137f7e008b0`. To reproduce the report:
 
 ```sh
 git clone https://github.com/ericmj/decimal.git /tmp/batata-decimal
 git -C /tmp/batata-decimal checkout 592d59ac4474933f91cdc3e8e037f137f7e008b0
-mix batata.decimal_probe \
+cd packages/batata_decimal
+BATATA_PATH=../.. BATATA_PROBE_PATH=../batata_probe mix batata.decimal.probe \
   --source /tmp/batata-decimal \
-  --output _build/decimal_probe/report.json \
-  --baseline probe/decimal/baseline.json
+  --report _build/decimal_probe/report.json \
+  --coverage _build/decimal_probe/coverage.json \
+  --fail-on-regression
 ```
 
 The schema-v6 baseline inventories four modules, 245 source definitions, and
