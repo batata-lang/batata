@@ -619,7 +619,7 @@ fn methodCall(
     }
 
     if (method.spec.returns != .float_value and method.spec.returns != .string_value and method.spec.returns != .string_name_value and method.spec.returns != .vector2_value and method.spec.returns != .vector3_value and method.spec.returns != .packed_vector3_array_value and method.spec.returns != .packed_int32_array_value and method.spec.returns != .array_mesh_surface_value and method.spec.returns != .object_value) {
-        writeImmediateResult(method.spec.returns, result_word, return_variant, call_error);
+        writeImmediateResult(method.spec.returns, method.spec.state, result_word, return_variant, call_error);
         return finishMethodCall(instance, method, state_word, call_error);
     }
 
@@ -678,6 +678,7 @@ fn methodCall(
 
 fn writeImmediateResult(
     return_type: ValueType,
+    state_policy: StatePolicy,
     result_word: i64,
     return_variant: godot.VariantPtr,
     call_error: *godot.CallError,
@@ -697,7 +698,10 @@ fn writeImmediateResult(
             api.bool_to_variant(return_variant, &value);
         },
         .int_value => {
-            var value = result_word;
+            var value = if (state_policy == .replace and term_runtime.ex_term_is_integer(result_word) != 0)
+                term_runtime.ex_term_to_int(result_word)
+            else
+                result_word;
             api.int_to_variant(return_variant, &value);
         },
         .float_value => unreachable,

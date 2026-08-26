@@ -25,7 +25,7 @@ defmodule Batata.Wings.Godot.SurfaceTest do
 
     source = Source.for_surface(surface, Batata.Wings.digest(mesh))
     assert source == Source.for_surface(surface, Batata.Wings.digest(mesh))
-    assert source =~ "def mesh(), do: materialize(subdivided_cube())"
+    assert source =~ "def mesh(), do: subdivided_cube()"
     refute source =~ "Batata.Wings.Subdivision"
   end
 

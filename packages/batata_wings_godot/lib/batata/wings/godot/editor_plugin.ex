@@ -45,9 +45,7 @@ defmodule Batata.Wings.Godot.EditorPlugin do
       if controller == null:
         push_error("E_GODOT_EDITOR_STATE_UNAVAILABLE: controller creation failed")
         return
-      var observed = controller.editor_pointer_button(
-        Vector2(640.0, 360.0), 1, true, 0,
-        Vector3(0.0, 0.0, 5.0), Vector3(0.0, 0.0, -1.0), 0)
+      var observed = controller.editor_pointer_button(3, 0, 0, 5000, 0, 0, -10)
       if observed != 0:
         push_error("E_GODOT_EDITOR_STATE_STALE: typed replay generation differs")
         return
@@ -67,6 +65,7 @@ defmodule Batata.Wings.Godot.EditorPlugin do
 
     func _edit(object):
       edit_target = object if _handles(object) else null
+      _refresh_mesh()
 
     func _make_visible(visible):
       editor_visible = visible
@@ -78,19 +77,29 @@ defmodule Batata.Wings.Godot.EditorPlugin do
       if event is InputEventMouseButton:
         var modifiers = _modifier_mask(event)
         var generation = controller.state_generation()
+        var origin = viewport_camera.project_ray_origin(event.position)
+        var direction = viewport_camera.project_ray_normal(event.position)
         controller.editor_pointer_button(
-          event.position, event.button_index, event.pressed, modifiers,
-          viewport_camera.project_ray_origin(event.position),
-          viewport_camera.project_ray_normal(event.position), generation)
+          generation * 256 + modifiers * 16 + event.button_index * 2 + int(event.pressed),
+          roundi(origin.x * 1000.0), roundi(origin.y * 1000.0), roundi(origin.z * 1000.0),
+          roundi(direction.x * 10.0), roundi(direction.y * 10.0), roundi(direction.z * 10.0))
+        _refresh_mesh()
         return EditorPlugin.AFTER_GUI_INPUT_STOP
 
       if event is InputEventKey and event.pressed and event.keycode in [KEY_Z, KEY_Y]:
-        controller.editor_key_chord(
-          event.keycode, _modifier_mask(event), event.pressed,
-          controller.state_generation())
+        var generation = controller.state_generation()
+        var observed = controller.editor_undo(generation) if event.keycode == KEY_Z else controller.editor_redo(generation)
+        if observed < 0:
+          push_error("E_GODOT_EDITOR_HISTORY_REJECTED: native history transaction failed closed")
+          return EditorPlugin.AFTER_GUI_INPUT_STOP
+        _refresh_mesh()
         return EditorPlugin.AFTER_GUI_INPUT_STOP
 
       return EditorPlugin.AFTER_GUI_INPUT_PASS
+
+    func _refresh_mesh():
+      if edit_target != null and controller != null:
+        edit_target.mesh = controller.mesh()
 
     func _modifier_mask(event):
       var mask := 0

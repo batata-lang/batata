@@ -22,28 +22,30 @@ The generated `mesh_receipt.json` binds the Wings upstream commit, canonical
 mesh digest, topology invariants, fixed-point descriptor digest, Batata source
 digest, Godot binding-plan digest, Godot API version, and artifact bundle.
 
-The editor slice keeps geometry ownership in `batata_wings` and exposes only
-two versioned input records: pointer-button events carrying a camera ray, and
-keyboard chords for undo/redo. Unknown fields, event subtypes, non-finite
-vectors, and stale generations fail closed before the displayed mesh changes.
-The fixed integration replay is:
+The editor slice compiles the checked-in
+`Batata.Wings.Native.Kernel` source into the GDExtension library and keeps its
+portable state rooted by the Godot instance. The plugin normalizes pointer
+events into bounded fixed-point rays and keyboard chords into native undo/redo
+transactions. Stale generations, unsupported inputs, quota violations, and
+out-of-range coordinates preserve the previous state and displayed mesh. The
+native integration replay is:
 
 ```text
-ray select → move → region extrude → inset → bevel
-  → undo to the original cube → redo to the final mesh
+ray select → move → undo → redo → reject stale move
 ```
 
-`build_editor_replay!/3` writes `editor_replay_receipt.json`, compiles the
-final canonical surface, and invokes the typed vector/scalar codecs plus the
-real `ArrayMesh` outbound call under pinned Godot 4.6.2
-`--headless --editor`. Selection indices remain a separate overlay contract;
-they never mutate the canonical geometry surface.
+`build_editor_replay!/3` writes `editor_replay_receipt.json`, compiles code
+rather than a final editor snapshot, and invokes the native methods plus the
+real `ArrayMesh` outbound call under pinned Godot 4.6.2 `--headless --editor`.
+Selection indices remain a separate overlay projection; the native state is
+the source of truth.
 
-The compiled `editor_state_snapshot/0` method returns `{new_state, result}` at
-the native boundary. A `state: :replace` binding deep-exports `new_state` into
-the instance-owned portable registry, swaps it only after export succeeds,
-and releases the prior root. Repeated same-instance smoke calls verify
-replacement and teardown instead of relying on the execution arena lifetime.
+Every `state: :replace` method returns `{new_state, result}` at the native
+boundary. The binding deep-exports `new_state` into the instance-owned
+portable registry, swaps it only after export succeeds, and releases the prior
+root. Repeated same-instance smoke calls verify replacement, history, stale
+rejection, mesh refresh, and teardown instead of relying on the execution
+arena lifetime.
 
 Inside the monorepo:
 

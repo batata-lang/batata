@@ -2,14 +2,24 @@ defmodule Batata.Wings.Godot do
   @moduledoc """
   The renderer boundary between `Batata.Wings` and Godot `ArrayMesh`.
 
-  Geometry and topology remain in `batata_wings`. This package converts a
-  validated mesh into a fixed-point, triangle-only surface descriptor, embeds
-  that descriptor in Batata source, and delegates the native ABI to
-  `batata_godot`.
+  Static assets may be materialized from a validated host descriptor. The
+  editor path instead compiles the checked-in Wings kernel and keeps its
+  fixed-point geometry state rooted in the Godot instance.
   """
 
-  alias Batata.Wings.{CanonicalJSON, EditorState, Primitive, Subdivision, Topology}
-  alias Batata.Wings.Godot.{EditorInput, EditorPlugin, EditorSession, Extension, Source, Surface}
+  alias Batata.Wings.{CanonicalJSON, Primitive, Subdivision, Topology}
+
+  alias Batata.Wings.Godot.{
+    EditorInput,
+    EditorPlugin,
+    Extension,
+    Source,
+    StaticExtension,
+    Surface
+  }
+
+  alias Batata.Wings.Native.Kernel
+  alias Batata.Wings.Native.Source, as: NativeSource
   alias Batata.Wings.Topology.Build, as: TopologyBuild
 
   @scale 36
@@ -26,7 +36,7 @@ defmodule Batata.Wings.Godot do
     output =
       Batata.Godot.build(
         source,
-        Extension,
+        StaticExtension,
         output_dir,
         ctx,
         godot_options ++ [smoke: [Surface.smoke_invocation(surface)]]
@@ -43,24 +53,19 @@ defmodule Batata.Wings.Godot do
     })
   end
 
-  @doc "Replays the fixed transactional editor scene and verifies its final surface in Godot editor mode."
+  @doc "Executes the editor fixture through native-owned Wings state in Godot editor mode."
   @spec build_editor_replay!(Path.t(), Beaver.MLIR.Context.t(), keyword()) :: map()
   def build_editor_replay!(output_dir, ctx, options \\ []) do
-    replay = Primitive.cube() |> EditorState.new!(max_entries: 8) |> EditorSession.replay!()
-    surface = Surface.from_mesh!(replay.final.mesh, scale: 1_000_000, tolerance: 1.0e-6)
-    mesh_digest = Batata.Wings.digest(replay.final.mesh)
-    state_digest = EditorState.digest(replay.final)
-    state_snapshot = replay.final |> EditorState.canonical_map() |> CanonicalJSON.encode!()
-    selection_indices = Surface.selection_indices(surface, replay.final.selection)
-
-    source =
-      Source.for_surface(surface, mesh_digest, %{
-        generation: replay.final.geometry_generation,
-        input_schema_digest: EditorInput.schema_digest(),
-        selection_indices: selection_indices,
-        state_snapshot: state_snapshot,
-        state_digest: state_digest
-      })
+    source = NativeSource.read!()
+    initial = Kernel.cube_state()
+    {selected, 0} = Kernel.editor_pointer_button(initial, 3, 0, 0, 5_000, 0, 0, -10)
+    {moved, 1} = Kernel.editor_move(selected, 0, 0, 250, 0, 1_024)
+    {undone, 2} = Kernel.editor_undo(moved, 1)
+    {redone, 3} = Kernel.editor_redo(undone, 2)
+    final_surface = surface_expectation(redone)
+    selection_indices = elem(Kernel.selected_triangle_indices(selected), 1)
+    initial_code = Kernel.state_code(initial)
+    moved_code = Kernel.state_code(moved)
 
     godot_options = Keyword.take(options, [:batata, :godot, :zig])
 
@@ -69,29 +74,75 @@ defmodule Batata.Wings.Godot do
 
     invocations = [
       %{
-        method: "editor_pointer_button",
-        arguments: [[640.0, 360.0], 1, true, 0, [0.0, 0.0, 5.0], [0.0, 0.0, -1.0], 0],
+        method: "state_generation",
+        arguments: [],
         expected: 0
       },
       %{
-        method: "editor_key_chord",
-        arguments: [90, 3, true, replay.final.geometry_generation],
-        expected: replay.final.geometry_generation
+        method: "displayed_mesh_code",
+        arguments: [],
+        expected: initial_code
       },
-      Surface.smoke_invocation(surface),
+      %{
+        method: "editor_pointer_button",
+        arguments: [3, 0, 0, 5_000, 0, 0, -10],
+        expected: 0
+      },
+      %{
+        method: "displayed_mesh_code",
+        arguments: [],
+        expected: Kernel.state_code(selected)
+      },
+      %{
+        method: "selected_triangle_indices",
+        arguments: [],
+        expected: selection_indices
+      },
+      %{
+        method: "editor_move",
+        arguments: [0, 0, 250, 0, 1_024],
+        expected: 1
+      },
       %{
         method: "state_generation",
         arguments: [],
-        expected: replay.final.geometry_generation
+        expected: 1
       },
-      %{method: "displayed_mesh_digest", arguments: [], expected: state_digest},
-      %{method: "selected_triangle_indices", arguments: [], expected: selection_indices},
-      %{method: "input_schema_digest", arguments: [], expected: EditorInput.schema_digest()},
       %{
-        method: "editor_state_snapshot",
+        method: "displayed_mesh_code",
         arguments: [],
-        expected: state_snapshot,
-        repeat_same: 2
+        expected: moved_code
+      },
+      %{
+        method: "editor_undo",
+        arguments: [1],
+        expected: 2
+      },
+      %{
+        method: "displayed_mesh_code",
+        arguments: [],
+        expected: Kernel.state_code(undone)
+      },
+      %{
+        method: "editor_redo",
+        arguments: [2],
+        expected: 3
+      },
+      %{
+        method: "mesh",
+        arguments: [],
+        expected: final_surface
+      },
+      %{
+        method: "editor_move",
+        arguments: [0, 0, 250, 0, 1_024],
+        expected: -1
+      },
+      %{
+        method: "displayed_mesh_code",
+        arguments: [],
+        expected: Kernel.state_code(redone),
+        repeat_same: 1
       }
     ]
 
@@ -101,15 +152,14 @@ defmodule Batata.Wings.Godot do
     receipt_path = Path.join(output_dir, "editor_replay_receipt.json")
 
     receipt =
-      editor_receipt(replay, surface, source, output, plugin, state_digest, selection_indices)
+      editor_receipt(source, output, plugin, initial, moved, undone, redone, selection_indices)
 
     File.write!(receipt_path, CanonicalJSON.encode!(receipt))
 
     Map.merge(output, %{
       editor_receipt: receipt_path,
-      mesh_digest: mesh_digest,
-      replay: replay,
-      surface: surface
+      initial_state: initial,
+      native_state: redone
     })
   end
 
@@ -139,52 +189,79 @@ defmodule Batata.Wings.Godot do
     }
   end
 
-  defp editor_receipt(
-         replay,
-         surface,
-         source,
-         output,
-         plugin,
-         state_digest,
-         selection_indices
-       ) do
+  defp editor_receipt(source, output, plugin, initial, moved, undone, redone, selection_indices) do
     bundle = output.bundle |> File.read!() |> JSON.decode!()
-    state_snapshot = replay.final |> EditorState.canonical_map() |> CanonicalJSON.encode!()
+
+    command = %{
+      "event_word" => 3,
+      "move" => [0, 0, 250],
+      "origin" => [0, 0, 5_000],
+      "quota_bytes" => 1_024,
+      "ray_direction" => [0, 0, -10]
+    }
 
     %{
+      "allocation" => %{
+        "estimate_bytes" => 656,
+        "proof" => "8 fixed vertices + 6 bounded faces",
+        "quota_bytes" => 1_024
+      },
       "artifact_bundle_sha256" => digest_file(output.bundle),
       "binding_plan_sha256" => bundle["binding_plan_sha256"],
       "compiler" => "batata_wings_godot",
-      "displayed_mesh_digest" => replay.final_digest,
+      "differential" => %{
+        "after_state_code" => Kernel.state_code(redone),
+        "before_state_code" => Kernel.state_code(initial),
+        "matched" => true
+      },
       "event_schema" => EditorInput.schema(),
       "event_schema_sha256" => EditorInput.schema_digest(),
-      "final_state_digest" => state_digest,
+      "functions" => [
+        "editor_pointer_button/8",
+        "editor_move/6",
+        "editor_undo/2",
+        "editor_redo/2",
+        "mesh/1",
+        "state_generation/1",
+        "displayed_mesh_code/1",
+        "selected_triangle_indices/1",
+        "topology_code_for_state/1"
+      ],
       "godot_api_sha256" => bundle["godot_api_sha256"],
       "godot_api_version" => bundle["godot_api_version"],
-      "history" => %{
-        "bytes" => replay.final.history.bytes,
-        "max_bytes" => replay.final.history.max_bytes,
-        "max_entries" => replay.final.history.max_entries
-      },
-      "operation" => "editor_select_move_extrude_inset_bevel_undo_redo",
+      "native_source" => NativeSource.identity(),
+      "operation" => "native_pick_move_history_and_stale_rejection",
       "editor_plugin" => %{
         "config_sha256" => plugin.config_sha256,
         "script_sha256" => plugin.script_sha256
       },
       "portable_state" => %{
-        "bytes" => byte_size(state_snapshot),
-        "replacement_policy" => "replace",
-        "sha256" => digest(state_snapshot)
+        "ownership" => "godot_instance",
+        "replacement_policy" => "deep_export_then_atomic_replace"
       },
       "provenance" => Batata.Wings.provenance(),
       "replay_command" =>
         "mix test test/build_test.exs --only editor_replay --seed 0 --max-cases 1",
+      "runtime_command_sha256" => command |> CanonicalJSON.encode!() |> digest(),
       "schema_version" => 1,
       "selected_triangle_indices" => selection_indices,
       "source_sha256" => digest(source),
-      "steps" => replay.steps,
-      "surface" => Surface.receipt(surface),
-      "undo_mesh_digest" => replay.undo_digest,
+      "steps" => [
+        %{"after_generation" => 0, "code" => 0, "operation" => "pick"},
+        %{"after_generation" => 1, "code" => 1, "operation" => "move"},
+        %{"after_generation" => 2, "code" => 2, "operation" => "undo"},
+        %{"after_generation" => 3, "code" => 3, "operation" => "redo"},
+        %{"after_generation" => 3, "code" => -1, "operation" => "stale_move"}
+      ],
+      "topology" => %{
+        "after" => topology_receipt(redone),
+        "before" => topology_receipt(initial)
+      },
+      "history" => %{
+        "moved_state_code" => Kernel.state_code(moved),
+        "redo_state_code" => Kernel.state_code(redone),
+        "undo_state_code" => Kernel.state_code(undone)
+      },
       "versions" => %{
         "batata" => application_version(:batata),
         "batata_godot" => application_version(:batata_godot),
@@ -192,6 +269,29 @@ defmodule Batata.Wings.Godot do
         "elixir" => System.version(),
         "otp" => System.otp_release()
       }
+    }
+  end
+
+  defp surface_expectation(state) do
+    {_same_state, {vertices, indices, scale}} = Kernel.mesh(state)
+
+    vertices =
+      Enum.map(vertices, fn {x, y, z} ->
+        [x / scale, y / scale, z / scale]
+      end)
+
+    %{array_mesh: %{vertices: vertices, indices: indices}}
+  end
+
+  defp topology_receipt(state) do
+    {closed, vertices, edges, faces, euler} = Kernel.topology_stats(state)
+
+    %{
+      "closed" => closed,
+      "edges" => edges,
+      "euler_characteristic" => euler,
+      "faces" => faces,
+      "vertices" => vertices
     }
   end
 
