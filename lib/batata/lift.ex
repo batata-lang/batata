@@ -3742,6 +3742,34 @@ defmodule Batata.Lift do
     {create_op(op, [left_value, right_value], [integer_type(ctx)], ctx, block), env}
   end
 
+  defp lift_expr({{:., _, [module_ast, name]}, _, arguments}, ctx, block, env)
+       when name in [
+              :bnot,
+              :"~~~",
+              :band,
+              :bor,
+              :bxor,
+              :bsl,
+              :bsr,
+              :&&&,
+              :|||,
+              :"^^^",
+              :<<<,
+              :>>>
+            ] and
+              is_list(arguments) do
+    case module_ref(module_ast) do
+      {:ok, Bitwise} ->
+        lift_bitwise(name, arguments, ctx, block, env)
+
+      {:ok, module} ->
+        lift_stdlib_call(module, name, arguments, ctx, block, env)
+
+      :error ->
+        raise Error, "unsupported AST in the current slice: #{inspect(module_ast)}.#{name}"
+    end
+  end
+
   defp lift_expr({:case, _, [scrutinee_ast, [do: clauses]]}, ctx, block, env) do
     {scrutinee, env} = lift_expr(scrutinee_ast, ctx, block, env)
 
@@ -4404,6 +4432,32 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp lift_bitwise(name, [operand_ast], ctx, block, env) when name in [:bnot, :"~~~"] do
+    {operand, env} = lift_expr(operand_ast, ctx, block, env)
+    [operand] = refine_integer_operands!([operand_ast], [operand], env, ctx, block)
+    all_bits = lit(-1, ctx, block)
+    {create_op("arith.xori", [operand, all_bits], [integer_type(ctx)], ctx, block), env}
+  end
+
+  defp lift_bitwise(name, [left_ast, right_ast], ctx, block, env) do
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    {right, env} = lift_expr(right_ast, ctx, block, env)
+
+    [left, right] =
+      refine_integer_operands!([left_ast, right_ast], [left, right], env, ctx, block)
+
+    operation =
+      case name do
+        name when name in [:band, :&&&] -> "arith.andi"
+        name when name in [:bor, :|||] -> "arith.ori"
+        name when name in [:bxor, :"^^^"] -> "arith.xori"
+        name when name in [:bsl, :<<<] -> "arith.shli"
+        name when name in [:bsr, :>>>] -> "arith.shrsi"
+      end
+
+    {create_op(operation, [left, right], [integer_type(ctx)], ctx, block), env}
   end
 
   defp maybe_relax_closure_dispatch_case(opts, env) do
