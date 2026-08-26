@@ -32,6 +32,7 @@ defmodule Batata.Lift do
   @known_atoms_key {__MODULE__, :known_atoms}
   @struct_schema_key {__MODULE__, :struct_schema}
   @arg_modes_key {__MODULE__, :arg_modes}
+  @integer_guard_modes_key {__MODULE__, :integer_guard_modes}
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @current_function_key {__MODULE__, :current_function}
@@ -88,6 +89,7 @@ defmodule Batata.Lift do
         @known_atoms_key => known_atoms,
         @struct_schema_key => schemas,
         @arg_modes_key => Batata.Signature.infer(definitions),
+        @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
         @no_return_functions_key => no_return_functions,
         @scalar_result_functions_key =>
           Batata.Signature.infer_results(definitions, no_return_functions)
@@ -3738,7 +3740,13 @@ defmodule Batata.Lift do
 
   defp lift_expr({:case, _, [scrutinee_ast, [do: clauses]]}, ctx, block, env) do
     {scrutinee, env} = lift_expr(scrutinee_ast, ctx, block, env)
-    {lift_case(clauses, scrutinee, env, ctx, block, case_result_contract(scrutinee_ast)), env}
+
+    opts =
+      scrutinee_ast
+      |> case_result_contract()
+      |> maybe_relax_closure_dispatch_case(env)
+
+    {lift_case(clauses, scrutinee, env, ctx, block, opts), env}
   end
 
   defp lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env) do
@@ -4387,6 +4395,12 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp maybe_relax_closure_dispatch_case(opts, env) do
+    if Map.get(env, @current_function_key) == :__fn_dispatch,
+      do: Keyword.put(opts, :relax_types, true),
+      else: opts
   end
 
   defp list_cons_operand(ast, value, ctx, block, env) when is_integer(ast) do
@@ -9411,17 +9425,19 @@ defmodule Batata.Lift do
   end
 
   defp term_operand?(value) do
-    value
-    |> MLIR.Value.type()
-    |> MLIR.to_string()
-    |> then(&(&1 in ["!ex.term", "!ex.bound", "!ex.unbound"]))
+    Enum.any?(["term", "bound", "unbound"], &ex_value_type?(value, &1))
   end
 
   defp ensure_refined_integer_operands!(values) do
-    if Enum.any?(values, fn v -> MLIR.to_string(MLIR.Value.type(v)) == "!ex.term" end) do
+    if Enum.any?(values, &ex_value_type?(&1, "term")) do
       raise Error,
             "integer arithmetic on a term-pattern binding requires an is_integer/1 guard"
     end
+  end
+
+  defp ex_value_type?(value, name) do
+    type = MLIR.Value.type(value)
+    MLIR.equal?(type, ex_type(name, MLIR.context(type)))
   end
 
   defp refine_integer_operands!(asts, values, env, ctx, block) do
@@ -9816,15 +9832,29 @@ defmodule Batata.Lift do
 
     dispatch? = Map.get(env, @current_function_key) == :__fn_dispatch
 
-    Enum.zip_with(values, modes, fn
-      value, _mode when dispatch? ->
+    integer_guards =
+      if fn_abi_name?(name) do
+        List.duplicate(true, length(values))
+      else
+        env
+        |> Map.fetch!(@integer_guard_modes_key)
+        |> Map.get({name, length(values)}, List.duplicate(false, length(values)))
+      end
+
+    Enum.zip([values, modes, integer_guards])
+    |> Enum.map(fn
+      {value, _mode, _integer_guard?} when dispatch? ->
         if term_operand?(value), do: unbox(value, ctx, block), else: value
 
-      value, :term ->
+      {value, :term, _integer_guard?} ->
         value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
 
-      value, :scalar ->
-        value
+      {value, :scalar, integer_guard?} ->
+        if integer_guard? and term_operand?(value) do
+          create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
+        else
+          value
+        end
     end)
   end
 

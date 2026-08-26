@@ -166,14 +166,14 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp scalar_args?(call) do
     call
     |> Walker.operands()
-    |> Enum.all?(&(MLIR.to_string(MLIR.Value.type(&1)) == "i64"))
+    |> Enum.all?(&i64_value?/1)
   end
 
   defp scalar_return?(callee) do
     terminator = callee |> body_block() |> MLIR.CAPI.mlirBlockGetTerminator()
 
     case terminator |> Walker.operands() |> Enum.to_list() do
-      [value] -> MLIR.to_string(MLIR.Value.type(value)) == "i64"
+      [value] -> i64_value?(value)
       _ -> false
     end
   end
@@ -184,7 +184,7 @@ defmodule Batata.Transform.InlineScalarCalls do
     |> Enum.to_list()
     |> hd()
     |> MLIR.Value.type()
-    |> MLIR.to_string() == "i64"
+    |> MLIR.equal?(MLIR.Type.i64())
   end
 
   # Replaces a call whose callee returns i64 with an i64-typed ex.call, so
@@ -288,13 +288,19 @@ defmodule Batata.Transform.InlineScalarCalls do
 
     Enum.all?(
       block |> Walker.arguments() |> Enum.to_list(),
-      &(MLIR.to_string(MLIR.Value.type(&1)) == "i64")
+      &i64_value?/1
     ) and
       match?([_], terminator |> Walker.operands() |> Enum.to_list()) and
       terminator
       |> Walker.operands()
       |> Enum.to_list()
-      |> Enum.all?(&(MLIR.to_string(MLIR.Value.type(&1)) == "i64"))
+      |> Enum.all?(&i64_value?/1)
+  end
+
+  defp i64_value?(value) do
+    value
+    |> MLIR.Value.type()
+    |> MLIR.equal?(MLIR.Type.i64())
   end
 
   defp callees(module) do

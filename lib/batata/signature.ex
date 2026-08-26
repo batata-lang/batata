@@ -34,6 +34,53 @@ defmodule Batata.Signature do
   def builtin_modes(module, function, arity),
     do: Map.get(@builtin_modes, {module, function, arity})
 
+  @doc false
+  def infer_integer_guards(definitions) do
+    definitions
+    |> Enum.group_by(&{&1.name, &1.arity})
+    |> Map.new(fn {signature = {_name, arity}, grouped} ->
+      clauses = Enum.flat_map(grouped, & &1.clauses)
+      {signature, integer_guard_modes(arity, clauses)}
+    end)
+  end
+
+  defp integer_guard_modes(0, _clauses), do: []
+
+  defp integer_guard_modes(arity, clauses) do
+    Enum.map(0..(arity - 1), fn index ->
+      clauses != [] and Enum.all?(clauses, &integer_guarded_argument?(&1, index))
+    end)
+  end
+
+  defp integer_guarded_argument?(clause, index) do
+    case Enum.at(clause.patterns, index) do
+      integer when is_integer(integer) ->
+        true
+
+      {name, _, context} when is_variable_ast(name, context) ->
+        guard_requires_integer?(clause.guard_ast, name)
+
+      _pattern ->
+        false
+    end
+  end
+
+  defp guard_requires_integer?(nil, _name), do: false
+
+  defp guard_requires_integer?(guard_ast, name) do
+    {_guard_ast, required?} =
+      Macro.prewalk(guard_ast, false, fn
+        {:is_integer, _, [{^name, _, context}]} = node, _required?
+        when is_atom(context) ->
+          {node, true}
+
+        node, required? ->
+          {node, required?}
+      end)
+
+    required?
+  end
+
   def infer(definitions) do
     initial =
       Map.new(definitions, fn %Frontend.Definition{name: name, arity: arity, clauses: clauses} ->
@@ -67,8 +114,7 @@ defmodule Batata.Signature do
       Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
         clauses = Enum.flat_map(definitions, & &1.clauses)
 
-        if clauses != [] and
-             Enum.all?(clauses, &scalar_result?(&1.body_ast, acc, no_return_functions)) do
+        if scalar_clauses?(clauses, acc, no_return_functions) do
           MapSet.put(acc, signature)
         else
           acc
@@ -80,32 +126,78 @@ defmodule Batata.Signature do
       else: infer_results_fixed_point(groups, no_return_functions, next)
   end
 
-  defp scalar_result?(ast, proven, no_return_functions) do
-    result_kind(ast, proven, no_return_functions) == :scalar
+  defp scalar_clauses?(clauses, proven, no_return_functions) do
+    clauses != [] and
+      Enum.all?(clauses, fn clause ->
+        scalar_result?(
+          clause.body_ast,
+          proven,
+          no_return_functions,
+          scalar_clause_variables(clause)
+        )
+      end)
   end
 
-  defp result_kind(integer, _proven, _no_return_functions) when is_integer(integer),
-    do: :scalar
+  defp scalar_result?(ast, proven, no_return_functions, scalar_variables) do
+    result_kind(ast, proven, no_return_functions, scalar_variables) == :scalar
+  end
 
-  defp result_kind({:-, _, [integer]}, _proven, _no_return_functions)
+  defp result_kind(integer, _proven, _no_return_functions, _scalar_variables)
        when is_integer(integer),
        do: :scalar
 
-  defp result_kind({:__block__, _, expressions}, proven, no_return_functions)
-       when expressions != [],
-       do: expressions |> List.last() |> result_kind(proven, no_return_functions)
+  defp result_kind({:-, _, [integer]}, _proven, _no_return_functions, _scalar_variables)
+       when is_integer(integer),
+       do: :scalar
 
-  defp result_kind({:case, _, [_value, [do: clauses]]}, proven, no_return_functions)
+  defp result_kind({:__block__, _, expressions}, proven, no_return_functions, scalar_variables)
+       when expressions != [],
+       do:
+         expressions
+         |> List.last()
+         |> result_kind(proven, no_return_functions, scalar_variables)
+
+  defp result_kind(
+         {:case, _, [_value, [do: clauses]]},
+         proven,
+         no_return_functions,
+         scalar_variables
+       )
        when is_list(clauses) do
     clauses
-    |> Enum.map(&clause_result_kind(&1, proven, no_return_functions))
+    |> Enum.map(&clause_result_kind(&1, proven, no_return_functions, scalar_variables))
     |> combine_result_kinds()
   end
 
-  defp result_kind({:throw, _, [_value]}, _proven, _no_return_functions),
+  defp result_kind(
+         {:if, _, [condition, branches]},
+         proven,
+         no_return_functions,
+         scalar_variables
+       )
+       when is_list(branches) do
+    with true <- scalar_condition?(condition, proven, no_return_functions, scalar_variables),
+         {:ok, then_branch} <- Keyword.fetch(branches, :do),
+         {:ok, else_branch} <- Keyword.fetch(branches, :else) do
+      [
+        result_kind(then_branch, proven, no_return_functions, scalar_variables),
+        result_kind(else_branch, proven, no_return_functions, scalar_variables)
+      ]
+      |> combine_result_kinds()
+    else
+      _not_proven -> :unknown
+    end
+  end
+
+  defp result_kind({:throw, _, [_value]}, _proven, _no_return_functions, _scalar_variables),
     do: :no_return
 
-  defp result_kind({name, _, arguments}, proven, no_return_functions)
+  defp result_kind({name, _, context}, _proven, _no_return_functions, scalar_variables)
+       when is_variable_ast(name, context) do
+    if MapSet.member?(scalar_variables, name), do: :scalar, else: :unknown
+  end
+
+  defp result_kind({name, _, arguments}, proven, no_return_functions, scalar_variables)
        when is_atom(name) and is_list(arguments) do
     signature = {name, length(arguments)}
 
@@ -117,7 +209,9 @@ defmodule Batata.Signature do
         :scalar
 
       name in [:+, :-, :*, :div, :rem] and
-          Enum.all?(arguments, &(result_kind(&1, proven, no_return_functions) == :scalar)) ->
+          Enum.all?(arguments, fn argument ->
+            result_kind(argument, proven, no_return_functions, scalar_variables) == :scalar
+          end) ->
         :scalar
 
       true ->
@@ -125,12 +219,78 @@ defmodule Batata.Signature do
     end
   end
 
-  defp result_kind(_ast, _proven, _no_return_functions), do: :unknown
+  defp result_kind(_ast, _proven, _no_return_functions, _scalar_variables), do: :unknown
 
-  defp clause_result_kind({:->, _, [_patterns, body]}, proven, no_return_functions),
-    do: result_kind(body, proven, no_return_functions)
+  defp clause_result_kind(
+         {:->, _, [_patterns, body]},
+         proven,
+         no_return_functions,
+         scalar_variables
+       ),
+       do: result_kind(body, proven, no_return_functions, scalar_variables)
 
-  defp clause_result_kind(_clause, _proven, _no_return_functions), do: :unknown
+  defp clause_result_kind(_clause, _proven, _no_return_functions, _scalar_variables),
+    do: :unknown
+
+  defp guarded_scalar_variables(nil), do: MapSet.new()
+
+  defp guarded_scalar_variables(guard_ast) do
+    {_guard_ast, variables} =
+      Macro.prewalk(guard_ast, MapSet.new(), fn
+        {:is_integer, _, [{name, _, context}]} = node, variables
+        when is_variable_ast(name, context) ->
+          {node, MapSet.put(variables, name)}
+
+        node, variables ->
+          {node, variables}
+      end)
+
+    variables
+  end
+
+  defp scalar_clause_variables(clause) do
+    [clause.guard_ast, clause.body_ast]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce(MapSet.new(), fn ast, variables ->
+      MapSet.union(variables, scalar_operation_variables(ast))
+    end)
+    |> MapSet.union(guarded_scalar_variables(clause.guard_ast))
+  end
+
+  defp scalar_operation_variables(ast) do
+    {_ast, variables} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {operator, _, arguments} = node, variables
+        when operator in [:+, :-, :*, :div, :rem, :<, :>, :<=, :>=] and is_list(arguments) ->
+          {node, Enum.reduce(arguments, variables, &put_scalar_variable/2)}
+
+        node, variables ->
+          {node, variables}
+      end)
+
+    variables
+  end
+
+  defp put_scalar_variable({name, _, context}, variables)
+       when is_variable_ast(name, context),
+       do: MapSet.put(variables, name)
+
+  defp put_scalar_variable(_argument, variables), do: variables
+
+  defp scalar_condition?(
+         {operator, _, [left, right]},
+         proven,
+         no_return_functions,
+         scalar_variables
+       )
+       when operator in [:==, :!=, :<, :>, :<=, :>=] do
+    Enum.all?([left, right], fn operand ->
+      result_kind(operand, proven, no_return_functions, scalar_variables) == :scalar
+    end)
+  end
+
+  defp scalar_condition?(_condition, _proven, _no_return_functions, _scalar_variables),
+    do: false
 
   defp combine_result_kinds(kinds) do
     cond do
@@ -243,6 +403,15 @@ defmodule Batata.Signature do
 
     {node, modes}
   end
+
+  defp infer_node(
+         {:if, _, [{name, _, context}, _branches]} = node,
+         modes,
+         names,
+         _signatures
+       )
+       when is_variable_ast(name, context),
+       do: {node, mark_name(modes, names, name)}
 
   defp infer_node(
          {{:., _, [module_ast, function]}, _, args} = node,
