@@ -1,10 +1,11 @@
 defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
   use ExUnit.Case, async: true
 
+  alias Batata.Decimal.Probe
   alias Batata.Probe.CapabilityMatrix
 
   test "marks aggregate numeric guards executable only with both sub-capabilities" do
-    matrix = CapabilityMatrix.load!("probe/decimal/capabilities.json")
+    matrix = CapabilityMatrix.load!(Probe.asset!("capabilities.json"))
     capabilities = Map.new(matrix["capabilities"], &{&1["id"], &1})
 
     assert capabilities["pattern.map_subset"]["gate"] == "execute_test"

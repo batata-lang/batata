@@ -8,10 +8,10 @@ defmodule Batata.Probe.Decimal.SubsetTest do
   normalization and term-field guard failures found by the wider probe.
   """
 
-  use Batata.Case, async: true
+  use Batata.Decimal.Case, async: true
 
   alias Batata
-  alias Batata.Test.DecimalSubset
+  alias Batata.Decimal.Test.Subset
 
   @cases [
     {"multiplies finite coefficients", "finite_mult(1, 125, 2, 0 - 1, 20, 1)"},
@@ -29,20 +29,18 @@ defmodule Batata.Probe.Decimal.SubsetTest do
     {"accepts a negative divisible coefficient", "divisible_guard(0 - 20)"},
     {"rejects a non-divisible coefficient", "divisible_guard(105)"},
     {"rejects a non-integer coefficient", "divisible_guard(false)"},
-    {"accepts a finite new guard", DecimalSubset.new_guard_expression("1", "42", "0")},
-    {"accepts a NaN new guard", DecimalSubset.new_guard_expression("0 - 1", ":NaN", "3")},
-    {"accepts an infinity new guard", DecimalSubset.new_guard_expression("1", ":inf", "0 - 2")},
-    {"rejects a negative finite coefficient",
-     DecimalSubset.new_guard_expression("1", "0 - 1", "0")},
-    {"rejects an unknown atom coefficient",
-     DecimalSubset.new_guard_expression("1", ":other", "0")},
-    {"rejects an invalid sign", DecimalSubset.new_guard_expression("0", "10", "0")},
-    {"rejects a non-integer exponent", DecimalSubset.new_guard_expression("1", "10", "false")}
+    {"accepts a finite new guard", Subset.new_guard_expression("1", "42", "0")},
+    {"accepts a NaN new guard", Subset.new_guard_expression("0 - 1", ":NaN", "3")},
+    {"accepts an infinity new guard", Subset.new_guard_expression("1", ":inf", "0 - 2")},
+    {"rejects a negative finite coefficient", Subset.new_guard_expression("1", "0 - 1", "0")},
+    {"rejects an unknown atom coefficient", Subset.new_guard_expression("1", ":other", "0")},
+    {"rejects an invalid sign", Subset.new_guard_expression("0", "10", "0")},
+    {"rejects a non-integer exponent", Subset.new_guard_expression("1", "10", "false")}
   ]
 
   for {name, expression} <- @cases do
     test name, %{ctx: ctx} do
-      source = DecimalSubset.source(unquote(expression))
+      source = Subset.source(unquote(expression))
 
       assert beam_result(source) == Batata.execute(source, ctx)
     end

@@ -1,8 +1,10 @@
 defmodule Batata.Probe.Decimal.SourceTest do
   use ExUnit.Case, async: true
 
+  alias Batata.Decimal.Probe
+
   test "pins Decimal 2.3.0 to an immutable upstream commit" do
-    metadata = "probe/decimal/source.json" |> File.read!() |> JSON.decode!()
+    metadata = "source.json" |> Probe.asset!() |> File.read!() |> JSON.decode!()
 
     assert metadata == %{
              "name" => "decimal",
