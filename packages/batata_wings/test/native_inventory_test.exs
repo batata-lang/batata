@@ -8,7 +8,7 @@ defmodule Batata.Wings.Native.InventoryTest do
 
     assert inventory["schema_version"] == 1
     assert byte_size(inventory["source_set_sha256"]) == 64
-    assert length(inventory["entries"]) == 10
+    assert length(inventory["entries"]) == 11
 
     assert Enum.any?(inventory["entries"], fn entry ->
              entry["module"] == "Batata.Wings.Topology.Build" and
