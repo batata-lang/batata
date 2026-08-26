@@ -869,6 +869,29 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "uses :binary.at results in integer dispatch and arithmetic", %{ctx: ctx} do
+    assert {2, 93} ==
+             Batata.execute(
+               """
+               defmodule NativeBinaryAtScalar do
+                 def main() do
+                   binary = <<34, 92, 118>>
+
+                   kind =
+                     case :binary.at(binary, 0) do
+                       92 -> 1
+                       34 -> 2
+                       _ -> 0
+                     end
+
+                   {kind, :binary.at(binary, 1) + 1}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
   test "matches compile-known byte patterns in binaries", %{ctx: ctx} do
     source = """
     defmodule NativeBinaryMatch do
