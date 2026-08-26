@@ -324,6 +324,32 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "selects and invokes private function captures", %{ctx: ctx} do
+    source = """
+    defmodule PrivateFunctionCapture do
+      def apply_selected(kind, value) do
+        selected =
+          case kind do
+            :increment -> &increment/1
+            :double -> &double/1
+          end
+
+        selected.(value)
+      end
+
+      def main(), do: {apply_selected(:increment, 4), apply_selected(:double, 4)}
+
+      defp increment(value), do: value + 1
+      defp double(value), do: value * 2
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nPrivateFunctionCapture.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "returns and invokes remote function captures", %{ctx: ctx} do
     source = """
     defmodule RemoteFunctionCapture do
