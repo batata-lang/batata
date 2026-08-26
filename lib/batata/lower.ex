@@ -7,6 +7,7 @@ defmodule Batata.Lower do
   standard `arith-to-llvm` and `func-to-llvm` passes for the lowering phase.
   """
 
+  alias Batata.Lower.Trace
   alias Batata.Memory.RuntimeQuota
   alias Beaver.Changeset
   alias Beaver.MLIR
@@ -37,11 +38,48 @@ defmodule Batata.Lower do
 
   @spec to_func(MLIR.Module.t(), keyword()) :: MLIR.Module.t()
   def to_func(module, opts \\ []) do
-    quota_bytes = opts |> Keyword.get(:memory_quota_bytes) |> RuntimeQuota.validate!()
-    if is_integer(quota_bytes), do: inject_runtime_quota!(module, quota_bytes)
-    module = Plan.run!(ExConversion.plan(), module)
-    if Keyword.get(opts, :memory_telemetry, false), do: inject_result_memory_accessors!(module)
+    {module, _stages} = do_to_func(module, opts, nil)
     module
+  end
+
+  @doc """
+  Converts an `ex` dialect module to `func`/`arith`/`scf`/`cf` and returns a
+  machine-readable native action trace.
+
+  The trace is opt-in because MLIR action observation adds measurement
+  overhead. Raw actions are reduced to bounded summaries grouped by action
+  tag, root operation, and native description.
+  """
+  @spec to_func_with_trace(MLIR.Module.t(), keyword()) :: {MLIR.Module.t(), Trace.receipt()}
+  def to_func_with_trace(module, opts \\ []) do
+    ctx = MLIR.context(module)
+
+    Trace.capture(ctx, :ex_to_func, fn session ->
+      do_to_func(module, opts, session)
+    end)
+  end
+
+  defp do_to_func(module, opts, session) do
+    quota_bytes = opts |> Keyword.get(:memory_quota_bytes) |> RuntimeQuota.validate!()
+
+    {module, stages} =
+      maybe_stage(module, [], session, :runtime_quota, is_integer(quota_bytes), fn ->
+        inject_runtime_quota!(module, quota_bytes)
+      end)
+
+    {module, stages} =
+      run_stage(module, stages, session, :ex_conversion, fn ->
+        Plan.run!(ExConversion.plan(), module)
+      end)
+
+    maybe_stage(
+      module,
+      stages,
+      session,
+      :memory_accessors,
+      Keyword.get(opts, :memory_telemetry, false),
+      fn -> inject_result_memory_accessors!(module) end
+    )
   end
 
   @doc """
@@ -55,44 +93,97 @@ defmodule Batata.Lower do
   """
   @spec to_llvm(MLIR.Module.t(), MLIR.Context.t(), keyword()) :: MLIR.Module.t()
   def to_llvm(module, ctx, opts \\ []) do
-    module = to_func(module, opts)
+    {module, _stages} = do_to_llvm(module, ctx, opts, nil)
+    module
+  end
+
+  @doc """
+  Lowers an `ex` dialect module to LLVM and returns a machine-readable trace.
+
+  The receipt separates the `ex` conversion and every standard MLIR lowering
+  pass. Native `apply-conversion`, `apply-pattern`, and `pass-execution`
+  actions are summarized within the stage that produced them.
+  """
+  @spec to_llvm_with_trace(MLIR.Module.t(), MLIR.Context.t(), keyword()) ::
+          {MLIR.Module.t(), Trace.receipt()}
+  def to_llvm_with_trace(module, ctx, opts \\ []) do
+    Trace.capture(ctx, :ex_to_llvm, fn session ->
+      do_to_llvm(module, ctx, opts, session)
+    end)
+  end
+
+  defp do_to_llvm(module, ctx, opts, session) do
+    {module, stages} = do_to_func(module, opts, session)
     request_c_wrappers? = Keyword.get(opts, :c_interface, false)
 
-    run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionArithToLLVMConversionPass/0)
-    run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionSCFToControlFlowPass/0)
-    run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertControlFlowToLLVMPass/0)
+    {module, stages} =
+      run_stage(module, stages, session, :arith_to_llvm, fn ->
+        run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionArithToLLVMConversionPass/0)
+      end)
 
-    if request_c_wrappers? do
-      request_c_wrappers_for_entries(module, [
-        "main",
-        "__batata_result_destroy",
-        "__batata_result_root_kind",
-        "__batata_result_root_word",
-        "__batata_result_exception_kind",
-        "__batata_result_exception_reason",
-        "__batata_result_term_kind",
-        "__batata_result_atom_name",
-        "__batata_result_term_length",
-        "__batata_result_term_get",
-        "__batata_result_arena_capacity_bytes",
-        "__batata_result_arena_chunks",
-        "__batata_result_arena_high_water",
-        "__batata_result_arena_limit",
-        "__batata_result_oom",
-        "__batata_term_export",
-        "__batata_term_import",
-        "__batata_exported_clone",
-        "__batata_exported_destroy",
-        "__batata_exported_length",
-        "__batata_exported_get",
-        "__batata_term_handle_export",
-        "__batata_term_handle_destroy"
-      ])
-    end
+    {module, stages} =
+      run_stage(module, stages, session, :scf_to_cf, fn ->
+        run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionSCFToControlFlowPass/0)
+      end)
 
-    run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertFuncToLLVMPass/0)
+    {module, stages} =
+      run_stage(module, stages, session, :cf_to_llvm, fn ->
+        run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertControlFlowToLLVMPass/0)
+      end)
 
-    module
+    {module, stages} =
+      maybe_stage(module, stages, session, :request_c_wrappers, request_c_wrappers?, fn ->
+        request_c_wrappers_for_entries(module, [
+          "main",
+          "__batata_result_destroy",
+          "__batata_result_root_kind",
+          "__batata_result_root_word",
+          "__batata_result_exception_kind",
+          "__batata_result_exception_reason",
+          "__batata_result_term_kind",
+          "__batata_result_atom_name",
+          "__batata_result_term_length",
+          "__batata_result_term_get",
+          "__batata_result_arena_capacity_bytes",
+          "__batata_result_arena_chunks",
+          "__batata_result_arena_high_water",
+          "__batata_result_arena_limit",
+          "__batata_result_oom",
+          "__batata_term_export",
+          "__batata_term_import",
+          "__batata_exported_clone",
+          "__batata_exported_destroy",
+          "__batata_exported_length",
+          "__batata_exported_get",
+          "__batata_term_handle_export",
+          "__batata_term_handle_destroy"
+        ])
+      end)
+
+    run_stage(module, stages, session, :func_to_llvm, fn ->
+      run_pass(module, ctx, &MLIR.CAPI.mlirCreateConversionConvertFuncToLLVMPass/0)
+    end)
+  end
+
+  defp maybe_stage(module, stages, nil, _name, true, callback) do
+    callback.()
+    {module, stages}
+  end
+
+  defp maybe_stage(module, stages, session, name, true, callback) do
+    run_stage(module, stages, session, name, fn ->
+      callback.()
+      module
+    end)
+  end
+
+  defp maybe_stage(module, stages, _session, _name, false, _callback), do: {module, stages}
+
+  defp run_stage(_module, stages, nil, _name, callback), do: {callback.(), stages}
+
+  defp run_stage(_module, stages, session, name, callback) do
+    {module, stage} = Trace.stage(session, name, callback)
+    {module, stages ++ [stage]}
   end
 
   defp inject_runtime_quota!(module, quota_bytes) do
