@@ -17,6 +17,7 @@ defmodule Batata.Wings.Godot.Extension do
   )
 
   godot_method(:state_generation, args: [], returns: :int, state: :replace)
+  godot_method(:editor_layout_code, args: [], returns: :int, state: :replace)
   godot_method(:displayed_mesh_code, args: [], returns: :int, state: :replace)
 
   godot_method(:selected_triangle_indices,
@@ -37,11 +38,36 @@ defmodule Batata.Wings.Godot.Extension do
     state: :replace
   )
 
+  godot_method(:editor_extrude,
+    args: [:int, :int, :int],
+    returns: :int,
+    state: :replace
+  )
+
+  godot_method(:editor_extrude_individual,
+    args: [:int, :int, :int],
+    returns: :int,
+    state: :replace
+  )
+
+  godot_method(:editor_inset,
+    args: [:int, :int, :int],
+    returns: :int,
+    state: :replace
+  )
+
+  godot_method(:editor_bevel,
+    args: [:int, :int, :int, :int],
+    returns: :int,
+    state: :replace
+  )
+
   godot_method(:editor_undo, args: [:int], returns: :int, state: :replace)
   godot_method(:editor_redo, args: [:int], returns: :int, state: :replace)
 
   def mesh(_state), do: nil
   def state_generation(_state), do: 0
+  def editor_layout_code(_state), do: 0
   def displayed_mesh_code(_state), do: 0
   def selected_triangle_indices(_state), do: []
 
@@ -62,6 +88,22 @@ defmodule Batata.Wings.Godot.Extension do
         _dx,
         _dy,
         _dz,
+        _expected_generation,
+        _quota_bytes
+      ),
+      do: 0
+
+  def editor_extrude(_state, _distance, _expected_generation, _quota_bytes), do: 0
+
+  def editor_extrude_individual(_state, _distance, _expected_generation, _quota_bytes),
+    do: 0
+
+  def editor_inset(_state, _ratio_milli, _expected_generation, _quota_bytes), do: 0
+
+  def editor_bevel(
+        _state,
+        _ratio_milli,
+        _width,
         _expected_generation,
         _quota_bytes
       ),

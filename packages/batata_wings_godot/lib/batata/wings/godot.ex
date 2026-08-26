@@ -60,10 +60,15 @@ defmodule Batata.Wings.Godot do
     initial = Kernel.cube_state()
     {selected, 0} = Kernel.editor_pointer_button(initial, 3, 0, 0, 5_000, 0, 0, -10)
     {moved, 1} = Kernel.editor_move(selected, 0, 0, 250, 0, 1_024)
-    {undone, 2} = Kernel.editor_undo(moved, 1)
-    {redone, 3} = Kernel.editor_redo(undone, 2)
+    {extruded, 2} = Kernel.editor_extrude(moved, 250, 1, 4_096)
+    {individual, 3} = Kernel.editor_extrude_individual(extruded, 250, 2, 4_096)
+    {inset, 4} = Kernel.editor_inset(individual, 250, 3, 4_096)
+    {beveled, 5} = Kernel.editor_bevel(inset, 100, 50, 4, 4_096)
+    {undone, 6} = Kernel.editor_undo(beveled, 5)
+    {redone, 7} = Kernel.editor_redo(undone, 6)
     final_surface = surface_expectation(redone)
-    selection_indices = elem(Kernel.selected_triangle_indices(selected), 1)
+    initial_selection_indices = elem(Kernel.selected_triangle_indices(selected), 1)
+    selection_indices = elem(Kernel.selected_triangle_indices(redone), 1)
     initial_code = Kernel.state_code(initial)
     moved_code = Kernel.state_code(moved)
 
@@ -96,7 +101,7 @@ defmodule Batata.Wings.Godot do
       %{
         method: "selected_triangle_indices",
         arguments: [],
-        expected: selection_indices
+        expected: initial_selection_indices
       },
       %{
         method: "editor_move",
@@ -114,19 +119,69 @@ defmodule Batata.Wings.Godot do
         expected: moved_code
       },
       %{
-        method: "editor_undo",
-        arguments: [1],
+        method: "editor_layout_code",
+        arguments: [],
+        expected: 806
+      },
+      %{
+        method: "editor_extrude",
+        arguments: [250, 1, 4_096],
         expected: 2
+      },
+      %{
+        method: "editor_layout_code",
+        arguments: [],
+        expected: 1_210
+      },
+      %{
+        method: "editor_extrude_individual",
+        arguments: [250, 2, 4_096],
+        expected: 3
+      },
+      %{
+        method: "editor_layout_code",
+        arguments: [],
+        expected: 1_614
+      },
+      %{
+        method: "editor_inset",
+        arguments: [250, 3, 4_096],
+        expected: 4
+      },
+      %{
+        method: "editor_layout_code",
+        arguments: [],
+        expected: 2_018
+      },
+      %{
+        method: "editor_bevel",
+        arguments: [100, 50, 4, 4_096],
+        expected: 5
+      },
+      %{
+        method: "editor_layout_code",
+        arguments: [],
+        expected: 2_422
       },
       %{
         method: "displayed_mesh_code",
         arguments: [],
-        expected: Kernel.state_code(undone)
+        expected: Kernel.state_code(beveled)
+      },
+      %{
+        method: "selected_triangle_indices",
+        arguments: [],
+        expected: selection_indices
+      },
+      %{
+        method: "editor_undo",
+        arguments: [5],
+        expected: 6
       },
       %{
         method: "editor_redo",
-        arguments: [2],
-        expected: 3
+        arguments: [6],
+        expected: 7
       },
       %{
         method: "mesh",
@@ -137,6 +192,21 @@ defmodule Batata.Wings.Godot do
         method: "editor_move",
         arguments: [0, 0, 250, 0, 1_024],
         expected: -1
+      },
+      %{
+        method: "editor_inset",
+        arguments: [500, 7, 4_096],
+        expected: -6
+      },
+      %{
+        method: "editor_bevel",
+        arguments: [100, 50, 7, 1],
+        expected: -3
+      },
+      %{
+        method: "editor_move",
+        arguments: [0, 0, 1_000_000, 7, 4_096],
+        expected: -4
       },
       %{
         method: "displayed_mesh_code",
@@ -152,7 +222,22 @@ defmodule Batata.Wings.Godot do
     receipt_path = Path.join(output_dir, "editor_replay_receipt.json")
 
     receipt =
-      editor_receipt(source, output, plugin, initial, moved, undone, redone, selection_indices)
+      editor_receipt(
+        source,
+        output,
+        plugin,
+        %{
+          initial: initial,
+          moved: moved,
+          extruded: extruded,
+          individual: individual,
+          inset: inset,
+          beveled: beveled,
+          undone: undone,
+          redone: redone
+        },
+        selection_indices
+      )
 
     File.write!(receipt_path, CanonicalJSON.encode!(receipt))
 
@@ -189,22 +274,37 @@ defmodule Batata.Wings.Godot do
     }
   end
 
-  defp editor_receipt(source, output, plugin, initial, moved, undone, redone, selection_indices) do
+  defp editor_receipt(
+         source,
+         output,
+         plugin,
+         %{
+           initial: initial,
+           moved: moved,
+           extruded: extruded,
+           individual: individual,
+           inset: inset,
+           beveled: beveled,
+           undone: undone,
+           redone: redone
+         },
+         selection_indices
+       ) do
     bundle = output.bundle |> File.read!() |> JSON.decode!()
 
     command = %{
       "event_word" => 3,
       "move" => [0, 0, 250],
       "origin" => [0, 0, 5_000],
-      "quota_bytes" => 1_024,
+      "quota_bytes" => 4_096,
       "ray_direction" => [0, 0, -10]
     }
 
     %{
       "allocation" => %{
-        "estimate_bytes" => 656,
-        "proof" => "8 fixed vertices + 6 bounded faces",
-        "quota_bytes" => 1_024
+        "estimate_bytes" => 2_192,
+        "proof" => "24 bounded vertices + 22 closed quad faces",
+        "quota_bytes" => 4_096
       },
       "artifact_bundle_sha256" => digest_file(output.bundle),
       "binding_plan_sha256" => bundle["binding_plan_sha256"],
@@ -219,10 +319,15 @@ defmodule Batata.Wings.Godot do
       "functions" => [
         "editor_pointer_button/8",
         "editor_move/6",
+        "editor_extrude/4",
+        "editor_extrude_individual/4",
+        "editor_inset/4",
+        "editor_bevel/5",
         "editor_undo/2",
         "editor_redo/2",
         "mesh/1",
         "state_generation/1",
+        "editor_layout_code/1",
         "displayed_mesh_code/1",
         "selected_triangle_indices/1",
         "topology_code_for_state/1"
@@ -230,7 +335,7 @@ defmodule Batata.Wings.Godot do
       "godot_api_sha256" => bundle["godot_api_sha256"],
       "godot_api_version" => bundle["godot_api_version"],
       "native_source" => NativeSource.identity(),
-      "operation" => "native_pick_move_history_and_stale_rejection",
+      "operation" => "native_pick_move_region_individual_extrude_inset_bevel_history",
       "editor_plugin" => %{
         "config_sha256" => plugin.config_sha256,
         "script_sha256" => plugin.script_sha256
@@ -249,15 +354,33 @@ defmodule Batata.Wings.Godot do
       "steps" => [
         %{"after_generation" => 0, "code" => 0, "operation" => "pick"},
         %{"after_generation" => 1, "code" => 1, "operation" => "move"},
-        %{"after_generation" => 2, "code" => 2, "operation" => "undo"},
-        %{"after_generation" => 3, "code" => 3, "operation" => "redo"},
-        %{"after_generation" => 3, "code" => -1, "operation" => "stale_move"}
+        %{"after_generation" => 2, "code" => 2, "operation" => "region_extrude"},
+        %{"after_generation" => 3, "code" => 3, "operation" => "individual_extrude"},
+        %{"after_generation" => 4, "code" => 4, "operation" => "inset"},
+        %{"after_generation" => 5, "code" => 5, "operation" => "bevel"},
+        %{"after_generation" => 6, "code" => 6, "operation" => "undo"},
+        %{"after_generation" => 7, "code" => 7, "operation" => "redo"},
+        %{"after_generation" => 7, "code" => -1, "operation" => "stale_move"},
+        %{"after_generation" => 7, "code" => -6, "operation" => "invalid_inset"},
+        %{"after_generation" => 7, "code" => -3, "operation" => "quota_bevel"},
+        %{"after_generation" => 7, "code" => -4, "operation" => "overflow_move"}
+      ],
+      "diagnostics" => diagnostic_receipt(),
+      "identity_delta" => [
+        identity_delta("region_extrude", 8, 11, 6, 9),
+        identity_delta("individual_extrude", 12, 15, 10, 13),
+        identity_delta("inset", 16, 19, 14, 17),
+        identity_delta("bevel", 20, 23, 18, 21)
       ],
       "topology" => %{
         "after" => topology_receipt(redone),
         "before" => topology_receipt(initial)
       },
       "history" => %{
+        "beveled_state_code" => Kernel.state_code(beveled),
+        "extruded_state_code" => Kernel.state_code(extruded),
+        "individual_extruded_state_code" => Kernel.state_code(individual),
+        "inset_state_code" => Kernel.state_code(inset),
         "moved_state_code" => Kernel.state_code(moved),
         "redo_state_code" => Kernel.state_code(redone),
         "undo_state_code" => Kernel.state_code(undone)
@@ -292,6 +415,39 @@ defmodule Batata.Wings.Godot do
       "euler_characteristic" => euler,
       "faces" => faces,
       "vertices" => vertices
+    }
+  end
+
+  defp identity_delta(operation, vertex_first, vertex_last, face_first, face_last) do
+    %{
+      "created_face_ids" => Enum.to_list(face_first..face_last),
+      "created_vertex_ids" => Enum.to_list(vertex_first..vertex_last),
+      "operation" => operation,
+      "preserved_existing_ids" => true
+    }
+  end
+
+  defp diagnostic_receipt do
+    %{
+      "-1" => diagnostic("E_WINGS_NATIVE_GENERATION_STALE", "retry with observed generation"),
+      "-2" => diagnostic("E_WINGS_NATIVE_SELECTION_INVALID", "select one canonical face"),
+      "-3" => diagnostic("E_WINGS_NATIVE_MEMORY_QUOTA_EXCEEDED", "raise quota_bytes"),
+      "-4" =>
+        diagnostic("E_WINGS_NATIVE_FIXED_POINT_OVERFLOW", "reduce fixed-point displacement"),
+      "-5" =>
+        diagnostic("E_WINGS_NATIVE_HISTORY_UNAVAILABLE", "stop undo or redo at history boundary"),
+      "-6" => diagnostic("E_WINGS_NATIVE_LAYOUT_UNSUPPORTED", "use bounded operation parameters"),
+      "-7" =>
+        diagnostic("E_WINGS_NATIVE_TOPOLOGY_INVALID", "repair the selected closed quad region")
+    }
+  end
+
+  defp diagnostic(code, next_action) do
+    %{
+      "code" => code,
+      "recoverable" => true,
+      "state_policy" => "preserve_before_state",
+      "next_action" => next_action
     }
   end
 

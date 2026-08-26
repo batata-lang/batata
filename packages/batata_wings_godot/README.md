@@ -31,7 +31,8 @@ out-of-range coordinates preserve the previous state and displayed mesh. The
 native integration replay is:
 
 ```text
-ray select → move → undo → redo → reject stale move
+ray select → move → region extrude → individual extrude → planar inset → segments=1 bevel
+  → undo → redo → reject stale move
 ```
 
 `build_editor_replay!/3` writes `editor_replay_receipt.json`, compiles code
