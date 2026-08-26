@@ -25,7 +25,13 @@ defmodule Batata.Wings.Godot.Source do
       def displayed_mesh_digest(), do: #{inspect(state_digest)}
       def selected_triangle_indices(), do: #{inspect(selection_indices, limit: :infinity)}
       def input_schema_digest(), do: #{inspect(input_schema_digest)}
-      def editor_state_snapshot(), do: {{#{generation}, #{state_literal}}, #{state_literal}}
+      def editor_state_snapshot(state) do
+        if state == nil do
+          {{#{generation}, #{state_literal}}, #{state_literal}}
+        else
+          {state, #{state_literal}}
+        end
+      end
       def editor_pointer_button(_position, _button, _pressed, _modifiers, _ray_origin, _ray_direction, expected_generation), do: expected_generation
       def editor_key_chord(_key, _modifiers, _pressed, expected_generation), do: expected_generation
     end

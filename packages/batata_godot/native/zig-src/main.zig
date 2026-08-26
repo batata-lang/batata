@@ -322,7 +322,7 @@ fn parseObjectClass(comptime encoded: []const u8) []const u8 {
 fn Invocation(comptime spec: MethodSpec) type {
     return struct {
         fn call(arguments: *const [max_method_arity]i64) callconv(.c) i64 {
-            return switch (spec.arity) {
+            return switch (compiledArity(spec)) {
                 0 => @extern(*const fn () callconv(.c) i64, .{ .name = spec.symbol })(),
                 1 => @extern(*const fn (i64) callconv(.c) i64, .{ .name = spec.symbol })(arguments[0]),
                 2 => @extern(*const fn (i64, i64) callconv(.c) i64, .{ .name = spec.symbol })(arguments[0], arguments[1]),
@@ -336,6 +336,10 @@ fn Invocation(comptime spec: MethodSpec) type {
             };
         }
     };
+}
+
+fn compiledArity(comptime spec: MethodSpec) usize {
+    return spec.arity + @intFromBool(spec.state == .replace);
 }
 
 fn makeMethodRuntimes() [method_specs.len]MethodRuntime {
@@ -497,6 +501,7 @@ fn methodCall(
     }
 
     var arguments = [_]i64{nil_word} ** max_method_arity;
+    const argument_offset: usize = if (method.spec.state == .replace) 1 else 0;
     var object_leases = [_]ObjectLease{.{ .object = null }} ** max_method_arity;
     var object_lease_count: usize = 0;
     const generation = invocation_generation.fetchAdd(1, .acq_rel);
@@ -509,7 +514,7 @@ fn methodCall(
             return failCall(call_error, .invalid_argument, @intCast(index), @intFromEnum(variantType(expected)), "E_GODOT_METHOD_SIGNATURE_UNSUPPORTED");
         }
 
-        arguments[index] = switch (expected) {
+        arguments[index + argument_offset] = switch (expected) {
             .nil_value => nil_word,
             .bool_value => blk: {
                 var value: godot.Bool = 0;
@@ -569,6 +574,16 @@ fn methodCall(
         };
     }
 
+    var imported_state_handle: i64 = 0;
+    if (method.spec.state == .replace and instance.portable_state > 0) {
+        imported_state_handle = term_runtime.ex_term_import(runtime_handle, instance.portable_state);
+        if (imported_state_handle <= 0) {
+            leaveRuntime();
+            return failCall(call_error, .invalid_method, -1, @intCast(imported_state_handle), "E_GODOT_EDITOR_STATE_IMPORT_FAILED");
+        }
+        arguments[0] = term_runtime.ex_term_handle_root_word(imported_state_handle);
+    }
+
     const invocation = InvocationContext{ .method = method, .arguments = &arguments };
     var caught: i64 = 0;
     var exception_kind: i64 = 0;
@@ -579,6 +594,11 @@ fn methodCall(
         &caught,
         &exception_kind,
     );
+
+    if (imported_state_handle > 0 and term_runtime.ex_term_handle_destroy(imported_state_handle) != 0) {
+        leaveRuntime();
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_IMPORT_RELEASE_FAILED");
+    }
 
     if (caught != 0) {
         leaveRuntime();
@@ -1120,13 +1140,26 @@ fn finishMethodCall(
     }
 
     const exported = term_runtime.ex_term_export(result_handle, state_word);
-    const destroyed = term_runtime.ex_term_result_destroy(result_handle);
-    const replacement_runtime = term_runtime.ex_term_runtime_create();
-    if (exported <= 0 or destroyed != 0 or replacement_runtime <= 0) {
-        if (exported > 0) _ = term_runtime.ex_term_exported_destroy(exported);
-        if (replacement_runtime > 0) _ = term_runtime.ex_term_runtime_destroy(replacement_runtime);
+    if (exported <= 0) {
         instance.runtime_handle = 0;
-        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_EXPORT_FAILED");
+        return switch (exported) {
+            -1 => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_EXPORT_INVALID"),
+            -3 => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_EXPORT_UNSUPPORTED"),
+            -5 => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_EXPORT_BUSY"),
+            else => failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_EXPORT_FAILED"),
+        };
+    }
+    if (term_runtime.ex_term_result_destroy(result_handle) != 0) {
+        _ = term_runtime.ex_term_exported_destroy(exported);
+        instance.runtime_handle = 0;
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_RESULT_DESTROY_FAILED");
+    }
+
+    const replacement_runtime = term_runtime.ex_term_runtime_create();
+    if (replacement_runtime <= 0) {
+        _ = term_runtime.ex_term_exported_destroy(exported);
+        instance.runtime_handle = 0;
+        return failCall(call_error, .invalid_method, -1, 0, "E_GODOT_EDITOR_STATE_RUNTIME_CREATE_FAILED");
     }
 
     if (instance.portable_state > 0 and
