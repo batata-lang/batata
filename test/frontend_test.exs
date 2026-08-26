@@ -62,6 +62,45 @@ defmodule Batata.FrontendTest do
            ] = snapshot.definitions
   end
 
+  test "normalizes imported and explicit Kernel.raise/1 calls" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule Raising do
+        def imported(error), do: raise error
+        def explicit(error), do: Kernel.raise(error)
+      end
+      """)
+
+    assert [
+             {:__batata_raise__, _, [9, {:error, _, nil}]},
+             {:__batata_raise__, _, [9, {:error, _, nil}]}
+           ] =
+             Enum.map(snapshot.definitions, fn definition ->
+               definition.clauses |> hd() |> Map.fetch!(:body_ast)
+             end)
+  end
+
+  test "preserves a genuine local raise/1 definition and its calls" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule LocalRaise do
+        def raise(value), do: {:local, value}
+        def call(value), do: raise(value)
+        def kernel(value), do: Kernel.raise(value)
+      end
+      """)
+
+    [local, call, kernel] = snapshot.definitions
+
+    assert {:local, {:value, _, nil}} = local.clauses |> hd() |> Map.fetch!(:body_ast)
+
+    assert {:raise, _, [{:value, _, nil}]} =
+             call.clauses |> hd() |> Map.fetch!(:body_ast)
+
+    assert {:__batata_raise__, _, [9, {:value, _, nil}]} =
+             kernel.clauses |> hd() |> Map.fetch!(:body_ast)
+  end
+
   test "normalizes default arguments into callable arities" do
     snapshot =
       Frontend.from_source("""
