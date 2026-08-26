@@ -56,11 +56,39 @@ defmodule Batata.Wings.Native.KernelTest do
              Kernel.move_selected(selected, 0, 0, 1_000_000, 0, 1_024)
   end
 
+  test "native quad edits evolve closed topology and bounded history" do
+    {selected, 0} = Kernel.select_face(Kernel.cube_state(), 1, 0)
+    {extruded, 0} = Kernel.extrude_selected(selected, 250, 0, 4_096)
+    assert Kernel.topology_stats(extruded) == {true, 12, 20, 10, 2}
+    assert Kernel.vertex_position(extruded, 8) == {8, -1_000, -1_000, 1_250}
+
+    {individual, 0} = Kernel.extrude_individual_selected(selected, 250, 0, 4_096)
+    assert Kernel.topology_stats(individual) == {true, 12, 20, 10, 2}
+    assert Kernel.vertex_position(individual, 8) == {8, -1_000, -1_000, 1_250}
+
+    {inset, 0} = Kernel.inset_selected(extruded, 250, 1, 4_096)
+    assert Kernel.topology_stats(inset) == {true, 16, 28, 14, 2}
+    assert Kernel.vertex_position(inset, 12) == {12, -750, -750, 1_250}
+
+    {beveled, 0} = Kernel.bevel_selected(inset, 100, 50, 2, 4_096)
+    assert Kernel.topology_stats(beveled) == {true, 20, 36, 18, 2}
+    assert Kernel.vertex_position(beveled, 16) == {16, -675, -675, 1_200}
+
+    {undone, 0} = Kernel.undo(beveled, 3)
+    assert Kernel.vertex_position(undone, 12) == {12, -750, -750, 1_250}
+    {redone, 0} = Kernel.redo(undone, 4)
+    assert Kernel.vertex_position(redone, 16) == {16, -675, -675, 1_200}
+
+    assert {^selected, 3} = Kernel.extrude_selected(selected, 250, 0, 1)
+    assert {^selected, 6} = Kernel.inset_selected(selected, 500, 0, 4_096)
+    assert {^selected, 6} = Kernel.bevel_selected(selected, 100, 0, 0, 4_096)
+  end
+
   test "the checked-in kernel source executes through Batata native lowering" do
     ctx = Context.create()
     on_exit(fn -> Context.destroy(ctx) end)
 
-    assert Batata.execute(Source.read!(), ctx) == {100_000}
+    assert Batata.execute(Source.read!(), ctx) == {100_000, 2_422}
     assert Source.identity()["source_sha256"] |> byte_size() == 64
   end
 
