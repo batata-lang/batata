@@ -138,6 +138,30 @@ defmodule Batata.LiftTest do
     assert result_create < runtime_leave
   end
 
+  test "lifts imported Bitwise operators and aliases into scalar arith IR", %{ctx: ctx} do
+    names =
+      lift!(
+        """
+        defmodule BitwiseIR do
+          import Bitwise
+
+          def main(value) do
+            bor(band(value, 255), bxor(value >>> 2, value <<< 3)) + bnot(value)
+          end
+        end
+        """,
+        ctx
+      )
+      |> op_names()
+
+    assert "arith.andi" in names
+    assert "arith.ori" in names
+    assert "arith.xori" in names
+    assert "arith.shli" in names
+    assert "arith.shrsi" in names
+    refute Enum.any?(names, &(&1 == "ex.call"))
+  end
+
   test "preserves the signed 61-bit integer literal boundaries", %{ctx: ctx} do
     max = 1_152_921_504_606_846_975
     min = -1_152_921_504_606_846_976

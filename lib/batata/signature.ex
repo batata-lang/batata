@@ -4,6 +4,20 @@ defmodule Batata.Signature do
   alias Batata.Frontend
 
   @term_guards ~w(is_atom is_binary is_float is_function is_list is_map is_tuple)a
+  @bitwise_signatures MapSet.new([
+                        {Bitwise, :bnot, 1},
+                        {Bitwise, :"~~~", 1},
+                        {Bitwise, :band, 2},
+                        {Bitwise, :bor, 2},
+                        {Bitwise, :bxor, 2},
+                        {Bitwise, :bsl, 2},
+                        {Bitwise, :bsr, 2},
+                        {Bitwise, :&&&, 2},
+                        {Bitwise, :|||, 2},
+                        {Bitwise, :"^^^", 2},
+                        {Bitwise, :<<<, 2},
+                        {Bitwise, :>>>, 2}
+                      ])
   @builtin_modes %{
     {Kernel, :length, 1} => [:term],
     {:erlang, :length, 1} => [:term],
@@ -31,8 +45,13 @@ defmodule Batata.Signature do
 
   defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
 
-  def builtin_modes(module, function, arity),
-    do: Map.get(@builtin_modes, {module, function, arity})
+  def builtin_modes(module, function, arity) do
+    signature = {module, function, arity}
+
+    if MapSet.member?(@bitwise_signatures, signature),
+      do: List.duplicate(:scalar, arity),
+      else: Map.get(@builtin_modes, signature)
+  end
 
   @doc false
   def infer_integer_guards(definitions) do
@@ -219,6 +238,26 @@ defmodule Batata.Signature do
     end
   end
 
+  defp result_kind(
+         {{:., _, [module_ast, function]}, _, arguments},
+         proven,
+         no_return_functions,
+         scalar_variables
+       )
+       when is_atom(function) and is_list(arguments) do
+    with {:ok, module} <- module_ref(module_ast),
+         modes when is_list(modes) <- builtin_modes(module, function, length(arguments)),
+         true <- Enum.all?(modes, &(&1 == :scalar)),
+         true <-
+           Enum.all?(arguments, fn argument ->
+             result_kind(argument, proven, no_return_functions, scalar_variables) == :scalar
+           end) do
+      :scalar
+    else
+      _not_scalar -> :unknown
+    end
+  end
+
   defp result_kind(_ast, _proven, _no_return_functions, _scalar_variables), do: :unknown
 
   defp clause_result_kind(
@@ -263,6 +302,22 @@ defmodule Batata.Signature do
         {operator, _, arguments} = node, variables
         when operator in [:+, :-, :*, :div, :rem, :<, :>, :<=, :>=] and is_list(arguments) ->
           {node, Enum.reduce(arguments, variables, &put_scalar_variable/2)}
+
+        {{:., _, [module_ast, function]}, _, arguments} = node, variables
+        when is_atom(function) and is_list(arguments) ->
+          scalar? =
+            case module_ref(module_ast) do
+              {:ok, module} ->
+                builtin_modes(module, function, length(arguments)) ==
+                  List.duplicate(:scalar, length(arguments))
+
+              :error ->
+                false
+            end
+
+          if scalar?,
+            do: {node, Enum.reduce(arguments, variables, &put_scalar_variable/2)},
+            else: {node, variables}
 
         node, variables ->
           {node, variables}

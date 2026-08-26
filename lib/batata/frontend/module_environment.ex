@@ -31,44 +31,63 @@ defmodule Batata.Frontend.ModuleEnvironment do
     forms = body_forms(body)
     reads = attribute_reads(forms)
 
-    {forms, _attributes} =
-      Enum.map_reduce(forms, %{}, &expand_form(&1, &2, reads))
+    environment = %{
+      attributes: %{},
+      bitwise: MapSet.new(),
+      locals: local_signatures(forms)
+    }
+
+    {forms, _environment} =
+      Enum.map_reduce(forms, environment, &expand_form(&1, &2, reads))
 
     {:defmodule, metadata, [name_ast, [do: block(forms)]]}
   end
 
   def expand(ast), do: ast
 
-  defp expand_form({:@, _, _} = form, attributes, reads) do
-    rewritten = rewrite(form, attributes)
+  defp expand_form({:@, _, _} = form, environment, reads) do
+    rewritten = rewrite(form, environment)
 
     case attribute_declaration(rewritten) do
       {:ok, name, value_ast} ->
-        expand_attribute(name, value_ast, rewritten, attributes, reads)
+        expand_attribute(name, value_ast, rewritten, environment, reads)
 
       :error ->
-        {rewritten, attributes}
+        {rewritten, environment}
     end
   end
 
-  defp expand_form({:import, _, _} = form, attributes, _reads) do
-    if supported_import?(form), do: {nil, attributes}, else: {form, attributes}
+  defp expand_form({:import, _, _} = form, environment, _reads) do
+    case supported_import(form) do
+      {:ok, :bitwise, signatures} ->
+        {nil, %{environment | bitwise: MapSet.difference(signatures, environment.locals)}}
+
+      {:ok, :kernel} ->
+        {nil, environment}
+
+      :error ->
+        {form, environment}
+    end
   end
 
-  defp expand_form(form, attributes, _reads), do: {rewrite(form, attributes), attributes}
+  defp expand_form(form, environment, _reads),
+    do: {rewrite(form, environment), environment}
 
-  defp expand_attribute(name, value_ast, form, attributes, reads) do
+  defp expand_attribute(name, value_ast, form, environment, reads) do
     if MapSet.member?(reads, name) do
-      expand_read_attribute(name, value_ast, form, attributes)
+      expand_read_attribute(name, value_ast, form, environment)
     else
-      {form, attributes}
+      {form, environment}
     end
   end
 
-  defp expand_read_attribute(name, value_ast, form, attributes) do
+  defp expand_read_attribute(name, value_ast, form, environment) do
     case Literal.eval_constant(value_ast) do
-      {:ok, value} -> {nil, Map.put(attributes, name, value)}
-      :error -> {form, Map.delete(attributes, name)}
+      {:ok, value} ->
+        {nil, put_in(environment, [:attributes, name], value)}
+
+      :error ->
+        {form, update_in(environment.attributes, &Map.delete(&1, name))}
     end
   end
 
@@ -77,30 +96,42 @@ defmodule Batata.Frontend.ModuleEnvironment do
 
   defp attribute_declaration(_form), do: :error
 
-  defp supported_import?({:import, _, [module_ast]}) do
-    import_allowed?(module_ast, [])
+  defp supported_import({:import, _, [module_ast]}) do
+    import_allowed(module_ast, [])
   end
 
-  defp supported_import?({:import, _, [module_ast, options]}) when is_list(options) do
-    import_allowed?(module_ast, options)
+  defp supported_import({:import, _, [module_ast, options]}) when is_list(options) do
+    import_allowed(module_ast, options)
   end
 
-  defp supported_import?(_form), do: false
+  defp supported_import(_form), do: :error
 
-  defp import_allowed?(module_ast, options) do
+  defp import_allowed(module_ast, options) do
     case Literal.eval(module_ast) do
-      {:ok, Bitwise} -> bitwise_options?(options)
-      {:ok, Kernel} -> kernel_except_options?(options)
-      _ -> false
+      {:ok, Bitwise} -> bitwise_import(options)
+      {:ok, Kernel} -> if(kernel_except_options?(options), do: {:ok, :kernel}, else: :error)
+      _ -> :error
     end
   end
 
-  defp bitwise_options?([]), do: true
+  defp bitwise_import([]), do: {:ok, :bitwise, @bitwise_signatures}
 
-  defp bitwise_options?([{kind, signatures}]) when kind in [:only, :except],
-    do: signature_subset?(signatures, @bitwise_signatures)
+  defp bitwise_import([{kind, signatures}]) when kind in [:only, :except] do
+    if signature_subset?(signatures, @bitwise_signatures) do
+      selected = MapSet.new(signatures)
 
-  defp bitwise_options?(_options), do: false
+      imported =
+        if kind == :only,
+          do: selected,
+          else: MapSet.difference(@bitwise_signatures, selected)
+
+      {:ok, :bitwise, imported}
+    else
+      :error
+    end
+  end
+
+  defp bitwise_import(_options), do: :error
 
   defp kernel_except_options?(except: signatures) do
     signature_list?(signatures)
@@ -148,28 +179,58 @@ defmodule Batata.Frontend.ModuleEnvironment do
 
   defp collect_attribute_reads(_other), do: MapSet.new()
 
-  defp rewrite({kind, _, _} = ast, _attributes)
+  defp rewrite({kind, _, _} = ast, _environment)
        when kind in [:defmodule, :defprotocol, :defimpl],
        do: ast
 
-  defp rewrite({:@, _, [{name, _, nil}]} = ast, attributes) when is_atom(name) do
-    case Map.fetch(attributes, name) do
+  defp rewrite({:@, _, [{name, _, nil}]} = ast, environment) when is_atom(name) do
+    case Map.fetch(environment.attributes, name) do
       {:ok, value} -> Macro.escape(value)
       :error -> ast
     end
   end
 
-  defp rewrite(tuple, attributes) when is_tuple(tuple) do
+  defp rewrite({name, metadata, arguments}, environment)
+       when is_atom(name) and is_list(arguments) do
+    arguments = Enum.map(arguments, &rewrite(&1, environment))
+
+    if MapSet.member?(environment.bitwise, {name, length(arguments)}) do
+      {{:., metadata, [Bitwise, name]}, metadata, arguments}
+    else
+      {name, metadata, arguments}
+    end
+  end
+
+  defp rewrite(tuple, environment) when is_tuple(tuple) do
     tuple
     |> Tuple.to_list()
-    |> Enum.map(&rewrite(&1, attributes))
+    |> Enum.map(&rewrite(&1, environment))
     |> List.to_tuple()
   end
 
-  defp rewrite(values, attributes) when is_list(values),
-    do: Enum.map(values, &rewrite(&1, attributes))
+  defp rewrite(values, environment) when is_list(values),
+    do: Enum.map(values, &rewrite(&1, environment))
 
-  defp rewrite(other, _attributes), do: other
+  defp rewrite(other, _environment), do: other
+
+  defp local_signatures(forms) do
+    Enum.reduce(forms, MapSet.new(), fn
+      {kind, _, [{:when, _, [head | _guards]} | _]}, signatures when kind in [:def, :defp] ->
+        put_local_signature(signatures, head)
+
+      {kind, _, [head | _]}, signatures when kind in [:def, :defp] ->
+        put_local_signature(signatures, head)
+
+      _form, signatures ->
+        signatures
+    end)
+  end
+
+  defp put_local_signature(signatures, {name, _, arguments})
+       when is_atom(name) and is_list(arguments),
+       do: MapSet.put(signatures, {name, length(arguments)})
+
+  defp put_local_signature(signatures, _head), do: signatures
 
   defp body_forms({:__block__, _, forms}), do: forms
   defp body_forms(form), do: [form]

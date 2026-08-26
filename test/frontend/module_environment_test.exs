@@ -26,7 +26,8 @@ defmodule Batata.Frontend.ModuleEnvironmentTest do
         definition.name == :mask and definition.arity == 1
       end)
 
-    assert Macro.to_string(hd(mask.clauses).body_ast) == "(value &&& 3) <<< 1"
+    assert Macro.to_string(hd(mask.clauses).body_ast) ==
+             "Bitwise.<<<(Bitwise.&&&(value, 3), 1)"
   end
 
   test "uses the explicit default for compile_env without reading host configuration" do
@@ -94,5 +95,51 @@ defmodule Batata.Frontend.ModuleEnvironmentTest do
 
     assert [%Frontend.UnsupportedForm{reason: :import}] = enum.unsupported
     assert [%Frontend.UnsupportedForm{reason: :import}] = bitwise.unsupported
+  end
+
+  test "attributes only imported Bitwise signatures and honors except" do
+    only =
+      Frontend.from_source("""
+      defmodule OnlyShift do
+        import Bitwise, only: [>>>: 2]
+        def selected(value), do: value >>> 2
+        def excluded(value), do: value <<< 2
+      end
+      """)
+
+    selected = Enum.find(only.definitions, &(&1.name == :selected))
+    excluded = Enum.find(only.definitions, &(&1.name == :excluded))
+
+    assert Macro.to_string(hd(selected.clauses).body_ast) == "Bitwise.>>>(value, 2)"
+    assert Macro.to_string(hd(excluded.clauses).body_ast) == "value <<< 2"
+
+    except =
+      Frontend.from_source("""
+      defmodule ExceptLeftShift do
+        import Bitwise, except: [<<<: 2]
+        def selected(value), do: value >>> 2
+        def excluded(value), do: value <<< 2
+      end
+      """)
+
+    selected = Enum.find(except.definitions, &(&1.name == :selected))
+    excluded = Enum.find(except.definitions, &(&1.name == :excluded))
+
+    assert Macro.to_string(hd(selected.clauses).body_ast) == "Bitwise.>>>(value, 2)"
+    assert Macro.to_string(hd(excluded.clauses).body_ast) == "value <<< 2"
+  end
+
+  test "preserves module-local definitions which overlap Bitwise imports" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule LocalShift do
+        import Bitwise
+        def left >>> right, do: left + right
+        def shift(value), do: value >>> 2
+      end
+      """)
+
+    shift = Enum.find(snapshot.definitions, &(&1.name == :shift))
+    assert Macro.to_string(hd(shift.clauses).body_ast) == "value >>> 2"
   end
 end
