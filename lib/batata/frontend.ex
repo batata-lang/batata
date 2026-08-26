@@ -53,6 +53,7 @@ defmodule Batata.Frontend do
     AliasExpand,
     BytecaseExpand,
     DefaultArgExpand,
+    KernelRaiseExpand,
     MetadataMacroExpand,
     MetaprogrammingExpand,
     ModuleEnvironment,
@@ -151,6 +152,7 @@ defmodule Batata.Frontend do
       |> ModuleEnvironment.expand()
       |> MetaprogrammingExpand.expand(table_generators(opts))
       |> RuntimeMacroExpand.expand()
+      |> KernelRaiseExpand.expand()
       |> DefaultArgExpand.expand()
       |> from_expanded_ast()
     end
@@ -169,6 +171,7 @@ defmodule Batata.Frontend do
     |> ModuleEnvironment.expand()
     |> MetaprogrammingExpand.expand(table_generators(opts))
     |> RuntimeMacroExpand.expand()
+    |> KernelRaiseExpand.expand()
     |> DefaultArgExpand.expand()
     |> from_expanded_ast()
   end

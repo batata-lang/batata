@@ -182,6 +182,7 @@ defmodule Batata.Lift do
   end
 
   defp no_return_ast?({:throw, _, [_value]}, _proven), do: true
+  defp no_return_ast?({:__batata_raise__, _, [_kind, _reason]}, _proven), do: true
   defp no_return_ast?({:__batata_raise__, _kind, _reason}, _proven), do: true
   defp no_return_ast?({:__batata_raise_scalar__, _kind, _reason}, _proven), do: true
 
@@ -334,6 +335,9 @@ defmodule Batata.Lift do
           {node, true}
 
         {:%{}, _, [{:|, _, [_base, _updates]}]} = node, false ->
+          {node, true}
+
+        {:__batata_raise__, _, [_kind, _reason]} = node, false ->
           {node, true}
 
         {{:., _, [{_name, _, nil}, field]}, _, []} = node, false when is_atom(field) ->
@@ -3747,6 +3751,11 @@ defmodule Batata.Lift do
       |> maybe_relax_closure_dispatch_case(env)
 
     {lift_case(clauses, scrutinee, env, ctx, block, opts), env}
+  end
+
+  defp lift_expr({:__batata_raise__, _, [kind, reason_ast]}, ctx, block, env)
+       when is_integer(kind) do
+    lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env)
   end
 
   defp lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env) do

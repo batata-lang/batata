@@ -173,6 +173,25 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
              CorpusCompileLink.run(tmp_dir)
   end
 
+  @tag :tmp_dir
+  test "keeps imported raise out of qualified local symbols", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "raising.ex", """
+    defmodule Raising do
+      def unwrap(result) do
+        case result do
+          {:ok, value} -> value
+          {:error, error} -> raise error
+        end
+      end
+
+      def explicit(error), do: Kernel.raise(error)
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
   defp write_source(root, name, contents) do
     lib = Path.join(root, "lib")
     File.mkdir_p!(lib)
