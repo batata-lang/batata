@@ -79,36 +79,6 @@ jobs:
             mix test --warnings-as-errors
           '
 
-      - name: Test Batata Jason package
-        working-directory: scripts/native_deps
-        run: |
-          mix batata.native exec -- bash -c '
-            cd packages/batata_jason
-            export BATATA_PATH=../..
-            export BATATA_PROBE_PATH=../batata_probe
-            export MIX_ENV=test
-            mix deps.get
-            mix format --check-formatted
-            mix compile --warnings-as-errors
-            mix credo --strict
-            mix test --warnings-as-errors --max-cases 1
-          '
-
-      - name: Test Batata Decimal package
-        working-directory: scripts/native_deps
-        run: |
-          mix batata.native exec -- bash -c '
-            cd packages/batata_decimal
-            export BATATA_PATH=../..
-            export BATATA_PROBE_PATH=../batata_probe
-            export MIX_ENV=test
-            mix deps.get
-            mix format --check-formatted
-            mix compile --warnings-as-errors
-            mix credo --strict
-            mix test --warnings-as-errors --max-cases 1
-          '
-
       - name: Install pinned Godot 4.6.2
         run: |
           mkdir -p "$RUNNER_TEMP/godot"
@@ -244,6 +214,126 @@ jobs:
               .no_reuse_last_index == 1000000
             " >/dev/null
           '
+
+  corpus-probe:
+    name: Probe ${{ matrix.corpus }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - corpus: jason
+            package: batata_jason
+            repository: michalmuskala/jason
+            ref: 4ede42858eb19f80ec9e863aab52df466eab8608
+            task: batata.jason.probe
+          - corpus: decimal
+            package: batata_decimal
+            repository: ericmj/decimal
+            ref: 592d59ac4474933f91cdc3e8e037f137f7e008b0
+            task: batata.decimal.probe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache pinned native downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/batata
+          key: batata-native-${{ runner.os }}-${{ hashFiles('native-deps.lock') }}
+
+      - name: Install Mix package managers
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Configure pinned native dependencies
+        working-directory: scripts/native_deps
+        run: mix batata.native setup
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Checkout pinned ${{ matrix.corpus }} corpus
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repository }}
+          ref: ${{ matrix.ref }}
+          path: ${{ matrix.corpus }}-probe-source
+
+      - name: Test package and build fail-closed evidence
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/${{ matrix.package }}
+            export BATATA_PATH=../..
+            export BATATA_PROBE_PATH=../batata_probe
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors --max-cases 1
+            mix ${{ matrix.task }} \
+              --source ../../${{ matrix.corpus }}-probe-source \
+              --report ../../_build/${{ matrix.corpus }}_probe/report.json \
+              --coverage ../../_build/${{ matrix.corpus }}_probe/coverage.json \
+              --fail-on-regression
+          '
+
+      - name: Upload ${{ matrix.corpus }} evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.corpus }}-probe-artifacts
+          path: _build/${{ matrix.corpus }}_probe
+          if-no-files-found: warn
+
+  coverage-dashboard:
+    name: Merge corpus coverage
+    needs: corpus-probe
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: jason-probe-artifacts
+          path: _build/jason_probe
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: decimal-probe-artifacts
+          path: _build/decimal_probe
+
+      - name: Merge precomputed coverage without recompiling corpora
+        run: |
+          elixir \
+            -r packages/batata_probe/lib/batata/probe/coverage_dashboard.ex \
+            -e 'Batata.Probe.CoverageDashboard.merge!(System.argv(), "_build/coverage/report.json")' \
+            -- \
+            _build/jason_probe/coverage.json \
+            _build/decimal_probe/coverage.json
+
+      - name: Upload coverage dashboard
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-coverage-dashboard
+          path: _build/coverage/report.json
+          if-no-files-found: error
 
   godot-platform:
     name: Godot ${{ matrix.target }}

@@ -14,6 +14,7 @@ defmodule Batata.Probe.Coverage do
   alias Batata.Frontend.StaticMapMacroExpand
   alias Batata.Probe.CapabilityMatrix
   alias Batata.Probe.CorpusCompileLink
+  alias Batata.Probe.CoverageDashboard
   alias Batata.Probe.{Diff, Report}
 
   @schema_version 2
@@ -50,43 +51,7 @@ defmodule Batata.Probe.Coverage do
 
   @doc "Merges already computed single- or multi-corpus dashboards without rerunning probes."
   @spec merge!([Path.t()], Path.t()) :: map()
-  def merge!(inputs, output) when is_list(inputs) and inputs != [] do
-    dashboards = Enum.map(inputs, &read_json!/1)
-    [first | rest] = dashboards
-    validate_dashboard!(first)
-
-    corpora =
-      Enum.reduce(rest, first["corpora"], fn dashboard, corpora ->
-        validate_dashboard!(dashboard)
-
-        unless dashboard["levels"] == first["levels"] and
-                 dashboard["coverage_claim"] == first["coverage_claim"] do
-          raise ArgumentError, "coverage dashboard contracts do not match"
-        end
-
-        Map.merge(corpora, dashboard["corpora"], fn name, _left, _right ->
-          raise ArgumentError, "duplicate coverage corpus #{name}"
-        end)
-      end)
-
-    merged = Map.put(first, "corpora", corpora)
-    output |> Path.dirname() |> File.mkdir_p!()
-    File.write!(output, JSON.encode!(merged))
-    merged
-  end
-
-  defp validate_dashboard!(%{
-         "schema_version" => @schema_version,
-         "coverage_claim" => claim,
-         "levels" => @levels,
-         "corpora" => corpora
-       })
-       when is_binary(claim) and is_map(corpora) and map_size(corpora) > 0,
-       do: :ok
-
-  defp validate_dashboard!(_dashboard) do
-    raise ArgumentError, "invalid coverage dashboard"
-  end
+  defdelegate merge!(inputs, output), to: CoverageDashboard
 
   defp corpus_result!(config) do
     name = Map.fetch!(config, :name)
