@@ -1,5 +1,5 @@
 defmodule Batata.Probe.Jason.FloatToBinaryAOTTest do
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   @moduletag timeout: 180_000
 

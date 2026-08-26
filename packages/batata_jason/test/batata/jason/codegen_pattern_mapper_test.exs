@@ -8,7 +8,7 @@ defmodule Batata.Probe.Jason.CodegenPatternMapperTest do
   collapse pipeline.
   """
 
-  use Batata.Case, async: true
+  use Batata.Jason.Case, async: true
 
   alias Batata
 
