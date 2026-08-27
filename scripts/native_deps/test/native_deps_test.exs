@@ -127,6 +127,52 @@ defmodule Batata.NativeDepsTest do
     assert :ok == Runner.verify!(Keyword.put(opts, :zig_path, zig))
   end
 
+  test "selects the host LLVM revision from Beaver metadata schema 2", %{root: root} do
+    platform = Resolver.platform_key()
+    beaver = Path.join(root, "beaver-schema-2")
+    File.mkdir_p!(beaver)
+
+    metadata = %{
+      "schema_version" => 2,
+      "kinda" => %{"git_url" => "https://example.invalid/kinda.git", "ref" => "abc123"},
+      "llvm" => %{
+        "repo" => "llvm/eudsl",
+        "tag" => "llvm",
+        "default_revisions" => %{platform => "20260827+6c81b990d"}
+      }
+    }
+
+    File.write!(Path.join(beaver, "native-deps.json"), JSON.encode!(metadata))
+
+    resolved = Resolver.metadata!(beaver)
+    assert resolved["schema_version"] == 2
+    assert resolved["llvm"]["default_revision"] == "20260827+6c81b990d"
+  end
+
+  test "fails closed when Beaver schema 2 has no host LLVM revision", %{root: root} do
+    beaver = Path.join(root, "beaver-schema-2-missing")
+    File.mkdir_p!(beaver)
+
+    metadata = %{
+      "schema_version" => 2,
+      "kinda" => %{"git_url" => "https://example.invalid/kinda.git", "ref" => "abc123"},
+      "llvm" => %{
+        "repo" => "llvm/eudsl",
+        "tag" => "llvm",
+        "default_revisions" => %{"unsupported_arch" => "20260827+6c81b990d"}
+      }
+    }
+
+    File.write!(Path.join(beaver, "native-deps.json"), JSON.encode!(metadata))
+
+    assert_raise Mix.Error, ~r/missing_llvm_revision/, fn ->
+      Resolver.metadata!(beaver)
+    end
+
+    resolved = Resolver.metadata!(beaver, require_default_revision: false)
+    refute Map.has_key?(resolved["llvm"], "default_revision")
+  end
+
   test "fails closed when the receipt is missing or the lock changes", %{
     root: root,
     opts: opts

@@ -90,7 +90,19 @@ defmodule Batata.LowerTest do
     assert receipt["schema_version"] == 1
     assert receipt["pipeline"] == "ex_to_func"
     assert receipt["duration_ns"] >= 0
-    assert [%{"name" => "ex_conversion", "actions" => actions}] = receipt["stages"]
+    assert receipt["status"] == "ok"
+
+    assert [
+             %{
+               "name" => "ex_conversion",
+               "actions" => actions,
+               "conversion_profile" => conversion_profile
+             }
+           ] = receipt["stages"]
+
+    assert conversion_profile["status"] == "ok"
+    assert conversion_profile["beam"]["callback_count"] > 0
+    refute Enum.any?(conversion_profile["callbacks"], &(&1["kind"] == "convert_type"))
 
     assert Enum.any?(actions, fn action ->
              action["tag"] == "apply-conversion" and action["count"] == 1 and
@@ -135,6 +147,30 @@ defmodule Batata.LowerTest do
     end
 
     assert MLIR.to_string(module) =~ "llvm.func"
+  end
+
+  test "retains completed and failed stages when profiled lowering fails", %{ctx: ctx} do
+    module =
+      Batata.compile(
+        """
+        defmodule ProfileFailure do
+          def main(value), do: missing(value)
+        end
+        """,
+        ctx
+      )
+
+    assert {{:error, :error, %Lower.Error{}, stacktrace}, receipt} =
+             Lower.profile_to_llvm(module, ctx)
+
+    assert is_list(stacktrace)
+    assert receipt["status"] == "error"
+    assert hd(receipt["stages"])["conversion_profile"]["status"] == "ok"
+
+    assert %{"name" => failed_stage, "status" => "error"} = List.last(receipt["stages"])
+    assert failed_stage in ~w(arith_to_llvm scf_to_cf cf_to_llvm func_to_llvm)
+
+    assert is_binary(JSON.encode!(receipt))
   end
 
   defp index(text, pattern) do

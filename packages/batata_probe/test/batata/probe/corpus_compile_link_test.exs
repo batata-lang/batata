@@ -83,6 +83,55 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "writes a bounded qualified profile without changing compile-link evidence", %{
+    tmp_dir: tmp_dir
+  } do
+    write_source(tmp_dir, "profiled.ex", """
+    defmodule Profiled do
+      def value(), do: 42
+    end
+    """)
+
+    output = Path.join(tmp_dir, "evidence/qualified-profile.json")
+
+    result =
+      CorpusCompileLink.run(tmp_dir,
+        diagnose_isolated: false,
+        profile_output: output
+      )
+
+    assert result["status"] == "pass"
+    assert result["isolated_attempts"] == "omitted"
+    assert result["attempts"] == []
+
+    profile = output |> File.read!() |> JSON.decode!()
+    assert profile["schema_version"] == 1
+    assert profile["name"] == "qualified_multi_module_unit"
+    assert profile["status"] == "ok"
+    assert profile["duration_ns"] >= 0
+    assert Enum.map(profile["stages"], & &1["name"]) == ~w(compile lower verify cleanup)
+
+    compile = Enum.find(profile["stages"], &(&1["name"] == "compile"))
+
+    assert Enum.map(compile["compilation"]["stages"], & &1["name"]) ==
+             ~w(snapshot lift inline_scalar_calls expand_case verify memory_verify)
+
+    lower = Enum.find(profile["stages"], &(&1["name"] == "lower"))
+    assert lower["lowering"]["status"] == "ok"
+    assert hd(lower["lowering"]["stages"])["conversion_profile"]["status"] == "ok"
+  end
+
+  test "rejects invalid diagnostic and profile options" do
+    assert_raise ArgumentError, ~r/diagnose_isolated must be a boolean/, fn ->
+      CorpusCompileLink.run("unused", diagnose_isolated: :sometimes)
+    end
+
+    assert_raise ArgumentError, ~r/profile_output must be a path/, fn ->
+      CorpusCompileLink.run("unused", profile_output: 42)
+    end
+  end
+
+  @tag :tmp_dir
   test "shares a schema across modules in the same unit", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "point.ex", """
     defmodule Point do

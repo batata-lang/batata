@@ -11,7 +11,9 @@ defmodule Mix.Tasks.Batata.Jason.Probe do
     report: :string,
     coverage: :string,
     fail_on_regression: :boolean,
-    compile_link_concurrency: :integer
+    compile_link_concurrency: :integer,
+    compile_link_profile: :string,
+    qualified_only: :boolean
   ]
 
   @impl Mix.Task
@@ -28,7 +30,9 @@ defmodule Mix.Tasks.Batata.Jason.Probe do
       report: Keyword.get(opts, :report, "_build/jason_probe/report.json"),
       coverage: Keyword.get(opts, :coverage, "_build/jason_probe/coverage.json"),
       fail_on_regression: Keyword.get(opts, :fail_on_regression, false),
-      compile_link_concurrency: Keyword.get(opts, :compile_link_concurrency, 1)
+      compile_link_concurrency: Keyword.get(opts, :compile_link_concurrency, 1),
+      compile_link_profile: Keyword.get(opts, :compile_link_profile),
+      qualified_only: Keyword.get(opts, :qualified_only, false)
     )
   end
 end
