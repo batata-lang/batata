@@ -58,6 +58,27 @@ defmodule Batata.TransformTest do
     assert rendered =~ ~s{"ex.add"}
   end
 
+  test "bulk-inlines more than one legacy pass worth of independent calls", %{ctx: ctx} do
+    calls = Enum.map_join(1..80, "\n", &"value#{&1} = add(#{&1}, #{&1})")
+
+    module =
+      transform!(
+        """
+        defmodule ManyScalarCalls do
+          def add(left, right), do: left + right
+
+          def main() do
+            #{calls}
+            value80
+          end
+        end
+        """,
+        ctx
+      )
+
+    refute MLIR.to_string(module, generic: true) =~ ~s{callee = "add"}
+  end
+
   test "leaves non-scalar callees as ex.call", %{ctx: ctx} do
     module =
       transform!(
@@ -77,6 +98,30 @@ defmodule Batata.TransformTest do
 
     rendered = MLIR.to_string(module, generic: true)
     assert rendered =~ ~s{"ex.call"}
+  end
+
+  test "retypes scalar control-flow calls without cloning nested regions", %{ctx: ctx} do
+    module =
+      transform!(
+        """
+        defmodule ScalarControlFlow do
+          def choose(value) do
+            case value do
+              0 -> 1
+              _ -> 2
+            end
+          end
+
+          def main(), do: choose(0) + 3
+        end
+        """,
+        ctx
+      )
+
+    rendered = MLIR.to_string(module, generic: true)
+
+    assert rendered =~
+             ~r/"ex\.call".*callee = "__batata_fn_63686f6f7365_1".*\(i64\) -> i64/
   end
 
   test "leaves unknown callees as ex.call", %{ctx: ctx} do

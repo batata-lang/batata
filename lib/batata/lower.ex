@@ -68,9 +68,7 @@ defmodule Batata.Lower do
       end)
 
     {module, stages} =
-      run_stage(module, stages, session, :ex_conversion, fn ->
-        Plan.run!(ExConversion.plan(), module)
-      end)
+      run_conversion_stage(module, stages, session)
 
     maybe_stage(
       module,
@@ -110,6 +108,25 @@ defmodule Batata.Lower do
     Trace.capture(ctx, :ex_to_llvm, fn session ->
       do_to_llvm(module, ctx, opts, session)
     end)
+  end
+
+  @doc """
+  Profiles LLVM lowering without discarding the receipt when lowering fails.
+
+  The outcome is tagged so corpus diagnostics can retain every completed stage
+  and the failed stage without weakening the ordinary raising API.
+  """
+  @spec profile_to_llvm(MLIR.Module.t(), MLIR.Context.t(), keyword()) ::
+          {{:ok, MLIR.Module.t()} | {:error, atom(), term(), list()}, Trace.receipt()}
+  def profile_to_llvm(module, ctx, opts \\ []) do
+    Trace.capture_result(
+      ctx,
+      :ex_to_llvm,
+      fn session ->
+        do_to_llvm(module, ctx, opts, session)
+      end,
+      actions: false
+    )
   end
 
   defp do_to_llvm(module, ctx, opts, session) do
@@ -184,6 +201,26 @@ defmodule Batata.Lower do
   defp run_stage(_module, stages, session, name, callback) do
     {module, stage} = Trace.stage(session, name, callback)
     {module, stages ++ [stage]}
+  end
+
+  defp run_conversion_stage(module, stages, nil) do
+    {Plan.run!(ExConversion.plan(), module), stages}
+  end
+
+  defp run_conversion_stage(module, stages, session) do
+    {result, stage} =
+      Trace.stage_with_details(session, :ex_conversion, fn ->
+        {result, receipt} = Plan.profile(ExConversion.plan(), module)
+        {result, %{"status" => receipt["status"], "conversion_profile" => receipt}}
+      end)
+
+    converted =
+      case result do
+        {:ok, converted, _diagnostics} -> converted
+        {:error, error} -> raise error
+      end
+
+    {converted, stages ++ [stage]}
   end
 
   defp inject_runtime_quota!(module, quota_bytes) do

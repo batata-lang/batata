@@ -238,13 +238,16 @@ jobs:
             repository: michalmuskala/jason
             ref: 4ede42858eb19f80ec9e863aab52df466eab8608
             task: batata.jason.probe
-            compile_link_concurrency: 2
+            probe_args: >-
+              --compile-link-concurrency 2
+              --qualified-only
+              --compile-link-profile ../../_build/jason_probe/compile-link-profile.json
           - corpus: decimal
             package: batata_decimal
             repository: ericmj/decimal
             ref: 592d59ac4474933f91cdc3e8e037f137f7e008b0
             task: batata.decimal.probe
-            compile_link_concurrency: 1
+            probe_args: --compile-link-concurrency 1
     steps:
       - uses: actions/checkout@v4
 
@@ -308,7 +311,7 @@ jobs:
               --source ../../${{ matrix.corpus }}-probe-source \
               --report ../../_build/${{ matrix.corpus }}_probe/report.json \
               --coverage ../../_build/${{ matrix.corpus }}_probe/coverage.json \
-              --compile-link-concurrency ${{ matrix.compile_link_concurrency }} \
+              ${{ matrix.probe_args }} \
               --fail-on-regression
           '
 

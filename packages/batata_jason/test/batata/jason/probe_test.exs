@@ -36,13 +36,24 @@ defmodule Batata.Jason.ProbeTest do
 
     report = Path.join(tmp_dir, "artifacts/raw.json")
     coverage = Path.join(tmp_dir, "artifacts/coverage.json")
+    profile = Path.join(tmp_dir, "artifacts/compile-link-profile.json")
 
     assert %{raw: raw, coverage: dashboard} =
-             Probe.run!(source, report: report, coverage: coverage)
+             Probe.run!(source,
+               report: report,
+               coverage: coverage,
+               compile_link_profile: profile,
+               qualified_only: true
+             )
 
     assert raw["corpus"]["name"] == "jason"
     assert Map.has_key?(dashboard["corpora"], "jason")
     assert File.regular?(report)
     assert File.regular?(coverage)
+    assert File.regular?(profile)
+
+    current = dashboard["corpora"]["jason"]["corpus_compile_link"]["current"]
+    assert current["isolated_attempts"] == "omitted"
+    assert current["attempts"] == []
   end
 end

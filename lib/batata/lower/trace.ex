@@ -17,57 +17,169 @@ defmodule Batata.Lower.Trace do
   @type stage() :: map()
   @type receipt() :: map()
 
+  defmodule Session do
+    @moduledoc false
+    @enforce_keys [:native, :owner, :ref]
+    defstruct [:native, :owner, :ref]
+
+    @type t() :: %__MODULE__{native: term(), owner: pid(), ref: reference()}
+  end
+
   @doc false
-  @spec capture(MLIR.Context.t(), atom(), (MLIR.ActionTracing.Session.t() -> {term(), [stage()]})) ::
+  @spec capture(MLIR.Context.t(), atom(), (Session.t() -> {term(), [stage()]})) ::
           {term(), receipt()}
   def capture(ctx, pipeline, callback) when is_atom(pipeline) and is_function(callback, 1) do
+    case capture_result(ctx, pipeline, callback) do
+      {{:ok, result}, receipt} ->
+        {result, receipt}
+
+      {{:error, kind, reason, stacktrace}, _receipt} ->
+        :erlang.raise(kind, reason, stacktrace)
+    end
+  end
+
+  @doc false
+  @spec capture_result(
+          MLIR.Context.t(),
+          atom(),
+          (Session.t() -> {term(), [stage()]})
+        ) ::
+          {{:ok, term()} | {:error, atom(), term(), list()}, receipt()}
+  @spec capture_result(
+          MLIR.Context.t(),
+          atom(),
+          (Session.t() -> {term(), [stage()]}),
+          keyword()
+        ) ::
+          {{:ok, term()} | {:error, atom(), term(), list()}, receipt()}
+  def capture_result(ctx, pipeline, callback, opts \\ [])
+      when is_atom(pipeline) and is_function(callback, 1) do
     started_at = monotonic_ns()
 
-    session =
-      MLIR.ActionTracing.attach(ctx,
-        tags: @action_tags,
-        telemetry: fn _event, _measurements, _metadata -> :ok end
-      )
+    native =
+      if Keyword.get(opts, :actions, true) do
+        MLIR.ActionTracing.attach(ctx,
+          tags: @action_tags,
+          telemetry: fn _event, _measurements, _metadata -> :ok end
+        )
+      end
+
+    session = %Session{native: native, owner: self(), ref: make_ref()}
 
     try do
-      {result, stages} = callback.(session)
+      outcome =
+        try do
+          {result, _stages} = callback.(session)
+          {:ok, result}
+        catch
+          kind, reason -> {:error, kind, reason, __STACKTRACE__}
+        end
 
       receipt = %{
         "schema_version" => @schema_version,
         "pipeline" => Atom.to_string(pipeline),
         "duration_ns" => elapsed_ns(started_at),
-        "stages" => stages
+        "status" => outcome_status(outcome),
+        "stages" => collect_stages(session.ref)
       }
 
-      {result, receipt}
+      {outcome, receipt}
     after
-      MLIR.ActionTracing.detach(session)
+      if native, do: MLIR.ActionTracing.detach(native)
     end
   end
 
   @doc false
-  @spec stage(MLIR.ActionTracing.Session.t(), stage_name(), (-> term())) :: {term(), stage()}
-  def stage(session, name, callback) when is_atom(name) and is_function(callback, 0) do
+  @spec stage(Session.t(), stage_name(), (-> term())) :: {term(), stage()}
+  def stage(%Session{} = session, name, callback)
+      when is_atom(name) and is_function(callback, 0) do
+    stage_with_details(session, name, fn -> {callback.(), %{}} end)
+  end
+
+  @doc false
+  @spec stage_with_details(Session.t(), stage_name(), (-> {term(), map()})) :: {term(), stage()}
+  def stage_with_details(%Session{} = session, name, callback)
+      when is_atom(name) and is_function(callback, 0) do
     started_at = monotonic_ns()
-    drainer = Task.async(fn -> drain_loop(session, empty_accumulator()) end)
 
-    try do
-      result = callback.()
-      duration_ns = elapsed_ns(started_at)
-      send(drainer.pid, :finish)
-      actions = Task.await(drainer, 30_000)
+    drainer =
+      if session.native,
+        do: Task.async(fn -> drain_loop(session.native, empty_accumulator()) end)
 
-      {result,
-       %{
-         "name" => Atom.to_string(name),
-         "duration_ns" => duration_ns,
-         "actions" => actions
-       }}
-    catch
-      kind, reason ->
-        Task.shutdown(drainer, :brutal_kill)
-        :erlang.raise(kind, reason, __STACKTRACE__)
+    outcome =
+      try do
+        {result, details} = callback.()
+        {:ok, result, details}
+      catch
+        kind, reason -> {:error, kind, reason, __STACKTRACE__}
+      end
+
+    duration_ns = elapsed_ns(started_at)
+
+    action_outcome =
+      if drainer do
+        send(drainer.pid, :finish)
+
+        try do
+          {:ok, Task.await(drainer, 30_000)}
+        catch
+          kind, reason -> {:error, kind, reason, __STACKTRACE__}
+        end
+      else
+        {:ok, []}
+      end
+
+    stage =
+      %{
+        "name" => Atom.to_string(name),
+        "duration_ns" => duration_ns,
+        "status" => stage_status(outcome, action_outcome),
+        "actions" => actions(action_outcome)
+      }
+      |> Map.merge(stage_details(outcome))
+      |> maybe_put_action_trace_failure(action_outcome)
+
+    send(session.owner, {:batata_lower_stage, session.ref, stage})
+
+    case {outcome, action_outcome} do
+      {{:ok, result, _details}, {:ok, _actions}} ->
+        {result, stage}
+
+      {{:error, kind, reason, stacktrace}, _action_outcome} ->
+        :erlang.raise(kind, reason, stacktrace)
+
+      {{:ok, _result, _details}, {:error, kind, reason, stacktrace}} ->
+        :erlang.raise(kind, reason, stacktrace)
     end
+  end
+
+  defp collect_stages(ref, stages \\ []) do
+    receive do
+      {:batata_lower_stage, ^ref, stage} -> collect_stages(ref, [stage | stages])
+    after
+      0 -> Enum.reverse(stages)
+    end
+  end
+
+  defp outcome_status({:ok, _result}), do: "ok"
+  defp outcome_status({:error, _kind, _reason, _stacktrace}), do: "error"
+
+  defp stage_status({:ok, _result, _details}, {:ok, _actions}), do: "ok"
+  defp stage_status(_outcome, _action_outcome), do: "error"
+
+  defp actions({:ok, actions}), do: actions
+  defp actions({:error, _kind, _reason, _stacktrace}), do: []
+
+  defp stage_details({:ok, _result, details}) when is_map(details), do: details
+  defp stage_details(_outcome), do: %{}
+
+  defp maybe_put_action_trace_failure(stage, {:ok, _actions}), do: stage
+
+  defp maybe_put_action_trace_failure(stage, {:error, kind, reason, _stacktrace}) do
+    Map.put(stage, "action_trace_failure", %{
+      "kind" => Atom.to_string(kind),
+      "reason" => reason |> inspect(limit: 20, printable_limit: 256) |> String.slice(0, 512)
+    })
   end
 
   defp drain_loop(session, accumulator) do

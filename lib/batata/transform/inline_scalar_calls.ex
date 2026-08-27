@@ -9,8 +9,9 @@ defmodule Batata.Transform.InlineScalarCalls do
   cannot be inlined (self/mutual recursion) are retyped to an i64 result when
   the callee returns i64 (e.g. `count(t)` in a recursive scanner).
 
-  The pass runs to a fixpoint so nested scalar calls are inlined
-  innermost-first. Term-returning callees, unknown callees and arity
+  The pass runs bounded bulk-rewrite rounds to a fixpoint so nested scalar
+  calls are inlined innermost-first without rescanning the complete IR after
+  every individual call. Term-returning callees, unknown callees and arity
   mismatches are left untouched (`ex.call` stays `!ex.term`).
   """
 
@@ -26,43 +27,54 @@ defmodule Batata.Transform.InlineScalarCalls do
 
   @impl Batata.Transform.Pass
   def run!(%MLIR.Module{} = module) do
-    _status =
-      Enum.reduce_while(1..@max_passes, :unchanged, fn _, _ ->
-        case inline_once(module) do
-          :changed -> {:cont, :changed}
-          :unchanged -> {:halt, :unchanged}
+    Enum.reduce_while(1..@max_passes, module, fn pass, module ->
+      case rewrite_round(module) do
+        :unchanged ->
+          {:halt, module}
+
+        :changed when pass < @max_passes ->
+          {:cont, module}
+
+        :changed ->
+          raise "scalar-call inlining did not converge after #{@max_passes} bulk rounds"
+      end
+    end)
+  end
+
+  defp rewrite_round(module) do
+    {funcs, applies, calls} = inventory(module)
+
+    apply_changed? =
+      Enum.reduce(applies, false, fn apply, changed? ->
+        case retype_apply_action(apply) do
+          :ok ->
+            retype_apply!(apply)
+            true
+
+          :skip ->
+            changed?
         end
       end)
 
-    module
-  end
+    callees = callees(funcs)
 
-  defp inline_once(module) do
-    callees = callees(module)
-
-    case module |> ops_of("ex.apply") |> Enum.find(&(retype_apply_action(&1) == :ok)) do
-      nil ->
-        inline_call_once(module, callees)
-
-      apply ->
-        retype_apply!(apply)
-        :changed
-    end
-  end
-
-  defp inline_call_once(module, callees) do
-    case module |> ops_of("ex.call") |> Enum.find(&(action(&1, callees) != :skip)) do
-      nil ->
-        :unchanged
-
-      call ->
+    call_changed? =
+      Enum.reduce(calls, false, fn call, changed? ->
         case action(call, callees) do
-          {:inline, callee} -> inline!(call, callee)
-          {:retype, _callee} -> retype!(call)
-        end
+          {:inline, callee} ->
+            inline!(call, callee)
+            true
 
-        :changed
-    end
+          {:retype, _callee} ->
+            retype!(call)
+            true
+
+          :skip ->
+            changed?
+        end
+      end)
+
+    if apply_changed? or call_changed?, do: :changed, else: :unchanged
   end
 
   # Dynamic anonymous-function application returns the extracted fn's result,
@@ -286,15 +298,27 @@ defmodule Batata.Transform.InlineScalarCalls do
     block = body_block(callee)
     terminator = MLIR.CAPI.mlirBlockGetTerminator(block)
 
-    Enum.all?(
-      block |> Walker.arguments() |> Enum.to_list(),
-      &i64_value?/1
-    ) and
+    straight_line_body?(block) and
+      Enum.all?(
+        block |> Walker.arguments() |> Enum.to_list(),
+        &i64_value?/1
+      ) and
       match?([_], terminator |> Walker.operands() |> Enum.to_list()) and
       terminator
       |> Walker.operands()
       |> Enum.to_list()
       |> Enum.all?(&i64_value?/1)
+  end
+
+  # Cloning a control-flow helper duplicates its complete nested region tree.
+  # Receive/scheduler functions can be thousands of regions deep, so treating
+  # them as ordinary scalar helpers causes both IR explosion and native stack
+  # overflow. Their proven i64 result is enough to retype the call; reserve
+  # inlining for genuinely straight-line scalar bodies.
+  defp straight_line_body?(block) do
+    block
+    |> Walker.operations()
+    |> Enum.all?(fn operation -> operation |> Walker.regions() |> Enum.empty?() end)
   end
 
   defp i64_value?(value) do
@@ -303,10 +327,8 @@ defmodule Batata.Transform.InlineScalarCalls do
     |> MLIR.equal?(MLIR.Type.i64())
   end
 
-  defp callees(module) do
-    module
-    |> ops_of("ex.func")
-    |> Map.new(fn func ->
+  defp callees(funcs) do
+    Map.new(funcs, fn func ->
       block = body_block(func)
       arity = block |> Walker.arguments() |> Enum.to_list() |> length()
       {{func |> attribute_string("sym_name"), arity}, func}
@@ -330,17 +352,29 @@ defmodule Batata.Transform.InlineScalarCalls do
     end)
   end
 
-  defp ops_of(operation, name) do
-    {_, ops} =
-      Walker.postwalk(operation, [], fn
+  # One walk feeds the complete rewrite round. Large qualified compilation
+  # units make even a read-only traversal expensive because every operation
+  # boundary is a short NIF call; collecting each operation kind separately
+  # would multiply that boundary traffic by three per round.
+  defp inventory(operation) do
+    {_, {funcs, applies, calls}} =
+      Walker.postwalk(operation, {[], [], []}, fn
         %MLIR.Operation{} = op, acc ->
-          {op, if(MLIR.Operation.name(op) == name, do: [op | acc], else: acc)}
+          next =
+            case MLIR.Operation.name(op) do
+              "ex.func" -> put_elem(acc, 0, [op | elem(acc, 0)])
+              "ex.apply" -> put_elem(acc, 1, [op | elem(acc, 1)])
+              "ex.call" -> put_elem(acc, 2, [op | elem(acc, 2)])
+              _other -> acc
+            end
+
+          {op, next}
 
         element, acc ->
           {element, acc}
       end)
 
-    Enum.reverse(ops)
+    {Enum.reverse(funcs), Enum.reverse(applies), Enum.reverse(calls)}
   end
 
   defp attribute_string(op, name) do

@@ -89,11 +89,7 @@ defmodule Batata.NativeDeps.Resolver do
 
     with {:ok, content} <- File.read(path),
          {:ok, metadata} <- decode_json(content),
-         1 <- metadata["schema_version"],
-         %{"git_url" => url, "ref" => ref} when is_binary(url) and is_binary(ref) <-
-           metadata["kinda"],
-         %{"repo" => repo, "tag" => tag, "default_revision" => revision}
-         when is_binary(repo) and is_binary(tag) and is_binary(revision) <- metadata["llvm"] do
+         {:ok, metadata} <- normalize_metadata(metadata) do
       metadata
     else
       {:error, reason} ->
@@ -103,6 +99,80 @@ defmodule Batata.NativeDeps.Resolver do
         Mix.raise("unsupported or incomplete Beaver toolchain metadata at #{path}")
     end
   end
+
+  @doc false
+  def platform_key do
+    os =
+      case :os.type() do
+        {:unix, :darwin} -> "macos"
+        {:unix, _name} -> "manylinux"
+        {:win32, _name} -> "windows"
+      end
+
+    architecture =
+      :erlang.system_info(:system_architecture)
+      |> List.to_string()
+      |> String.downcase()
+
+    arm? = architecture =~ "aarch64" or architecture =~ "arm64"
+
+    arch =
+      case {os, arm?} do
+        {"macos", true} -> "arm64"
+        {"macos", false} -> "x86_64"
+        {"windows", _arm?} -> "amd64"
+        {_os, true} -> "aarch64"
+        {_os, false} ->
+          if architecture =~ "x86_64" or architecture =~ "amd64" do
+            "x86_64"
+          else
+            Mix.raise("unsupported native dependency architecture: #{architecture}")
+          end
+      end
+
+    "#{os}_#{arch}"
+  end
+
+  defp normalize_metadata(
+         %{
+           "schema_version" => 1,
+           "kinda" => %{"git_url" => url, "ref" => ref},
+           "llvm" => %{
+             "repo" => repo,
+             "tag" => tag,
+             "default_revision" => revision
+           }
+         } = metadata
+       )
+       when is_binary(url) and is_binary(ref) and is_binary(repo) and is_binary(tag) and
+              is_binary(revision),
+       do: {:ok, metadata}
+
+  defp normalize_metadata(
+         %{
+           "schema_version" => 2,
+           "kinda" => %{"git_url" => url, "ref" => ref},
+           "llvm" => %{
+             "repo" => repo,
+             "tag" => tag,
+             "default_revisions" => revisions
+           } = llvm
+         } = metadata
+       )
+       when is_binary(url) and is_binary(ref) and is_binary(repo) and is_binary(tag) and
+              is_map(revisions) do
+    platform = platform_key()
+
+    case Map.get(revisions, platform) do
+      revision when is_binary(revision) ->
+        {:ok, put_in(metadata, ["llvm"], Map.put(llvm, "default_revision", revision))}
+
+      _missing ->
+        {:error, {:missing_llvm_revision, platform}}
+    end
+  end
+
+  defp normalize_metadata(_metadata), do: {:error, :unsupported_schema}
 
   def validate_config!(config, opts \\ []) do
     unless Keyword.get(config, :schema) == 1,

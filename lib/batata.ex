@@ -10,8 +10,10 @@ defmodule Batata do
   and AOT (`build/4`) execution are supported.
   """
 
+  alias Batata.Compile.Trace, as: CompileTrace
   alias Batata.Lower
   alias Batata.Memory.{Calibration, Plan, RuntimeQuota}
+  alias Batata.Transform.{ExpandCase, InlineScalarCalls}
   alias Beaver.MLIR
   alias Beaver.Native
   alias Beaver.Native.I64
@@ -33,52 +35,86 @@ defmodule Batata do
   @spec compile(String.t() | Batata.Frontend.Module.t(), MLIR.Context.t(), keyword()) ::
           MLIR.Module.t()
   def compile(source, ctx, opts \\ []) do
+    compile_pipeline(source, ctx, opts, fn _name, callback -> callback.() end)
+  end
+
+  @doc """
+  Compiles source while returning a bounded, machine-readable stage receipt.
+
+  Unlike `compile/3`, failures are returned with their original exception kind,
+  reason, and stacktrace so callers can retain the completed stage evidence.
+  The receipt separates snapshot preparation, Ex IR lift, scalar-call inlining,
+  case expansion, verification, and memory verification.
+  """
+  @spec profile_compile(String.t() | Batata.Frontend.Module.t(), MLIR.Context.t(), keyword()) ::
+          {{:ok, MLIR.Module.t()} | {:error, atom(), term(), list()}, map()}
+  def profile_compile(source, ctx, opts \\ []) do
+    CompileTrace.capture_result(fn session ->
+      compile_pipeline(source, ctx, opts, fn name, callback ->
+        CompileTrace.stage(session, name, callback)
+      end)
+    end)
+  end
+
+  defp compile_pipeline(source, ctx, opts, stage) do
+    {snapshot, atom_table} =
+      stage.(:snapshot, fn -> prepare_snapshot(source, opts) end)
+
+    module =
+      stage.(:lift, fn ->
+        snapshot
+        |> Batata.Lift.module_to_ir(
+          [
+            ctx: ctx,
+            atom_table: atom_table,
+            reduction_budget: opts[:reduction_budget],
+            reduction_batching: opts[:reduction_batching],
+            workers: Keyword.get(opts, :workers, 1),
+            process_cap: opts[:process_cap]
+          ] ++ opts
+        )
+        |> Beaver.Deferred.resolve(ctx)
+      end)
+
+    module =
+      stage.(:inline_scalar_calls, fn ->
+        InlineScalarCalls.run!(module)
+      end)
+
+    module =
+      stage.(:expand_case, fn ->
+        ExpandCase.run!(module)
+      end)
+
+    module = stage.(:verify, fn -> MLIR.verify!(module) end)
+
+    stage.(:memory_verify, fn ->
+      Batata.Memory.verify!(module,
+        module: snapshot.name,
+        source: source,
+        policy: Keyword.get(opts, :memory_policy, :disabled),
+        dependency_lock: opts[:memory_dependency_lock],
+        contracts: Keyword.get(opts, :memory_contracts, %{}),
+        quota_bytes: opts[:memory_quota_bytes]
+      )
+
+      module
+    end)
+  end
+
+  defp prepare_snapshot(source, opts) do
     validate_reduction_budget!(opts[:reduction_budget])
     RuntimeQuota.validate!(opts[:memory_quota_bytes])
 
-    {snapshot, atom_table} =
-      case source do
-        %Batata.Frontend.Module{} = mod ->
-          validate_parallel_receive_sites!(mod, Keyword.get(opts, :workers, 1))
-          {mod, Keyword.get(opts, :atom_table, literal_atom_table(mod))}
+    case source do
+      %Batata.Frontend.Module{} = mod ->
+        validate_parallel_receive_sites!(mod, Keyword.get(opts, :workers, 1))
+        {mod, Keyword.get(opts, :atom_table, literal_atom_table(mod))}
 
-        source when is_binary(source) ->
-          validate_parallel_receive_sites!(source, Keyword.get(opts, :workers, 1))
-          {Batata.Frontend.from_source(source), literal_atom_table(source)}
-      end
-
-    module =
-      snapshot
-      |> Batata.Lift.module_to_ir(
-        [
-          ctx: ctx,
-          atom_table: atom_table,
-          reduction_budget: opts[:reduction_budget],
-          reduction_batching: opts[:reduction_batching],
-          workers: Keyword.get(opts, :workers, 1),
-          process_cap: opts[:process_cap]
-        ] ++ opts
-      )
-      |> Beaver.Deferred.resolve(ctx)
-
-    module =
-      module
-      |> Batata.Transform.run!([
-        Batata.Transform.InlineScalarCalls,
-        Batata.Transform.ExpandCase
-      ])
-      |> MLIR.verify!()
-
-    Batata.Memory.verify!(module,
-      module: snapshot.name,
-      source: source,
-      policy: Keyword.get(opts, :memory_policy, :disabled),
-      dependency_lock: opts[:memory_dependency_lock],
-      contracts: Keyword.get(opts, :memory_contracts, %{}),
-      quota_bytes: opts[:memory_quota_bytes]
-    )
-
-    module
+      source when is_binary(source) ->
+        validate_parallel_receive_sites!(source, Keyword.get(opts, :workers, 1))
+        {Batata.Frontend.from_source(source), literal_atom_table(source)}
+    end
   end
 
   # The reduction budget drives the batched tick (`ex.reduction_tick(budget)`
