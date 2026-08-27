@@ -10,6 +10,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Kernel, :hd, 1}) == :native_term
       assert Stdlib.class({Kernel, :elem, 2}) == :native_term
       assert Stdlib.class({Kernel, :map_size, 1}) == :native_term
+      assert Stdlib.class({Kernel, :binary_part, 3}) == :native_term
       assert Stdlib.class({Kernel, :inspect, 1}) == :native_term
       assert Stdlib.class({Kernel, :inspect, 2}) == :native_term
       assert Stdlib.class({:erlang, :length, 1}) == :native_term
@@ -18,6 +19,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:erlang, :binary_to_float, 1}) == :native_term
       assert Stdlib.class({:erlang, :float_to_binary, 2}) == :native_term
       assert Stdlib.class({:erlang, :split_binary, 2}) == :native_term
+      assert Stdlib.class({:erlang, :binary_part, 3}) == :native_term
       assert Stdlib.class({:binary, :at, 2}) == :native_term
       assert Stdlib.class({:binary, :copy, 1}) == :native_term
       assert Stdlib.class({:binary, :match, 2}) == :native_term
@@ -39,6 +41,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:maps, :from_list, 1}) == :native_term
       assert Stdlib.class({Tuple, :size, 1}) == :native_term
       assert Stdlib.class({Tuple, :delete_at, 2}) == :unsupported
+      assert Stdlib.class({:binary, :part, 3}) == :native_term
       assert Stdlib.class({String, :printable?, 1}) == :native_term
       assert Stdlib.class({String, :to_atom, 1}) == :native_term
       assert Stdlib.class({String, :duplicate, 2}) == :native_term
@@ -62,6 +65,7 @@ defmodule Batata.StdlibTest do
 
     test "declares native calls which require an actor exception boundary" do
       assert Stdlib.may_raise?({Kernel, :to_string, 1})
+      assert Stdlib.may_raise?({Kernel, :binary_part, 3})
       assert Stdlib.may_raise?({Atom, :to_string, 1})
       assert Stdlib.may_raise?({String.Chars, :to_string, 1})
       assert Stdlib.may_raise?({String, :printable?, 1})
@@ -78,6 +82,8 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({:erlang, :binary_to_float, 1})
       assert Stdlib.may_raise?({:erlang, :float_to_binary, 2})
       assert Stdlib.may_raise?({:erlang, :split_binary, 2})
+      assert Stdlib.may_raise?({:erlang, :binary_part, 3})
+      assert Stdlib.may_raise?({:binary, :part, 3})
       assert Stdlib.may_raise?({:binary, :copy, 1})
       assert Stdlib.may_raise?({:maps, :from_list, 1})
       refute Stdlib.may_raise?({String, :length, 1})
@@ -204,11 +210,64 @@ defmodule Batata.StdlibTest do
                reductions: :per_element
              }
 
+      assert Stdlib.metadata({Kernel, :binary_part, 3}) == %{
+               purity: :pure,
+               allocation: :may_allocate,
+               preemption: :none,
+               reductions: :per_element
+             }
+
       assert Enum.all?(Stdlib.classes(), fn {mfa, _class} -> Stdlib.metadata(mfa) != nil end)
     end
   end
 
   describe "execution" do
+    test "extracts binary parts through all Kernel and Erlang aliases", %{ctx: ctx} do
+      source = """
+      defmodule NativeBinaryPart do
+        def part(binary, start, length), do: binary_part(binary, start, length)
+
+        def main() do
+          binary = "Jason"
+
+          {
+            part(binary, 0, 2),
+            part(binary, 4, -2),
+            Kernel.binary_part(binary, 5, 0),
+            :erlang.binary_part(binary, 1, 3),
+            :binary.part(binary, 3, 2)
+          }
+        end
+      end
+      """
+
+      expected = source |> Kernel.<>("\nNativeBinaryPart.main()") |> Code.eval_string() |> elem(0)
+      assert Batata.execute(source, ctx) == expected
+
+      ir = source |> Batata.compile(ctx) |> Beaver.MLIR.to_string(generic: true)
+      refute ir =~ "__batata_fn_62696e6172795f70617274_3"
+      assert ir =~ "ex.binary_part"
+    end
+
+    test "raises for invalid binary part types and bounds", %{ctx: ctx} do
+      for expression <- [
+            ~s|binary_part("abc", -1, 1)|,
+            ~s|binary_part("abc", 2, 2)|,
+            ~s|binary_part("abc", 0, -1)|,
+            ~s|binary_part(:not_binary, 0, 0)|,
+            ~s|binary_part("abc", :not_integer, 1)|,
+            ~s|binary_part("abc", 0, :not_integer)|
+          ] do
+        source = """
+        defmodule InvalidBinaryPart do
+          def main(), do: #{expression}
+        end
+        """
+
+        assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
+      end
+    end
+
     test "resolves auto-imported Kernel BIFs", %{ctx: ctx} do
       assert 3 == execute("length([1, 2, 3])", ctx)
       assert 8 == execute("hd([1, 2, 3])", ctx)
