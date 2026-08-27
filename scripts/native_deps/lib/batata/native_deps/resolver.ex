@@ -33,7 +33,10 @@ defmodule Batata.NativeDeps.Resolver do
         opts
       )
 
-    metadata = metadata!(beaver.path)
+    metadata =
+      metadata!(beaver.path,
+        require_default_revision: is_nil(opts[:llvm_config])
+      )
 
     kinda_meta = Map.fetch!(metadata, "kinda")
     kinda_path = Workspace.select_path!(workspace, opts, :kinda_path)
@@ -84,12 +87,12 @@ defmodule Batata.NativeDeps.Resolver do
     config
   end
 
-  def metadata!(beaver_path) do
+  def metadata!(beaver_path, opts \\ []) do
     path = Path.join(beaver_path, "native-deps.json")
 
     with {:ok, content} <- File.read(path),
          {:ok, metadata} <- decode_json(content),
-         {:ok, metadata} <- normalize_metadata(metadata) do
+         {:ok, metadata} <- normalize_metadata(metadata, opts) do
       metadata
     else
       {:error, reason} ->
@@ -150,7 +153,8 @@ defmodule Batata.NativeDeps.Resolver do
              "tag" => tag,
              "default_revision" => revision
            }
-         } = metadata
+         } = metadata,
+         _opts
        )
        when is_binary(url) and is_binary(ref) and is_binary(repo) and is_binary(tag) and
               is_binary(revision),
@@ -166,7 +170,8 @@ defmodule Batata.NativeDeps.Resolver do
                "tag" => tag,
                "default_revisions" => revisions
              } = llvm
-         } = metadata
+         } = metadata,
+         opts
        )
        when is_binary(url) and is_binary(ref) and is_binary(repo) and is_binary(tag) and
               is_map(revisions) do
@@ -177,11 +182,15 @@ defmodule Batata.NativeDeps.Resolver do
         {:ok, put_in(metadata, ["llvm"], Map.put(llvm, "default_revision", revision))}
 
       _missing ->
-        {:error, {:missing_llvm_revision, platform}}
+        if Keyword.get(opts, :require_default_revision, true) do
+          {:error, {:missing_llvm_revision, platform}}
+        else
+          {:ok, metadata}
+        end
     end
   end
 
-  defp normalize_metadata(_metadata), do: {:error, :unsupported_schema}
+  defp normalize_metadata(_metadata, _opts), do: {:error, :unsupported_schema}
 
   def validate_config!(config, opts \\ []) do
     unless Keyword.get(config, :schema) == 1,

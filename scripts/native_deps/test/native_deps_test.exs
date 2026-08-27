@@ -168,6 +168,9 @@ defmodule Batata.NativeDepsTest do
     assert_raise Mix.Error, ~r/missing_llvm_revision/, fn ->
       Resolver.metadata!(beaver)
     end
+
+    resolved = Resolver.metadata!(beaver, require_default_revision: false)
+    refute Map.has_key?(resolved["llvm"], "default_revision")
   end
 
   test "fails closed when the receipt is missing or the lock changes", %{
