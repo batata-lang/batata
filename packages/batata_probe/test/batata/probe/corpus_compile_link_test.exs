@@ -57,6 +57,32 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "keeps isolated attempt order stable when attempts run concurrently", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "alpha.ex", """
+    defmodule Alpha do
+      def value(), do: 1
+    end
+    """)
+
+    write_source(tmp_dir, "beta.ex", """
+    defmodule Beta do
+      def value(), do: 2
+    end
+    """)
+
+    result = CorpusCompileLink.run(tmp_dir, max_concurrency: 2)
+
+    assert Enum.map(result["attempts"], & &1["module"]) == ["Alpha", "Beta"]
+    assert result["unit_attempt"]["status"] == "pass"
+  end
+
+  test "rejects an invalid isolated attempt concurrency" do
+    assert_raise ArgumentError, ~r/max_concurrency must be a positive integer/, fn ->
+      CorpusCompileLink.run("unused", max_concurrency: 0)
+    end
+  end
+
+  @tag :tmp_dir
   test "shares a schema across modules in the same unit", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "point.ex", """
     defmodule Point do
