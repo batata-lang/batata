@@ -1,5 +1,5 @@
 defmodule Batata.TransformTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   alias Batata.{Frontend, Lift, Transform}
   alias Batata.Transform.InlineScalarCalls

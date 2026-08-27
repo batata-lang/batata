@@ -1,5 +1,5 @@
 defmodule Batata.ListLiteralBodyTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   test "preserves a list literal as a function body", %{ctx: ctx} do
     source = """

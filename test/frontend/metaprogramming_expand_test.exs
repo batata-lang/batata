@@ -1,5 +1,5 @@
 defmodule Batata.Frontend.MetaprogrammingExpandTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: true, group: :execution_engine
 
   alias Batata.Frontend
   alias Batata.Frontend.MetaprogrammingExpand

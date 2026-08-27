@@ -1,5 +1,5 @@
 defmodule Batata.DateTimeIso8601Test do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   @datetimes [
     {-9999, 1, 1, 0, 0, 0, {0, 0}},

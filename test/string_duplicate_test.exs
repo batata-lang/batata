@@ -1,5 +1,5 @@
 defmodule Batata.StringDuplicateTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   for {label, expression, expected} <- [
         {"positive count", ~S|String.duplicate("ab", 3)|, "ababab"},

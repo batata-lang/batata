@@ -1,5 +1,5 @@
 defmodule Batata.Frontend.RecordExpandTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: true, group: :execution_engine
 
   alias Batata.Frontend
   alias Beaver.MLIR.Context

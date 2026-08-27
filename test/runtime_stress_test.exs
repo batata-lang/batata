@@ -1,5 +1,5 @@
 defmodule Batata.RuntimeStressTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   @moduletag timeout: 180_000
   @boundary_sizes [1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 1024]

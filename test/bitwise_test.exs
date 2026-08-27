@@ -1,5 +1,5 @@
 defmodule Batata.BitwiseTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   test "executes the imported Bitwise cluster against the BEAM oracle", %{ctx: ctx} do
     source = """
