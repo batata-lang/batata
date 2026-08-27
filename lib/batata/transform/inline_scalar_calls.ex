@@ -32,10 +32,13 @@ defmodule Batata.Transform.InlineScalarCalls do
         :unchanged ->
           {:halt, module}
 
-        :changed when pass < @max_passes ->
+        {:changed, false} ->
+          {:halt, module}
+
+        {:changed, true} when pass < @max_passes ->
           {:cont, module}
 
-        :changed ->
+        {:changed, true} ->
           raise "scalar-call inlining did not converge after #{@max_passes} bulk rounds"
       end
     end)
@@ -58,23 +61,25 @@ defmodule Batata.Transform.InlineScalarCalls do
 
     callees = callees(funcs)
 
-    call_changed? =
-      Enum.reduce(calls, false, fn call, changed? ->
+    {call_changed?, needs_another_round?} =
+      Enum.reduce(calls, {false, false}, fn call, {changed?, another_round?} ->
         case action(call, callees) do
           {:inline, callee} ->
-            inline!(call, callee)
-            true
+            inline!(call, callee.operation)
+            {true, another_round? or callee.rewrite_candidates?}
 
           {:retype, _callee} ->
             retype!(call)
-            true
+            {true, another_round?}
 
           :skip ->
-            changed?
+            {changed?, another_round?}
         end
       end)
 
-    if apply_changed? or call_changed?, do: :changed, else: :unchanged
+    if apply_changed? or call_changed?,
+      do: {:changed, needs_another_round?},
+      else: :unchanged
   end
 
   # Dynamic anonymous-function application returns the extracted fn's result,
@@ -169,8 +174,8 @@ defmodule Batata.Transform.InlineScalarCalls do
 
   defp action_for_callee(call, callee) do
     cond do
-      scalar?(callee) and scalar_args?(call) -> {:inline, callee}
-      scalar_return?(callee) and not scalar_typed?(call) -> {:retype, callee}
+      callee.scalar? and scalar_args?(call) -> {:inline, callee}
+      callee.scalar_return? and not scalar_typed?(call) -> {:retype, callee}
       true -> :skip
     end
   end
@@ -179,15 +184,6 @@ defmodule Batata.Transform.InlineScalarCalls do
     call
     |> Walker.operands()
     |> Enum.all?(&i64_value?/1)
-  end
-
-  defp scalar_return?(callee) do
-    terminator = callee |> body_block() |> MLIR.CAPI.mlirBlockGetTerminator()
-
-    case terminator |> Walker.operands() |> Enum.to_list() do
-      [value] -> i64_value?(value)
-      _ -> false
-    end
   end
 
   defp scalar_typed?(call) do
@@ -292,35 +288,6 @@ defmodule Batata.Transform.InlineScalarCalls do
 
   defp map_argument(mapping, {from, to}), do: IRMapping.map(mapping, from, to)
 
-  # A callee is in the scalar slice when every parameter and the return value
-  # are i64.
-  defp scalar?(callee) do
-    block = body_block(callee)
-    terminator = MLIR.CAPI.mlirBlockGetTerminator(block)
-
-    straight_line_body?(block) and
-      Enum.all?(
-        block |> Walker.arguments() |> Enum.to_list(),
-        &i64_value?/1
-      ) and
-      match?([_], terminator |> Walker.operands() |> Enum.to_list()) and
-      terminator
-      |> Walker.operands()
-      |> Enum.to_list()
-      |> Enum.all?(&i64_value?/1)
-  end
-
-  # Cloning a control-flow helper duplicates its complete nested region tree.
-  # Receive/scheduler functions can be thousands of regions deep, so treating
-  # them as ordinary scalar helpers causes both IR explosion and native stack
-  # overflow. Their proven i64 result is enough to retype the call; reserve
-  # inlining for genuinely straight-line scalar bodies.
-  defp straight_line_body?(block) do
-    block
-    |> Walker.operations()
-    |> Enum.all?(fn operation -> operation |> Walker.regions() |> Enum.empty?() end)
-  end
-
   defp i64_value?(value) do
     value
     |> MLIR.Value.type()
@@ -330,8 +297,31 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp callees(funcs) do
     Map.new(funcs, fn func ->
       block = body_block(func)
-      arity = block |> Walker.arguments() |> Enum.to_list() |> length()
-      {{func |> attribute_string("sym_name"), arity}, func}
+      arguments = block |> Walker.arguments() |> Enum.to_list()
+      operations = block |> Walker.operations() |> Enum.to_list()
+      terminator = MLIR.CAPI.mlirBlockGetTerminator(block)
+      returned = terminator |> Walker.operands() |> Enum.to_list()
+      scalar_return? = match?([_], returned) and Enum.all?(returned, &i64_value?/1)
+
+      # Cloning a control-flow helper duplicates its complete nested region
+      # tree. Compute the body classification once per callee per round instead
+      # of walking the same body again for every call site.
+      straight_line? =
+        Enum.all?(operations, fn operation ->
+          operation |> Walker.regions() |> Enum.empty?()
+        end)
+
+      callee = %{
+        operation: func,
+        scalar?: straight_line? and scalar_return? and Enum.all?(arguments, &i64_value?/1),
+        scalar_return?: scalar_return?,
+        rewrite_candidates?:
+          Enum.any?(operations, fn operation ->
+            MLIR.Operation.name(operation) in ["ex.apply", "ex.call"]
+          end)
+      }
+
+      {{func |> attribute_string("sym_name"), length(arguments)}, callee}
     end)
   end
 

@@ -37,6 +37,8 @@ defmodule Batata.Lift do
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @current_function_key {__MODULE__, :current_function}
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
+  @ex_type_cache_key {__MODULE__, :ex_type_cache}
+  @ex_type_names ~w(term bound unbound)
   @min_scalar_integer -9_223_372_036_854_775_808
   @max_scalar_integer 9_223_372_036_854_775_807
   @min_term_integer -1_152_921_504_606_846_976
@@ -62,54 +64,58 @@ defmodule Batata.Lift do
         Beaver.Slang.load(ctx, Ex)
       end
 
-      module = MLIR.Module.create!("module {}", ctx: ctx)
-      body = MLIR.CAPI.mlirModuleGetBody(module)
-      budget = Keyword.get(opts, :reduction_budget)
-      batching = Keyword.get(opts, :reduction_batching) != false
-      batch_size = reduction_batch_size(budget, batching)
-      {workers, process_cap} = validate_runtime_options!(opts)
-      known_atoms = opts |> Keyword.get(:atom_table, %{}) |> Enum.sort_by(&elem(&1, 0))
-      {definitions, entry_name} = rename_entry(mod.definitions)
-
-      definitions =
-        definitions
-        |> recognize_enum_calls()
-        |> extract_all_fns()
-        |> ensure_dynamic_apply_dispatch!()
-        |> append_dispatch()
-
-      schemas = Keyword.get(opts, :struct_schemas, Map.get(mod, :struct_schemas, %{}))
-
-      schemas =
-        if mod.struct_schema, do: Map.put(schemas, mod.name, mod.struct_schema), else: schemas
-
-      no_return_functions = infer_no_return_functions(definitions)
-
-      module_env = %{
-        @known_atoms_key => known_atoms,
-        @struct_schema_key => schemas,
-        @arg_modes_key => Batata.Signature.infer(definitions),
-        @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
-        @no_return_functions_key => no_return_functions,
-        @scalar_result_functions_key =>
-          Batata.Signature.infer_results(definitions, no_return_functions)
-      }
-
-      groups =
-        definitions
-        |> Enum.group_by(&{&1.name, &1.arity})
-        |> Enum.sort_by(fn {{name, arity}, _definitions} -> {Atom.to_string(name), arity} end)
-
-      enforce_resumable_plan(groups, budget)
-
-      Enum.each(groups, fn {_key, definitions} ->
-        lift_definitions(definitions, ctx, body, budget, batch_size, module_env)
-      end)
-
-      maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
-
-      module
+      with_ex_type_cache(ctx, fn -> build_module(mod, opts, ctx) end)
     end)
+  end
+
+  defp build_module(mod, opts, ctx) do
+    module = MLIR.Module.create!("module {}", ctx: ctx)
+    body = MLIR.CAPI.mlirModuleGetBody(module)
+    budget = Keyword.get(opts, :reduction_budget)
+    batching = Keyword.get(opts, :reduction_batching) != false
+    batch_size = reduction_batch_size(budget, batching)
+    {workers, process_cap} = validate_runtime_options!(opts)
+    known_atoms = opts |> Keyword.get(:atom_table, %{}) |> Enum.sort_by(&elem(&1, 0))
+    {definitions, entry_name} = rename_entry(mod.definitions)
+
+    definitions =
+      definitions
+      |> recognize_enum_calls()
+      |> extract_all_fns()
+      |> ensure_dynamic_apply_dispatch!()
+      |> append_dispatch()
+
+    schemas = Keyword.get(opts, :struct_schemas, Map.get(mod, :struct_schemas, %{}))
+
+    schemas =
+      if mod.struct_schema, do: Map.put(schemas, mod.name, mod.struct_schema), else: schemas
+
+    no_return_functions = infer_no_return_functions(definitions)
+
+    module_env = %{
+      @known_atoms_key => known_atoms,
+      @struct_schema_key => schemas,
+      @arg_modes_key => Batata.Signature.infer(definitions),
+      @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
+      @no_return_functions_key => no_return_functions,
+      @scalar_result_functions_key =>
+        Batata.Signature.infer_results(definitions, no_return_functions)
+    }
+
+    groups =
+      definitions
+      |> Enum.group_by(&{&1.name, &1.arity})
+      |> Enum.sort_by(fn {{name, arity}, _definitions} -> {Atom.to_string(name), arity} end)
+
+    enforce_resumable_plan(groups, budget)
+
+    Enum.each(groups, fn {_key, definitions} ->
+      lift_definitions(definitions, ctx, body, budget, batch_size, module_env)
+    end)
+
+    maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
+
+    module
   end
 
   defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers, _process_cap),
@@ -9927,6 +9933,29 @@ defmodule Batata.Lift do
   defp integer_type(ctx), do: MLIR.Type.integer(64, ctx: ctx)
 
   defp ex_type(name, ctx) do
+    case Process.get(@ex_type_cache_key) do
+      %{^name => type} -> type
+      _cache_miss -> resolve_ex_type(name, ctx)
+    end
+  end
+
+  defp with_ex_type_cache(ctx, callback) when is_function(callback, 0) do
+    previous = Process.get(@ex_type_cache_key)
+    cache = Map.new(@ex_type_names, &{&1, resolve_ex_type(&1, ctx)})
+    Process.put(@ex_type_cache_key, cache)
+
+    try do
+      callback.()
+    after
+      if is_nil(previous) do
+        Process.delete(@ex_type_cache_key)
+      else
+        Process.put(@ex_type_cache_key, previous)
+      end
+    end
+  end
+
+  defp resolve_ex_type(name, ctx) do
     Beaver.Slang.create_constrained_element(:type, "ex", name, [], ctx: ctx)
     |> Beaver.Deferred.resolve(ctx)
   end
