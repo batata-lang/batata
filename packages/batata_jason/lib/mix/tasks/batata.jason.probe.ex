@@ -6,7 +6,13 @@ defmodule Mix.Tasks.Batata.Jason.Probe do
   alias Batata.Jason.Probe
 
   @shortdoc "Builds raw and coverage evidence for pinned Jason"
-  @switches [source: :string, report: :string, coverage: :string, fail_on_regression: :boolean]
+  @switches [
+    source: :string,
+    report: :string,
+    coverage: :string,
+    fail_on_regression: :boolean,
+    compile_link_concurrency: :integer
+  ]
 
   @impl Mix.Task
   def run(args) do
@@ -21,7 +27,8 @@ defmodule Mix.Tasks.Batata.Jason.Probe do
     Probe.run!(source,
       report: Keyword.get(opts, :report, "_build/jason_probe/report.json"),
       coverage: Keyword.get(opts, :coverage, "_build/jason_probe/coverage.json"),
-      fail_on_regression: Keyword.get(opts, :fail_on_regression, false)
+      fail_on_regression: Keyword.get(opts, :fail_on_regression, false),
+      compile_link_concurrency: Keyword.get(opts, :compile_link_concurrency, 1)
     )
   end
 end

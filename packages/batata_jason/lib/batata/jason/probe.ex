@@ -23,6 +23,7 @@ defmodule Batata.Jason.Probe do
     report = Keyword.get(opts, :report, "_build/jason_probe/report.json")
     coverage = Keyword.get(opts, :coverage, "_build/jason_probe/coverage.json")
     fail_on_regression = Keyword.get(opts, :fail_on_regression, false)
+    compile_link_concurrency = Keyword.get(opts, :compile_link_concurrency, 1)
 
     raw =
       Corpus.run!(source,
@@ -35,7 +36,7 @@ defmodule Batata.Jason.Probe do
 
     dashboard =
       Coverage.run!(
-        [coverage_config(source, report)],
+        [coverage_config(source, report, compile_link_concurrency)],
         coverage,
         fail_on_regression: fail_on_regression
       )
@@ -43,7 +44,7 @@ defmodule Batata.Jason.Probe do
     %{raw: raw, coverage: dashboard}
   end
 
-  defp coverage_config(source, report) do
+  defp coverage_config(source, report, compile_link_concurrency) do
     %{
       name: "jason",
       source: source,
@@ -52,7 +53,8 @@ defmodule Batata.Jason.Probe do
       canonical_baseline: asset!("canonical.json"),
       link_baseline: asset!("link.json"),
       metadata: asset!("source.json"),
-      capabilities: asset!("capabilities.json")
+      capabilities: asset!("capabilities.json"),
+      compile_link_options: [max_concurrency: compile_link_concurrency]
     }
   end
 end

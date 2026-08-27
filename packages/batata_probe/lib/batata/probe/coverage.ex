@@ -73,7 +73,7 @@ defmodule Batata.Probe.Coverage do
     verify_link_identity!(link_baseline, metadata)
     diff = Diff.compare(raw, baseline)
     canonical = canonical_acceptance(source)
-    compile_link = CorpusCompileLink.run(source)
+    compile_link = CorpusCompileLink.run(source, Map.get(config, :compile_link_options, []))
     semantic = semantic_execution(capabilities)
 
     regressions = raw_regressions(diff) ++ canonical_regressions(canonical, canonical_baseline)

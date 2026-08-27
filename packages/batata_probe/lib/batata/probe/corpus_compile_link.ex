@@ -5,6 +5,9 @@ defmodule Batata.Probe.CorpusCompileLink do
   Isolated module attempts remain diagnostic evidence, but the reported status
   comes only from a qualified, dependency-aware compilation unit containing
   every normalized module. Isolated success can never produce a corpus pass.
+
+  Isolated attempts may use bounded concurrency because each one owns its MLIR
+  context. The qualified whole-corpus attempt always remains singular.
   """
 
   alias Batata.CompilationUnit
@@ -16,15 +19,20 @@ defmodule Batata.Probe.CorpusCompileLink do
 
   @mode "qualified_multi_module_unit"
 
-  @spec run(Path.t()) :: map()
-  def run(source) do
+  @spec run(Path.t(), keyword()) :: map()
+  def run(source, opts \\ []) do
+    max_concurrency = max_concurrency!(opts)
+    do_run(source, max_concurrency)
+  end
+
+  defp do_run(source, max_concurrency) do
     sources = source |> source_files() |> Enum.map(&File.read!/1)
     modules = Frontend.from_sources(sources)
     runtime_slice = CorpusRuntimeSlice.slice(source, modules)
     runtime_modules = runtime_slice.modules
     module_names = MapSet.new(runtime_modules, & &1.name)
     dependencies = internal_dependencies(runtime_modules, module_names)
-    attempts = Enum.map(modules, &attempt/1)
+    attempts = isolated_attempts(modules, max_concurrency)
     isolated_passes = Enum.count(attempts, &(&1["status"] == "pass"))
     unit_attempt = attempt_unit(runtime_modules)
     status = if unit_attempt["status"] == "pass", do: "pass", else: "blocked"
@@ -60,6 +68,31 @@ defmodule Batata.Probe.CorpusCompileLink do
         },
         CompileAttempt.failure_details(error)
       )
+  end
+
+  defp max_concurrency!(opts) do
+    case Keyword.get(opts, :max_concurrency, 1) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value ->
+        raise ArgumentError, "max_concurrency must be a positive integer, got: #{inspect(value)}"
+    end
+  end
+
+  defp isolated_attempts(modules, 1), do: Enum.map(modules, &attempt/1)
+
+  # Every task owns an independent MLIR context. The qualified whole-corpus
+  # attempt remains outside this pool so the largest compilation is never
+  # multiplied by this option.
+  defp isolated_attempts(modules, max_concurrency) do
+    modules
+    |> Task.async_stream(&attempt/1,
+      max_concurrency: max_concurrency,
+      ordered: true,
+      timeout: :infinity
+    )
+    |> Enum.map(fn {:ok, result} -> result end)
   end
 
   defp source_files(source) do
