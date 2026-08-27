@@ -3532,28 +3532,15 @@ defmodule Batata.Lift do
     {create_term_op("ex.list", [], ctx, block), env}
   end
 
-  defp lift_expr([{:|, _, [head_ast, tail_ast]}], ctx, block, env) do
-    {head, env} = lift_expr(head_ast, ctx, block, env)
-    {tail, env} = lift_expr(tail_ast, ctx, block, env)
-
-    value =
-      create_op(
-        "ex.list_cons",
-        [
-          list_cons_operand(head_ast, head, ctx, block, env),
-          list_cons_operand(tail_ast, tail, ctx, block, env)
-        ],
-        [ex_type("term", ctx)],
-        ctx,
-        block
-      )
-
-    {value, env}
-  end
-
   defp lift_expr(elements, ctx, block, env) when is_list(elements) do
-    {values, env} = lift_operands_boxed(elements, ctx, block, env)
-    {create_term_op("ex.list", values, ctx, block), env}
+    case split_list_cons(elements) do
+      {:ok, heads, tail} ->
+        lift_list_cons(heads, tail, ctx, block, env)
+
+      :error ->
+        {values, env} = lift_operands_boxed(elements, ctx, block, env)
+        {create_term_op("ex.list", values, ctx, block), env}
+    end
   end
 
   defp lift_expr({:%{}, _, [{:|, _, [base_ast, updates]}]}, ctx, block, env)
@@ -4484,6 +4471,34 @@ defmodule Batata.Lift do
       ctx,
       block
     )
+  end
+
+  defp split_list_cons([{:|, _, [head, tail]}]), do: {:ok, [head], tail}
+
+  defp split_list_cons([head | rest]) do
+    case split_list_cons(rest) do
+      {:ok, heads, tail} -> {:ok, [head | heads], tail}
+      :error -> :error
+    end
+  end
+
+  defp split_list_cons([]), do: :error
+
+  defp lift_list_cons(head_asts, tail_ast, ctx, block, env) do
+    {heads, env} = Enum.map_reduce(head_asts, env, &lift_expr(&1, ctx, block, &2))
+    {tail, env} = lift_expr(tail_ast, ctx, block, env)
+    tail = list_cons_operand(tail_ast, tail, ctx, block, env)
+
+    value =
+      head_asts
+      |> Enum.zip(heads)
+      |> Enum.reverse()
+      |> Enum.reduce(tail, fn {head_ast, head}, tail ->
+        head = list_cons_operand(head_ast, head, ctx, block, env)
+        create_op("ex.list_cons", [head, tail], [ex_type("term", ctx)], ctx, block)
+      end)
+
+    {value, env}
   end
 
   defp validate_term_integer_literal!(integer)
