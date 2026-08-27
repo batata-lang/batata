@@ -118,10 +118,18 @@ defmodule Batata.NativeDeps.Resolver do
 
     arch =
       case {os, arm?} do
-        {"macos", true} -> "arm64"
-        {"macos", false} -> "x86_64"
-        {"windows", _arm?} -> "amd64"
-        {_os, true} -> "aarch64"
+        {"macos", true} ->
+          "arm64"
+
+        {"macos", false} ->
+          "x86_64"
+
+        {"windows", _arm?} ->
+          "amd64"
+
+        {_os, true} ->
+          "aarch64"
+
         {_os, false} ->
           if architecture =~ "x86_64" or architecture =~ "amd64" do
             "x86_64"
@@ -152,11 +160,12 @@ defmodule Batata.NativeDeps.Resolver do
          %{
            "schema_version" => 2,
            "kinda" => %{"git_url" => url, "ref" => ref},
-           "llvm" => %{
-             "repo" => repo,
-             "tag" => tag,
-             "default_revisions" => revisions
-           } = llvm
+           "llvm" =>
+             %{
+               "repo" => repo,
+               "tag" => tag,
+               "default_revisions" => revisions
+             } = llvm
          } = metadata
        )
        when is_binary(url) and is_binary(ref) and is_binary(repo) and is_binary(tag) and
