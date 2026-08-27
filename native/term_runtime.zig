@@ -4382,6 +4382,35 @@ pub fn ex_term_binary_slice(binary: i64, start: i64) callconv(.c) i64 {
     return slice_word;
 }
 
+/// Materializes a binary part. Start and length are tagged integer terms;
+/// negative lengths select bytes immediately preceding start, matching the
+/// BEAM binary_part/3 contract. Invalid terms and ranges return nil.
+pub fn ex_term_binary_part(binary: i64, start_word: i64, length_word: i64) callconv(.c) i64 {
+    if (word_tag(binary) != tag_binary or !is_int(start_word) or !is_int(length_word)) return nil_word;
+    const len: i64 = @intCast(binary_len(binary));
+    const start = word_payload(start_word);
+    const length = word_payload(length_word);
+    if (start < 0 or start > len) return nil_word;
+
+    const normalized_start, const normalized_length = if (length >= 0) blk: {
+        if (length > len - start) return nil_word;
+        break :blk .{ start, length };
+    } else blk: {
+        if (length < -start) return nil_word;
+        break :blk .{ start + length, -length };
+    };
+
+    const start_index: usize = @intCast(normalized_start);
+    const part_len: usize = @intCast(normalized_length);
+
+    const part = alloc_binary(part_len) orelse return nil_word;
+    const part_word = word_from_ptr(part, tag_binary);
+    if (part_len != 0) {
+        @memcpy(binary_bytes(part_word)[0..part_len], binary_bytes(binary)[start_index .. start_index + part_len]);
+    }
+    return part_word;
+}
+
 const Utf8Decoded = struct { cp: i64, width: i64 };
 
 fn utf8_at(binary: i64, index: i64) ?Utf8Decoded {
@@ -5507,6 +5536,15 @@ test "term ABI reads" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_binary_length(rest));
     try std.testing.expectEqual(two, ex_term_binary_get(rest, 0));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_slice(binary, 3)));
+
+    const part = ex_term_binary_part(binary, 0, one);
+    try std.testing.expectEqual(@as(i64, 1), ex_term_binary_length(part));
+    try std.testing.expectEqual(one, ex_term_binary_get(part, 0));
+    const preceding = ex_term_binary_part(binary, two, -one);
+    try std.testing.expectEqual(two, ex_term_binary_get(preceding, 0));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_binary_length(ex_term_binary_part(binary, two, 0)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_part(binary, one, two)));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_binary_part(binary, nil_word, one)));
 
     // Binary enumeration widens bytes before applying the three-bit term
     // tag. Shifting as u8 truncated every value at or above 32.

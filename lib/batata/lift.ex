@@ -7097,6 +7097,13 @@ defmodule Batata.Lift do
   defp native_term_call(module, :byte_size, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.binary_length", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(module, :binary_part, [binary, start, length], ctx, block)
+       when module in [Kernel, :erlang],
+       do: lower_binary_part(binary, start, length, ctx, block)
+
+  defp native_term_call(:binary, :part, [binary, start, length], ctx, block),
+    do: lower_binary_part(binary, start, length, ctx, block)
+
   defp native_term_call(module, :map_size, [value], ctx, block) when module in [Kernel, :erlang],
     do: create_op("ex.map_length", [value], [MLIR.Type.i64()], ctx, block)
 
@@ -7531,6 +7538,39 @@ defmodule Batata.Lift do
         fn b ->
           [
             raise_argument_error("invalid :erlang.split_binary/2 arguments", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lower_binary_part(binary, start, part_length, ctx, block) do
+    i64 = integer_type(ctx)
+
+    part =
+      create_op(
+        "ex.binary_part",
+        [binary, start, part_length],
+        [ex_type("term", ctx)],
+        ctx,
+        block
+      )
+
+    valid = create_op("ex.is_binary", [part], [i64], ctx, block)
+
+    result =
+      build_scf_if(
+        create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block),
+        ctx,
+        block,
+        [i64],
+        fn b -> [unbox(part, ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("invalid binary_part/3 arguments", ctx, b)
             |> unbox(ctx, b)
           ]
         end

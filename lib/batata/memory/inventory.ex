@@ -30,6 +30,7 @@ defmodule Batata.Memory.Inventory do
     ex.binary_decode16
     ex.binary_encode16
     ex.binary_from_list
+    ex.binary_part
     ex.binary_quote
     ex.binary_slice
     ex.enumerable_intersperse

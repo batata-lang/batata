@@ -11,6 +11,7 @@ defmodule Batata.Stdlib.Kernel do
     {Kernel, :tuple_size, 1} => :native_term,
     {Kernel, :elem, 2} => :native_term,
     {Kernel, :byte_size, 1} => :native_term,
+    {Kernel, :binary_part, 3} => :native_term,
     {Kernel, :map_size, 1} => :native_term,
     {Kernel, :list_to_binary, 1} => :native_term,
     {Kernel, :inspect, 1} => :native_term,
@@ -31,6 +32,7 @@ defmodule Batata.Stdlib.Kernel do
     {:erlang, :tl, 1} => :native_term,
     {:erlang, :tuple_size, 1} => :native_term,
     {:erlang, :byte_size, 1} => :native_term,
+    {:erlang, :binary_part, 3} => :native_term,
     {:erlang, :map_size, 1} => :native_term,
     {:erlang, :list_to_binary, 1} => :native_term,
     {:erlang, :binary_to_float, 1} => :native_term,
@@ -231,7 +233,7 @@ defmodule Batata.Stdlib.Binary do
     {:binary, :at, 2} => :native_term,
     {:binary, :copy, 1} => :native_term,
     {:binary, :match, 2} => :native_term,
-    {Binary, :part, 3} => :unsupported
+    {:binary, :part, 3} => :native_term
   }
 
   @doc "Returns binary-domain stdlib replacement declarations."
@@ -430,6 +432,7 @@ defmodule Batata.Stdlib do
            )
 
   @raising_mfas MapSet.new([
+                  {Kernel, :binary_part, 3},
                   {Kernel, :inspect, 1},
                   {Kernel, :inspect, 2},
                   {Kernel, :to_string, 1},
@@ -444,6 +447,7 @@ defmodule Batata.Stdlib do
                   {NaiveDateTime, :to_iso8601, 1},
                   {Time, :to_iso8601, 1},
                   {:erlang, :binary_to_float, 1},
+                  {:erlang, :binary_part, 3},
                   {:erlang, :float_to_binary, 2},
                   {String, :printable?, 1},
                   {String, :to_atom, 1},
@@ -454,6 +458,7 @@ defmodule Batata.Stdlib do
                   {Keyword, :get, 3},
                   {:erlang, :split_binary, 2},
                   {:binary, :copy, 1},
+                  {:binary, :part, 3},
                   {:maps, :from_list, 1},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
@@ -489,7 +494,9 @@ defmodule Batata.Stdlib do
   @allocating_mfas MapSet.new([
                      {Kernel, :spawn, 1},
                      {:binary, :copy, 1},
-                     {Binary, :part, 3},
+                     {:binary, :part, 3},
+                     {Kernel, :binary_part, 3},
+                     {:erlang, :binary_part, 3},
                      {MapSet, :new, 1},
                      {MapSet, :put, 2},
                      {Map, :put, 3},
@@ -545,6 +552,9 @@ defmodule Batata.Stdlib do
                  ])
 
   @per_element_mfas MapSet.new([
+                      {Kernel, :binary_part, 3},
+                      {:erlang, :binary_part, 3},
+                      {:binary, :part, 3},
                       {Enum, :count, 1},
                       {Enum, :into, 2},
                       {Enum, :intersperse, 2},
