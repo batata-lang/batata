@@ -1,5 +1,5 @@
 defmodule Batata.ListDuplicateTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   @source """
   defmodule ListDuplicateFixture do

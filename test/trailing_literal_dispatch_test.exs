@@ -1,5 +1,5 @@
 defmodule Batata.TrailingLiteralDispatchTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   test "dispatches Jason-shaped module literals with BEAM semantics", %{ctx: ctx} do
     source = """

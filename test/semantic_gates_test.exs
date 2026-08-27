@@ -5,7 +5,7 @@ defmodule Batata.SemanticGatesTest do
   equivalent expression.
   """
 
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   alias Batata
 

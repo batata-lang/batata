@@ -1,5 +1,5 @@
 defmodule Batata.TimeIso8601Test do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   @times [
     {0, 0, 0, {0, 0}},

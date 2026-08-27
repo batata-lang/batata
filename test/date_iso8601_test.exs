@@ -1,5 +1,5 @@
 defmodule Batata.DateIso8601Test do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   test "formats Gregorian day values across the supported Date range", %{ctx: ctx} do
     dates = [

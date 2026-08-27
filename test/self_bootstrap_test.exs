@@ -1,5 +1,5 @@
 defmodule Batata.SelfBootstrapTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   alias Batata
   alias Batata.Export

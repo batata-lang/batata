@@ -1,5 +1,5 @@
 defmodule Batata.AnyStructPatternTest do
-  use Batata.Case, async: true
+  use Batata.Case, async: true, group: :execution_engine
 
   test "matches generic struct patterns with BEAM semantics", %{ctx: ctx} do
     source = """
