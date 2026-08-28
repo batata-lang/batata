@@ -179,6 +179,22 @@ defmodule Batata do
     |> elem(1)
   end
 
+  # AOT execution cannot safely resume multiple receive sites when its driver
+  # is preemptive or parallel. Unlike JIT execution, the generated process can
+  # otherwise stall outside the host VM and survive an ExUnit timeout.
+  defp validate_aot_receive_sites!(source, opts) do
+    workers = Keyword.get(opts, :workers, 1)
+    reduction_budget = opts[:reduction_budget]
+    receive_sites = count_receive_sites(source)
+
+    if receive_sites > 1 and (workers > 1 or reduction_budget != nil) do
+      raise ArgumentError,
+            "AOT scheduler currently supports at most one receive site per module; " <>
+              "got #{receive_sites} with workers: #{workers}, " <>
+              "reduction_budget: #{inspect(reduction_budget)}"
+    end
+  end
+
   @doc """
   Parses Elixir source and lowers it all the way to LLVM dialect IR.
   """
@@ -642,6 +658,7 @@ defmodule Batata do
   def build(source, output_dir, ctx, opts \\ []) do
     validate_reduction_budget!(opts[:reduction_budget])
     RuntimeQuota.validate!(opts[:memory_quota_bytes])
+    validate_aot_receive_sites!(source, opts)
 
     snapshot =
       source
