@@ -3760,6 +3760,12 @@ defmodule Batata.Lift do
     {result, env}
   end
 
+  defp lift_expr({:cond, _, [[do: clauses]]}, ctx, block, env) when is_list(clauses) do
+    clauses
+    |> cond_to_if!()
+    |> lift_expr(ctx, block, env)
+  end
+
   defp lift_expr({:if, _, [condition_ast, options]}, ctx, block, env)
        when is_list(options) do
     then_ast = options |> Keyword.fetch!(:do) |> normalize_unused_branch_aliases()
@@ -4527,6 +4533,16 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp cond_to_if!([{:->, _, [[true], body]} | _rest]), do: body
+
+  defp cond_to_if!([{:->, metadata, [[condition], body]} | rest]) when rest != [] do
+    {:if, metadata, [condition, [do: body, else: cond_to_if!(rest)]]}
+  end
+
+  defp cond_to_if!(_clauses) do
+    raise Error, "body-level cond requires a final true clause"
   end
 
   defp lift_bitwise(name, [operand_ast], ctx, block, env) when name in [:bnot, :"~~~"] do
