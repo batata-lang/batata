@@ -13,6 +13,6 @@
   "unit_attempt": {
     "status": "lowering_failure",
     "reason_class": "lowering_pass_failure",
-    "fingerprint": "a9c9b7313f787d6510cd0ef3349cbf81cb4947adb60c84c4cace1fa44d6e5c04"
+    "fingerprint": "48b08cae2ec96cbe8ee8903048269bdea4bc90427e62882f659bd5f0a3ea8f33"
   }
 }

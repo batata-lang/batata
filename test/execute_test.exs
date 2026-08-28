@@ -390,6 +390,25 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "returns and invokes shorthand captures with free variables", %{ctx: ctx} do
+    source = """
+    defmodule ShorthandFunctionCapture do
+      def continuation(offset), do: &add(&1, &2, offset)
+      def add(left, right, offset), do: left + right + offset
+
+      def main() do
+        captured = continuation(4)
+        captured.(1, 2)
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nShorthandFunctionCapture.main()") |> Code.eval_string() |> elem(0)
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "maps byte-aligned binary comprehensions in source order", %{ctx: ctx} do
     source = """
     defmodule BinaryComprehension do

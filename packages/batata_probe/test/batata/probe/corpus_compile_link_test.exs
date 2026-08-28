@@ -284,6 +284,19 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "qualifies calls inside Jason-shaped shorthand continuations", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "formatter.ex", """
+    defmodule Formatter do
+      def continuation(depth, empty, opts), do: &render(&1, &2, depth, empty, opts)
+      defp render(input, output, depth, empty, opts), do: {input, output, depth, empty, opts}
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
+  @tag :tmp_dir
   test "keeps imported raise out of qualified local symbols", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "raising.ex", """
     defmodule Raising do

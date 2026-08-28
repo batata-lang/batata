@@ -1244,6 +1244,16 @@ defmodule Batata.Lift do
     extract_fns({:fn, [], [{:->, [], [args, {name, [], args}]}]}, parent, state)
   end
 
+  defp extract_fns({:&, _, [body]} = capture, parent, state) do
+    case expand_shorthand_capture(body) do
+      {:ok, args, expanded_body} ->
+        extract_fns({:fn, [], [{:->, [], [args, expanded_body]}]}, parent, state)
+
+      :error ->
+        {capture, state}
+    end
+  end
+
   defp extract_fns({:fn, _, [{:->, _, [args, body]}]}, parent, {synthetic, counter}) do
     name = :"__fn_#{parent}_#{counter}"
     arity = length(args)
@@ -1289,6 +1299,55 @@ defmodule Batata.Lift do
   end
 
   defp extract_fns(other, _parent, acc), do: {other, acc}
+
+  defp expand_shorthand_capture(body) do
+    indexes = capture_placeholder_indexes(body, MapSet.new())
+
+    with false <- MapSet.size(indexes) == 0,
+         arity when arity <= 4 <- Enum.max(indexes),
+         true <- indexes == MapSet.new(1..arity) do
+      args = Enum.map(1..arity, &{String.to_atom("__batata_capture_arg_#{&1}"), [], nil})
+      replacements = args |> Enum.with_index(1) |> Map.new(fn {arg, index} -> {index, arg} end)
+      {:ok, args, replace_capture_placeholders(body, replacements)}
+    else
+      _ -> :error
+    end
+  end
+
+  defp capture_placeholder_indexes({:&, _, [index]}, indexes) when is_integer(index),
+    do: MapSet.put(indexes, index)
+
+  # A nested capture owns its placeholders; they do not contribute to the
+  # enclosing shorthand capture's arity.
+  defp capture_placeholder_indexes({:&, _, [_nested]} = _capture, indexes), do: indexes
+
+  defp capture_placeholder_indexes(tuple, indexes) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.reduce(indexes, &capture_placeholder_indexes/2)
+  end
+
+  defp capture_placeholder_indexes(list, indexes) when is_list(list),
+    do: Enum.reduce(list, indexes, &capture_placeholder_indexes/2)
+
+  defp capture_placeholder_indexes(_other, indexes), do: indexes
+
+  defp replace_capture_placeholders({:&, _, [index]}, replacements) when is_integer(index),
+    do: Map.fetch!(replacements, index)
+
+  defp replace_capture_placeholders({:&, _, [_nested]} = capture, _replacements), do: capture
+
+  defp replace_capture_placeholders(tuple, replacements) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&replace_capture_placeholders(&1, replacements))
+    |> List.to_tuple()
+  end
+
+  defp replace_capture_placeholders(list, replacements) when is_list(list),
+    do: Enum.map(list, &replace_capture_placeholders(&1, replacements))
+
+  defp replace_capture_placeholders(other, _replacements), do: other
 
   # Collects variable references in an AST that are not bound by `bound`.
   # Nested fn literals are skipped: their bodies bind and reference variables
