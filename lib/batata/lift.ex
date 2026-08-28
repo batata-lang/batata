@@ -3670,6 +3670,37 @@ defmodule Batata.Lift do
     {lower_short_circuit(left, right_ast, falsy, true, env, ctx, block), env}
   end
 
+  defp lift_expr({:and, _, [left_ast, right_ast]}, ctx, block, env) do
+    unless strict_boolean_scalar_ast?(left_ast) and strict_boolean_scalar_ast?(right_ast) do
+      raise Error,
+            "body-level and requires compile-proven boolean scalar operands: " <>
+              inspect({left_ast, right_ast})
+    end
+
+    if ast_has_assignment?(right_ast) do
+      raise Error, "assignments in the right-hand side of and are unsupported"
+    end
+
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    left = lift_value(left, ctx, block, env)
+    left_i1 = create_op("arith.trunci", [left], [MLIR.Type.i1()], ctx, block)
+
+    [result] =
+      build_scf_if(
+        left_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn right_block ->
+          {right, right_env} = lift_expr(right_ast, ctx, right_block, env)
+          [lift_value(right, ctx, right_block, right_env)]
+        end,
+        fn false_block -> [lit(0, ctx, false_block)] end
+      )
+
+    {result, env}
+  end
+
   defp lift_expr({:if, _, [condition_ast, options]}, ctx, block, env)
        when is_list(options) do
     then_ast = options |> Keyword.fetch!(:do) |> normalize_unused_branch_aliases()
@@ -8277,7 +8308,39 @@ defmodule Batata.Lift do
        when op in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
        do: true
 
+  defp boolean_scalar_ast?({:and, _, [left, right]}),
+    do: strict_boolean_scalar_ast?(left) and strict_boolean_scalar_ast?(right)
+
   defp boolean_scalar_ast?(_ast), do: false
+
+  defp strict_boolean_scalar_ast?({name, _, [_arg]})
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
+       do: true
+
+  defp strict_boolean_scalar_ast?({op, _, [left, right]})
+       when op in [:==, :!=, :===, :!==],
+       do: compile_known_integer_ast?(left) and compile_known_integer_ast?(right)
+
+  defp strict_boolean_scalar_ast?({op, _, [left, right]}) when op in [:<, :<=, :>, :>=],
+    do: scalar_integer_candidate_ast?(left) and scalar_integer_candidate_ast?(right)
+
+  defp strict_boolean_scalar_ast?(_ast), do: false
+
+  defp compile_known_integer_ast?(value) when is_integer(value), do: true
+
+  defp compile_known_integer_ast?({op, _, [value]}) when op in [:+, :-],
+    do: compile_known_integer_ast?(value)
+
+  defp compile_known_integer_ast?({op, _, [left, right]}) when op in [:+, :-, :*, :div, :rem],
+    do: compile_known_integer_ast?(left) and compile_known_integer_ast?(right)
+
+  defp compile_known_integer_ast?(_ast), do: false
+
+  defp scalar_integer_candidate_ast?({name, _, context})
+       when is_atom(name) and (is_atom(context) or is_nil(context)),
+       do: true
+
+  defp scalar_integer_candidate_ast?(ast), do: compile_known_integer_ast?(ast)
 
   defp raise_unsupported_to_string(reason, value, ctx, block) do
     reported_value = if reason == :unknown_atom, do: atom_term(reason, ctx, block), else: value
