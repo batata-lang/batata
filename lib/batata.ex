@@ -397,6 +397,13 @@ defmodule Batata do
 
   defp materialize_extended_exception(9, %{__exception__: true} = exception), do: raise(exception)
 
+  defp materialize_extended_exception(10, {protocol, value, description}) do
+    raise Protocol.UndefinedError,
+      protocol: protocol,
+      value: value,
+      description: description
+  end
+
   defp materialize_extended_exception(kind, reason) do
     raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
   end

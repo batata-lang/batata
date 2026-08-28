@@ -353,6 +353,28 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
              CorpusCompileLink.run(tmp_dir)
   end
 
+  @tag :tmp_dir
+  test "compiles Jason Encoder-shaped raise/2 boundaries", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "encoder.ex", """
+    defimpl Encoder, for: Any do
+      def encode(value, _opts) do
+        raise(Protocol.UndefinedError,
+          protocol: Encoder,
+          value: value,
+          description: "cannot encode value"
+        )
+      end
+    end
+
+    defmodule Decoder do
+      def argument_error(message), do: raise(ArgumentError, message)
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
   defp write_source(root, name, contents) do
     lib = Path.join(root, "lib")
     File.mkdir_p!(lib)

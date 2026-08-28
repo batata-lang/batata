@@ -62,6 +62,35 @@ defmodule Batata.ExecuteTest do
     assert_raise NativeRaisedError, "native boom", fn -> Batata.execute(source, ctx) end
   end
 
+  test "raises ArgumentError through the Kernel.raise/2 boundary", %{ctx: ctx} do
+    source = """
+    defmodule RaisedArgumentError do
+      def main(), do: raise(ArgumentError, "invalid option")
+    end
+    """
+
+    assert_raise ArgumentError, "invalid option", fn -> Batata.execute(source, ctx) end
+  end
+
+  test "raises Protocol.UndefinedError through the Kernel.raise/2 boundary", %{ctx: ctx} do
+    source = """
+    defmodule RaisedProtocolUndefined do
+      def main() do
+        raise(Protocol.UndefinedError,
+          protocol: Enumerable,
+          value: 42,
+          description: "not enumerable"
+        )
+      end
+    end
+    """
+
+    error = assert_raise Protocol.UndefinedError, fn -> Batata.execute(source, ctx) end
+    assert error.protocol == Enumerable
+    assert error.value == 42
+    assert error.description == "not enumerable"
+  end
+
   test "JIT lifecycle materializes a composite result on repeated executions", %{ctx: ctx} do
     source = """
     defmodule Composite do
