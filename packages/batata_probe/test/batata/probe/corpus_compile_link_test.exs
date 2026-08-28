@@ -316,6 +316,25 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "compiles Jason Encode-shaped literal charlist terminators", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "encode.ex", """
+    defmodule Encode do
+      def render() do
+        {list_loop([], nil, nil), map_naive_loop([], nil, nil),
+         map_strict_loop([], nil, nil, %{})}
+      end
+
+      defp list_loop([], _escape, _encode_map), do: ~c']'
+      defp map_naive_loop([], _escape, _encode_map), do: ~c'}'
+      defp map_strict_loop([], _escape, _encode_map, _visited), do: ~c'}'
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
+  @tag :tmp_dir
   test "keeps imported raise out of qualified local symbols", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "raising.ex", """
     defmodule Raising do

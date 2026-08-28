@@ -3503,6 +3503,19 @@ defmodule Batata.Lift do
   defp lift_expr({:+, _, [integer]}, ctx, block, env) when is_integer(integer),
     do: lift_expr(validate_scalar_integer_literal!(integer), ctx, block, env)
 
+  defp lift_expr({:sigil_c, _, [{:<<>>, _, [contents]}, []]} = ast, ctx, block, env)
+       when is_binary(contents) do
+    case Macro.expand(ast, __ENV__) do
+      charlist when is_list(charlist) -> lift_expr(charlist, ctx, block, env)
+      _other -> raise Error, "failed to expand literal charlist sigil: #{Macro.to_string(ast)}"
+    end
+  end
+
+  defp lift_expr({:sigil_c, _, _} = ast, _ctx, _block, _env) do
+    raise Error,
+          "charlist sigils require literal contents without modifiers: #{Macro.to_string(ast)}"
+  end
+
   # Preserve the established source spelling used to construct the minimum
   # term integer without first materializing the positive out-of-domain value.
   defp lift_expr({:-, _, [0, integer]}, ctx, block, env) when is_integer(integer),
