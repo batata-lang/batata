@@ -1346,6 +1346,42 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes compile-proven body-level strict boolean and lazily", %{ctx: ctx} do
+    source = """
+    defmodule NativeStrictBooleanAnd do
+      def escapeu(<<last>>), do: if(0 == 0 and last <= 127, do: 1, else: 0)
+      def rejected_skip(<<last>>), do: if(1 == 0 and last <= 127, do: 1, else: 0)
+
+      def main() do
+        lazy_result = if 1 == 0 and is_integer(Kernel.to_string([1])), do: 1, else: 0
+        {escapeu(<<127>>), escapeu(<<128>>), rejected_skip(<<127>>), lazy_result}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nNativeStrictBooleanAnd.main()") |> Code.eval_string() |> elem(0)
+
+    assert expected == {1, 0, 0, 0}
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects general term-valued body-level strict boolean and", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error,
+                 ~r/body-level and requires compile-proven boolean scalar operands/,
+                 fn ->
+                   Batata.compile(
+                     """
+                     defmodule NativeStrictBooleanAnd do
+                       def both(left, right), do: left and right
+                       def main(), do: both(true, false)
+                     end
+                     """,
+                     ctx
+                   )
+                 end
+  end
+
   test "executes the Decimal.Error message short-circuit kernel", %{ctx: ctx} do
     source = """
     defmodule DecimalErrorMessage do
