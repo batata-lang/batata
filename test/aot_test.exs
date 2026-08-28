@@ -4,6 +4,9 @@ defmodule Batata.AOTTest do
   @moduletag timeout: 180_000
 
   alias Batata
+  alias Batata.Test.Subprocess
+
+  @child_timeout 15_000
 
   @tag :tmp_dir
   test "builds a static library and runs it from C", %{ctx: ctx, tmp_dir: tmp_dir} do
@@ -36,7 +39,7 @@ defmodule Batata.AOTTest do
         stderr_to_stdout: true
       )
 
-    {stdout, 0} = System.cmd(binary, [])
+    {stdout, 0} = Subprocess.cmd(binary, timeout: @child_timeout)
     assert stdout == "6\n"
   end
 
@@ -66,7 +69,7 @@ defmodule Batata.AOTTest do
       )
 
     for _ <- 1..2 do
-      {stdout, 0} = System.cmd(binary, [])
+      {stdout, 0} = Subprocess.cmd(binary, timeout: @child_timeout)
       assert stdout == ~s|{1, [2, 3], "\x04\x05"}\n|
     end
   end
@@ -105,12 +108,12 @@ defmodule Batata.AOTTest do
         stderr_to_stdout: true
       )
 
-    {stdout, 0} = System.cmd(binary, [])
+    {stdout, 0} = Subprocess.cmd(binary, timeout: @child_timeout)
     assert stdout == "7\n"
   end
 
   @tag :tmp_dir
-  test "runs a fan-in AOT workload with a small growing process table", %{
+  test "preserves out-of-order messages across consecutive selective receives", %{
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
@@ -120,8 +123,8 @@ defmodule Batata.AOTTest do
         defmodule FanIn do
           def main() do
             me = self()
-            spawn(fn -> send(me, 10) end)
-            spawn(fn -> send(me, 20) end)
+            send(me, 20)
+            send(me, 10)
             sum = Enum.reduce([1, 2, 3, 4, 5], 0, fn x, acc -> x + acc end)
 
             first = receive do
@@ -137,10 +140,7 @@ defmodule Batata.AOTTest do
         end
         """,
         tmp_dir,
-        ctx,
-        workers: 4,
-        process_cap: 2,
-        reduction_budget: 2
+        ctx
       )
 
     binary = Path.join(tmp_dir, "run_fan_in")
@@ -152,8 +152,56 @@ defmodule Batata.AOTTest do
         stderr_to_stdout: true
       )
 
-    {stdout, 0} = System.cmd(binary, [])
+    {stdout, 0} = Subprocess.cmd(binary, timeout: @child_timeout)
     assert stdout == "45\n"
+  end
+
+  @tag :tmp_dir
+  test "AOT rejects unsafe scheduler multi-receive continuations", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    source = """
+    defmodule UnsafeReceives do
+      def main() do
+        receive do
+          10 -> 10
+        end
+
+        receive do
+          20 -> 20
+        end
+      end
+    end
+    """
+
+    for workers <- [1, 4] do
+      assert_raise ArgumentError,
+                   ~r/AOT scheduler currently supports at most one receive site/,
+                   fn ->
+                     Batata.build(source, tmp_dir, ctx,
+                       workers: workers,
+                       reduction_budget: 2
+                     )
+                   end
+    end
+  end
+
+  @tag :tmp_dir
+  test "bounded AOT execution kills and reaps a stalled child", %{tmp_dir: tmp_dir} do
+    source = Path.join(tmp_dir, "stalled.c")
+    binary = Path.join(tmp_dir, "run_fan_in")
+    File.write!(source, "int main(void) { for (;;) {} }")
+
+    {_, 0} =
+      System.cmd("zig", ["cc", source, "-o", binary], stderr_to_stdout: true)
+
+    error =
+      assert_raise Subprocess.TimeoutError, fn ->
+        Subprocess.cmd(binary, timeout: 100)
+      end
+
+    refute Subprocess.alive?(error.os_pid)
   end
 
   @tag :tmp_dir
@@ -182,7 +230,7 @@ defmodule Batata.AOTTest do
         stderr_to_stdout: true
       )
 
-    {stdout, 6} = System.cmd(binary, [], stderr_to_stdout: true)
+    {stdout, 6} = Subprocess.cmd(binary, timeout: @child_timeout)
     assert stdout == ""
   end
 end
