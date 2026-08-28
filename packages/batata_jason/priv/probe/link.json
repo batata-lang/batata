@@ -11,8 +11,8 @@
     "removed_definition_count": 20
   },
   "unit_attempt": {
-    "status": "ir_verification_failure",
-    "reason_class": "runtime_error",
-    "fingerprint": "806a37e2db8823951a8f03eb594c696ff2c754023a3966396ca5907530ab8821"
+    "status": "lowering_failure",
+    "reason_class": "lowering_pass_failure",
+    "fingerprint": "a9c9b7313f787d6510cd0ef3349cbf81cb4947adb60c84c4cace1fa44d6e5c04"
   }
 }

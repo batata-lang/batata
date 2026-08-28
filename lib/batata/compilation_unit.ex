@@ -155,7 +155,9 @@ defmodule Batata.CompilationUnit do
   defp rewrite_ast(nil, _module, _symbols), do: nil
 
   defp rewrite_ast(ast, module, symbols) do
-    Macro.prewalk(ast, fn
+    ast
+    |> expand_pipes()
+    |> Macro.prewalk(fn
       {:&, capture_metadata, [{:/, slash_metadata, [{name, call_metadata, context}, arity]}]} =
           capture
       when is_atom(name) and is_integer(arity) ->
@@ -197,6 +199,17 @@ defmodule Batata.CompilationUnit do
 
       node ->
         node
+    end)
+  end
+
+  # Qualification must see a pipe call's effective arity. Leaving the pipe for
+  # Lift would qualify `value |> local(opts)` as local/1, then insert `value`
+  # and emit a local/2 call against the local/1 symbol. Post-order expansion
+  # handles nested pipelines from the inside out before names are rewritten.
+  defp expand_pipes(ast) do
+    Macro.postwalk(ast, fn
+      {:|>, _, [left, right]} -> Macro.pipe(left, right, 0)
+      node -> node
     end)
   end
 
