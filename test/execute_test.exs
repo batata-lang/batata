@@ -320,6 +320,42 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "executes exhaustive cond clauses lazily with Elixir truthiness", %{ctx: ctx} do
+    source = """
+    defmodule CondDispatch do
+      def choose(value) do
+        cond do
+          value == :unreachable -> raise "unreachable"
+          value == 0 -> :zero
+          value -> :truthy
+          true -> :falsy
+        end
+      end
+
+      def main(), do: {choose(0), choose(:ok), choose(nil)}
+    end
+    """
+
+    expected = source |> Kernel.<>("\nCondDispatch.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects cond without a final true clause", %{ctx: ctx} do
+    source = """
+    defmodule NonExhaustiveCond do
+      def main() do
+        cond do
+          1 == 2 -> :never
+        end
+      end
+    end
+    """
+
+    assert_raise Batata.Lift.Error, ~r/body-level cond requires a final true clause/, fn ->
+      Batata.execute(source, ctx)
+    end
+  end
+
   test "returns and invokes module-local function captures", %{ctx: ctx} do
     source = """
     defmodule LocalFunctionCapture do

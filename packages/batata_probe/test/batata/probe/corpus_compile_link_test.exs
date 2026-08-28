@@ -297,6 +297,25 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "compiles Jason Formatter-shaped exhaustive cond clauses", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "formatter.ex", """
+    defmodule Formatter do
+      def render(byte, depth, empty) do
+        cond do
+          depth == :first -> {byte, 1}
+          depth == 0 -> {[byte], 1}
+          empty -> {[byte], depth + 1}
+          true -> {byte, depth + 1}
+        end
+      end
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
+  @tag :tmp_dir
   test "keeps imported raise out of qualified local symbols", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "raising.ex", """
     defmodule Raising do
