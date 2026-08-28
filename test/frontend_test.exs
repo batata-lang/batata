@@ -80,6 +80,59 @@ defmodule Batata.FrontendTest do
              end)
   end
 
+  test "normalizes supported imported and explicit Kernel.raise/2 calls" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule Raising do
+        def argument(message), do: raise(ArgumentError, message)
+
+        def protocol(value) do
+          Kernel.raise(Protocol.UndefinedError,
+            protocol: Enumerable,
+            value: value,
+            description: "not enumerable"
+          )
+        end
+      end
+      """)
+
+    [argument, protocol] = snapshot.definitions
+
+    assert {:__batata_raise__, _, [6, {:message, _, nil}]} =
+             argument.clauses |> hd() |> Map.fetch!(:body_ast)
+
+    assert {:__batata_raise__, _,
+            [
+              10,
+              {:{}, _,
+               [
+                 {:__aliases__, _, [:Enumerable]},
+                 {:value, _, nil},
+                 "not enumerable"
+               ]}
+            ]} = protocol.clauses |> hd() |> Map.fetch!(:body_ast)
+  end
+
+  test "normalizes Kernel.raise/2 inside defimpl bodies" do
+    snapshot =
+      Frontend.from_source("""
+      defimpl Enumerable, for: Any do
+        def reduce(value, _acc, _fun) do
+          raise(Protocol.UndefinedError,
+            protocol: Enumerable,
+            value: value,
+            description: "not enumerable"
+          )
+        end
+      end
+      """)
+
+    assert [definition] = snapshot.definitions
+
+    assert {:__batata_raise__, _, [10, {:{}, _, _payload}]} =
+             definition.clauses |> hd() |> Map.fetch!(:body_ast)
+  end
+
   test "preserves a genuine local raise/1 definition and its calls" do
     snapshot =
       Frontend.from_source("""
@@ -98,6 +151,28 @@ defmodule Batata.FrontendTest do
              call.clauses |> hd() |> Map.fetch!(:body_ast)
 
     assert {:__batata_raise__, _, [9, {:value, _, nil}]} =
+             kernel.clauses |> hd() |> Map.fetch!(:body_ast)
+  end
+
+  test "preserves a genuine local raise/2 definition and its calls" do
+    snapshot =
+      Frontend.from_source("""
+      defmodule LocalRaise do
+        def raise(kind, value), do: {:local, kind, value}
+        def call(kind, value), do: raise(kind, value)
+        def kernel(message), do: Kernel.raise(ArgumentError, message)
+      end
+      """)
+
+    [local, call, kernel] = snapshot.definitions
+
+    assert {:{}, _, [:local, {:kind, _, nil}, {:value, _, nil}]} =
+             local.clauses |> hd() |> Map.fetch!(:body_ast)
+
+    assert {:raise, _, [{:kind, _, nil}, {:value, _, nil}]} =
+             call.clauses |> hd() |> Map.fetch!(:body_ast)
+
+    assert {:__batata_raise__, _, [6, {:message, _, nil}]} =
              kernel.clauses |> hd() |> Map.fetch!(:body_ast)
   end
 
