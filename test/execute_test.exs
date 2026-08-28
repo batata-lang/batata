@@ -356,6 +356,40 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes literal charlist sigils without runtime dispatch", %{ctx: ctx} do
+    source = ~S'''
+    defmodule CharlistSigil do
+      def main(), do: {~c"abc", ~c"\b\t\n", ~c"雪"}
+    end
+    '''
+
+    expected = source |> Kernel.<>("\nCharlistSigil.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects interpolated or modified charlist sigils", %{ctx: ctx} do
+    interpolated = ~S'''
+    defmodule InterpolatedCharlistSigil do
+      def main(), do: render(1)
+      defp render(value), do: ~c"#{value}"
+    end
+    '''
+
+    modified = ~S'''
+    defmodule ModifiedCharlistSigil do
+      def main(), do: ~c"abc"u
+    end
+    '''
+
+    assert_raise Batata.Lift.Error,
+                 ~r/charlist sigils require literal contents without modifiers/,
+                 fn -> Batata.execute(interpolated, ctx) end
+
+    assert_raise Batata.Lift.Error,
+                 ~r/charlist sigils require literal contents without modifiers/,
+                 fn -> Batata.execute(modified, ctx) end
+  end
+
   test "returns and invokes module-local function captures", %{ctx: ctx} do
     source = """
     defmodule LocalFunctionCapture do
