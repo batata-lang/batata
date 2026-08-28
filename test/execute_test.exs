@@ -1298,6 +1298,54 @@ defmodule Batata.ExecuteTest do
     end
   end
 
+  test "executes body-level short-circuit or with Elixir truthiness", %{ctx: ctx} do
+    source = """
+    defmodule NativeShortCircuitOr do
+      def main() do
+        {false || 1, nil || 1, 0 || 2, "" || 2, :known || 2, true || 2}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nNativeShortCircuitOr.main()") |> Code.eval_string() |> elem(0)
+
+    assert expected == {1, 1, 0, "", :known, true}
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "does not execute the right-hand side of truthy short-circuit or", %{ctx: ctx} do
+    assert {0, "", :known} ==
+             Batata.execute(
+               """
+               defmodule NativeShortCircuitOr do
+                 def main() do
+                   {0 || Kernel.to_string([1]), "" || Kernel.to_string([1]),
+                    :known || Kernel.to_string([1])}
+                 end
+               end
+               """,
+               ctx
+             )
+  end
+
+  test "rejects assignments inside the right-hand side of short-circuit or", %{ctx: ctx} do
+    for rhs <- ["value = 1", "case 1 do x -> value = x end"] do
+      assert_raise Batata.Lift.Error,
+                   "assignments in the right-hand side of || are unsupported",
+                   fn ->
+                     Batata.compile(
+                       """
+                       defmodule NativeShortCircuitOr do
+                         def main(), do: true || (#{rhs})
+                       end
+                       """,
+                       ctx
+                     )
+                   end
+    end
+  end
+
   test "executes the Decimal.Error message short-circuit kernel", %{ctx: ctx} do
     source = """
     defmodule DecimalErrorMessage do
