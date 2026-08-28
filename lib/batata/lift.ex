@@ -3655,7 +3655,19 @@ defmodule Batata.Lift do
     left = box_term(lift_value(left, ctx, block, env), ctx, block)
     falsy = term_falsy_condition(left, ctx, block)
 
-    {lower_short_circuit_and(left, right_ast, falsy, env, ctx, block), env}
+    {lower_short_circuit(left, right_ast, falsy, false, env, ctx, block), env}
+  end
+
+  defp lift_expr({:||, _, [left_ast, right_ast]}, ctx, block, env) do
+    if ast_has_assignment?(right_ast) do
+      raise Error, "assignments in the right-hand side of || are unsupported"
+    end
+
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    left = box_term(lift_value(left, ctx, block, env), ctx, block)
+    falsy = term_falsy_condition(left, ctx, block)
+
+    {lower_short_circuit(left, right_ast, falsy, true, env, ctx, block), env}
   end
 
   defp lift_expr({:if, _, [condition_ast, options]}, ctx, block, env)
@@ -8135,24 +8147,31 @@ defmodule Batata.Lift do
     )
   end
 
-  defp lower_short_circuit_and(left, right_ast, falsy, env, ctx, block) do
+  defp lower_short_circuit(left, right_ast, falsy, rhs_on_falsy?, env, ctx, block) do
     dyn = ex_type("term", ctx)
     region = MLIR.CAPI.mlirRegionCreate()
 
     falsy_block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, falsy_block)
     create_op("ex.clause", [falsy, patterns: pattern_attr([])], [], ctx, falsy_block)
-    create_op("ex.yield", [left, operandSegmentSizes: segment_sizes([1])], [], ctx, falsy_block)
+    falsy_value = short_circuit_value(rhs_on_falsy?, left, right_ast, env, ctx, falsy_block)
+
+    create_op(
+      "ex.yield",
+      [falsy_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      falsy_block
+    )
 
     truthy_block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, truthy_block)
     create_op("ex.clause", [patterns: pattern_attr([])], [], ctx, truthy_block)
-    {right, _right_env} = lift_expr(right_ast, ctx, truthy_block, env)
-    right = box_term(lift_value(right, ctx, truthy_block, env), ctx, truthy_block)
+    truthy_value = short_circuit_value(not rhs_on_falsy?, left, right_ast, env, ctx, truthy_block)
 
     create_op(
       "ex.yield",
-      [right, operandSegmentSizes: segment_sizes([1])],
+      [truthy_value, operandSegmentSizes: segment_sizes([1])],
       [],
       ctx,
       truthy_block
@@ -8171,6 +8190,13 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp short_circuit_value(false, left, _right_ast, _env, _ctx, _block), do: left
+
+  defp short_circuit_value(true, _left, right_ast, env, ctx, block) do
+    {right, right_env} = lift_expr(right_ast, ctx, block, env)
+    box_term(lift_value(right, ctx, block, right_env), ctx, block)
   end
 
   defp lower_body_if(condition, then_ast, else_ast, falsy, env, ctx, block) do
