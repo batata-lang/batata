@@ -57,6 +57,41 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
   end
 
   @tag :tmp_dir
+  test "qualifies a piped call by its effective arity instead of a default wrapper", %{
+    tmp_dir: tmp_dir
+  } do
+    write_source(tmp_dir, "formatter.ex", """
+    defmodule Formatter do
+      def render(input, opts \\\\ []), do: {input, opts}
+      def call(input, opts), do: input |> render(opts)
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
+  @tag :tmp_dir
+  test "qualifies nested cross-module pipes by effective arity", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "formatter.ex", """
+    defmodule Formatter do
+      def render(input, _opts), do: input
+    end
+    """)
+
+    write_source(tmp_dir, "caller.ex", """
+    defmodule Caller do
+      def call(input, opts) do
+        input |> Formatter.render(opts) |> Formatter.render(opts)
+      end
+    end
+    """)
+
+    assert %{"status" => "pass", "unit_attempt" => %{"status" => "pass"}} =
+             CorpusCompileLink.run(tmp_dir)
+  end
+
+  @tag :tmp_dir
   test "keeps isolated attempt order stable when attempts run concurrently", %{tmp_dir: tmp_dir} do
     write_source(tmp_dir, "alpha.ex", """
     defmodule Alpha do
