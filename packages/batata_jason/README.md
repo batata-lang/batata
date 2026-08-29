@@ -25,6 +25,13 @@ The probe has two deliberately separate surfaces:
   decoder surface. Valid and invalid tokens exercise guarded byte/rest and
   UTF-8 scanner paths against a BEAM oracle; a representative number token
   also runs through the AOT gate.
+- The probe's fail-closed L2 lane compiles the pinned, unmodified Jason sources
+  as one qualified multi-module unit and executes one bounded 18-case JIT
+  entry against an isolated BEAM oracle. It covers scalar and container
+  encode/decode, builtin and derived encoders, known and unknown structs,
+  and fallback-to-any dispatch while retaining a single worker and
+  execution-engine lifetime. Executable rescue and exception-message coverage
+  remains a separate runtime gate tracked by Forgejo #143.
 
 ## Pinned corpus
 

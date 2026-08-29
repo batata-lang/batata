@@ -6,6 +6,7 @@ defmodule Batata.Jason.Probe do
   it never turns a later compiler failure into an accepted frontend result.
   """
 
+  alias Batata.Jason.UnmodifiedExecution
   alias Batata.Probe.Corpus
   alias Batata.Probe.Coverage
 
@@ -18,7 +19,7 @@ defmodule Batata.Jason.Probe do
   end
 
   @doc "Runs the raw and coverage probes once against an unmodified Jason checkout."
-  @spec run!(Path.t(), keyword()) :: %{raw: map(), coverage: map()}
+  @spec run!(Path.t(), keyword()) :: %{raw: map(), coverage: map(), execution: map() | nil}
   def run!(source, opts \\ []) do
     report = Keyword.get(opts, :report, "_build/jason_probe/report.json")
     coverage = Keyword.get(opts, :coverage, "_build/jason_probe/coverage.json")
@@ -26,6 +27,7 @@ defmodule Batata.Jason.Probe do
     compile_link_concurrency = Keyword.get(opts, :compile_link_concurrency, 1)
     compile_link_profile = Keyword.get(opts, :compile_link_profile)
     qualified_only = Keyword.get(opts, :qualified_only, false)
+    execute_unmodified = Keyword.get(opts, :execute_unmodified, true)
 
     raw =
       Corpus.run!(source,
@@ -36,6 +38,8 @@ defmodule Batata.Jason.Probe do
         fail_on_regression: fail_on_regression
       )
 
+    execution = if execute_unmodified, do: UnmodifiedExecution.run!(source)
+
     dashboard =
       Coverage.run!(
         [
@@ -44,14 +48,15 @@ defmodule Batata.Jason.Probe do
             report,
             compile_link_concurrency,
             compile_link_profile,
-            qualified_only
+            qualified_only,
+            execution
           )
         ],
         coverage,
         fail_on_regression: fail_on_regression
       )
 
-    %{raw: raw, coverage: dashboard}
+    %{raw: raw, coverage: dashboard, execution: execution}
   end
 
   defp coverage_config(
@@ -59,7 +64,8 @@ defmodule Batata.Jason.Probe do
          report,
          compile_link_concurrency,
          compile_link_profile,
-         qualified_only
+         qualified_only,
+         execution
        ) do
     %{
       name: "jason",
@@ -70,6 +76,7 @@ defmodule Batata.Jason.Probe do
       link_baseline: asset!("link.json"),
       metadata: asset!("source.json"),
       capabilities: asset!("capabilities.json"),
+      semantic_evidence: execution,
       compile_link_options: [
         max_concurrency: compile_link_concurrency,
         profile_output: compile_link_profile,
