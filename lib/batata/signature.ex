@@ -521,8 +521,19 @@ defmodule Batata.Signature do
   end
 
   defp caller_argument_mode(argument, names, caller_modes) do
-    if caller_term_argument?(argument, names, caller_modes), do: :term, else: :scalar
+    if caller_term_argument?(argument, names, caller_modes) or term_call_argument?(argument),
+      do: :term,
+      else: :scalar
   end
+
+  defp term_call_argument?(value) when is_binary(value) or is_atom(value) or is_list(value),
+    do: true
+
+  defp term_call_argument?({:{}, _, values}) when is_list(values), do: true
+  defp term_call_argument?({:%{}, _, entries}) when is_list(entries), do: true
+  defp term_call_argument?({:fn, _, clauses}) when is_list(clauses), do: true
+  defp term_call_argument?({:__fn_ref__, _, _arguments}), do: true
+  defp term_call_argument?(_argument), do: false
 
   defp caller_term_argument?({name, _, context}, names, caller_modes)
        when is_variable_ast(name, context) do
@@ -683,10 +694,6 @@ defmodule Batata.Signature do
     modes = if pattern_mode(pattern) == :term, do: mark_name(modes, names, name), else: modes
     {node, modes}
   end
-
-  defp infer_node({:{}, _, values} = node, modes, names, _signatures)
-       when is_list(values),
-       do: {node, mark_term_values(modes, names, values)}
 
   defp infer_node({:%{}, _, entries} = node, modes, names, _signatures)
        when is_list(entries) do

@@ -101,7 +101,7 @@ defmodule Batata.SignatureTest do
            }
   end
 
-  test "infers destructured and tuple-built tail parameters as terms" do
+  test "infers destructured tail parameters as terms without widening tuple scalars" do
     [original, skip, stack, decode, value] =
       Enum.map(~w(original skip stack decode value)a, &Macro.var(&1, nil))
 
@@ -124,7 +124,7 @@ defmodule Batata.SignatureTest do
       )
 
     assert Batata.Signature.infer([definition]) == %{
-             {:object, 6} => [:scalar, :term, :term, :term, :term, :term]
+             {:object, 6} => [:scalar, :scalar, :scalar, :term, :scalar, :scalar]
            }
   end
 
