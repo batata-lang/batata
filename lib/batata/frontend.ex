@@ -13,6 +13,8 @@ defmodule Batata.Frontend do
     @type t() :: %__MODULE__{}
     defstruct [
       :name,
+      :protocol,
+      :protocol_target,
       :struct_schema,
       definitions: [],
       unsupported: [],
@@ -213,6 +215,8 @@ defmodule Batata.Frontend do
 
     %Module{
       name: impl_module,
+      protocol: protocol,
+      protocol_target: target,
       definitions: definitions,
       unsupported: unsupported,
       struct_schema: struct_schema,
@@ -231,6 +235,7 @@ defmodule Batata.Frontend do
 
     %Module{
       name: module,
+      protocol: module,
       definitions: definitions,
       unsupported: unsupported,
       struct_schemas: %{},

@@ -119,8 +119,12 @@ defmodule Batata.Frontend.ProtocolAndClosureTest do
     assert protocol.name == Printable
     assert Enum.map(protocol.definitions, &{&1.name, &1.arity}) == [print: 1]
     assert protocol.protocol_options == %{fallback_to_any: true}
+    assert protocol.protocol == Printable
+    assert protocol.protocol_target == nil
     assert protocol.unsupported == []
     assert implementation.name == Printable.Integer
+    assert implementation.protocol == Printable
+    assert implementation.protocol_target == Integer
   end
 
   test "keeps invalid protocol fallback metadata visible" do

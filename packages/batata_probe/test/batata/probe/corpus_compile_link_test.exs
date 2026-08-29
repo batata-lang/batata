@@ -375,6 +375,46 @@ defmodule Batata.Probe.CorpusCompileLinkTest do
              CorpusCompileLink.run(tmp_dir)
   end
 
+  @tag :tmp_dir
+  test "compiles a Jason-shaped generated protocol dispatcher", %{tmp_dir: tmp_dir} do
+    write_source(tmp_dir, "encoder.ex", """
+    defprotocol Encoder do
+      @fallback_to_any true
+      def encode(value, opts)
+    end
+
+    defimpl Encoder, for: Integer do
+      def encode(value, _opts), do: [value]
+    end
+
+    defimpl Encoder, for: Map do
+      def encode(_value, _opts), do: [2]
+    end
+
+    defimpl Encoder, for: Any do
+      def encode(value, _opts), do: [value]
+    end
+
+    defmodule Encode do
+      def value(value, opts), do: Encoder.encode(value, opts)
+    end
+    """)
+
+    result = CorpusCompileLink.run(tmp_dir)
+
+    assert result["status"] == "pass"
+    assert result["unit_attempt"]["status"] == "pass"
+
+    assert result["internal_dependencies"] == [
+             %{
+               "caller" => "Encode",
+               "callee" => "Encoder",
+               "function" => "encode",
+               "arity" => 2
+             }
+           ]
+  end
+
   defp write_source(root, name, contents) do
     lib = Path.join(root, "lib")
     File.mkdir_p!(lib)

@@ -21,7 +21,9 @@ defmodule Batata.Jason.ProbeTest do
     assert baseline["summary"]["categories"]["alias"] == nil
     assert link["corpus"]["commit"] == metadata["commit"]
     assert link["runtime_slice"] == %{"removed_definition_count" => 20}
-    assert link["unresolved_internal_dependencies"] == 14
+    assert link["status"] == "pass"
+    assert link["unresolved_internal_dependencies"] == 0
+    assert link["unit_attempt"] == %{"status" => "pass"}
   end
 
   @tag :tmp_dir
