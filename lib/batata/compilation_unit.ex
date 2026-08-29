@@ -6,14 +6,30 @@ defmodule Batata.CompilationUnit do
   Local calls and calls to another module in the same unit are rewritten to
   those identities. Calls outside the unit remain remote calls and continue to
   be handled by the existing stdlib/runtime boundary.
+
+  Pass `entry: {module, function, arity}` to retain one qualified definition as
+  `main`, allowing a multi-module unit to be exercised through the normal JIT
+  entry boundary.
   """
 
   alias Batata.Frontend
 
-  @spec build([Frontend.Module.t()]) :: Frontend.Module.t()
-  def build(modules) when is_list(modules) and modules != [] do
+  @builtin_protocol_targets %{
+    Atom => :is_atom,
+    BitString => :is_binary,
+    Float => :is_float,
+    Integer => :is_integer,
+    List => :is_list,
+    Map => :is_map,
+    Tuple => :is_tuple
+  }
+  @unsupported_builtin_protocol_targets MapSet.new([Function, PID, Port, Reference])
+
+  @spec build([Frontend.Module.t()], keyword()) :: Frontend.Module.t()
+  def build(modules, opts \\ []) when is_list(modules) and modules != [] do
     modules = Enum.map(modules, &prune_unreachable_private_definitions/1)
-    symbols = symbol_table(modules)
+    modules = expand_protocol_dispatchers(modules)
+    symbols = symbol_table(modules, opts[:entry])
 
     definitions =
       Enum.flat_map(modules, fn module ->
@@ -25,6 +41,160 @@ defmodule Batata.CompilationUnit do
       definitions: definitions,
       struct_schemas: shared_schemas(modules)
     }
+  end
+
+  defp expand_protocol_dispatchers(modules) do
+    implementations =
+      modules
+      |> Enum.reject(&is_nil(&1.protocol_target))
+      |> Enum.group_by(& &1.protocol)
+
+    Enum.map(modules, fn module ->
+      if module.protocol == module.name and is_nil(module.protocol_target) do
+        impls = Map.get(implementations, module.name, [])
+        validate_protocol_targets!(module.name, impls)
+
+        definitions =
+          Enum.map(module.definitions, &expand_protocol_definition(&1, module, impls))
+
+        %{module | definitions: definitions}
+      else
+        module
+      end
+    end)
+  end
+
+  defp expand_protocol_definition(definition, protocol, implementations) do
+    clauses =
+      Enum.map(definition.clauses, fn clause ->
+        case clause.body_ast do
+          {:__protocol_dispatch__, _, [name, function, arity]}
+          when name == protocol.name and function == definition.name and
+                 arity == definition.arity ->
+            %{
+              clause
+              | body_ast: protocol_dispatch_ast(protocol, definition, clause, implementations)
+            }
+
+          _other ->
+            clause
+        end
+      end)
+
+    %{definition | clauses: clauses}
+  end
+
+  defp protocol_dispatch_ast(protocol, definition, clause, implementations) do
+    [value | _] = clause.patterns
+    by_target = Map.new(implementations, &{&1.protocol_target, &1})
+    fallback = protocol_fallback_ast(protocol, definition, clause, by_target)
+
+    struct_clauses =
+      implementations
+      |> Enum.reject(&builtin_protocol_target?/1)
+      |> Enum.sort_by(&inspect(&1.protocol_target))
+      |> Enum.map(fn implementation ->
+        pattern = {:%{}, [], [{:__struct__, implementation.protocol_target}]}
+        {:->, [], [[pattern], protocol_impl_call(implementation, definition, clause.patterns)]}
+      end)
+
+    builtin_clauses =
+      @builtin_protocol_targets
+      |> Enum.sort_by(fn {target, _guard} -> inspect(target) end)
+      |> Enum.flat_map(fn {target, guard} ->
+        case Map.fetch(by_target, target) do
+          {:ok, implementation} ->
+            guarded = {:when, [], [{:_, [], nil}, {guard, [], [value]}]}
+
+            [
+              {:->, [],
+               [[guarded], protocol_impl_call(implementation, definition, clause.patterns)]}
+            ]
+
+          :error ->
+            []
+        end
+      end)
+
+    # A map carrying __struct__ must never fall through to the Map
+    # implementation. BEAM protocol dispatch first tries the struct module and
+    # then the protocol fallback, while plain maps use the Map implementation.
+    unknown_struct = {:%{}, [], [{:__struct__, {:_, [], nil}}]}
+
+    {:case, [],
+     [
+       value,
+       [
+         do:
+           struct_clauses ++
+             [{:->, [], [[unknown_struct], fallback]}] ++
+             builtin_clauses ++ [{:->, [], [[{:_, [], nil}], fallback]}]
+       ]
+     ]}
+  end
+
+  defp protocol_fallback_ast(protocol, definition, clause, implementations) do
+    if protocol.protocol_options[:fallback_to_any] == true and
+         Map.has_key?(implementations, Any) do
+      implementations
+      |> Map.fetch!(Any)
+      |> protocol_impl_call(definition, clause.patterns)
+    else
+      [value | _] = clause.patterns
+
+      {:__batata_raise__, [],
+       [
+         10,
+         {:{}, [],
+          [
+            protocol.name,
+            value,
+            "protocol #{inspect(protocol.name)} is not implemented for value"
+          ]}
+       ]}
+    end
+  end
+
+  defp protocol_impl_call(implementation, definition, arguments) do
+    arguments =
+      case {implementation.protocol_target, arguments} do
+        {Integer, [value | rest]} -> [{:__batata_protocol_integer__, [], [value]} | rest]
+        _other -> arguments
+      end
+
+    {{:., [], [implementation.name, definition.name]}, [], arguments}
+  end
+
+  defp builtin_protocol_target?(module) do
+    Map.has_key?(@builtin_protocol_targets, module.protocol_target) or
+      module.protocol_target == Any or
+      MapSet.member?(@unsupported_builtin_protocol_targets, module.protocol_target)
+  end
+
+  defp validate_protocol_targets!(protocol, implementations) do
+    duplicate_target =
+      implementations
+      |> Enum.frequencies_by(& &1.protocol_target)
+      |> Enum.find(fn {_target, count} -> count > 1 end)
+
+    unsupported =
+      Enum.find(implementations, fn implementation ->
+        MapSet.member?(@unsupported_builtin_protocol_targets, implementation.protocol_target)
+      end)
+
+    case {duplicate_target, unsupported} do
+      {{target, _count}, _unsupported} ->
+        raise ArgumentError,
+              "protocol #{inspect(protocol)} has duplicate implementation target #{inspect(target)}"
+
+      {nil, nil} ->
+        :ok
+
+      {nil, implementation} ->
+        raise ArgumentError,
+              "protocol #{inspect(protocol)} implementation target " <>
+                "#{inspect(implementation.protocol_target)} requires an unsupported runtime predicate"
+    end
   end
 
   defp prune_unreachable_private_definitions(module) do
@@ -119,14 +289,33 @@ defmodule Batata.CompilationUnit do
     if Map.has_key?(grouped, signature), do: [signature | references], else: references
   end
 
-  defp symbol_table(modules) do
-    Map.new(
-      for module <- modules,
-          definition <- module.definitions do
-        identity = {module.name, definition.name, definition.arity}
-        {identity, qualified_name(identity)}
-      end
-    )
+  defp symbol_table(modules, entry) do
+    symbols =
+      Map.new(
+        for module <- modules,
+            definition <- module.definitions do
+          identity = {module.name, definition.name, definition.arity}
+          {identity, qualified_name(identity)}
+        end
+      )
+
+    case entry do
+      nil ->
+        symbols
+
+      {module, name, arity} = identity
+      when is_atom(module) and is_atom(name) and is_integer(arity) and arity >= 0 ->
+        if Map.has_key?(symbols, identity) do
+          Map.put(symbols, identity, :main)
+        else
+          raise ArgumentError, "compilation unit entry is not defined: #{inspect(identity)}"
+        end
+
+      other ->
+        raise ArgumentError,
+              "compilation unit entry must be a {module, function, arity} tuple, got: " <>
+                inspect(other)
+    end
   end
 
   defp qualified_name(identity) do

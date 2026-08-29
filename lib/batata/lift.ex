@@ -3913,6 +3913,16 @@ defmodule Batata.Lift do
     {create_op("ex.to_int", [raised], [integer_type(ctx)], ctx, block), env}
   end
 
+  # A generated protocol dispatcher owns proof that this branch received an
+  # integer term. Convert the tagged word before adapting it to the selected
+  # implementation's inferred ABI; implementations are not required to repeat
+  # an `is_integer/1` guard on their first argument.
+  defp lift_expr({:__batata_protocol_integer__, _, [value_ast]}, ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    value = value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
+    {validated_integer_parameter(value, ctx, block), env}
+  end
+
   defp lift_expr({:__block__, _, expressions}, ctx, block, env) do
     lift_block(expressions, ctx, block, env)
   end

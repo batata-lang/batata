@@ -5,14 +5,12 @@
     "ref": "v1.4.5",
     "commit": "4ede42858eb19f80ec9e863aab52df466eab8608"
   },
-  "status": "blocked",
-  "unresolved_internal_dependencies": 14,
+  "status": "pass",
+  "unresolved_internal_dependencies": 0,
   "runtime_slice": {
     "removed_definition_count": 20
   },
   "unit_attempt": {
-    "status": "lowering_failure",
-    "reason_class": "lowering_pass_failure",
-    "fingerprint": "f7241d0267d0ad57fbe0bcf5aff2cccc1bb706ca33e0b6736644e750f5e27165"
+    "status": "pass"
   }
 }
