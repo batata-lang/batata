@@ -479,44 +479,49 @@ defmodule Batata.Signature do
       if definition.name == :__fn_dispatch do
         acc
       else
-        Enum.reduce(definition.clauses, acc, fn clause, clause_acc ->
-          names = Enum.map(clause.patterns, &plain_variable/1)
-
-          [clause.guard_ast, clause.body_ast]
-          |> Enum.reject(&is_nil/1)
-          |> Enum.reduce(clause_acc, fn ast, ast_acc ->
-            {_ast, updated} =
-              Macro.prewalk(ast, ast_acc, fn
-                {callee, _, arguments} = node, current
-                when is_atom(callee) and is_list(arguments) ->
-                  signature = {callee, length(arguments)}
-
-                  current =
-                    if Map.has_key?(current, signature) do
-                      required =
-                        arguments
-                        |> Enum.map(fn argument ->
-                          if caller_term_argument?(argument, names, caller_modes),
-                            do: :term,
-                            else: :scalar
-                        end)
-
-                      Map.update!(current, signature, &merge_modes(&1, required))
-                    else
-                      current
-                    end
-
-                  {node, current}
-
-                node, current ->
-                  {node, current}
-              end)
-
-            updated
-          end)
-        end)
+        propagate_definition_calls(definition, caller_modes, acc)
       end
     end)
+  end
+
+  defp propagate_definition_calls(definition, caller_modes, modes) do
+    Enum.reduce(definition.clauses, modes, fn clause, clause_modes ->
+      names = Enum.map(clause.patterns, &plain_variable/1)
+
+      [clause.guard_ast, clause.body_ast]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reduce(clause_modes, &propagate_ast_calls(&1, &2, names, caller_modes))
+    end)
+  end
+
+  defp propagate_ast_calls(ast, modes, names, caller_modes) do
+    {_ast, modes} =
+      Macro.prewalk(ast, modes, fn
+        {callee, _, arguments} = node, current
+        when is_atom(callee) and is_list(arguments) ->
+          {node, promote_local_call_modes(current, callee, arguments, names, caller_modes)}
+
+        node, current ->
+          {node, current}
+      end)
+
+    modes
+  end
+
+  defp promote_local_call_modes(modes, callee, arguments, names, caller_modes) do
+    signature = {callee, length(arguments)}
+
+    if Map.has_key?(modes, signature) do
+      required = Enum.map(arguments, &caller_argument_mode(&1, names, caller_modes))
+
+      Map.update!(modes, signature, &merge_modes(&1, required))
+    else
+      modes
+    end
+  end
+
+  defp caller_argument_mode(argument, names, caller_modes) do
+    if caller_term_argument?(argument, names, caller_modes), do: :term, else: :scalar
   end
 
   defp caller_term_argument?({name, _, context}, names, caller_modes)

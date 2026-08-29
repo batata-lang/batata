@@ -9748,25 +9748,37 @@ defmodule Batata.Lift do
           end
       end
 
-    value =
-      case value do
-        # Preserve the raw closure ABI through a guarded clause. Consumers
-        # that require a term normalize it at the use site (for example the
-        # term-case scrutinee path), while scalar closure results stay raw.
-        {:closure_result, applied, _closure} = closure_result ->
-          if expected_type != nil and MLIR.equal?(expected_type, ex_type("term", ctx)) do
-            lift_value(closure_result, ctx, block, clause_env)
-          else
-            applied
-          end
-
-        value ->
-          lift_value(value, ctx, block, clause_env)
-      end
+    value = normalize_term_clause_value(value, expected_type, clause_env, ctx, block)
 
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
   end
+
+  # Preserve the raw closure ABI through a guarded clause. Consumers that
+  # require a term normalize it here, while scalar closure results stay raw.
+  defp normalize_term_clause_value(
+         {:closure_result, applied, _closure},
+         nil,
+         _env,
+         _ctx,
+         _block
+       ),
+       do: applied
+
+  defp normalize_term_clause_value(
+         {:closure_result, applied, _closure} = closure_result,
+         expected_type,
+         env,
+         ctx,
+         block
+       ) do
+    if MLIR.equal?(expected_type, ex_type("term", ctx)),
+      do: lift_value(closure_result, ctx, block, env),
+      else: applied
+  end
+
+  defp normalize_term_clause_value(value, _expected_type, env, ctx, block),
+    do: lift_value(value, ctx, block, env)
 
   defp coerce_exception_result(value, nil, _ctx, _block), do: value
 

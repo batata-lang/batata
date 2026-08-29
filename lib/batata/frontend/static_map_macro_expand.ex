@@ -201,31 +201,36 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
 
   defp derive_implementations(module, forms, registry, metadata)
        when is_atom(module) and not is_nil(module) do
-    with {:ok, fields, _struct_form} <- struct_fields(forms) do
-      Enum.reduce(forms, {[], MapSet.new()}, fn form, {implementations, consumed} ->
-        case derive_spec(form, registry) do
-          {:ok, spec, options} ->
-            case derived_fields(fields, options) do
-              {:ok, selected} ->
-                implementation = derive_impl_ast(module, selected, spec, metadata)
+    case struct_fields(forms) do
+      {:ok, fields, _struct_form} ->
+        Enum.reduce(forms, {[], MapSet.new()}, fn form, acc ->
+          append_derived_implementation(form, module, fields, registry, metadata, acc)
+        end)
 
-                {implementations ++ [implementation], MapSet.put(consumed, form)}
-
-              :error ->
-                {implementations, consumed}
-            end
-
-          :error ->
-            {implementations, consumed}
-        end
-      end)
-    else
-      _ -> {[], MapSet.new()}
+      _other ->
+        {[], MapSet.new()}
     end
   end
 
   defp derive_implementations(_module, _forms, _registry, _metadata),
     do: {[], MapSet.new()}
+
+  defp append_derived_implementation(
+         form,
+         module,
+         fields,
+         registry,
+         metadata,
+         {implementations, consumed} = unchanged
+       ) do
+    with {:ok, spec, options} <- derive_spec(form, registry),
+         {:ok, selected} <- derived_fields(fields, options) do
+      implementation = derive_impl_ast(module, selected, spec, metadata)
+      {implementations ++ [implementation], MapSet.put(consumed, form)}
+    else
+      _other -> unchanged
+    end
+  end
 
   defp derive_spec({:@, _, [{:derive, _, [value]}]}, registry) do
     with {:ok, protocol, options} <- derive_value(value),
