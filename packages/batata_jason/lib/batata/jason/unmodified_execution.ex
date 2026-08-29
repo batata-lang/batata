@@ -65,7 +65,8 @@ defmodule Batata.Jason.UnmodifiedExecution do
     if actual != expected do
       raise RuntimeError,
             "unmodified Jason semantic mismatch: " <>
-              "BEAM=#{fingerprint(expected)} Batata=#{fingerprint(actual)}"
+              "BEAM=#{fingerprint(expected)} Batata=#{fingerprint(actual)} " <>
+              "differences=#{inspect(semantic_differences(expected, actual), limit: :infinity)}"
     end
 
     %{
@@ -77,6 +78,17 @@ defmodule Batata.Jason.UnmodifiedExecution do
       "oracle_fingerprint" => fingerprint(expected),
       "actual_fingerprint" => fingerprint(actual)
     }
+  end
+
+  defp semantic_differences(expected, actual) when is_tuple(expected) and is_tuple(actual) do
+    expected
+    |> Tuple.to_list()
+    |> Enum.zip(Tuple.to_list(actual))
+    |> Enum.with_index(1)
+    |> Enum.flat_map(fn
+      {{same, same}, _index} -> []
+      {{beam, batata}, index} -> [%{case: index, beam: beam, batata: batata}]
+    end)
   end
 
   defp batata_oracle!(source, files) do
