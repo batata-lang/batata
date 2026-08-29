@@ -177,6 +177,29 @@ defmodule Batata.Frontend.MetaprogrammingExpandTest do
     assert Enum.count(snapshot.definitions, &(&1.name == :entry)) == 3
   end
 
+  test "interprets escapes in charlist sigils used by generators" do
+    snapshot =
+      Frontend.from_source(~S'''
+      defmodule EscapedCharlistGenerator do
+        pairs = Enum.zip(~c'\b\t\n\f\r\"\\', ~c'btnfr"\\')
+
+        Enum.map(pairs, fn {byte, escaped} ->
+          def escape(unquote(byte)), do: unquote(escaped)
+        end)
+      end
+      ''')
+
+    clauses =
+      snapshot.definitions
+      |> Enum.filter(&(&1.name == :escape))
+      |> Enum.flat_map(& &1.clauses)
+
+    assert Enum.map(clauses, &{hd(&1.patterns), &1.body_ast}) ==
+             Enum.zip(~c'\b\t\n\f\r\"\\', ~c'btnfr"\\')
+
+    assert snapshot.unsupported == []
+  end
+
   test "selects the successful branch of an allowlisted capability probe" do
     snapshot =
       Frontend.from_source("""

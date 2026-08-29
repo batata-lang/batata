@@ -359,7 +359,7 @@ defmodule Batata do
 
       {2, {function, arity, args}} ->
         raise FunctionClauseError,
-          module: Batata.Frontend.from_source(source).name,
+          module: source_module_name(source),
           function: function,
           arity: arity,
           args: args
@@ -404,9 +404,17 @@ defmodule Batata do
       description: description
   end
 
+  defp materialize_extended_exception(10, %Protocol.UndefinedError{} = exception),
+    do: raise(exception)
+
   defp materialize_extended_exception(kind, reason) do
     raise ResultError, "unknown native exception kind #{kind}: #{inspect(reason)}"
   end
+
+  defp source_module_name(%Batata.Frontend.Module{name: name}), do: name
+
+  defp source_module_name(source) when is_binary(source),
+    do: Batata.Frontend.from_source(source).name
 
   defp materialize_result(jit, handle, source) do
     kind = invoke_i64(jit, "__batata_result_root_kind", [handle])

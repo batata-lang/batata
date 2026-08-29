@@ -5493,26 +5493,56 @@ defmodule Batata.Lift do
     if catch_all_clause?(List.last(clauses)) do
       clauses
     else
+      kind = Macro.var(:__batata_unwind_kind, __MODULE__)
+      reason = Macro.var(:__batata_unwind_reason, __MODULE__)
       unmatched = {:__batata_uncaught_throw__, [], nil}
-      clauses ++ [{:->, [], [[unmatched], {:__batata_rethrow__, [], [unmatched]}]}]
+
+      clauses ++
+        [
+          {:->, [], [[{:{}, [], [0, reason]}], {:__batata_rethrow__, [], [reason]}]},
+          {:->, [],
+           [
+             [{:when, [], [{:{}, [], [kind, reason]}, {:>, [], [kind, 0]}]}],
+             {:__batata_reraise__, [], [kind, reason]}
+           ]},
+          {:->, [], [[unmatched], {:__batata_rethrow__, [], [unmatched]}]}
+        ]
     end
   end
 
   defp normalize_catch_clauses(clauses) do
     Enum.flat_map(clauses, fn
       {:->, meta, [[:throw, pattern], body]} ->
-        [{:->, meta, [[pattern], body]}]
+        [{:->, meta, [[throw_catch_pattern(pattern)], body]}]
 
-      {:->, _, [[kind, _pattern], _body]} when kind in [:error, :exit] ->
+      {:->, meta, [[:error, pattern], body]} ->
+        kind = Macro.var(:__batata_error_kind, __MODULE__)
+        tagged = {:{}, [], [kind, pattern]}
+        guarded = {:when, [], [tagged, {:>, [], [kind, 0]}]}
+        [{:->, meta, [[guarded], body]}]
+
+      {:->, _, [[:exit, _pattern], _body]} ->
         []
 
       {:->, _, [[_kind, _pattern], _body]} = clause ->
         raise Error, "unsupported catch kind pattern: #{inspect(clause)}"
 
       clause ->
-        [clause]
+        case clause do
+          {:->, meta, [[pattern], body]} ->
+            [{:->, meta, [[throw_catch_pattern(pattern)], body]}]
+
+          _ ->
+            [clause]
+        end
     end)
   end
+
+  defp throw_catch_pattern({:when, metadata, [pattern, guard]}) do
+    {:when, metadata, [{:{}, [], [0, pattern]}, guard]}
+  end
+
+  defp throw_catch_pattern(pattern), do: {:{}, [], [0, pattern]}
 
   defp box_try_else_results(clauses) do
     Enum.map(clauses, fn {:->, metadata, [patterns, body]} ->
@@ -5895,18 +5925,33 @@ defmodule Batata.Lift do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = lift_value(value, ctx, block, env)
 
-    {days, integer?} =
+    {days, valid} =
       if term_operand?(value) do
-        {create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block),
-         create_op("ex.is_integer", [value], [integer_type(ctx)], ctx, block)}
+        integer_days = create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
+        integer? = create_op("ex.is_integer", [value], [integer_type(ctx)], ctx, block)
+        lower = cmp(integer_days, -3_652_059, "sge", ctx, block)
+        upper = cmp(integer_days, 3_652_424, "sle", ctx, block)
+        integer_valid = combine([integer?, lower, upper], ctx, block)
+        {struct_days, struct_valid} = date_struct_days(value, ctx, block)
+        integer_i1 = create_op("arith.trunci", [integer?], [MLIR.Type.i1()], ctx, block)
+
+        days =
+          create_op(
+            "arith.select",
+            [integer_i1, integer_days, struct_days],
+            [integer_type(ctx)],
+            ctx,
+            block
+          )
+
+        {days,
+         create_op("arith.ori", [integer_valid, struct_valid], [integer_type(ctx)], ctx, block)}
       else
-        {value, lit(1, ctx, block)}
+        lower = cmp(value, -3_652_059, "sge", ctx, block)
+        upper = cmp(value, 3_652_424, "sle", ctx, block)
+        {value, combine([lower, upper], ctx, block)}
       end
 
-    lower = cmp(days, -3_652_059, "sge", ctx, block)
-    upper = cmp(days, 3_652_424, "sle", ctx, block)
-    in_range = create_op("arith.andi", [lower, upper], [integer_type(ctx)], ctx, block)
-    valid = create_op("arith.andi", [integer?, in_range], [integer_type(ctx)], ctx, block)
     valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
 
     result_word =
@@ -6322,6 +6367,130 @@ defmodule Batata.Lift do
         raise Error,
               "unsupported stdlib call: #{inspect(module)}.#{fun}/#{length(args)}"
     end
+  end
+
+  defp date_struct_days(value, ctx, block) do
+    pattern =
+      {:%{}, [],
+       [
+         __struct__: Date,
+         calendar: Calendar.ISO,
+         year: Macro.var(:__batata_date_year, __MODULE__),
+         month: Macro.var(:__batata_date_month, __MODULE__),
+         day: Macro.var(:__batata_date_day, __MODULE__)
+       ]}
+
+    {shape_valid, bindings} = do_build_match(pattern, value, ctx, block, %{})
+    year_term = Keyword.fetch!(bindings, :__batata_date_year)
+    month_term = Keyword.fetch!(bindings, :__batata_date_month)
+    day_term = Keyword.fetch!(bindings, :__batata_date_day)
+    year = create_op("ex.to_int", [year_term], [integer_type(ctx)], ctx, block)
+    month = create_op("ex.to_int", [month_term], [integer_type(ctx)], ctx, block)
+    day = create_op("ex.to_int", [day_term], [integer_type(ctx)], ctx, block)
+
+    integer_fields =
+      combine(
+        Enum.map([year_term, month_term, day_term], fn term ->
+          create_op("ex.is_integer", [term], [integer_type(ctx)], ctx, block)
+        end),
+        ctx,
+        block
+      )
+
+    year_valid =
+      combine(
+        [cmp(year, -9_999, "sge", ctx, block), cmp(year, 9_999, "sle", ctx, block)],
+        ctx,
+        block
+      )
+
+    month_valid =
+      combine([cmp(month, 1, "sge", ctx, block), cmp(month, 12, "sle", ctx, block)], ctx, block)
+
+    leap = gregorian_leap_year(year, ctx, block)
+    february_days = select_i64(leap, lit(29, ctx, block), lit(28, ctx, block), ctx, block)
+
+    short_month =
+      combine_any(
+        Enum.map([4, 6, 9, 11], &cmp(month, &1, "eq", ctx, block)),
+        ctx,
+        block
+      )
+
+    february = cmp(month, 2, "eq", ctx, block)
+
+    short_or_default =
+      select_i64(short_month, lit(30, ctx, block), lit(31, ctx, block), ctx, block)
+
+    max_day = select_i64(february, february_days, short_or_default, ctx, block)
+
+    day_valid =
+      combine([cmp(day, 1, "sge", ctx, block), cmp(day, max_day, "sle", ctx, block)], ctx, block)
+
+    valid = combine([shape_valid, integer_fields, year_valid, month_valid, day_valid], ctx, block)
+
+    {gregorian_date_to_days(year, month, day, ctx, block), valid}
+  end
+
+  defp gregorian_leap_year(year, ctx, block) do
+    by_four = cmp(date_rem(year, 4, ctx, block), 0, "eq", ctx, block)
+    not_by_hundred = cmp(date_rem(year, 100, ctx, block), 0, "ne", ctx, block)
+    by_four_hundred = cmp(date_rem(year, 400, ctx, block), 0, "eq", ctx, block)
+
+    century_valid =
+      create_op("arith.ori", [not_by_hundred, by_four_hundred], [integer_type(ctx)], ctx, block)
+
+    create_op("arith.andi", [by_four, century_valid], [integer_type(ctx)], ctx, block)
+  end
+
+  defp gregorian_date_to_days(year, month, day, ctx, block) do
+    jan_or_feb = cmp(month, 2, "sle", ctx, block)
+
+    adjusted_year =
+      select_i64(jan_or_feb, date_sub(year, lit(1, ctx, block), ctx, block), year, ctx, block)
+
+    negative_year = cmp(adjusted_year, 0, "slt", ctx, block)
+
+    era_numerator =
+      select_i64(
+        negative_year,
+        date_sub(adjusted_year, lit(399, ctx, block), ctx, block),
+        adjusted_year,
+        ctx,
+        block
+      )
+
+    era = date_div(era_numerator, 400, ctx, block)
+    year_of_era = date_sub(adjusted_year, date_mul(era, 400, ctx, block), ctx, block)
+
+    march_month =
+      select_i64(
+        jan_or_feb,
+        date_add(month, lit(9, ctx, block), ctx, block),
+        date_sub(month, lit(3, ctx, block), ctx, block),
+        ctx,
+        block
+      )
+
+    day_of_year =
+      march_month
+      |> date_mul(153, ctx, block)
+      |> date_add(lit(2, ctx, block), ctx, block)
+      |> date_div(5, ctx, block)
+      |> date_add(day, ctx, block)
+      |> date_sub(lit(1, ctx, block), ctx, block)
+
+    day_of_era =
+      year_of_era
+      |> date_mul(365, ctx, block)
+      |> date_add(date_div(year_of_era, 4, ctx, block), ctx, block)
+      |> date_sub(date_div(year_of_era, 100, ctx, block), ctx, block)
+      |> date_add(day_of_year, ctx, block)
+
+    era
+    |> date_mul(146_097, ctx, block)
+    |> date_add(day_of_era, ctx, block)
+    |> date_add(lit(60, ctx, block), ctx, block)
   end
 
   # Converts the slice's Gregorian day count to the proleptic Gregorian civil
@@ -7728,6 +7897,12 @@ defmodule Batata.Lift do
   defp lower_binary_part(binary, start, part_length, ctx, block) do
     i64 = integer_type(ctx)
 
+    # Signature inference intentionally keeps offsets scalar so callers can
+    # update them arithmetically. The term runtime ABI still consumes tagged
+    # integer words, so box dynamic indexes at this boundary.
+    start = box_if_scalar(start, ctx, block)
+    part_length = box_if_scalar(part_length, ctx, block)
+
     part =
       create_op(
         "ex.binary_part",
@@ -8710,6 +8885,11 @@ defmodule Batata.Lift do
       raise Error, "case requires a final catch-all clause"
     end
 
+    # A dynamic closure application carries its raw word and result mode until
+    # its consumer is known. Term patterns are that consumer, so normalize it
+    # before reading the tagged word.
+    scrutinee = lift_value(scrutinee, ctx, block, env)
+
     # term reads require a tagged word, so box the scrutinee once up front
     # (a no-op for values that already are terms). Multi-clause function
     # arguments already carry the tagged word, so they are re-typed with
@@ -8999,6 +9179,15 @@ defmodule Batata.Lift do
        when module == mod,
        do: {:ok, schema}
 
+  defp resolve_struct_schema(Protocol.UndefinedError, %{}) do
+    {:ok,
+     %Frontend.StructSchema{
+       module: Protocol.UndefinedError,
+       kind: :exception,
+       fields: [protocol: nil, value: nil, description: nil]
+     }}
+  end
+
   defp resolve_struct_schema(module, %{} = schemas), do: Map.fetch(schemas, module)
   defp resolve_struct_schema(_module, _), do: :error
 
@@ -9042,6 +9231,15 @@ defmodule Batata.Lift do
       )
 
     {cond, []}
+  end
+
+  defp do_build_match({:__aliases__, _, parts}, value, ctx, block, pattern_env)
+       when is_list(parts) and parts != [] do
+    if Enum.all?(parts, &is_atom/1) do
+      do_build_match(Module.concat(parts), value, ctx, block, pattern_env)
+    else
+      raise Error, "unsupported module alias pattern: #{inspect(parts)}"
+    end
   end
 
   defp do_build_match(integer, value, ctx, block, _pattern_env) when is_integer(integer) do
@@ -9524,6 +9722,15 @@ defmodule Batata.Lift do
 
     {value, clause_env} =
       case clause.body do
+        {:__batata_reraise__, _, [kind_ast, reason_ast]} ->
+          {kind, clause_env} = lift_expr(kind_ast, ctx, block, clause_env)
+          {reason, clause_env} = lift_expr(reason_ast, ctx, block, clause_env)
+          kind = kind |> lift_value(ctx, block, clause_env)
+          kind = create_op("ex.to_int", [kind], [integer_type(ctx)], ctx, block)
+          reason = reason |> lift_value(ctx, block, clause_env) |> box_if_scalar(ctx, block)
+          value = create_op("ex.raise", [reason, kind], [ex_type("term", ctx)], ctx, block)
+          {coerce_exception_result(value, expected_type, ctx, block), clause_env}
+
         {:__batata_rethrow__, _, [value_ast]} ->
           {value, clause_env} = lift_expr({:throw, [], [value_ast]}, ctx, block, clause_env)
           {coerce_exception_result(value, expected_type, ctx, block), clause_env}
@@ -9541,18 +9748,37 @@ defmodule Batata.Lift do
           end
       end
 
-    value =
-      case value do
-        # Preserve the raw closure ABI through a guarded clause. A following
-        # no-return fallback must not force a scalar closure result through
-        # term boxing before the enclosing function returns it.
-        {:closure_result, applied, _closure} -> applied
-        value -> lift_value(value, ctx, block, clause_env)
-      end
+    value = normalize_term_clause_value(value, expected_type, clause_env, ctx, block)
 
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
   end
+
+  # Preserve the raw closure ABI through a guarded clause. Consumers that
+  # require a term normalize it here, while scalar closure results stay raw.
+  defp normalize_term_clause_value(
+         {:closure_result, applied, _closure},
+         nil,
+         _env,
+         _ctx,
+         _block
+       ),
+       do: applied
+
+  defp normalize_term_clause_value(
+         {:closure_result, applied, _closure} = closure_result,
+         expected_type,
+         env,
+         ctx,
+         block
+       ) do
+    if MLIR.equal?(expected_type, ex_type("term", ctx)),
+      do: lift_value(closure_result, ctx, block, env),
+      else: applied
+  end
+
+  defp normalize_term_clause_value(value, _expected_type, env, ctx, block),
+    do: lift_value(value, ctx, block, env)
 
   defp coerce_exception_result(value, nil, _ctx, _block), do: value
 
