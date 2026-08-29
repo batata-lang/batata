@@ -148,6 +148,65 @@ defmodule Batata.CompilationUnitProtocolTest do
     assert error.value == :missing
   end
 
+  test "rescues and dispatches source exception messages inside a qualified unit", %{ctx: ctx} do
+    source = """
+    defmodule Unit.MessageError do
+      defexception [:value]
+      def message(%{value: value}), do: "message: " <> value
+    end
+
+    defmodule Unit.MessageOracle do
+      def main() do
+        try do
+          raise %Unit.MessageError{value: "boom"}
+        rescue
+          error in Unit.MessageError -> Exception.message(error)
+        end
+      end
+    end
+    """
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> CompilationUnit.build(entry: {Unit.MessageOracle, :main, 0})
+
+    assert Batata.execute(unit, ctx) == "message: boom"
+  end
+
+  test "formats a rescued Protocol.UndefinedError inside a qualified unit", %{ctx: ctx} do
+    source = """
+    defprotocol Unit.MissingProtocol do
+      def render(value)
+    end
+
+    defmodule Unit.ProtocolMessageOracle do
+      def main() do
+        try do
+          raise Protocol.UndefinedError,
+            protocol: Unit.MissingProtocol,
+            value: :missing,
+            description: "missing"
+        rescue
+          error in Protocol.UndefinedError -> Exception.message(error)
+        end
+      end
+    end
+    """
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> List.wrap()
+      |> CompilationUnit.build(entry: {Unit.ProtocolMessageOracle, :main, 0})
+
+    expected =
+      "protocol Unit.MissingProtocol not implemented for Atom, missing\n\n" <>
+        "Got value:\n\n    :missing\n"
+
+    assert Batata.execute(unit, ctx) == expected
+  end
+
   test "materializes function-clause failures from compilation units", %{ctx: ctx} do
     source = """
     defmodule UnitFunctionClause do

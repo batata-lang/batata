@@ -377,6 +377,12 @@ defmodule Batata.CompilationUnit do
           :error -> call
         end
 
+      {{:., _dot_metadata, [Exception, :message]}, metadata, [exception]} ->
+        exception_message_dispatch(exception, metadata, symbols)
+
+      {{:., _dot_metadata, [{:__aliases__, _, [:Exception]}, :message]}, metadata, [exception]} ->
+        exception_message_dispatch(exception, metadata, symbols)
+
       {{:., dot_metadata, [module_ast, name]}, call_metadata, arguments}
       when is_atom(name) and is_list(arguments) ->
         with {:ok, target_module} <- resolve_module(module_ast),
@@ -389,6 +395,44 @@ defmodule Batata.CompilationUnit do
       node ->
         node
     end)
+  end
+
+  defp exception_message_dispatch(exception, metadata, symbols) do
+    bound = Macro.var(:__batata_exception, __MODULE__)
+
+    source_clauses =
+      symbols
+      |> Enum.flat_map(fn
+        {{exception_module, :message, 1}, qualified} when exception_module != Exception ->
+          pattern = {:%{}, [], [__struct__: exception_module]}
+          [{:->, metadata, [[{:=, [], [pattern, bound]}], {qualified, metadata, [bound]}]}]
+
+        _other ->
+          []
+      end)
+      |> Enum.sort_by(fn {:->, _, [[{:=, _, [{:%{}, _, fields}, _]}], _]} ->
+        fields |> Keyword.fetch!(:__struct__) |> inspect()
+      end)
+
+    protocol_pattern =
+      {:=, [], [{:%{}, [], [__struct__: Protocol.UndefinedError]}, bound]}
+
+    fallback = Macro.var(:__batata_unsupported_exception, __MODULE__)
+
+    {:case, metadata,
+     [
+       exception,
+       [
+         do:
+           source_clauses ++
+             [
+               {:->, metadata,
+                [[protocol_pattern], {:__batata_protocol_undefined_message__, metadata, [bound]}]},
+               {:->, metadata,
+                [[fallback], {:__batata_unsupported_exception_message__, metadata, [fallback]}]}
+             ]
+       ]
+     ]}
   end
 
   # Qualification must see a pipe call's effective arity. Leaving the pipe for

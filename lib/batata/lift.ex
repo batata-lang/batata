@@ -3913,6 +3913,44 @@ defmodule Batata.Lift do
      env}
   end
 
+  defp lift_expr({:__batata_protocol_undefined_message__, _, [exception_ast]}, ctx, block, env) do
+    {exception, env} = lift_expr(exception_ast, ctx, block, env)
+    exception = exception |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    protocol = lower_map_field_access(exception, :protocol, ctx, block)
+    value = lower_map_field_access(exception, :value, ctx, block)
+    description = lower_map_field_access(exception, :description, ctx, block)
+    known_atoms = Map.fetch!(env, @known_atoms_key)
+    protocol_name = lower_protocol_name(protocol, known_atoms, ctx, block)
+    value_type = lower_protocol_value_type(value, ctx, block)
+    inspected = lower_kernel_inspect(value, :default, known_atoms, ctx, block)
+
+    parts =
+      [
+        "protocol ",
+        protocol_name,
+        " not implemented for ",
+        value_type,
+        ", ",
+        description,
+        "\n\nGot value:\n\n    ",
+        inspected,
+        "\n"
+      ]
+      |> Enum.map(fn
+        part when is_binary(part) -> lift_expr(part, ctx, block, %{}) |> elem(0)
+        part -> part
+      end)
+
+    iodata = create_term_op("ex.list", parts, ctx, block)
+    {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+  end
+
+  defp lift_expr({:__batata_unsupported_exception_message__, _, [exception_ast]}, ctx, block, env) do
+    {exception, env} = lift_expr(exception_ast, ctx, block, env)
+    _exception = exception |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {raise_argument_error("unsupported Exception.message/1 exception", ctx, block), env}
+  end
+
   defp lift_expr({:__batata_raise_scalar__, kind, reason_ast}, ctx, block, env) do
     {raised, env} = lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env)
     {create_op("ex.to_int", [raised], [integer_type(ctx)], ctx, block), env}
@@ -8354,6 +8392,85 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     case_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
+  end
+
+  defp lower_protocol_name(value, known_atoms, ctx, block) do
+    dyn = ex_type("term", ctx)
+
+    clauses =
+      Enum.map(known_atoms, fn {word, atom} ->
+        tagged = create_op("ex.to_word", [lit(word, ctx, block)], [dyn], ctx, block)
+        equal? = create_op("ex.term_eq", [value, tagged], [MLIR.Type.i64()], ctx, block)
+
+        rendered =
+          atom
+          |> Atom.to_string()
+          |> String.trim_leading("Elixir.")
+
+        {equal?, fn b -> lift_expr(rendered, ctx, b, %{}) |> elem(0) end}
+      end) ++
+        [
+          {nil,
+           fn b -> raise_argument_error("invalid protocol in Protocol.UndefinedError", ctx, b) end}
+        ]
+
+    lower_binary_choice(value, clauses, ctx, block)
+  end
+
+  defp lower_protocol_value_type(value, ctx, block) do
+    clauses =
+      [
+        {create_op("ex.is_atom", [value], [MLIR.Type.i64()], ctx, block), "Atom"},
+        {create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block), "BitString"},
+        {create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block), "Integer"},
+        {create_op("ex.is_float", [value], [MLIR.Type.i64()], ctx, block), "Float"},
+        {create_op("ex.is_list", [value], [MLIR.Type.i64()], ctx, block), "List"},
+        {create_op("ex.is_tuple", [value], [MLIR.Type.i64()], ctx, block), "Tuple"},
+        {create_op("ex.is_map", [value], [MLIR.Type.i64()], ctx, block), "Map"}
+      ]
+      |> Enum.map(fn {guard, rendered} ->
+        {guard, fn b -> lift_expr(rendered, ctx, b, %{}) |> elem(0) end}
+      end)
+      |> Kernel.++([
+        {nil, fn b -> raise_argument_error("unsupported protocol value type", ctx, b) end}
+      ])
+
+    lower_binary_choice(value, clauses, ctx, block)
+  end
+
+  defp lower_binary_choice(scrutinee, clauses, ctx, block) do
+    dyn = ex_type("term", ctx)
+    region = MLIR.CAPI.mlirRegionCreate()
+
+    Enum.each(clauses, fn {guard, body_fn} ->
+      clause_block = MLIR.Block.create([], [])
+      MLIR.CAPI.mlirRegionAppendOwnedBlock(region, clause_block)
+      clause_args = if guard, do: [guard], else: []
+      create_op("ex.clause", clause_args ++ [patterns: pattern_attr([])], [], ctx, clause_block)
+      result = body_fn.(clause_block)
+
+      create_op(
+        "ex.yield",
+        [result, operandSegmentSizes: segment_sizes([1])],
+        [],
+        ctx,
+        clause_block
+      )
+    end)
+
+    %Beaver.SSA{
+      op: "ex.case",
+      ip: block,
+      ctx: ctx,
+      arguments: [scrutinee, operandSegmentSizes: segment_sizes([1])],
+      results: [dyn],
+      loc: MLIR.Location.unknown(),
+      filler: fn -> [region] end
+    }
+    |> MLIR.Operation.create()
+    |> MLIR.Operation.results()
+    |> Enum.to_list()
+    |> hd()
   end
 
   defp lower_binary_concat(left, right, both_binary, ctx, block) do
