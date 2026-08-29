@@ -1881,21 +1881,42 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects unrefined term-pattern integer arithmetic before verification", %{ctx: ctx} do
-    assert_raise Batata.Lift.Error, ~r/requires an is_integer\/1 guard/, fn ->
-      Batata.execute(
-        """
-        defmodule Math do
-          def main() do
-            case {100, 7} do
-              {value, divisor} -> rem(value, divisor)
-              _ -> 0
-            end
-          end
+  test "runtime-refines term-pattern integer arithmetic", %{ctx: ctx} do
+    source = """
+    defmodule Math do
+      def calculate(value) do
+        case value do
+          {left, right} -> left + right
+          [head | _] -> head * 2
+          %{value: item} -> item - 1
         end
-        """,
-        ctx
-      )
+      end
+
+      def mask([head | _]), do: Bitwise.band(head, 15)
+
+      def main() do
+        {calculate({100, 7}), calculate([9]), calculate(%{value: 5}), mask([25])}
+      end
+    end
+    """
+
+    assert {107, 18, 4, 9} == Batata.execute(source, ctx)
+  end
+
+  test "rejects non-integer term-pattern arithmetic at runtime", %{ctx: ctx} do
+    source = """
+    defmodule Math do
+      def main() do
+        case [:not_an_integer] do
+          [head | _] -> head + 1
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    assert_raise ArgumentError, ~r/integer arithmetic requires integer operands/, fn ->
+      Batata.execute(source, ctx)
     end
   end
 
