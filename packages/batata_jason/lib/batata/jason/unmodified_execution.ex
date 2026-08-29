@@ -14,7 +14,7 @@ defmodule Batata.Jason.UnmodifiedExecution do
   alias Batata.Probe.CorpusRuntimeSlice
   alias Beaver.MLIR
 
-  @case_count 18
+  @case_count 20
   @wrapper_module Batata.Jason.UnmodifiedOracle
   @wrapper_source ~S'''
   defmodule Batata.Jason.DerivedFixture do
@@ -24,6 +24,10 @@ defmodule Batata.Jason.UnmodifiedExecution do
 
   defmodule Batata.Jason.UnknownFixture do
     defstruct [:value]
+  end
+
+  defprotocol Batata.Jason.MissingProtocol do
+    def render(value)
   end
 
   defmodule Batata.Jason.UnmodifiedOracle do
@@ -49,8 +53,29 @@ defmodule Batata.Jason.UnmodifiedExecution do
           %{__struct__: Date, year: 2026, month: 8, day: 29, calendar: Calendar.ISO},
           nil
         ),
-        Jason.encode(%Batata.Jason.UnknownFixture{value: 1})
+        Jason.encode(%Batata.Jason.UnknownFixture{value: 1}),
+        decode_error_message(),
+        protocol_error_message()
       }
+    end
+
+    defp decode_error_message() do
+      try do
+        Jason.decode!("x")
+      rescue
+        error in Jason.DecodeError -> Exception.message(error)
+      end
+    end
+
+    defp protocol_error_message() do
+      try do
+        raise Protocol.UndefinedError,
+          protocol: Batata.Jason.MissingProtocol,
+          value: :missing,
+          description: "missing"
+      rescue
+        error in Protocol.UndefinedError -> Exception.message(error)
+      end
     end
   end
   '''
