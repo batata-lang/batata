@@ -42,6 +42,10 @@ defmodule Batata.Signature do
     {:lists, :reverse, 1} => [:term],
     {:lists, :reverse, 2} => [:term, :term]
   }
+  @builtin_scalar_results MapSet.new([
+                            {Kernel, :length, 1},
+                            {:erlang, :length, 1}
+                          ])
 
   defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
 
@@ -101,6 +105,8 @@ defmodule Batata.Signature do
   end
 
   def infer(definitions) do
+    returned_closures = returned_closure_names(definitions)
+
     initial =
       Map.new(definitions, fn %Frontend.Definition{name: name, arity: arity, clauses: clauses} ->
         modes =
@@ -119,21 +125,25 @@ defmodule Batata.Signature do
       end)
       |> merge_trailing_integer_pattern_modes(definitions)
 
-    fixed_point(definitions, initial)
+    fixed_point(definitions, initial, returned_closures)
   end
 
   @doc false
   def infer_results(definitions, no_return_functions \\ MapSet.new()) do
     groups = Enum.group_by(definitions, &{&1.name, &1.arity})
-    infer_results_fixed_point(groups, no_return_functions, MapSet.new())
+    returned_closures = returned_closure_names(definitions)
+    infer_results_fixed_point(groups, no_return_functions, returned_closures, MapSet.new())
   end
 
-  defp infer_results_fixed_point(groups, no_return_functions, proven) do
+  defp infer_results_fixed_point(groups, no_return_functions, returned_closures, proven) do
     next =
       Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
         clauses = Enum.flat_map(definitions, & &1.clauses)
 
-        if scalar_clauses?(clauses, acc, no_return_functions) do
+        identity? = closure_identity_result?(signature, clauses)
+
+        if scalar_clauses?(clauses, acc, no_return_functions) or
+             (identity? and not MapSet.member?(returned_closures, elem(signature, 0))) do
           MapSet.put(acc, signature)
         else
           acc
@@ -142,8 +152,25 @@ defmodule Batata.Signature do
 
     if next == proven,
       do: proven,
-      else: infer_results_fixed_point(groups, no_return_functions, next)
+      else: infer_results_fixed_point(groups, no_return_functions, returned_closures, next)
   end
+
+  defp closure_identity_result?({name, _arity}, clauses) do
+    String.starts_with?(Atom.to_string(name), "__fn_") and
+      Enum.any?(clauses, &identity_clause?/1)
+  end
+
+  defp identity_clause?(%{body_ast: {result, _, context}, patterns: patterns})
+       when is_atom(result) and (is_atom(context) or is_nil(context)),
+       do: Enum.any?(patterns, &identity_pattern?(&1, result))
+
+  defp identity_clause?(_clause), do: false
+
+  defp identity_pattern?({result, _, context}, result)
+       when is_atom(context) or is_nil(context),
+       do: true
+
+  defp identity_pattern?(_pattern, _result), do: false
 
   defp scalar_clauses?(clauses, proven, no_return_functions) do
     clauses != [] and
@@ -245,20 +272,64 @@ defmodule Batata.Signature do
          scalar_variables
        )
        when is_atom(function) and is_list(arguments) do
-    with {:ok, module} <- module_ref(module_ast),
-         modes when is_list(modes) <- builtin_modes(module, function, length(arguments)),
-         true <- Enum.all?(modes, &(&1 == :scalar)),
-         true <-
-           Enum.all?(arguments, fn argument ->
-             result_kind(argument, proven, no_return_functions, scalar_variables) == :scalar
-           end) do
-      :scalar
-    else
-      _not_scalar -> :unknown
+    case module_ref(module_ast) do
+      {:ok, module} ->
+        builtin_result_kind(
+          module,
+          function,
+          arguments,
+          proven,
+          no_return_functions,
+          scalar_variables
+        )
+
+      :error ->
+        :unknown
     end
   end
 
   defp result_kind(_ast, _proven, _no_return_functions, _scalar_variables), do: :unknown
+
+  defp builtin_result_kind(
+         module,
+         function,
+         arguments,
+         proven,
+         no_return_functions,
+         scalar_variables
+       ) do
+    signature = {module, function, length(arguments)}
+
+    cond do
+      MapSet.member?(@builtin_scalar_results, signature) ->
+        :scalar
+
+      builtin_scalar_arguments?(
+        signature,
+        arguments,
+        proven,
+        no_return_functions,
+        scalar_variables
+      ) ->
+        :scalar
+
+      true ->
+        :unknown
+    end
+  end
+
+  defp builtin_scalar_arguments?(
+         {module, function, arity},
+         arguments,
+         proven,
+         no_return_functions,
+         scalar_variables
+       ) do
+    builtin_modes(module, function, arity) == List.duplicate(:scalar, arity) and
+      Enum.all?(arguments, fn argument ->
+        result_kind(argument, proven, no_return_functions, scalar_variables) == :scalar
+      end)
+  end
 
   defp clause_result_kind(
          {:->, _, [_patterns, body]},
@@ -382,18 +453,22 @@ defmodule Batata.Signature do
 
   defp trailing_integer_clause?(_clause), do: false
 
-  defp fixed_point(definitions, modes) do
+  defp fixed_point(definitions, modes, returned_closures) do
     next =
       Enum.reduce(definitions, modes, fn definition, acc ->
         key = {definition.name, definition.arity}
-        inferred = infer_definition(definition, acc)
+        inferred = infer_definition(definition, acc, returned_closures)
         Map.update!(acc, key, &merge_modes(&1, inferred))
       end)
 
-    if next == modes, do: modes, else: fixed_point(definitions, next)
+    if next == modes, do: modes, else: fixed_point(definitions, next, returned_closures)
   end
 
-  defp infer_definition(%Frontend.Definition{arity: arity, clauses: clauses}, signatures) do
+  defp infer_definition(
+         %Frontend.Definition{name: name, arity: arity, clauses: clauses},
+         signatures,
+         returned_closures
+       ) do
     Enum.reduce(clauses, List.duplicate(:scalar, arity), fn clause, acc ->
       names = Enum.map(clause.patterns, &plain_variable/1)
 
@@ -402,9 +477,78 @@ defmodule Batata.Signature do
         |> Enum.reject(&is_nil/1)
         |> Enum.reduce(acc, &infer_ast(&1, names, signatures, &2))
 
+      uses =
+        maybe_mark_closure_identity_result(
+          name,
+          clause.body_ast,
+          names,
+          uses,
+          returned_closures
+        )
+
       merge_modes(acc, uses)
     end)
   end
+
+  # Extracted closures cross `__fn_dispatch` as term words. When a closure
+  # returns one of its parameters unchanged there is no use-site operation
+  # from which ordinary signature inference can recover that representation.
+  # Keep that slot as a term; arithmetic closures still infer scalar modes
+  # from their operators and retain the existing raw-i64 fast path.
+  defp maybe_mark_closure_identity_result(
+         name,
+         {result, _, context},
+         names,
+         modes,
+         returned_closures
+       )
+       when is_atom(name) and is_atom(result) and
+              (is_atom(context) or is_nil(context)) do
+    if MapSet.member?(returned_closures, name) do
+      mark_name(modes, names, result)
+    else
+      modes
+    end
+  end
+
+  defp maybe_mark_closure_identity_result(
+         _name,
+         _body,
+         _names,
+         modes,
+         _returned_closures
+       ),
+       do: modes
+
+  defp returned_closure_names(definitions) do
+    Enum.reduce(definitions, MapSet.new(), fn %Frontend.Definition{clauses: clauses}, names ->
+      Enum.reduce(clauses, names, fn clause, acc ->
+        MapSet.union(acc, terminal_closure_names(clause.body_ast))
+      end)
+    end)
+  end
+
+  defp terminal_closure_names({:__fn_ref__, _, [_index, name, _arity, _captured]})
+       when is_atom(name),
+       do: MapSet.new([name])
+
+  defp terminal_closure_names({:__block__, _, expressions}) when expressions != [],
+    do: expressions |> List.last() |> terminal_closure_names()
+
+  defp terminal_closure_names({:case, _, [_value, [do: clauses]]}) when is_list(clauses) do
+    Enum.reduce(clauses, MapSet.new(), fn
+      {:->, _, [_patterns, body]}, acc -> MapSet.union(acc, terminal_closure_names(body))
+      _clause, acc -> acc
+    end)
+  end
+
+  defp terminal_closure_names({:if, _, [_condition, branches]}) when is_list(branches) do
+    branches
+    |> Keyword.values()
+    |> Enum.reduce(MapSet.new(), &MapSet.union(&2, terminal_closure_names(&1)))
+  end
+
+  defp terminal_closure_names(_ast), do: MapSet.new()
 
   defp infer_ast(ast, names, signatures, modes) do
     {_ast, modes} =

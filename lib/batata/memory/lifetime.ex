@@ -76,7 +76,13 @@ defmodule Batata.Memory.Lifetime do
       {"ex.result_create", _} ->
         [:result]
 
-      {name, _} when name in ["ex.make_fun", "ex.make_fun_with_arity", "ex.spawn"] ->
+      {name, _}
+      when name in [
+             "ex.make_fun",
+             "ex.make_fun_with_arity",
+             "ex.make_fun_with_signature",
+             "ex.spawn"
+           ] ->
         [:closure_capture]
 
       {"ex.return", _} ->

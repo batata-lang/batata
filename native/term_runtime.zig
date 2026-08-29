@@ -24,6 +24,7 @@ const tag_map: usize = 4;
 const tag_binary: usize = 5;
 const tag_fun: usize = 6;
 const fun_arity_marker: u64 = @as(u64, 1) << 61;
+const fun_signature_marker: u64 = @as(u64, 1) << 60;
 // Tag 7 is shared by arena-owned boxed floats and immediate runtime-local
 // words. The latter carry runtime_local_marker and are never arena pointers.
 const tag_float: usize = 7;
@@ -203,13 +204,17 @@ fn fun_has_arity(fun: i64) bool {
     return (@as(u64, @bitCast(fun_words(fun)[1])) & fun_arity_marker) != 0;
 }
 
+fn fun_has_signature(fun: i64) bool {
+    return (@as(u64, @bitCast(fun_words(fun)[1])) & fun_signature_marker) != 0;
+}
+
 fn fun_env_len(fun: i64) usize {
     const header: u64 = @bitCast(fun_words(fun)[1]);
-    return @intCast(header & ~fun_arity_marker);
+    return @intCast(header & ~(fun_arity_marker | fun_signature_marker));
 }
 
 fn fun_env_offset(fun: i64) usize {
-    return if (fun_has_arity(fun)) 3 else 2;
+    return if (fun_has_signature(fun)) 4 else if (fun_has_arity(fun)) 3 else 2;
 }
 
 fn float_bits(float: i64) u64 {
@@ -3300,6 +3305,20 @@ pub fn ex_term_make_fun_with_arity(fn_idx: i64, arity: i64, env_len: i64, e0: i6
     return word_from_ptr(words, tag_fun);
 }
 
+/// Constructs a closure carrying its call arity and result representation.
+/// result_mode 0 is a raw scalar and 1 is a tagged term word.
+pub fn ex_term_make_fun_with_signature(fn_idx: i64, arity: i64, result_mode: i64, env_len: i64, e0: i64, e1: i64, e2: i64, e3: i64) callconv(.c) i64 {
+    if (arity < 0 or arity > 4 or result_mode < 0 or result_mode > 1 or env_len < 0 or env_len > 4) return nil_word;
+    const words = alloc_words(8) orelse return nil_word;
+    words[0] = fn_idx;
+    words[1] = @bitCast(fun_arity_marker | fun_signature_marker | @as(u64, @intCast(env_len)));
+    words[2] = arity;
+    words[3] = result_mode;
+    const env = [4]i64{ e0, e1, e2, e3 };
+    for (0..@as(usize, @intCast(env_len))) |i| words[4 + i] = env[i];
+    return word_from_ptr(words, tag_fun);
+}
+
 /// Returns the function index of a closure word; 0 for non-functions.
 pub fn ex_term_fun_idx(fun: i64) callconv(.c) i64 {
     if (word_tag(fun) != tag_fun) return 0;
@@ -3311,6 +3330,13 @@ pub fn ex_term_fun_idx(fun: i64) callconv(.c) i64 {
 pub fn ex_term_fun_arity(fun: i64) callconv(.c) i64 {
     if (word_tag(fun) != tag_fun or !fun_has_arity(fun)) return -1;
     return fun_words(fun)[2];
+}
+
+/// Returns 0 for scalar-result closures, 1 for term-result closures, and -1
+/// for values or legacy closures without result metadata.
+pub fn ex_term_fun_result_mode(fun: i64) callconv(.c) i64 {
+    if (word_tag(fun) != tag_fun or !fun_has_signature(fun)) return -1;
+    return fun_words(fun)[3];
 }
 
 /// Returns the `index`-th captured env word of a closure; nil for
@@ -5245,6 +5271,14 @@ test "closure ABI carries arity without breaking legacy env reads" {
     try std.testing.expectEqual(@as(i64, 32), ex_term_fun_env(arity_carrying, 1));
     try std.testing.expectEqual(nil_word, ex_term_fun_env(arity_carrying, 2));
     try std.testing.expectEqual(@as(i64, -1), ex_term_fun_arity(nil_word));
+
+    const signed = ex_term_make_fun_with_signature(13, 1, 1, 2, 41, 42, 0, 0);
+    try std.testing.expectEqual(@as(i64, 13), ex_term_fun_idx(signed));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_fun_arity(signed));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_fun_result_mode(signed));
+    try std.testing.expectEqual(@as(i64, 41), ex_term_fun_env(signed, 0));
+    try std.testing.expectEqual(@as(i64, 42), ex_term_fun_env(signed, 1));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_fun_result_mode(arity_carrying));
 }
 
 test "list flatten preserves leaves and rejects improper nested lists" {
