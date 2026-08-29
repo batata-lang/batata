@@ -4330,6 +4330,29 @@ defmodule Batata.ExecuteTest do
     assert {:error, %Protocol.UndefinedError{value: %{value: 7}}} = Batata.execute(source, ctx)
   end
 
+  test "try rescues a raised protocol exception by exception module", %{ctx: ctx} do
+    source = """
+    defmodule ProtocolErrorRescue do
+      def fail(value) do
+        raise Protocol.UndefinedError,
+          protocol: String.Chars,
+          value: value,
+          description: "missing"
+      end
+
+      def main() do
+        try do
+          fail(:missing)
+        rescue
+          error in Protocol.UndefinedError -> {:rescued, error.value}
+        end
+      end
+    end
+    """
+
+    assert {:rescued, :missing} == Batata.execute(source, ctx)
+  end
+
   test "executes nested composite terms under abstract !ex.term representation", %{ctx: ctx} do
     assert {1, [2, 3], %{foo: "bar"}, <<4, 5, 6>>} ==
              Batata.execute(

@@ -4406,20 +4406,21 @@ defmodule Batata.Lift do
     {create_op("ex.throw", [value], [ex_type("term", ctx)], ctx, block), env}
   end
 
-  # `try do body catch pattern -> handler end`: the body region runs normally;
-  # a `throw` longjmps back and the catch region matches the thrown value.
+  # `try do body rescue/catch pattern -> handler end`: the body region runs
+  # normally; a typed unwind longjmps back and the handler region matches its
+  # `{kind, reason}` pair. Rescue clauses are normalized to positive error
+  # kinds and precede ordinary catch clauses, matching BEAM dispatch order.
   defp lift_expr({:try, _, [options]}, ctx, block, env) do
-    if Enum.any?([:rescue, :after], &Keyword.has_key?(options, &1)) do
-      raise Error, "only try/catch with optional else is supported in the current slice"
+    if Keyword.has_key?(options, :after) do
+      raise Error, "try/after is not supported in the current slice"
     end
 
     body = Keyword.fetch!(options, :do)
     else_clauses = Keyword.get(options, :else)
 
     catch_clauses =
-      options
-      |> Keyword.fetch!(:catch)
-      |> normalize_catch_clauses()
+      (normalize_rescue_clauses(Keyword.get(options, :rescue, [])) ++
+         normalize_catch_clauses(Keyword.get(options, :catch, [])))
       |> ensure_catch_fallback()
 
     body_region = MLIR.CAPI.mlirRegionCreate()
@@ -5536,6 +5537,43 @@ defmodule Batata.Lift do
             [clause]
         end
     end)
+  end
+
+  defp normalize_rescue_clauses(clauses) do
+    Enum.map(clauses, fn
+      {:->, metadata, [[pattern], body]} ->
+        kind = Macro.var(:__batata_rescue_kind, __MODULE__)
+        reason = normalize_rescue_pattern(pattern)
+        tagged = {:{}, [], [kind, reason]}
+        guarded = {:when, [], [tagged, {:>, [], [kind, 0]}]}
+        {:->, metadata, [[guarded], body]}
+
+      clause ->
+        raise Error, "unsupported rescue clause: #{inspect(clause)}"
+    end)
+  end
+
+  defp normalize_rescue_pattern({:in, _, [variable, module_ast]}) do
+    unless match?({name, _, context} when is_variable_ast(name, context), variable) and
+             match?({:__aliases__, _, parts} when is_list(parts) and parts != [], module_ast) do
+      raise Error,
+            "rescue membership requires a variable and one exception module, got: " <>
+              inspect({:in, [], [variable, module_ast]})
+    end
+
+    {:=, [], [{:%, [], [module_ast, {:%{}, [], []}]}, variable]}
+  end
+
+  defp normalize_rescue_pattern({:__aliases__, _, parts} = module_ast)
+       when is_list(parts) and parts != [],
+       do: {:%, [], [module_ast, {:%{}, [], []}]}
+
+  defp normalize_rescue_pattern({name, _, context} = variable)
+       when is_variable_ast(name, context),
+       do: variable
+
+  defp normalize_rescue_pattern(pattern) do
+    raise Error, "unsupported rescue pattern: #{inspect(pattern)}"
   end
 
   defp throw_catch_pattern({:when, metadata, [pattern, guard]}) do
