@@ -42,20 +42,28 @@ defmodule Batata.UnusedBranchAliasTest do
     assert ir =~ ~s{"ex.term_eq"}
   end
 
-  test "keeps environment-bearing branch assignments fail-closed", %{ctx: ctx} do
-    for branch <- [
-          "value = 1",
-          "(_value = 1; _value)"
-        ] do
-      source = """
-      defmodule EnvironmentBearingBranchAssignment do
-        def main(), do: if(true, do: (#{branch}), else: 0)
-      end
-      """
+  test "keeps branch assignments local to their selected region", %{ctx: ctx} do
+    source = """
+    defmodule EnvironmentBearingBranchAssignment do
+      def choose(flag) do
+        value = 10
 
-      assert_raise Batata.Lift.Error,
-                   "assignments in if branches are unsupported",
-                   fn -> Batata.compile(source, ctx) end
+        branch =
+          if flag do
+            value = 1
+            value + 1
+          else
+            value = 3
+            value + 1
+          end
+
+        {value, branch}
+      end
+
+      def main(), do: {choose(true), choose(false)}
     end
+    """
+
+    assert {{10, 2}, {10, 4}} == Batata.execute(source, ctx)
   end
 end
