@@ -100,8 +100,13 @@ defmodule Batata.Frontend.GuardSupport do
     end
   end
 
-  def term_members({:sigil_c, _, [{:<<>>, _, [value]}, []]}) when is_binary(value),
-    do: {:integer_set, value |> String.to_charlist() |> Enum.uniq()}
+  def term_members({:sigil_c, _, [{:<<>>, _, [value]}, []]} = sigil)
+      when is_binary(value) do
+    case Macro.expand(sigil, __ENV__) do
+      values when is_list(values) -> {:integer_set, Enum.uniq(values)}
+      _other -> nil
+    end
+  end
 
   def term_members(_members), do: nil
 
