@@ -3231,6 +3231,49 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "preserves term results from dynamically returned identity closures", %{ctx: ctx} do
+    source = """
+    defmodule DynamicIdentity do
+      def identity(), do: fn value -> value end
+
+      def main() do
+        identity = identity()
+        record = {identity, :decode}
+        lookup = %{decode: identity}
+        {decode, _kind} = record
+        map_decode = lookup.decode
+
+        {
+          decode.("Jason"),
+          map_decode.({1, 2}),
+          identity.([1, 2]),
+          identity.(%{key: 1}),
+          identity.(:ok)
+        }
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {"Jason", {1, 2}, [1, 2], %{key: 1}, :ok}
+  end
+
+  test "dispatches mixed scalar and term closures returned from functions", %{ctx: ctx} do
+    source = """
+    defmodule DynamicMixedResults do
+      def select(0), do: fn value -> value end
+      def select(_), do: fn value -> value + 1 end
+
+      def main() do
+        term = select(0)
+        scalar = select(1)
+        {term.("Jason"), scalar.(2) + scalar.(3)}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {"Jason", 7}
+  end
+
   test "captures and applies functions from within closures", %{ctx: ctx} do
     assert 6 ==
              Batata.execute(

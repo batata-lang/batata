@@ -91,6 +91,7 @@ defmodule Batata.Lift do
       if mod.struct_schema, do: Map.put(schemas, mod.name, mod.struct_schema), else: schemas
 
     no_return_functions = infer_no_return_functions(definitions)
+    scalar_result_functions = Batata.Signature.infer_results(definitions, no_return_functions)
 
     module_env = %{
       @known_atoms_key => known_atoms,
@@ -98,8 +99,7 @@ defmodule Batata.Lift do
       @arg_modes_key => Batata.Signature.infer(definitions),
       @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
       @no_return_functions_key => no_return_functions,
-      @scalar_result_functions_key =>
-        Batata.Signature.infer_results(definitions, no_return_functions)
+      @scalar_result_functions_key => scalar_result_functions
     }
 
     groups =
@@ -1413,8 +1413,11 @@ defmodule Batata.Lift do
 
     clauses =
       Enum.map(fns, fn {idx, name} ->
-        {:->, [], [[idx], {name, [], call_args}]}
-      end) ++ [{:->, [], [[{:_, [], nil}], {first_name, [], zero_args}]}]
+        {:->, [], [[idx], closure_dispatch_result({name, [], call_args})]}
+      end) ++
+        [
+          {:->, [], [[{:_, [], nil}], closure_dispatch_result({first_name, [], zero_args})]}
+        ]
 
     %Frontend.Definition{
       kind: :defp,
@@ -1428,6 +1431,8 @@ defmodule Batata.Lift do
       ]
     }
   end
+
+  defp closure_dispatch_result(call), do: {:__batata_raw_closure_result__, [], [call]}
 
   defp lift_definition(
          %Frontend.Definition{kind: kind, name: name, arity: arity, clauses: clauses},
@@ -4286,7 +4291,7 @@ defmodule Batata.Lift do
 
         closure_word = create_op("ex.to_word", [closure], [ex_type("term", ctx)], ctx, block)
 
-        {
+        applied =
           create_op(
             "ex.apply",
             [closure_word] ++
@@ -4299,12 +4304,12 @@ defmodule Batata.Lift do
                       List.duplicate(0, 4 - length(args))
                   )
               ],
-            [ex_type("term", ctx)],
+            [integer_type(ctx)],
             ctx,
             block
-          ),
-          env
-        }
+          )
+
+        {{:closure_result, applied, closure_word}, env}
 
       :error ->
         raise Error,
@@ -4488,6 +4493,38 @@ defmodule Batata.Lift do
   defp lift_expr({:__batata_box_try_else__, _, [body]}, ctx, block, env) do
     {value, env} = lift_expr(body, ctx, block, env)
     value = value |> lift_value(ctx, block, env) |> box_if_scalar(ctx, block)
+    {value, env}
+  end
+
+  defp lift_expr(
+         {:__batata_raw_closure_result__, _, [{name, _, args}]},
+         ctx,
+         block,
+         env
+       )
+       when is_atom(name) and is_list(args) do
+    {arg_values, env} =
+      Enum.map_reduce(args, env, fn arg, env ->
+        {value, env} = lift_expr(arg, ctx, block, env)
+        {lift_value(value, ctx, block, env), env}
+      end)
+
+    arg_values = adapt_call_arguments(name, arg_values, env, ctx, block)
+
+    value =
+      create_op(
+        "ex.call",
+        arg_values ++
+          [
+            callee: MLIR.Attribute.string(Symbol.function(name, length(args))),
+            arity: MLIR.Attribute.integer(MLIR.Type.i64(), length(args)),
+            operandSegmentSizes: segment_sizes(arg_segment_sizes(length(args)))
+          ],
+        [integer_type(ctx)],
+        ctx,
+        block
+      )
+
     {value, env}
   end
 
@@ -8480,7 +8517,7 @@ defmodule Batata.Lift do
 
   # Materializes a compile-time function reference into a first-class closure
   # word; all other values pass through unchanged.
-  defp lift_value({:fn_ref, fn_idx, _name, arity, captured}, ctx, block, env) do
+  defp lift_value({:fn_ref, fn_idx, name, arity, captured}, ctx, block, env) do
     env_values =
       captured
       |> resolve_captured(env)
@@ -8490,12 +8527,18 @@ defmodule Batata.Lift do
       raise Error, "anonymous function capture exceeds 4 slots: #{length(env_values)}"
     end
 
+    result_mode =
+      if MapSet.member?(Map.fetch!(env, @scalar_result_functions_key), {name, 8}),
+        do: 0,
+        else: 1
+
     create_op(
-      "ex.make_fun_with_arity",
+      "ex.make_fun_with_signature",
       env_values ++
         [
           fn_idx: MLIR.Attribute.integer(MLIR.Type.i64(), fn_idx),
           arity: MLIR.Attribute.integer(MLIR.Type.i64(), arity),
+          result_mode: MLIR.Attribute.integer(MLIR.Type.i64(), result_mode),
           env_len: MLIR.Attribute.integer(MLIR.Type.i64(), length(captured)),
           operandSegmentSizes:
             segment_sizes(
@@ -8506,6 +8549,14 @@ defmodule Batata.Lift do
       ctx,
       block
     )
+  end
+
+  defp lift_value({:closure_result, applied, closure}, ctx, block, _env) do
+    mode = create_op("ex.fun_result_mode", [closure], [integer_type(ctx)], ctx, block)
+    term? = cmp(mode, lit(1, ctx, block), "eq", ctx, block)
+    scalar_word = applied |> box_term(ctx, block) |> unbox(ctx, block)
+    word = select_i64(term?, applied, scalar_word, ctx, block)
+    create_op("ex.to_word", [word], [ex_type("term", ctx)], ctx, block)
   end
 
   defp lift_value(value, _ctx, _block, _env), do: value
@@ -9490,7 +9541,15 @@ defmodule Batata.Lift do
           end
       end
 
-    value = lift_value(value, ctx, block, clause_env)
+    value =
+      case value do
+        # Preserve the raw closure ABI through a guarded clause. A following
+        # no-return fallback must not force a scalar closure result through
+        # term boxing before the enclosing function returns it.
+        {:closure_result, applied, _closure} -> applied
+        value -> lift_value(value, ctx, block, clause_env)
+      end
+
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
   end
@@ -9753,21 +9812,27 @@ defmodule Batata.Lift do
 
   defp refine_integer_operands!(asts, values, env, ctx, block) do
     Enum.zip_with(asts, values, fn ast, value ->
-      cond do
-        not term_operand?(value) ->
-          value
-
-        term_parameter?(ast, env) ->
-          validated_integer_parameter(value, ctx, block)
-
-        deferred_scalar_call?(ast) ->
-          value
-
-        true ->
-          ensure_refined_integer_operands!([value])
-          value
-      end
+      refine_integer_operand(ast, value, env, ctx, block)
     end)
+  end
+
+  defp refine_integer_operand(_ast, {:closure_result, applied, closure}, _env, ctx, block),
+    do: refine_closure_integer(applied, closure, ctx, block)
+
+  defp refine_integer_operand(ast, value, env, ctx, block) do
+    value = lift_value(value, ctx, block, env)
+
+    cond do
+      not term_operand?(value) -> value
+      term_parameter?(ast, env) -> validated_integer_parameter(value, ctx, block)
+      deferred_scalar_call?(ast) -> value
+      true -> ensure_refined_integer_operand!(value)
+    end
+  end
+
+  defp ensure_refined_integer_operand!(value) do
+    ensure_refined_integer_operands!([value])
+    value
   end
 
   defp term_parameter?({name, _, context}, env) when is_variable_ast(name, context) do
@@ -9805,6 +9870,25 @@ defmodule Batata.Lift do
           |> unbox(ctx, b)
         ]
       end
+    )
+    |> hd()
+  end
+
+  defp refine_closure_integer(applied, closure, ctx, block) do
+    mode = create_op("ex.fun_result_mode", [closure], [integer_type(ctx)], ctx, block)
+    term? = cmp(mode, lit(1, ctx, block), "eq", ctx, block)
+    term_i1 = create_op("arith.trunci", [term?], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      term_i1,
+      ctx,
+      block,
+      [integer_type(ctx)],
+      fn b ->
+        term_value = create_op("ex.to_word", [applied], [ex_type("term", ctx)], ctx, b)
+        [validated_integer_parameter(term_value, ctx, b)]
+      end,
+      fn _b -> [applied] end
     )
     |> hd()
   end
@@ -10057,6 +10141,11 @@ defmodule Batata.Lift do
 
   defp insert_return(nil, ctx, block, _env) do
     create_op("ex.return", [operandSegmentSizes: segment_sizes([0])], [], ctx, block)
+    :ok
+  end
+
+  defp insert_return({:closure_result, applied, _closure}, ctx, block, _env) do
+    create_op("ex.return", [applied, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     :ok
   end
 

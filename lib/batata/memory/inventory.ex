@@ -50,6 +50,7 @@ defmodule Batata.Memory.Inventory do
     ex.list_flatten
     ex.make_fun
     ex.make_fun_with_arity
+    ex.make_fun_with_signature
     ex.map
     ex.map_put
     ex.mapset_from_list
@@ -92,6 +93,7 @@ defmodule Batata.Memory.Inventory do
     ex.exported_get
     ex.exported_length
     ex.fun_arity
+    ex.fun_result_mode
     ex.func
     ex.func_addr
     ex.if

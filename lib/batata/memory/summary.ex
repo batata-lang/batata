@@ -120,5 +120,6 @@ defmodule Batata.Memory.Summary do
   defp exact_bytes("ex.float_lit", _operands), do: @word_bytes
   defp exact_bytes("ex.make_fun", _operands), do: 6 * @word_bytes
   defp exact_bytes("ex.make_fun_with_arity", _operands), do: 7 * @word_bytes
+  defp exact_bytes("ex.make_fun_with_signature", _operands), do: 8 * @word_bytes
   defp exact_bytes(_operation, _operands), do: nil
 end
