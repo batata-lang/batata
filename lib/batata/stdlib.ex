@@ -325,7 +325,8 @@ defmodule Batata.Stdlib.IO do
 
   @class_map %{
     {IO, :iodata_to_binary, 1} => :native_term,
-    {:erlang, :iolist_to_binary, 1} => :native_term
+    {:erlang, :iolist_to_binary, 1} => :native_term,
+    {:io_lib_format, :fwrite_g, 1} => :native_term
   }
 
   @doc "Returns IO-domain stdlib replacement declarations."
@@ -449,6 +450,7 @@ defmodule Batata.Stdlib do
                   {:erlang, :binary_to_float, 1},
                   {:erlang, :binary_part, 3},
                   {:erlang, :float_to_binary, 2},
+                  {:io_lib_format, :fwrite_g, 1},
                   {String, :printable?, 1},
                   {String, :to_atom, 1},
                   {String, :to_existing_atom, 1},
@@ -516,6 +518,7 @@ defmodule Batata.Stdlib do
                      {List, :flatten, 1},
                      {:erlang, :binary_to_float, 1},
                      {:erlang, :float_to_binary, 2},
+                     {:io_lib_format, :fwrite_g, 1},
                      {:erlang, :iolist_to_binary, 1},
                      {:erlang, :split_binary, 2},
                      {HashSet, :new, 1},

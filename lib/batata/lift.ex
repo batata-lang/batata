@@ -6266,6 +6266,14 @@ defmodule Batata.Lift do
           ":erlang.float_to_binary/2 supports only the literal option [:short], got: #{inspect(options)}"
   end
 
+  defp lift_stdlib_call(:io_lib_format, :fwrite_g, [value_ast], ctx, block, env) do
+    {binary, env} =
+      lift_stdlib_call(:erlang, :float_to_binary, [value_ast, [:short]], ctx, block, env)
+
+    binary = box_term(binary, ctx, block)
+    {create_op("ex.enumerable_to_list", [binary], [ex_type("term", ctx)], ctx, block), env}
+  end
+
   defp lift_stdlib_call(Kernel, :to_string, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
     value = box_term(value, ctx, block)

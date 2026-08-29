@@ -1196,6 +1196,32 @@ defmodule Batata.ExecuteTest do
     assert_raise ArgumentError, fn -> Batata.execute(source, ctx) end
   end
 
+  test "formats floats as fwrite_g charlists", %{ctx: ctx} do
+    values = [0.0, -0.0, 1.0, 1.5, 0.1, 1.0e-20, 1.0e20, 1.797_693_134_862_315_7e308]
+
+    source = """
+    defmodule NativeFwriteG do
+      def format(value), do: :io_lib_format.fwrite_g(value)
+
+      def main() do
+        [
+          format(0.0),
+          format(-0.0),
+          format(1.0),
+          format(1.5),
+          format(0.1),
+          format(1.0e-20),
+          format(1.0e20),
+          format(1.797_693_134_862_315_7e308)
+        ]
+      end
+    end
+    """
+
+    expected = Enum.map(values, &:io_lib_format.fwrite_g/1)
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "rejects unsupported float formatting options during lifting", %{ctx: ctx} do
     source = """
     defmodule UnsupportedFloatToBinary do

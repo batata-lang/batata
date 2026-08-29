@@ -18,6 +18,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({:erlang, :iolist_to_binary, 1}) == :native_term
       assert Stdlib.class({:erlang, :binary_to_float, 1}) == :native_term
       assert Stdlib.class({:erlang, :float_to_binary, 2}) == :native_term
+      assert Stdlib.class({:io_lib_format, :fwrite_g, 1}) == :native_term
       assert Stdlib.class({:erlang, :split_binary, 2}) == :native_term
       assert Stdlib.class({:erlang, :binary_part, 3}) == :native_term
       assert Stdlib.class({:binary, :at, 2}) == :native_term
@@ -81,6 +82,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Time, :to_iso8601, 1})
       assert Stdlib.may_raise?({:erlang, :binary_to_float, 1})
       assert Stdlib.may_raise?({:erlang, :float_to_binary, 2})
+      assert Stdlib.may_raise?({:io_lib_format, :fwrite_g, 1})
       assert Stdlib.may_raise?({:erlang, :split_binary, 2})
       assert Stdlib.may_raise?({:erlang, :binary_part, 3})
       assert Stdlib.may_raise?({:binary, :part, 3})
