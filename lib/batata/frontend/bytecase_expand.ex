@@ -234,8 +234,13 @@ defmodule Batata.Frontend.BytecaseExpand do
 
   defp eval_range({:unquote, _, [value]}), do: eval_range(value)
 
-  defp eval_range({:sigil_c, _, [{:<<>>, _, [contents]}, []]}) when is_binary(contents),
-    do: {:ok, String.to_charlist(contents)}
+  defp eval_range({:sigil_c, _, [{:<<>>, _, [contents]}, []]} = sigil)
+       when is_binary(contents) do
+    case Macro.expand(sigil, __ENV__) do
+      charlist when is_list(charlist) -> {:ok, charlist}
+      _other -> :error
+    end
+  end
 
   defp eval_range(ast) do
     case Literal.eval(ast) do

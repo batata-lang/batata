@@ -249,6 +249,22 @@ defmodule Batata.StdlibTest do
       assert ir =~ "ex.binary_part"
     end
 
+    test "extracts binary parts with arithmetically updated offsets", %{ctx: ctx} do
+      source = """
+      defmodule DynamicBinaryPart do
+        def part(binary, start, length), do: binary_part(binary, start, length)
+
+        def main() do
+          offset = 1 + 1
+          length = offset + 1
+          part("snowman", offset, length)
+        end
+      end
+      """
+
+      assert Batata.execute(source, ctx) == "owm"
+    end
+
     test "raises for invalid binary part types and bounds", %{ctx: ctx} do
       for expression <- [
             ~s|binary_part("abc", -1, 1)|,

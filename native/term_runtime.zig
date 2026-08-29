@@ -2308,19 +2308,23 @@ pub fn ex_term_throw(value: i64) callconv(.c) noreturn {
     @panic("uncaught throw outside an actor boundary");
 }
 
-/// Raises an exception past user catch frames to the actor boundary. `kind`
-/// is kept as runtime metadata, never encoded in the user-controlled reason.
+/// Raises an exception to the innermost user catch frame or actor boundary.
+/// `kind` remains separate from the user-controlled reason until a catch
+/// value is requested.
 pub fn ex_term_raise(reason: i64, kind: i64) callconv(.c) noreturn {
     throw_value = reason;
     unwind_kind = kind;
+    if (jmp_depth > 0) c.longjmp(jmp_stack[jmp_depth - 1], 1);
     if (uncaught_boundary) |boundary| c.longjmp(boundary, 1);
     @panic("uncaught exception outside an actor boundary");
 }
 
-/// Returns the value delivered by the most recent throw (called from the
-/// catch region after the longjmp returns).
+/// Returns `{kind, reason}` for the active unwind. Zero denotes `:throw`; a
+/// positive boxed kind denotes the Erlang `:error` class. Keeping both shapes
+/// tagged lets compiled catch patterns distinguish a thrown two-tuple from an
+/// exception without changing the actor-boundary ABI.
 pub fn ex_term_catch_value() callconv(.c) i64 {
-    return throw_value;
+    return tuple2(unwind_kind << @intCast(tag_shift), throw_value);
 }
 
 /// Invokes a host callback behind the runtime's uncaught throw/raise
@@ -7382,21 +7386,28 @@ fn exception_boundary_dispatch(pid: i64) callconv(.c) i64 {
     return pid;
 }
 
-test "typed raise bypasses catch frames and survives result ownership" {
+test "typed raise unwinds to the innermost try with its kind" {
     const runtime_handle = ex_term_runtime_create();
-    _ = ex_term_runtime_enter(runtime_handle);
-    _ = ex_term_process_table_reset(default_process_cap);
+    try std.testing.expect(runtime_handle > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(runtime_handle);
+    }
 
     var user_catch: c.jmp_buf = undefined;
     try std.testing.expectEqual(@as(i64, 0), ex_term_try_push(&user_catch));
-    _ = ex_term_worker_run(1, &exception_boundary_dispatch);
 
-    const handle = ex_term_result_create(runtime_handle, nil_word);
-    try std.testing.expect(handle > 0);
-    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
-    try std.testing.expectEqual(@as(i64, 1), ex_term_result_exception_kind(handle));
-    try std.testing.expectEqual(99 << @intCast(tag_shift), ex_term_result_exception_reason(handle));
-    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
+    if (c.setjmp(&user_catch) == 0) {
+        ex_term_raise(99 << @intCast(tag_shift), 1);
+        unreachable;
+    } else {
+        const caught = ex_term_catch_value();
+        try std.testing.expectEqual(@as(i64, 1 << @intCast(tag_shift)), ex_term_tuple_get(caught, 0));
+        try std.testing.expectEqual(@as(i64, 99 << @intCast(tag_shift)), ex_term_tuple_get(caught, 1));
+    }
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_try_pop());
 }
 
 test "uncaught throw exits only its actor and workers continue" {
@@ -7685,6 +7696,14 @@ test "protected host calls close normal and raised control paths" {
 }
 
 test "term ABI throw unwinds to the innermost try" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expect(runtime_handle > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(runtime_handle);
+    }
+
     var buf: c.jmp_buf = undefined;
     try std.testing.expectEqual(@as(i64, 0), ex_term_try_push(&buf));
 
@@ -7693,7 +7712,9 @@ test "term ABI throw unwinds to the innermost try" {
         ex_term_throw(42 << @intCast(tag_shift));
         unreachable;
     } else {
-        try std.testing.expectEqual(@as(i64, 42 << @intCast(tag_shift)), ex_term_catch_value());
+        const caught = ex_term_catch_value();
+        try std.testing.expectEqual(@as(i64, 0), ex_term_tuple_get(caught, 0));
+        try std.testing.expectEqual(@as(i64, 42 << @intCast(tag_shift)), ex_term_tuple_get(caught, 1));
     }
 
     try std.testing.expectEqual(@as(i64, 0), ex_term_try_pop());

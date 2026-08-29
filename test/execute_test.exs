@@ -3257,6 +3257,144 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == {"Jason", {1, 2}, [1, 2], %{key: 1}, :ok}
   end
 
+  test "normalizes a dynamic closure result after a term case clause", %{ctx: ctx} do
+    source = """
+    defmodule DynamicCaseResult do
+      def identity(), do: fn value -> value end
+
+      def choose(value) do
+        identity = identity()
+
+        case value do
+          [] -> "{}"
+          value -> identity.(value)
+        end
+      end
+
+      def main(), do: {choose([]), choose("Jason")}
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {"{}", "Jason"}
+  end
+
+  test "normalizes a dynamic closure result before term case matching", %{ctx: ctx} do
+    source = """
+    defmodule DynamicCaseScrutinee do
+      def identity(), do: fn value -> value end
+
+      def main() do
+        identity = identity()
+
+        case identity.(:ok) do
+          :ok -> 1
+          _ -> 0
+        end
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == 1
+  end
+
+  test "preserves tail positions in high-arity multi-clause dispatch", %{ctx: ctx} do
+    source = """
+    defmodule HighArityTailPositions do
+      def object(:close, original, skip, stack, decode, value) do
+        [key, acc | rest] = stack
+        {key, acc, rest, original, skip, decode, value}
+      end
+
+      def object(_, _, _, _, _, _), do: :fallback
+
+      def main() do
+        object(:close, "original", 7, ["x", [:existing], :outer], :decode, [1, true, nil])
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) ==
+             {"x", [:existing], [:outer], "original", 7, :decode, [1, true, nil]}
+  end
+
+  test "dispatches guarded binary heads with term tail arguments", %{ctx: ctx} do
+    source = """
+    defmodule GuardedBinaryTailDispatch do
+      def scan(<<byte, rest::bits>>, acc, original, skip) when byte === ?s do
+        {rest, acc, original, skip + 1}
+      end
+
+      def scan(<<>>, acc, original, skip), do: {"", acc, original, skip}
+      def scan(_, _, _, _), do: :fallback
+
+      def main(), do: scan("snow", [:acc], "snow", 0)
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {"now", [:acc], "snow", 1}
+  end
+
+  test "dispatches a generated binary jump table", %{ctx: ctx} do
+    source = """
+    defmodule GeneratedBinaryJumpTable do
+      def scan(data), do: scan(data, [], data, 0)
+
+      Enum.map(0..127, fn expected ->
+        def scan(<<byte, rest::bits>>, acc, original, skip)
+            when byte === unquote(expected) do
+          chunk(rest, acc, original, skip, 1)
+        end
+
+        def chunk(<<byte, rest::bits>>, acc, original, skip, length)
+            when byte === unquote(expected) do
+          chunk(rest, acc, original, skip, length + 1)
+        end
+      end)
+
+      def scan(<<>>, acc, original, skip), do: {"", acc, original, skip}
+      def scan(_, _, _, _), do: :fallback
+
+      def chunk(<<>>, acc, original, skip, length) do
+        {Kernel.length(acc), original, skip, length}
+      end
+
+      def chunk(_, _, _, _, _), do: :fallback
+
+      def main(), do: scan("snow")
+    end
+    """
+
+    unit =
+      source
+      |> Batata.Frontend.from_source()
+      |> List.wrap()
+      |> Batata.CompilationUnit.build(entry: {GeneratedBinaryJumpTable, :main, 0})
+
+    assert Batata.execute(unit, ctx) == {0, "snow", 0, 4}
+  end
+
+  test "selects the matching generated binary clause", %{ctx: ctx} do
+    source = """
+    defmodule GeneratedBinaryClauseIdentity do
+      Enum.map(0..127, fn expected ->
+        def classify(<<byte, _rest::bits>>) when byte === unquote(expected),
+          do: unquote(expected)
+      end)
+
+      def classify(_), do: -1
+      def main(), do: {classify("s"), classify("n"), classify(<<0>>)}
+    end
+    """
+
+    unit =
+      source
+      |> Batata.Frontend.from_source()
+      |> List.wrap()
+      |> Batata.CompilationUnit.build(entry: {GeneratedBinaryClauseIdentity, :main, 0})
+
+    assert Batata.execute(unit, ctx) == {115, 110, 0}
+  end
+
   test "dispatches mixed scalar and term closures returned from functions", %{ctx: ctx} do
     source = """
     defmodule DynamicMixedResults do
@@ -4166,6 +4304,30 @@ defmodule Batata.ExecuteTest do
 
     expected = source |> Kernel.<>("\nJasonThrowPattern.main()") |> Code.eval_string() |> elem(0)
     assert Batata.execute(source, ctx) == expected
+  end
+
+  test "try catches a raised protocol exception by error class", %{ctx: ctx} do
+    source = """
+    defmodule ProtocolErrorCatch do
+      def fail(value) do
+        raise Protocol.UndefinedError,
+          protocol: String.Chars,
+          value: value,
+          description: "missing"
+      end
+
+      def main() do
+        try do
+          fail(%{value: 7})
+        catch
+          :error, %Protocol.UndefinedError{protocol: String.Chars} = error ->
+            {:error, error}
+        end
+      end
+    end
+    """
+
+    assert {:error, %Protocol.UndefinedError{value: %{value: 7}}} = Batata.execute(source, ctx)
   end
 
   test "executes nested composite terms under abstract !ex.term representation", %{ctx: ctx} do

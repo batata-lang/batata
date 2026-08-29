@@ -87,7 +87,16 @@ defmodule Batata.Frontend.KernelRaiseExpand do
          {:ok, protocol} <- Keyword.fetch(attributes, :protocol),
          {:ok, value} <- Keyword.fetch(attributes, :value) do
       description = Keyword.get(attributes, :description)
-      {:ok, {:{}, [], [protocol, value, description]}}
+
+      {:ok,
+       {:%{}, [],
+        [
+          __struct__: Protocol.UndefinedError,
+          __exception__: true,
+          protocol: protocol,
+          value: value,
+          description: description
+        ]}}
     else
       _other -> :error
     end

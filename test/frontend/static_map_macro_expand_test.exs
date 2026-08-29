@@ -114,4 +114,41 @@ defmodule Batata.Frontend.StaticMapMacroExpandTest do
     assert snapshot.unsupported == []
     assert Enum.map(snapshot.definitions, & &1.name) == [:encode]
   end
+
+  test "expands a bounded deriving declaration into a protocol implementation" do
+    provider = """
+    defimpl Sample.Encoder, for: Any do
+      defmacro __deriving__(module, struct, opts) do
+        fields = fields_to_encode(struct, opts)
+        kv = Enum.map(fields, &{&1, generated_var(&1)})
+        iodata = Sample.Codegen.build_kv_iodata(kv, [])
+
+        quote do
+          defimpl Sample.Encoder, for: unquote(module) do
+            def encode(%{unquote_splicing(kv)}, opts), do: {opts, unquote(iodata)}
+          end
+        end
+      end
+
+      def encode(value, opts), do: {value, opts}
+    end
+    """
+
+    fixture = """
+    defmodule Sample.Derived do
+      @derive {Sample.Encoder, only: [:visible]}
+      defstruct [:visible, :hidden]
+    end
+    """
+
+    modules = Frontend.from_sources([provider, fixture])
+    derived = Enum.find(modules, &(&1.name == Sample.Encoder.Sample.Derived))
+    fixture = Enum.find(modules, &(&1.name == Sample.Derived))
+
+    assert fixture.struct_schema.fields == [visible: nil, hidden: nil]
+    assert fixture.unsupported == []
+    assert derived.protocol == Sample.Encoder
+    assert derived.protocol_target == Sample.Derived
+    assert [%Frontend.Definition{name: :encode, arity: 2}] = derived.definitions
+  end
 end

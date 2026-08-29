@@ -14,7 +14,8 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
   @type macro_spec :: %{
           required(:kind) => macro_kind(),
           optional(:fragment_module) => module(),
-          optional(:encode_module) => module()
+          optional(:encode_module) => module(),
+          optional(:protocol) => module()
         }
   @type signature :: {atom(), non_neg_integer()}
   @type registry :: %{optional(module()) => %{optional(signature()) => macro_spec()}}
@@ -29,6 +30,37 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
       |> discover_ast(registry)
     end)
   end
+
+  @doc "Expands bounded `@derive` declarations into ordinary protocol implementations."
+  @spec expand_derivations(Macro.t(), registry()) :: Macro.t()
+  def expand_derivations({:__block__, metadata, forms}, registry) do
+    expanded =
+      Enum.flat_map(forms, fn form ->
+        case expand_derivations(form, registry) do
+          {:__block__, _, nested} -> nested
+          expanded_form -> [expanded_form]
+        end
+      end)
+
+    {:__block__, metadata, expanded}
+  end
+
+  def expand_derivations({:defmodule, metadata, [module_ast, [do: body]]} = ast, registry) do
+    module = literal_module(module_ast)
+    forms = body_forms(body)
+
+    case derive_implementations(module, forms, registry, metadata) do
+      {[], _consumed} ->
+        ast
+
+      {implementations, consumed} ->
+        kept = Enum.reject(forms, &MapSet.member?(consumed, &1))
+        target = {:defmodule, metadata, [module_ast, [do: block(kept)]]}
+        {:__block__, metadata, [target | implementations]}
+    end
+  end
+
+  def expand_derivations(ast, _registry), do: ast
 
   @doc "Consumes supported declarations and expands imported or required calls."
   @spec expand(Macro.t(), registry()) :: Macro.t()
@@ -92,7 +124,7 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
       body
       |> body_forms()
       |> Enum.reduce(%{}, fn form, acc ->
-        case macro_kind(form) do
+        case macro_kind(form, module) do
           {:ok, signature, spec} -> Map.put(acc, signature, spec)
           :error -> acc
         end
@@ -111,7 +143,7 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
       body
       |> body_forms()
       |> Enum.reduce(%{}, fn form, acc ->
-        case macro_kind(form) do
+        case macro_kind(form, module) do
           {:ok, signature, spec} -> Map.put(acc, signature, spec)
           :error -> acc
         end
@@ -124,19 +156,19 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
 
   defp discover_ast(_ast, registry), do: registry
 
-  defp macro_kind({:defmacro, _, [head, [do: body]]}) do
+  defp macro_kind({:defmacro, _, [head, [do: body]]}, provider) do
     with {:ok, {name, arity} = signature} <- definition_signature(head),
          true <- calls_build_kv_iodata?(body),
-         {:ok, spec} <- map_macro_kind(name, arity, body) do
+         {:ok, spec} <- map_macro_kind(name, arity, body, provider) do
       {:ok, signature, spec}
     else
       _ -> :error
     end
   end
 
-  defp macro_kind(_form), do: :error
+  defp macro_kind(_form, _provider), do: :error
 
-  defp map_macro_kind(_name, 1, body) do
+  defp map_macro_kind(_name, 1, body, _provider) do
     with {:ok, fragment_module} <- fragment_module(body),
          encode_module when is_atom(encode_module) <- sibling_module(fragment_module, :Encode) do
       {:ok, %{kind: :literal_map, fragment_module: fragment_module, encode_module: encode_module}}
@@ -145,7 +177,7 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
     end
   end
 
-  defp map_macro_kind(_name, 2, body) do
+  defp map_macro_kind(_name, 2, body, _provider) do
     with true <- contains?(body, &match?({:case, _, _}, &1)),
          {:ok, fragment_module} <- fragment_module(body),
          encode_module when is_atom(encode_module) <- sibling_module(fragment_module, :Encode) do
@@ -155,13 +187,137 @@ defmodule Batata.Frontend.StaticMapMacroExpand do
     end
   end
 
-  defp map_macro_kind(:__deriving__, 3, body) do
-    if contains?(body, &match?({:defimpl, _, _}, &1)),
-      do: {:ok, %{kind: :deriving}},
-      else: :error
+  defp map_macro_kind(:__deriving__, 3, body, provider) do
+    with true <- contains?(body, &match?({:defimpl, _, _}, &1)),
+         protocol when is_atom(protocol) <- parent_protocol(provider),
+         encode_module when is_atom(encode_module) <- sibling_module(protocol, :Encode) do
+      {:ok, %{kind: :deriving, protocol: protocol, encode_module: encode_module}}
+    else
+      _ -> :error
+    end
   end
 
-  defp map_macro_kind(_name, _arity, _body), do: :error
+  defp map_macro_kind(_name, _arity, _body, _provider), do: :error
+
+  defp derive_implementations(module, forms, registry, metadata)
+       when is_atom(module) and not is_nil(module) do
+    with {:ok, fields, _struct_form} <- struct_fields(forms) do
+      Enum.reduce(forms, {[], MapSet.new()}, fn form, {implementations, consumed} ->
+        case derive_spec(form, registry) do
+          {:ok, spec, options} ->
+            case derived_fields(fields, options) do
+              {:ok, selected} ->
+                implementation = derive_impl_ast(module, selected, spec, metadata)
+
+                {implementations ++ [implementation], MapSet.put(consumed, form)}
+
+              :error ->
+                {implementations, consumed}
+            end
+
+          :error ->
+            {implementations, consumed}
+        end
+      end)
+    else
+      _ -> {[], MapSet.new()}
+    end
+  end
+
+  defp derive_implementations(_module, _forms, _registry, _metadata),
+    do: {[], MapSet.new()}
+
+  defp derive_spec({:@, _, [{:derive, _, [value]}]}, registry) do
+    with {:ok, protocol, options} <- derive_value(value),
+         provider <- Module.concat(protocol, Any),
+         macros when is_map(macros) <- Map.get(registry, provider),
+         %{kind: :deriving, protocol: ^protocol} = spec <- Map.get(macros, {:__deriving__, 3}) do
+      {:ok, spec, options}
+    else
+      _ -> :error
+    end
+  end
+
+  defp derive_spec(_form, _registry), do: :error
+
+  defp derive_value({:{}, _, [protocol_ast, options]}) when is_list(options) do
+    case literal_module(protocol_ast) do
+      protocol when is_atom(protocol) and not is_nil(protocol) -> {:ok, protocol, options}
+      _ -> :error
+    end
+  end
+
+  defp derive_value({protocol_ast, options}) when is_list(options) do
+    case literal_module(protocol_ast) do
+      protocol when is_atom(protocol) and not is_nil(protocol) -> {:ok, protocol, options}
+      _ -> :error
+    end
+  end
+
+  defp derive_value(protocol_ast) do
+    case literal_module(protocol_ast) do
+      protocol when is_atom(protocol) and not is_nil(protocol) -> {:ok, protocol, []}
+      _ -> :error
+    end
+  end
+
+  defp struct_fields(forms) do
+    Enum.find_value(forms, :error, fn
+      {:defstruct, _, [fields]} = form when is_list(fields) ->
+        names =
+          Enum.map(fields, fn
+            {name, _default} -> name
+            name -> name
+          end)
+
+        if Enum.all?(names, &is_atom/1), do: {:ok, names, form}, else: false
+
+      _ ->
+        false
+    end)
+  end
+
+  defp derived_fields(fields, options) do
+    cond do
+      Keyword.keyword?(options) and is_list(options[:only]) and
+          Enum.all?(options[:only], &(&1 in fields)) ->
+        {:ok, options[:only]}
+
+      Keyword.keyword?(options) and is_list(options[:except]) and
+          Enum.all?(options[:except], &(&1 in fields)) ->
+        {:ok, fields -- options[:except]}
+
+      options == [] ->
+        {:ok, fields}
+
+      true ->
+        :error
+    end
+  end
+
+  defp derive_impl_ast(module, fields, spec, metadata) do
+    variables = generated_vars(Enum.map(fields, &{&1, nil}))
+    pairs = Enum.zip(fields, variables)
+    pattern = {:%{}, metadata, pairs}
+    escape = Macro.var(:escape, __MODULE__)
+    encode_map = Macro.var(:encode_map, __MODULE__)
+    opts = {:{}, metadata, [escape, encode_map]}
+    body = iodata_ast(pairs, escape, encode_map, spec.encode_module, metadata)
+    head = {:encode, metadata, [pattern, opts]}
+    definition = {:def, metadata, [head, [do: body]]}
+
+    {:defimpl, metadata,
+     [module_ast(spec.protocol, metadata), [for: module_ast(module, metadata)], [do: definition]]}
+  end
+
+  defp parent_protocol(provider) when is_atom(provider) do
+    case Module.split(provider) do
+      [_single] -> nil
+      parts -> parts |> Enum.drop(-1) |> Module.concat()
+    end
+  end
+
+  defp parent_protocol(_provider), do: nil
 
   defp calls_build_kv_iodata?(ast) do
     contains?(ast, fn

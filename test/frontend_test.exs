@@ -104,11 +104,13 @@ defmodule Batata.FrontendTest do
     assert {:__batata_raise__, _,
             [
               10,
-              {:{}, _,
+              {:%{}, _,
                [
-                 {:__aliases__, _, [:Enumerable]},
-                 {:value, _, nil},
-                 "not enumerable"
+                 __struct__: Protocol.UndefinedError,
+                 __exception__: true,
+                 protocol: {:__aliases__, _, [:Enumerable]},
+                 value: {:value, _, nil},
+                 description: "not enumerable"
                ]}
             ]} = protocol.clauses |> hd() |> Map.fetch!(:body_ast)
   end
@@ -129,7 +131,7 @@ defmodule Batata.FrontendTest do
 
     assert [definition] = snapshot.definitions
 
-    assert {:__batata_raise__, _, [10, {:{}, _, _payload}]} =
+    assert {:__batata_raise__, _, [10, {:%{}, _, _payload}]} =
              definition.clauses |> hd() |> Map.fetch!(:body_ast)
   end
 

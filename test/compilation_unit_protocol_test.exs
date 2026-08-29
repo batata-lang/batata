@@ -69,6 +69,51 @@ defmodule Batata.CompilationUnitProtocolTest do
     end
   end
 
+  test "dispatches a statically derived implementation across source files", %{ctx: ctx} do
+    provider = """
+    defprotocol Sample.Encoder do
+      @fallback_to_any true
+      def encode(value, opts)
+    end
+
+    defmodule Sample.Encode do
+      def value(_value, _escape, _encode_map), do: "encoded"
+    end
+
+    defimpl Sample.Encoder, for: Any do
+      defmacro __deriving__(module, struct, opts) do
+        fields = fields_to_encode(struct, opts)
+        kv = Enum.map(fields, &{&1, generated_var(&1)})
+        iodata = Sample.Codegen.build_kv_iodata(kv, [])
+
+        quote do
+          defimpl Sample.Encoder, for: unquote(module) do
+            def encode(%{unquote_splicing(kv)}, opts), do: {opts, unquote(iodata)}
+          end
+        end
+      end
+
+      def encode(_value, _opts), do: :fallback
+    end
+    """
+
+    consumer = """
+    defmodule Sample.Fixture do
+      @derive {Sample.Encoder, only: [:visible]}
+      defstruct [:visible, :hidden]
+    end
+
+    defmodule Sample.Oracle do
+      def main(), do: Sample.Encoder.encode(%Sample.Fixture{visible: 7, hidden: 9}, {nil, nil})
+    end
+    """
+
+    modules = Frontend.from_sources([provider, consumer])
+    unit = CompilationUnit.build(modules, entry: {Sample.Oracle, :main, 0})
+
+    assert Batata.execute(unit, ctx) == ["{\"visible\":", "encoded", "}"]
+  end
+
   test "raises Protocol.UndefinedError when no implementation or Any fallback matches", %{
     ctx: ctx
   } do
@@ -101,5 +146,28 @@ defmodule Batata.CompilationUnitProtocolTest do
     assert %Protocol.UndefinedError{} = error
     assert error.protocol == StrictValue
     assert error.value == :missing
+  end
+
+  test "materializes function-clause failures from compilation units", %{ctx: ctx} do
+    source = """
+    defmodule UnitFunctionClause do
+      def accept(:ok), do: :ok
+    end
+
+    defmodule UnitFunctionClauseOracle do
+      def main(), do: UnitFunctionClause.accept(:missing)
+    end
+    """
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> CompilationUnit.build(entry: {UnitFunctionClauseOracle, :main, 0})
+
+    error = assert_raise FunctionClauseError, fn -> Batata.execute(unit, ctx) end
+
+    assert error.module == Batata.CompilationUnit
+    assert error.arity == 1
+    assert error.args == [:missing]
   end
 end

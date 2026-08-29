@@ -467,9 +467,16 @@ defmodule Batata.Frontend.MetaprogrammingExpand do
     end
   end
 
-  defp eval_compile_expr({:sigil_c, _, [{:<<>>, _, [contents]}, []]}, _bindings)
-       when is_binary(contents),
-       do: {:ok, String.to_charlist(contents)}
+  defp eval_compile_expr(
+         {:sigil_c, _, [{:<<>>, _, [contents]}, []]} = sigil,
+         _bindings
+       )
+       when is_binary(contents) do
+    case Macro.expand(sigil, __ENV__) do
+      charlist when is_list(charlist) -> {:ok, charlist}
+      _other -> :error
+    end
+  end
 
   defp eval_compile_expr(
          {{:., _, [{:__aliases__, _, [:List]}, :to_string]}, _, [expression]},

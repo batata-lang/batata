@@ -96,7 +96,13 @@ defmodule Batata.Frontend do
 
     modules =
       Enum.flat_map(sources, fn source ->
-        case from_source(source,
+        ast =
+          source
+          |> Code.string_to_quoted!()
+          |> AliasExpand.expand()
+          |> StaticMapMacroExpand.expand_derivations(static_map_macros)
+
+        case from_ast(ast,
                metadata_macros: metadata_macros,
                table_generators: table_generators,
                bytecase_macros: bytecase_macros,

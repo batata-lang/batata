@@ -49,6 +49,26 @@ defmodule Batata.DateIso8601Test do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "formats an ISO Date struct term passed through protocol dispatch", %{ctx: ctx} do
+    source = """
+    defmodule DateIso8601StructOracle do
+      defp encode(value), do: Date.to_iso8601(value)
+
+      def main() do
+        encode(%{
+          __struct__: Date,
+          year: 2026,
+          month: 8,
+          day: 29,
+          calendar: Calendar.ISO
+        })
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == "2026-08-29"
+  end
+
   test "fails closed outside the supported Date year range", %{ctx: ctx} do
     too_early = Calendar.ISO.date_to_iso_days(-10_000, 12, 31)
     too_late = Calendar.ISO.date_to_iso_days(10_000, 1, 1)
