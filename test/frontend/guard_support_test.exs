@@ -56,4 +56,11 @@ defmodule Batata.Frontend.GuardSupportTest do
               [byte, {:%{}, [], [__struct__: Range, first: 0, last: :thirty_one, step: 1]}]}
            )
   end
+
+  test "expands escapes in literal charlist members" do
+    members = quote(do: ~c'\s\n\t\r')
+
+    assert GuardSupport.term_members(members) == {:integer_set, [32, 10, 9, 13]}
+    refute ?n in elem(GuardSupport.term_members(members), 1)
+  end
 end

@@ -2167,6 +2167,23 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "expands escaped charlist members in binary guards", %{ctx: ctx} do
+    source = """
+    defmodule EscapedCharlistGuard do
+      def main(), do: classify("null")
+
+      defp classify(data) do
+        case data do
+          <<byte, _rest::binary>> when byte in ~c'\\s\\n\\t\\r' -> :whitespace
+          <<?n, rest::binary>> -> {:null, rest}
+        end
+      end
+    end
+    """
+
+    assert {:null, "ull"} == Batata.execute(source, ctx)
+  end
+
   test "rejects invalid utf8 sequences with fall-through", %{ctx: ctx} do
     assert 0 ==
              Batata.execute(
