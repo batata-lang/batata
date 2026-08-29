@@ -324,8 +324,96 @@ defmodule Batata.Lift do
       (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
         (length(clauses) == 1 and Enum.any?(clauses, &function_clause_requires_dispatch?/1))
     end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
-      Enum.any?(definitions, &definition_uses_native_raise?/1)
+      Enum.any?(definitions, &definition_uses_native_raise?/1) or
+      Enum.any?(definitions, &definition_uses_term_pattern_arithmetic?/1)
   end
+
+  defp definition_uses_term_pattern_arithmetic?(%Frontend.Definition{clauses: clauses}) do
+    Enum.any?(clauses, fn %Frontend.Clause{patterns: patterns, body_ast: body} ->
+      ast_uses_integer_arithmetic?(body) and
+        (Enum.any?(patterns, &term_pattern?/1) or ast_has_term_pattern_case?(body))
+    end)
+  end
+
+  defp ast_uses_integer_arithmetic?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        node, true ->
+          {node, true}
+
+        {name, _, args} = node, false
+        when name in [
+               :+,
+               :-,
+               :*,
+               :div,
+               :rem,
+               :bnot,
+               :"~~~",
+               :band,
+               :bor,
+               :bxor,
+               :bsl,
+               :bsr,
+               :&&&,
+               :|||,
+               :"^^^",
+               :<<<,
+               :>>>
+             ] and is_list(args) ->
+          {node, true}
+
+        {{:., _, [_module, _name]}, _, args} = node, false when is_list(args) ->
+          {node, remote_integer_arithmetic_call?(node)}
+
+        node, false ->
+          {node, false}
+      end)
+
+    found?
+  end
+
+  defp remote_integer_arithmetic_call?({{:., _, [module_ast, name]}, _, args}) do
+    is_list(args) and
+      name in [
+        :div,
+        :rem,
+        :bnot,
+        :"~~~",
+        :band,
+        :bor,
+        :bxor,
+        :bsl,
+        :bsr,
+        :&&&,
+        :|||,
+        :"^^^",
+        :<<<,
+        :>>>
+      ] and module_ref(module_ast) in [{:ok, Kernel}, {:ok, Bitwise}]
+  end
+
+  defp ast_has_term_pattern_case?(ast) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        node, true ->
+          {node, true}
+
+        {:case, _, [_value, [do: clauses]]} = node, false ->
+          {node, Enum.any?(clauses, &case_clause_has_term_pattern?/1)}
+
+        node, false ->
+          {node, false}
+      end)
+
+    found?
+  end
+
+  defp case_clause_has_term_pattern?({:->, _, [[{:when, _, [pattern, _guard]}], _body]}),
+    do: term_pattern?(pattern)
+
+  defp case_clause_has_term_pattern?({:->, _, [[pattern], _body]}), do: term_pattern?(pattern)
+  defp case_clause_has_term_pattern?(_clause), do: false
 
   defp definition_uses_native_raise?(%Frontend.Definition{clauses: clauses}) do
     Enum.any?(clauses, fn %Frontend.Clause{body_ast: body} -> ast_uses_native_raise?(body) end)
@@ -10211,13 +10299,8 @@ defmodule Batata.Lift do
       not term_operand?(value) -> value
       term_parameter?(ast, env) -> validated_integer_parameter(value, ctx, block)
       deferred_scalar_call?(ast) -> value
-      true -> ensure_refined_integer_operand!(value)
+      true -> validated_integer_parameter(value, ctx, block)
     end
-  end
-
-  defp ensure_refined_integer_operand!(value) do
-    ensure_refined_integer_operands!([value])
-    value
   end
 
   defp term_parameter?({name, _, context}, env) when is_variable_ast(name, context) do
