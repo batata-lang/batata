@@ -1580,19 +1580,29 @@ defmodule Batata.ExecuteTest do
              )
   end
 
-  test "rejects assignments inside body-level if branches", %{ctx: ctx} do
-    for branches <- ["do: (value = 1), else: 2", "do: 1, else: (value = 2)"] do
-      assert_raise Batata.Lift.Error, "assignments in if branches are unsupported", fn ->
-        Batata.compile(
-          """
-          defmodule NativeBodyIfAssignment do
-            def main(), do: if(true, #{branches})
+  test "executes branch-local assignments without replacing outer bindings", %{ctx: ctx} do
+    source = """
+    defmodule NativeBodyIfAssignment do
+      def choose(flag) do
+        outer = 9
+
+        selected =
+          if flag do
+            value = 3
+            value + 4
+          else
+            value = 5
+            value * 2
           end
-          """,
-          ctx
-        )
+
+        {outer, selected}
       end
+
+      def main(), do: {choose(true), choose(false)}
     end
+    """
+
+    assert {{9, 7}, {9, 10}} == Batata.execute(source, ctx)
   end
 
   test "executes list cons pattern matching through the Zig runtime", %{ctx: ctx} do

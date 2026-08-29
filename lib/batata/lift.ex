@@ -3789,10 +3789,6 @@ defmodule Batata.Lift do
     then_ast = options |> Keyword.fetch!(:do) |> normalize_unused_branch_aliases()
     else_ast = options |> Keyword.get(:else, nil) |> normalize_unused_branch_aliases()
 
-    if ast_has_assignment?(then_ast) or ast_has_assignment?(else_ast) do
-      raise Error, "assignments in if branches are unsupported"
-    end
-
     {condition, env} = lift_expr(condition_ast, ctx, block, env)
     condition = lift_value(condition, ctx, block, env)
     {condition, falsy} = lower_if_truthiness(condition_ast, condition, ctx, block)
