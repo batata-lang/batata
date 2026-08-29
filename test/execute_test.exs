@@ -891,6 +891,27 @@ defmodule Batata.ExecuteTest do
     assert bad_map_error.term == 1
   end
 
+  test "reads fields from local and qualified call results", %{ctx: ctx} do
+    source = """
+    defmodule FieldSource do
+      def context(), do: %{precision: 28}
+    end
+
+    defmodule ExpressionFieldAccess do
+      def local(), do: %{value: 7}
+      def local_value(), do: local().value
+      def main(), do: {local_value(), FieldSource.context().precision}
+    end
+    """
+
+    unit =
+      source
+      |> Batata.Frontend.from_source()
+      |> Batata.CompilationUnit.build(entry: {ExpressionFieldAccess, :main, 0})
+
+    assert {7, 28} == Batata.execute(unit, ctx)
+  end
+
   test "raises typed errors for invalid exact map updates", %{ctx: ctx} do
     key_error =
       assert_raise KeyError, fn ->

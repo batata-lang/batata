@@ -4455,6 +4455,19 @@ defmodule Batata.Lift do
     end
   end
 
+  defp lift_expr({{:., _, [base_ast, field]}, [{:no_parens, true} | _], []}, ctx, block, env)
+       when is_atom(field) do
+    case module_ref(base_ast) do
+      {:ok, module} ->
+        lift_stdlib_call(module, field, [], ctx, block, env)
+
+      :error ->
+        {base, env} = lift_expr(base_ast, ctx, block, env)
+        base = base |> lift_value(ctx, block, env) |> box_term(ctx, block)
+        {lower_map_field_access(base, field, ctx, block), env}
+    end
+  end
+
   defp lift_expr({{:., _, [mod_ast, fun]}, _, args}, ctx, block, env)
        when is_atom(fun) and is_list(args) do
     case module_ref(mod_ast) do
