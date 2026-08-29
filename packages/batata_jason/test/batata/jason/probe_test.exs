@@ -45,7 +45,8 @@ defmodule Batata.Jason.ProbeTest do
                report: report,
                coverage: coverage,
                compile_link_profile: profile,
-               qualified_only: true
+               qualified_only: true,
+               execute_unmodified: false
              )
 
     assert raw["corpus"]["name"] == "jason"
@@ -53,6 +54,7 @@ defmodule Batata.Jason.ProbeTest do
     assert File.regular?(report)
     assert File.regular?(coverage)
     assert File.regular?(profile)
+    assert is_nil(dashboard["corpora"]["jason"]["semantic_execution"]["current"]["evidence"])
 
     current = dashboard["corpora"]["jason"]["corpus_compile_link"]["current"]
     assert current["isolated_attempts"] == "omitted"

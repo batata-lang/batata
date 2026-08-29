@@ -111,8 +111,9 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
 
     assert capabilities["exception.schema_compile"]["status"] == "executable"
     assert capabilities["exception.schema_compile"]["gate"] == "compile_probe"
-    assert capabilities["exception.execution"]["status"] == "blocked"
-    assert capabilities["exception.execution"]["reason"] =~ "raise/rescue"
+    assert capabilities["exception.execution"]["status"] == "executable"
+    assert capabilities["exception.execution"]["gate"] == "unmodified_execution"
+    assert capabilities["exception.execution"]["scope"] =~ "Exception.message/1"
     assert capabilities["struct.schema_compile"]["status"] == "executable"
     assert capabilities["struct.schema_compile"]["gate"] == "compile_probe"
     assert capabilities["struct.schema_compile"]["scope"] =~ "current-module defstruct"
@@ -124,7 +125,10 @@ defmodule Batata.Probe.Jason.CapabilityMatrixTest do
     assert capabilities["guard.is_function"]["status"] == "executable"
     assert capabilities["guard.is_function"]["gate"] == "execute_test"
     assert capabilities["guard.is_function"]["scope"] =~ "module-local"
-    assert capabilities["jason.unmodified"]["owner"] == "frontend"
+    assert capabilities["jason.unmodified"]["status"] == "executable"
+    assert capabilities["jason.unmodified"]["gate"] == "unmodified_execution"
+    assert capabilities["jason.unmodified"]["scope"] =~ "qualified multi-module JIT"
+    assert capabilities["jason.unmodified"]["scope"] =~ "fallback-to-any"
     assert capabilities["fixture.second"]["status"] == "executable"
     assert capabilities["fixture.second"]["gate"] == "decimal_subset_test"
   end

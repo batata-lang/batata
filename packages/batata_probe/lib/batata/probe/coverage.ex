@@ -74,7 +74,7 @@ defmodule Batata.Probe.Coverage do
     diff = Diff.compare(raw, baseline)
     canonical = canonical_acceptance(source)
     compile_link = CorpusCompileLink.run(source, Map.get(config, :compile_link_options, []))
-    semantic = semantic_execution(capabilities)
+    semantic = semantic_execution(capabilities, config[:semantic_evidence])
 
     regressions = raw_regressions(diff) ++ canonical_regressions(canonical, canonical_baseline)
 
@@ -255,7 +255,7 @@ defmodule Batata.Probe.Coverage do
     end
   end
 
-  defp semantic_execution(%{"capabilities" => capabilities}) do
+  defp semantic_execution(%{"capabilities" => capabilities}, evidence) do
     statuses = Enum.frequencies_by(capabilities, & &1["status"])
 
     %{
@@ -266,7 +266,8 @@ defmodule Batata.Probe.Coverage do
         capabilities
         |> Enum.filter(&(&1["status"] == "blocked"))
         |> Enum.map(& &1["id"])
-        |> Enum.sort()
+        |> Enum.sort(),
+      "evidence" => evidence
     }
   end
 

@@ -13,7 +13,8 @@ defmodule Mix.Tasks.Batata.Jason.Probe do
     fail_on_regression: :boolean,
     compile_link_concurrency: :integer,
     compile_link_profile: :string,
-    qualified_only: :boolean
+    qualified_only: :boolean,
+    execute_unmodified: :boolean
   ]
 
   @impl Mix.Task
@@ -32,7 +33,8 @@ defmodule Mix.Tasks.Batata.Jason.Probe do
       fail_on_regression: Keyword.get(opts, :fail_on_regression, false),
       compile_link_concurrency: Keyword.get(opts, :compile_link_concurrency, 1),
       compile_link_profile: Keyword.get(opts, :compile_link_profile),
-      qualified_only: Keyword.get(opts, :qualified_only, false)
+      qualified_only: Keyword.get(opts, :qualified_only, false),
+      execute_unmodified: Keyword.get(opts, :execute_unmodified, true)
     )
   end
 end

@@ -43,12 +43,12 @@
     {"id": "struct.constructor", "status": "executable", "gate": "execute_test", "scope": "current-module schemas with runtime-representable literal defaults, validated atom-key overrides, and exception marker injection"},
     {"id": "exception.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defexception schemas accepted by canonical frontend normalization"},
     {"id": "struct.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defstruct schemas accepted by canonical frontend normalization"},
-    {"id": "exception.execution", "status": "blocked", "owner": "runtime", "reason": "raise/rescue and Exception.message dispatch are not covered by schema-only compile attempts"},
+    {"id": "exception.execution", "status": "executable", "gate": "unmodified_execution", "scope": "Jason.DecodeError and Protocol.UndefinedError are rescued and rendered with Exception.message/1 inside the qualified multi-module JIT"},
     {"id": "guard.byte_size", "status": "executable", "gate": "guard_byte_size_test"},
     {"id": "guard.expanded_unit_range", "status": "executable", "gate": "generated_range_guard_test", "scope": "canonical escaped Range membership with integer bounds and step 1 or -1; stepped and malformed ranges remain rejected"},
     {"id": "guard.is_function", "status": "executable", "gate": "execute_test", "scope": "module-local arity-carrying closures; external closure provenance remains blocked"},
     {"id": "error.structured", "status": "executable", "gate": "decoder_subset_test"},
-    {"id": "jason.unmodified", "status": "blocked", "owner": "frontend", "reason": "macro, attribute and protocol expansion"},
+    {"id": "jason.unmodified", "status": "executable", "gate": "unmodified_execution", "scope": "18 deterministic encode/decode cases through one qualified multi-module JIT entry, compared with an isolated BEAM oracle; builtin, derived, known, and fallback-to-any Jason.Encoder dispatch included"},
     {"id": "fixture.second", "status": "executable", "gate": "decimal_subset_test"}
   ]
 }
