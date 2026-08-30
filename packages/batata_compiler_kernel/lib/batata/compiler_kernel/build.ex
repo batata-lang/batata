@@ -12,6 +12,7 @@ defmodule Batata.CompilerKernel.Build do
   alias Batata.CompilerKernel
   alias Batata.CompilerKernel.Manifest
   alias Batata.CompilerKernel.Provider
+  alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
 
   @semantic_exports [
@@ -102,7 +103,7 @@ defmodule Batata.CompilerKernel.Build do
     object_path = Path.join(output_dir, "batata-ex-conversion.o")
     library_path = Path.join(output_dir, AOT.library_name("batata_ex_conversion"))
 
-    compile_options = if conversion_plan, do: [conversion_plan: conversion_plan], else: []
+    compile_options = [conversion_plan: conversion_plan || ExConversion.plan()]
 
     %{
       exports: semantic_exports,

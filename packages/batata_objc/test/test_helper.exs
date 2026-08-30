@@ -1,3 +1,5 @@
+Application.put_env(:batata, :conversion_provider, :cpp_bootstrap)
+
 exclusions =
   []
   |> then(fn tags -> if :os.type() == {:unix, :darwin}, do: tags, else: [:darwin | tags] end)
