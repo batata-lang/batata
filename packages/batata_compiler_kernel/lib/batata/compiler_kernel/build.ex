@@ -59,6 +59,7 @@ defmodule Batata.CompilerKernel.Build do
   def build!(output_dir, ctx, opts)
       when is_binary(output_dir) and is_list(opts) do
     reject_unknown_options!(opts)
+    verify_bootstrap_provenance!(opts)
 
     bootstrap = %{
       "stage" => "stage1",
@@ -185,6 +186,17 @@ defmodule Batata.CompilerKernel.Build do
       bootstrap_seed: Map.fetch!(bootstrap, "seed"),
       bootstrap_provenance: Map.fetch!(bootstrap, "provenance")
     ]
+  end
+
+  defp verify_bootstrap_provenance!(opts) do
+    seed = CompilerKernel.seed_manifest!()
+    expected = "beaver-stage0:" <> Map.fetch!(seed, "identity_digest")
+    actual = Keyword.fetch!(opts, :bootstrap_provenance)
+
+    unless actual == expected do
+      raise ArgumentError,
+            "bootstrap provenance must match the frozen Beaver Stage 0 identity: #{expected}"
+    end
   end
 
   defp provider_options(opts) do

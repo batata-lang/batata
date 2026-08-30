@@ -8,6 +8,8 @@ defmodule Batata.CompilerKernel do
   this package or on its release layout.
   """
 
+  alias Beaver.MLIR.Conversion.Ex.Stage0
+
   @provider "batata.ex-conversion"
   @sidecar "compiler-kernel.json"
 
@@ -28,9 +30,18 @@ defmodule Batata.CompilerKernel do
     |> Path.join("bootstrap/seed-manifest.json")
   end
 
-  @doc "Reads the checked-in Stage 0 seed policy."
+  @doc "Reads and verifies the checked-in Stage 0 seed policy."
   @spec seed_manifest!() :: map()
-  def seed_manifest!, do: seed_manifest_path() |> File.read!() |> JSON.decode!()
+  def seed_manifest! do
+    manifest = seed_manifest_path() |> File.read!() |> JSON.decode!()
+    expected = Stage0.manifest()
+
+    unless manifest == expected do
+      raise "checked-in Stage 0 seed manifest does not match Beaver"
+    end
+
+    manifest
+  end
 
   @doc false
   @spec conversion_source_path() :: Path.t()

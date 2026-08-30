@@ -79,10 +79,13 @@ defmodule Batata.CompilerKernel.ManifestTest do
 
   test "ships a frozen, non-production Stage 0 seed policy" do
     seed = CompilerKernel.seed_manifest!()
-    assert seed["stage"] == "stage0"
-    assert seed["seed"] == "cpp-bootstrap"
-    assert seed["provider"] == "beaver.ex-bootstrap"
-    assert seed["source_subset"] == "pure-scalar-v1"
+    assert seed["provider"] == "cpp-bootstrap"
+    assert seed["entrypoint"] == "beaverPopulateExScalarConversionPatterns"
+
+    assert seed["identity_digest"] ==
+             "sha256:6e5d22d6e59047a2875c55104427a343affd23fdfd867a5d988fb34f15e64d4c"
+
+    assert length(seed["patterns"]) == 12
   end
 
   test "rejects cwd-dependent artifact paths and implicit provenance" do
