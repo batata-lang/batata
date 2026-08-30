@@ -46,6 +46,26 @@ defmodule Batata.LowerTest do
     assert rendered =~ "llvm.func"
   end
 
+  test "rejects an invalid conversion provider before mutating the module", %{ctx: ctx} do
+    module =
+      Batata.compile(
+        """
+        defmodule InvalidProvider do
+          def main(), do: 1 + 2
+        end
+        """,
+        ctx
+      )
+
+    before = MLIR.to_string(module, generic: true)
+
+    assert_raise ArgumentError, ~r/:conversion_plan must be a conversion plan/, fn ->
+      Lower.to_func(module, conversion_plan: :implicit_fallback)
+    end
+
+    assert MLIR.to_string(module, generic: true) == before
+  end
+
   test "injects the physical arena quota at the Lower boundary", %{ctx: ctx} do
     module =
       Batata.compile(
