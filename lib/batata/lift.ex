@@ -92,12 +92,21 @@ defmodule Batata.Lift do
       if mod.struct_schema, do: Map.put(schemas, mod.name, mod.struct_schema), else: schemas
 
     no_return_functions = infer_no_return_functions(definitions)
-    scalar_result_functions = Batata.Signature.infer_results(definitions, no_return_functions)
+
+    scalar_result_functions =
+      definitions
+      |> Batata.Signature.infer_results(no_return_functions)
+      |> apply_scalar_result_overrides!(definitions, opts)
+
+    argument_modes =
+      definitions
+      |> Batata.Signature.infer()
+      |> apply_signature_overrides!(definitions, opts)
 
     module_env = %{
       @known_atoms_key => known_atoms,
       @struct_schema_key => schemas,
-      @arg_modes_key => Batata.Signature.infer(definitions),
+      @arg_modes_key => argument_modes,
       @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
       @no_return_functions_key => no_return_functions,
       @scalar_result_functions_key => scalar_result_functions
@@ -117,6 +126,47 @@ defmodule Batata.Lift do
     maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
 
     module
+  end
+
+  defp apply_signature_overrides!(inferred, definitions, opts) do
+    overrides = Keyword.get(opts, :signature_overrides, %{})
+    defined = MapSet.new(definitions, &{&1.name, &1.arity})
+
+    unless is_map(overrides) do
+      raise Error, ":signature_overrides must be a map"
+    end
+
+    Enum.reduce(overrides, inferred, fn
+      {{name, arity} = signature, modes}, acc
+      when is_atom(name) and is_integer(arity) and arity >= 0 and is_list(modes) ->
+        unless MapSet.member?(defined, signature) and length(modes) == arity and
+                 Enum.all?(modes, &(&1 in [:scalar, :term])) do
+          raise Error, "invalid signature override for #{name}/#{arity}: #{inspect(modes)}"
+        end
+
+        Map.put(acc, signature, modes)
+
+      {signature, modes}, _acc ->
+        raise Error, "invalid signature override: #{inspect(signature)} => #{inspect(modes)}"
+    end)
+  end
+
+  defp apply_scalar_result_overrides!(inferred, definitions, opts) do
+    configured = Keyword.get(opts, :scalar_result_overrides, [])
+
+    unless Enumerable.impl_for(configured) do
+      raise Error, ":scalar_result_overrides must be enumerable"
+    end
+
+    overrides = MapSet.new(configured)
+    defined = MapSet.new(definitions, &{&1.name, &1.arity})
+    unknown = MapSet.difference(overrides, defined)
+
+    if MapSet.size(unknown) > 0 do
+      raise Error, "scalar result overrides reference unknown functions: #{inspect(unknown)}"
+    end
+
+    MapSet.union(inferred, overrides)
   end
 
   defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers, _process_cap),
