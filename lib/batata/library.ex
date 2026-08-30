@@ -86,10 +86,24 @@ defmodule Batata.Library do
     reject_entry_point!(snapshot)
     exports = normalize_exports!(requested_exports, snapshot)
 
-    signature_overrides =
-      Map.new(exports, &{{&1.function, &1.arity}, List.duplicate(:scalar, &1.arity)})
+    scalar_definitions =
+      if Keyword.get(opts, :scalar_module, false), do: snapshot.definitions, else: exports
 
-    scalar_result_overrides = MapSet.new(exports, &{&1.function, &1.arity})
+    signature_overrides =
+      Map.new(scalar_definitions, fn definition ->
+        function =
+          if is_map_key(definition, :function), do: definition.function, else: definition.name
+
+        {{function, definition.arity}, List.duplicate(:scalar, definition.arity)}
+      end)
+
+    scalar_result_overrides =
+      MapSet.new(scalar_definitions, fn definition ->
+        function =
+          if is_map_key(definition, :function), do: definition.function, else: definition.name
+
+        {function, definition.arity}
+      end)
 
     lower_options =
       [conversion_plan: Keyword.get(opts, :conversion_plan)]
