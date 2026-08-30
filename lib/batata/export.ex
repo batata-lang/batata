@@ -41,18 +41,20 @@ defmodule Batata.Export do
     source_digest = digest(source)
     artifact_digest = artifact_paths |> Enum.map(&digest_file/1) |> join_digests()
     runtime_version = runtime_version()
-    exports = exports(definitions, module_name)
+    exports = Keyword.get_lazy(opts, :exports, fn -> exports(definitions, module_name) end)
+    entry = Keyword.get(opts, :entry, "batata_main")
+    bundle_metadata = validate_bundle_metadata!(Keyword.get(opts, :bundle_metadata, %{}))
 
     bundle =
-      %{
+      Map.merge(bundle_metadata, %{
         "schema_version" => @schema_version,
         "module" => inspect(module_name),
-        "entry" => "batata_main",
+        "entry" => entry,
         "source_digest" => source_digest,
         "runtime_version" => runtime_version,
         "artifact_digest" => artifact_digest,
         "exports" => exports
-      }
+      })
 
     files =
       artifact_paths
@@ -144,16 +146,7 @@ defmodule Batata.Export do
   """
   @spec verify_symbols!(Path.t(), [map()]) :: :ok
   def verify_symbols!(archive_path, exports) do
-    nm = System.find_executable("nm") || raise "nm not found on PATH"
-    {output, 0} = System.cmd(nm, ["-g", archive_path], stderr_to_stdout: true)
-
-    defined =
-      output
-      |> String.split("\n")
-      |> Enum.map(fn line -> line |> String.split() |> List.last() end)
-      |> Enum.reject(&is_nil/1)
-      |> Enum.flat_map(fn sym -> [sym, String.replace_prefix(sym, "_", "")] end)
-      |> MapSet.new()
+    defined = defined_symbols!(archive_path, exact: false)
 
     missing =
       exports
@@ -168,8 +161,62 @@ defmodule Batata.Export do
     :ok
   end
 
+  @doc "Verifies that a dynamic library exports exactly the declared C symbols."
+  @spec verify_exact_symbols!(Path.t(), [map()]) :: :ok
+  def verify_exact_symbols!(library_path, exports) do
+    actual = defined_symbols!(library_path, exact: true)
+    expected = exports |> Enum.map(& &1["symbol"]) |> MapSet.new()
+
+    if actual != expected do
+      raise ArgumentError,
+            "dynamic export surface mismatch for #{Path.basename(library_path)}: " <>
+              "missing=#{inspect(MapSet.difference(expected, actual) |> MapSet.to_list())} " <>
+              "unexpected=#{inspect(MapSet.difference(actual, expected) |> MapSet.to_list())}"
+    end
+
+    :ok
+  end
+
   defp write_json!(path, value) do
     File.write!(path, JSON.encode!(value))
+  end
+
+  defp validate_bundle_metadata!(metadata) when is_map(metadata) do
+    if Enum.all?(Map.keys(metadata), &is_binary/1) do
+      metadata
+    else
+      raise ArgumentError, "bundle metadata keys must be strings"
+    end
+  end
+
+  defp validate_bundle_metadata!(_metadata),
+    do: raise(ArgumentError, "bundle metadata must be a map")
+
+  defp defined_symbols!(path, opts) do
+    nm = System.find_executable("nm") || raise "nm not found on PATH"
+
+    arguments =
+      case {:os.type(), Keyword.fetch!(opts, :exact)} do
+        {{:unix, :darwin}, true} -> ["-gU", path]
+        {_, true} -> ["-g", "--defined-only", path]
+        {_, false} -> ["-g", path]
+      end
+
+    {output, 0} = System.cmd(nm, arguments, stderr_to_stdout: true)
+
+    output
+    |> String.split("\n")
+    |> Enum.map(fn line -> line |> String.split() |> List.last() end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&normalize_c_symbol/1)
+    |> MapSet.new()
+  end
+
+  defp normalize_c_symbol(symbol) do
+    case :os.type() do
+      {:unix, :darwin} -> String.replace_prefix(symbol, "_", "")
+      _ -> symbol
+    end
   end
 
   defp read_json(path) do

@@ -718,7 +718,7 @@ defmodule Batata do
     runtime_lib_copy = Path.join(output_dir, Path.basename(runtime_lib))
     File.cp!(runtime_lib, runtime_lib_copy)
 
-    emit_aot_object!(module, object_path)
+    Batata.AOT.emit_object!(module, object_path)
 
     archive!(archive_path, object_path)
     File.write!(driver_path, driver_source())
@@ -774,55 +774,6 @@ defmodule Batata do
     ar = System.find_executable("ar") || raise "ar not found on PATH"
     {_output, 0} = System.cmd(ar, ["rcs", archive_path, object_path], stderr_to_stdout: true)
     archive_path
-  end
-
-  defp emit_aot_object!(module, object_path) do
-    llvm_config =
-      System.get_env("LLVM_CONFIG_PATH") ||
-        raise "LLVM_CONFIG_PATH is required to emit a relocatable AOT object"
-
-    llvm_bin = Path.dirname(llvm_config)
-    mlir_translate = require_tool!(Path.join(llvm_bin, "mlir-translate"), "mlir-translate")
-    mlir_path = Path.rootname(object_path) <> ".mlir"
-    llvm_ir_path = Path.rootname(object_path) <> ".ll"
-
-    File.write!(mlir_path, MLIR.to_string(module))
-
-    run_tool!(mlir_translate, ["--mlir-to-llvmir", mlir_path, "-o", llvm_ir_path])
-
-    {compiler, compiler_prefix, pic_args} =
-      case :os.type() do
-        {:win32, _} ->
-          {require_tool!(System.find_executable("clang"), "clang"), [], []}
-
-        {:unix, _} ->
-          {require_tool!(System.find_executable("zig"), "zig"), ["cc"], ["-fPIC"]}
-      end
-
-    run_tool!(
-      compiler,
-      compiler_prefix ++ ["-c", "-O2"] ++ pic_args ++ [llvm_ir_path, "-o", object_path]
-    )
-
-    File.rm!(mlir_path)
-    File.rm!(llvm_ir_path)
-    object_path
-  end
-
-  defp require_tool!(path, name) when is_binary(path) do
-    if File.regular?(path), do: path, else: raise("#{name} not found at #{path}")
-  end
-
-  defp require_tool!(nil, name), do: raise("#{name} not found on PATH")
-
-  defp run_tool!(executable, arguments) do
-    case System.cmd(executable, arguments, stderr_to_stdout: true) do
-      {_output, 0} ->
-        :ok
-
-      {output, status} ->
-        raise "#{Path.basename(executable)} failed with exit status #{status}:\n#{output}"
-    end
   end
 
   defp driver_source do
