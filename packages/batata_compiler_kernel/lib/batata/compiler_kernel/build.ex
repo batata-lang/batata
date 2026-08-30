@@ -13,12 +13,11 @@ defmodule Batata.CompilerKernel.Build do
   alias Batata.CompilerKernel.Manifest
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
 
-  @decision_exports [
-    %{function: :ex_add_decide, arity: 2, symbol: "batata_kernel_ex_add_decide"},
-    %{function: :ex_add_target_length, arity: 0, symbol: "batata_kernel_ex_add_target_length"},
-    %{function: :ex_add_target_word0, arity: 0, symbol: "batata_kernel_ex_add_target_word0"},
-    %{function: :ex_add_target_word1, arity: 0, symbol: "batata_kernel_ex_add_target_word1"},
-    %{function: :ex_add_target_word2, arity: 0, symbol: "batata_kernel_ex_add_target_word2"}
+  @semantic_exports [
+    %{function: :pattern_accept, arity: 4, symbol: "batata_kernel_pattern_accept"},
+    %{function: :target_length, arity: 1, symbol: "batata_kernel_target_length"},
+    %{function: :target_word, arity: 2, symbol: "batata_kernel_target_word"},
+    %{function: :cmp_predicate, arity: 2, symbol: "batata_kernel_cmp_predicate"}
   ]
   @allowed_options [
     :beaver_path,
@@ -41,24 +40,25 @@ defmodule Batata.CompilerKernel.Build do
           build_manifest: Path.t()
         }
 
-  @doc "Builds the Stage 1 `ex.add` compiler-kernel artifact and receipts."
-  @spec build_ex_add!(Path.t(), Beaver.MLIR.Context.t(), keyword()) :: output()
-  def build_ex_add!(output_dir, ctx, opts) when is_binary(output_dir) and is_list(opts) do
+  @doc "Builds the Stage 1 pure-scalar compiler-kernel artifact and receipts."
+  @spec build_pure_scalar!(Path.t(), Beaver.MLIR.Context.t(), keyword()) :: output()
+  def build_pure_scalar!(output_dir, ctx, opts)
+      when is_binary(output_dir) and is_list(opts) do
     reject_unknown_options!(opts)
     File.mkdir_p!(output_dir)
     source = File.read!(CompilerKernel.conversion_source_path())
     object_path = Path.join(output_dir, "batata-ex-conversion.o")
     library_path = Path.join(output_dir, AOT.library_name("batata_ex_conversion"))
 
-    %{exports: decision_exports, snapshot: snapshot} =
-      Library.compile_object!(source, object_path, ctx, @decision_exports)
+    %{exports: semantic_exports, snapshot: snapshot} =
+      Library.compile_object!(source, object_path, ctx, @semantic_exports)
 
     File.write!(library_path, "")
     draft = Manifest.build!(library_path, manifest_options(opts))
     identity = KernelManifest.identity_digest(draft)
     entrypoints = draft.entrypoints |> Map.values() |> Enum.sort()
 
-    AOT.link_shared_library!(object_path, library_path, decision_exports,
+    AOT.link_shared_library!(object_path, library_path, semantic_exports,
       extra_sources: [CompilerKernel.native_adapter_path()],
       compiler_args: native_compiler_args(identity, opts),
       public_symbols: entrypoints

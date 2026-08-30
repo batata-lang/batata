@@ -17,8 +17,19 @@ defmodule Batata.CompilerKernel.Manifest do
     "manifest" => "batata_conversion_manifest",
     "populate" => "batata_populate_ex_patterns"
   }
-  @patterns [%{"name" => "batata.ex.add", "root" => "ex.add", "version" => "1"}]
-  @capabilities ["ir.scalar.v1", "pattern.register"]
+  @patterns [
+    %{"name" => "batata.ex.add", "root" => "ex.add", "version" => "1"},
+    %{"name" => "batata.ex.cmp", "root" => "ex.cmp", "version" => "1"},
+    %{"name" => "batata.ex.div", "root" => "ex.div", "version" => "1"},
+    %{"name" => "batata.ex.lit", "root" => "ex.lit", "version" => "1"},
+    %{"name" => "batata.ex.mul", "root" => "ex.mul", "version" => "1"},
+    %{"name" => "batata.ex.rem", "root" => "ex.rem", "version" => "1"},
+    %{"name" => "batata.ex.sub", "root" => "ex.sub", "version" => "1"},
+    %{"name" => "batata.ex.to_word", "root" => "ex.to_word", "version" => "1"},
+    %{"name" => "batata.ex.unbox", "root" => "ex.unbox", "version" => "1"},
+    %{"name" => "batata.ex.yield", "root" => "ex.yield", "version" => "1"}
+  ]
+  @capabilities ["ir.attribute.v1", "ir.scalar.v1", "pattern.register"]
   @allowed_options [
     :beaver_revision,
     :bootstrap_provenance,

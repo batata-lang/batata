@@ -16,6 +16,10 @@ defmodule Batata.LibraryTest do
         defmodule ScalarKernel do
           def add(left, right), do: left + right
           def sub(left, right), do: left - right
+
+          def choose(value) do
+            if value == 7, do: 41, else: 1
+          end
         end
         """,
         tmp_dir,
@@ -23,6 +27,7 @@ defmodule Batata.LibraryTest do
         library_name: "batata_scalar_kernel",
         exports: [
           %{function: :add, arity: 2, symbol: "batata_scalar_add"},
+          %{function: :choose, arity: 1, symbol: "batata_scalar_choose"},
           %{function: :sub, arity: 2, symbol: "batata_scalar_sub"}
         ],
         dependency_pins: %{
@@ -44,6 +49,7 @@ defmodule Batata.LibraryTest do
 
     assert bundle["exports"] == [
              %{"function" => "ScalarKernel.add/2", "symbol" => "batata_scalar_add"},
+             %{"function" => "ScalarKernel.choose/1", "symbol" => "batata_scalar_choose"},
              %{"function" => "ScalarKernel.sub/2", "symbol" => "batata_scalar_sub"}
            ]
 
@@ -57,9 +63,15 @@ defmodule Batata.LibraryTest do
     File.write!(runner_source, """
     #include <stdint.h>
     extern int64_t batata_scalar_add(int64_t, int64_t);
+    extern int64_t batata_scalar_choose(int64_t);
     extern int64_t batata_scalar_sub(int64_t, int64_t);
     int main(void) {
-      return batata_scalar_add(20, 22) == 42 && batata_scalar_sub(20, 7) == 13 ? 0 : 1;
+      return batata_scalar_add(20, 22) == 42 &&
+                     batata_scalar_choose(7) == 41 &&
+                     batata_scalar_choose(8) == 1 &&
+                     batata_scalar_sub(20, 7) == 13
+                 ? 0
+                 : 1;
     }
     """)
 

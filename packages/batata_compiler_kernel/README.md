@@ -13,7 +13,7 @@ Beaver generic ABI
 Batata compiler kernel
 ```
 
-The first checked-in seed manifest closes only the `ex.add` scalar vertical
-slice. It is a clean-bootstrap and parity oracle, not a production fallback.
+The checked-in seed manifest closes the first pure-scalar source subset. It is
+a clean-bootstrap and parity oracle, not a production fallback.
 Production loading must reject missing or incompatible native artifacts rather
 than silently selecting the C++ seed or BEAM reference implementation.
