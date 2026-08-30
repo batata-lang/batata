@@ -36,6 +36,7 @@ defmodule Batata.Lift do
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @current_function_key {__MODULE__, :current_function}
+  @current_function_signature_key {__MODULE__, :current_function_signature}
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
   @term_pattern_names_key {__MODULE__, :term_pattern_names}
   @ex_type_cache_key {__MODULE__, :ex_type_cache}
@@ -1620,6 +1621,7 @@ defmodule Batata.Lift do
         Map.put(env, param_name(pattern), inbound)
       end)
       |> Map.put(@current_function_key, name)
+      |> Map.put(@current_function_signature_key, {name, arity})
       |> Map.put(@term_parameter_names_key, term_parameter_names(patterns, modes))
       |> Map.put(:__budget__, budget)
       |> Map.put(:__batch_size__, batch_size)
@@ -1869,6 +1871,7 @@ defmodule Batata.Lift do
     function_env =
       module_env
       |> Map.put(@current_function_key, name)
+      |> Map.put(@current_function_signature_key, {name, arity})
       |> Map.put(@term_parameter_names_key, term_parameter_names)
 
     failure_tail_names =
@@ -8889,6 +8892,52 @@ defmodule Batata.Lift do
   end
 
   defp lower_body_if(condition, then_ast, else_ast, falsy, env, ctx, block) do
+    if scalar_function_result?(env) do
+      lower_scalar_body_if(then_ast, else_ast, falsy, env, ctx, block)
+    else
+      lower_term_body_if(condition, then_ast, else_ast, falsy, env, ctx, block)
+    end
+  end
+
+  defp lower_scalar_body_if(then_ast, else_ast, falsy, env, ctx, block) do
+    truthy = cmp(falsy, 0, "eq", ctx, block)
+    truthy_i1 = create_op("arith.trunci", [truthy], [MLIR.Type.i1()], ctx, block)
+
+    [result] =
+      build_scf_if(
+        truthy_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn then_block -> [scalar_branch_value!(then_ast, env, ctx, then_block)] end,
+        fn else_block -> [scalar_branch_value!(else_ast, env, ctx, else_block)] end
+      )
+
+    result
+  end
+
+  defp scalar_branch_value!(ast, env, ctx, block) do
+    {value, branch_env} = lift_expr(ast, ctx, block, env)
+    value = lift_value(value, ctx, block, branch_env)
+
+    if term_operand?(value) do
+      raise Error, "scalar function branch produced a term value: #{inspect(ast)}"
+    end
+
+    value
+  end
+
+  defp scalar_function_result?(env) do
+    case Map.fetch(env, @current_function_signature_key) do
+      {:ok, signature} ->
+        MapSet.member?(Map.fetch!(env, @scalar_result_functions_key), signature)
+
+      :error ->
+        false
+    end
+  end
+
+  defp lower_term_body_if(condition, then_ast, else_ast, falsy, env, ctx, block) do
     dyn = ex_type("term", ctx)
     region = MLIR.CAPI.mlirRegionCreate()
 
@@ -8975,12 +9024,15 @@ defmodule Batata.Lift do
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
        do: true
 
-  defp strict_boolean_scalar_ast?({op, _, [left, right]})
+  defp strict_boolean_scalar_ast?({op, _, [_left, _right]})
        when op in [:==, :!=, :===, :!==],
-       do: compile_known_integer_ast?(left) and compile_known_integer_ast?(right)
+       do: true
 
   defp strict_boolean_scalar_ast?({op, _, [left, right]}) when op in [:<, :<=, :>, :>=],
     do: scalar_integer_candidate_ast?(left) and scalar_integer_candidate_ast?(right)
+
+  defp strict_boolean_scalar_ast?({:and, _, [left, right]}),
+    do: strict_boolean_scalar_ast?(left) and strict_boolean_scalar_ast?(right)
 
   defp strict_boolean_scalar_ast?(_ast), do: false
 

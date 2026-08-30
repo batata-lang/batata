@@ -16,11 +16,12 @@ defmodule Batata.CompilerKernel.ManifestTest do
 
     assert manifest.provider == CompilerKernel.provider()
 
-    assert manifest.patterns == [
-             %{"name" => "batata.ex.add", "root" => "ex.add", "version" => "1"}
-           ]
+    assert length(manifest.patterns) == 10
 
-    assert manifest.capabilities == ["ir.scalar.v1", "pattern.register"]
+    assert Enum.map(manifest.patterns, & &1["root"]) ==
+             ~w(ex.add ex.cmp ex.div ex.lit ex.mul ex.rem ex.sub ex.to_word ex.unbox ex.yield)
+
+    assert manifest.capabilities == ["ir.attribute.v1", "ir.scalar.v1", "pattern.register"]
 
     assert manifest.bootstrap == %{
              "stage" => "stage1",
