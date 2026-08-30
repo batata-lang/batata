@@ -11,7 +11,13 @@ defmodule Batata.Library do
   alias Beaver.MLIR
 
   @symbol_pattern ~r/^[A-Za-z_][A-Za-z0-9_]*$/
-  @allowed_options [:dependency_pins, :exports, :library_name, :memory_policy]
+  @allowed_options [
+    :conversion_plan,
+    :dependency_pins,
+    :exports,
+    :library_name,
+    :memory_policy
+  ]
 
   @type export() :: %{function: atom(), arity: non_neg_integer(), symbol: String.t()}
   @type output() :: %{
@@ -34,6 +40,7 @@ defmodule Batata.Library do
 
     %{snapshot: snapshot, exports: exports} =
       compile_object!(source, object_path, ctx, Keyword.fetch!(opts, :exports),
+        conversion_plan: Keyword.get(opts, :conversion_plan),
         memory_policy: Keyword.get(opts, :memory_policy, :disabled)
       )
 
@@ -84,6 +91,10 @@ defmodule Batata.Library do
 
     scalar_result_overrides = MapSet.new(exports, &{&1.function, &1.arity})
 
+    lower_options =
+      [conversion_plan: Keyword.get(opts, :conversion_plan)]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
     module =
       source
       |> Batata.compile(ctx,
@@ -92,12 +103,20 @@ defmodule Batata.Library do
         scalar_result_overrides: scalar_result_overrides
       )
       |> reject_term_runtime!()
-      |> Lower.to_llvm(ctx)
+      |> Lower.to_llvm(ctx, lower_options)
       |> MLIR.verify!()
+
+    lowered_ir_digest = digest(MLIR.to_string(module, generic: true))
 
     File.mkdir_p!(Path.dirname(object_path))
     AOT.emit_object!(module, object_path)
-    %{snapshot: snapshot, exports: exports, object: object_path}
+
+    %{
+      snapshot: snapshot,
+      exports: exports,
+      object: object_path,
+      lowered_ir_digest: lowered_ir_digest
+    }
   end
 
   defp reject_entry_point!(%Frontend.Module{definitions: definitions}) do
@@ -195,5 +214,10 @@ defmodule Batata.Library do
       [] -> :ok
       unknown -> raise ArgumentError, "unknown shared-library options: #{inspect(unknown)}"
     end
+  end
+
+  defp digest(value) do
+    "sha256:" <>
+      (value |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower))
   end
 end

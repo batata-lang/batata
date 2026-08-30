@@ -8,10 +8,11 @@ defmodule Batata.CompilerKernel.Build do
   dynamic export allowlist contains only the three versioned kernel entrypoints.
   """
 
-  alias Batata.{AOT, Export, Library}
+  alias Batata.{AOT, Export, Library, Memory}
   alias Batata.CompilerKernel
   alias Batata.CompilerKernel.Manifest
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
+  alias Beaver.MLIR.Conversion.Plan
 
   @semantic_exports [
     %{function: :pattern_accept, arity: 4, symbol: "batata_kernel_pattern_accept"},
@@ -37,6 +38,8 @@ defmodule Batata.CompilerKernel.Build do
           object: Path.t(),
           kernel_manifest: KernelManifest.t(),
           kernel_manifest_path: Path.t(),
+          bootstrap_receipt: Path.t(),
+          lowered_ir_digest: String.t(),
           bundle: Path.t(),
           artifact_index: Path.t(),
           build_manifest: Path.t()
@@ -47,16 +50,54 @@ defmodule Batata.CompilerKernel.Build do
   def build!(output_dir, ctx, opts)
       when is_binary(output_dir) and is_list(opts) do
     reject_unknown_options!(opts)
+
+    bootstrap = %{
+      "stage" => "stage1",
+      "seed" => "cpp-bootstrap",
+      "provenance" => Keyword.fetch!(opts, :bootstrap_provenance),
+      "source_kernel_identity" => nil
+    }
+
+    do_build!(output_dir, ctx, opts, nil, bootstrap)
+  end
+
+  @doc "Rebuilds the compiler kernel with a verified Stage 1 kernel."
+  @spec rebuild!(Path.t(), Beaver.MLIR.Context.t(), output(), keyword()) :: output()
+  def rebuild!(output_dir, ctx, stage1, opts)
+      when is_binary(output_dir) and is_map(stage1) and is_list(opts) do
+    reject_unknown_options!(opts)
+    manifest = Map.fetch!(stage1, :kernel_manifest)
+    library = Map.fetch!(stage1, :library)
+    %KernelManifest{} = manifest
+    ^manifest = KernelManifest.verify_artifact!(manifest, library)
+    source_identity = KernelManifest.identity_digest(manifest)
+
+    bootstrap = %{
+      "stage" => "stage2",
+      "seed" => "previous-native",
+      "provenance" => "batata-stage1:" <> source_identity,
+      "source_kernel_identity" => source_identity
+    }
+
+    do_build!(output_dir, ctx, opts, kernel_plan(manifest, library, opts), bootstrap)
+  end
+
+  defp do_build!(output_dir, ctx, opts, conversion_plan, bootstrap) do
     File.mkdir_p!(output_dir)
     source = File.read!(CompilerKernel.conversion_source_path())
     object_path = Path.join(output_dir, "batata-ex-conversion.o")
     library_path = Path.join(output_dir, AOT.library_name("batata_ex_conversion"))
 
-    %{exports: semantic_exports, snapshot: snapshot} =
-      Library.compile_object!(source, object_path, ctx, @semantic_exports)
+    compile_options = if conversion_plan, do: [conversion_plan: conversion_plan], else: []
+
+    %{
+      exports: semantic_exports,
+      snapshot: snapshot,
+      lowered_ir_digest: lowered_ir_digest
+    } = Library.compile_object!(source, object_path, ctx, @semantic_exports, compile_options)
 
     File.write!(library_path, "")
-    draft = Manifest.build!(library_path, manifest_options(opts))
+    draft = Manifest.build!(library_path, manifest_options(opts, bootstrap))
     identity = KernelManifest.identity_digest(draft)
     entrypoints = draft.entrypoints |> Map.values() |> Enum.sort()
 
@@ -66,20 +107,30 @@ defmodule Batata.CompilerKernel.Build do
       public_symbols: entrypoints
     )
 
-    kernel_manifest = Manifest.build!(library_path, manifest_options(opts))
+    kernel_manifest = Manifest.build!(library_path, manifest_options(opts, bootstrap))
 
     unless KernelManifest.identity_digest(kernel_manifest) == identity do
       raise "compiler-kernel identity changed after artifact hashing"
     end
 
     kernel_manifest_path = Manifest.write_sidecar!(kernel_manifest, output_dir)
+
+    bootstrap_receipt =
+      write_bootstrap_receipt!(
+        output_dir,
+        bootstrap,
+        identity,
+        lowered_ir_digest,
+        object_path
+      )
+
     abi_exports = Enum.map(entrypoints, &%{"function" => "compiler-kernel ABI", "symbol" => &1})
     :ok = Export.verify_exact_symbols!(library_path, abi_exports)
 
     metadata =
       Export.write!(output_dir, snapshot.name,
         source: source,
-        artifact_paths: [kernel_manifest_path, library_path, object_path],
+        artifact_paths: [bootstrap_receipt, kernel_manifest_path, library_path, object_path],
         definitions: snapshot.definitions,
         exports: abi_exports,
         entry: nil,
@@ -100,21 +151,75 @@ defmodule Batata.CompilerKernel.Build do
       object: object_path,
       kernel_manifest: kernel_manifest,
       kernel_manifest_path: kernel_manifest_path,
+      bootstrap_receipt: bootstrap_receipt,
+      lowered_ir_digest: lowered_ir_digest,
       bundle: metadata.bundle,
       artifact_index: metadata.artifact_index,
       build_manifest: metadata.manifest
     }
   end
 
-  defp manifest_options(opts) do
+  defp manifest_options(opts, bootstrap) do
     [
       compiler_revision: Keyword.fetch!(opts, :compiler_revision),
       beaver_revision: Keyword.fetch!(opts, :beaver_revision),
       dialect_schema_digest: Keyword.fetch!(opts, :dialect_schema_digest),
       runtime_abi_digest: Keyword.fetch!(opts, :runtime_abi_digest),
       target: Keyword.fetch!(opts, :target),
-      bootstrap_provenance: Keyword.fetch!(opts, :bootstrap_provenance)
+      bootstrap_stage: Map.fetch!(bootstrap, "stage"),
+      bootstrap_seed: Map.fetch!(bootstrap, "seed"),
+      bootstrap_provenance: Map.fetch!(bootstrap, "provenance")
     ]
+  end
+
+  defp kernel_plan(manifest, library, opts) do
+    Plan.new(mode: :full, folding_mode: :after_patterns, build_materializations: true)
+    |> Plan.add_legal_dialect("builtin")
+    |> Plan.add_legal_dialect("func")
+    |> Plan.add_legal_dialect("arith")
+    |> Plan.add_legal_dialect("cf")
+    |> Plan.add_legal_dialect("scf")
+    |> Plan.add_legal_dialect("llvm")
+    |> Plan.add_illegal_dialect("ex")
+    |> Plan.add_conversion_map(~w(!ex.term !ex.bound !ex.unbound), "i64")
+    |> Plan.add_external_pattern_population(manifest, library,
+      expected: [
+        beaver_revision: Keyword.fetch!(opts, :beaver_revision),
+        dialect_schema_digest: Keyword.fetch!(opts, :dialect_schema_digest),
+        runtime_abi_digest: Keyword.fetch!(opts, :runtime_abi_digest),
+        target: Keyword.fetch!(opts, :target),
+        capabilities: manifest.capabilities
+      ]
+    )
+  end
+
+  defp write_bootstrap_receipt!(
+         output_dir,
+         bootstrap,
+         kernel_identity,
+         lowered_ir_digest,
+         object_path
+       ) do
+    path = Path.join(output_dir, "bootstrap-receipt.json")
+
+    receipt = %{
+      "schema_version" => 1,
+      "stage" => Map.fetch!(bootstrap, "stage"),
+      "seed" => Map.fetch!(bootstrap, "seed"),
+      "provenance" => Map.fetch!(bootstrap, "provenance"),
+      "source_kernel_identity" => Map.fetch!(bootstrap, "source_kernel_identity"),
+      "kernel_identity" => kernel_identity,
+      "lowered_ir_sha256" => lowered_ir_digest,
+      "object_sha256" => digest_file!(object_path)
+    }
+
+    File.write!(path, Memory.canonical_json(receipt) <> "\n")
+    path
+  end
+
+  defp digest_file!(path) do
+    "sha256:" <>
+      (path |> File.read!() |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower))
   end
 
   defp native_compiler_args(identity, opts) do

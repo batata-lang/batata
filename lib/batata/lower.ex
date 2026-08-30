@@ -62,13 +62,23 @@ defmodule Batata.Lower do
   defp do_to_func(module, opts, session) do
     quota_bytes = opts |> Keyword.get(:memory_quota_bytes) |> RuntimeQuota.validate!()
 
+    conversion_plan =
+      case Keyword.get_lazy(opts, :conversion_plan, &ExConversion.plan/0) do
+        %Plan{} = plan ->
+          plan
+
+        other ->
+          raise ArgumentError,
+                ":conversion_plan must be a conversion plan, got: #{inspect(other)}"
+      end
+
     {module, stages} =
       maybe_stage(module, [], session, :runtime_quota, is_integer(quota_bytes), fn ->
         inject_runtime_quota!(module, quota_bytes)
       end)
 
     {module, stages} =
-      run_conversion_stage(module, stages, session)
+      run_conversion_stage(module, stages, session, conversion_plan)
 
     maybe_stage(
       module,
@@ -203,14 +213,14 @@ defmodule Batata.Lower do
     {module, stages ++ [stage]}
   end
 
-  defp run_conversion_stage(module, stages, nil) do
-    {Plan.run!(ExConversion.plan(), module), stages}
+  defp run_conversion_stage(module, stages, nil, conversion_plan) do
+    {Plan.run!(conversion_plan, module), stages}
   end
 
-  defp run_conversion_stage(module, stages, session) do
+  defp run_conversion_stage(module, stages, session, conversion_plan) do
     {result, stage} =
       Trace.stage_with_details(session, :ex_conversion, fn ->
-        {result, receipt} = Plan.profile(ExConversion.plan(), module)
+        {result, receipt} = Plan.profile(conversion_plan, module)
         {result, %{"status" => receipt["status"], "conversion_profile" => receipt}}
       end)
 

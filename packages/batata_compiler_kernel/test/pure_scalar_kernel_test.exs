@@ -5,6 +5,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Kernel.Error, as: KernelError
+  alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
   alias Beaver.MLIR.Conversion.Plan
 
   @beaver_revision "2b0a1a32153fdef59affc439460cc9ce95b301c7"
@@ -196,6 +197,65 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   @tag :tmp_dir
+  @tag timeout: 240_000
+  test "Stage 1 rebuilds a parity-equivalent Stage 2 with an auditable receipt", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    stage1 = Build.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
+    stage2 = Build.rebuild!(Path.join(tmp_dir, "stage2"), ctx, stage1, build_options())
+
+    stage1_identity =
+      KernelManifest.identity_digest(stage1.kernel_manifest)
+
+    assert stage1.kernel_manifest.bootstrap["stage"] == "stage1"
+    assert stage1.kernel_manifest.bootstrap["seed"] == "cpp-bootstrap"
+    assert stage2.kernel_manifest.bootstrap["stage"] == "stage2"
+    assert stage2.kernel_manifest.bootstrap["seed"] == "previous-native"
+
+    assert stage2.kernel_manifest.bootstrap["provenance"] ==
+             "batata-stage1:" <> stage1_identity
+
+    assert stage2.kernel_manifest.patterns == stage1.kernel_manifest.patterns
+    assert stage2.kernel_manifest.capabilities == stage1.kernel_manifest.capabilities
+    assert stage2.lowered_ir_digest == stage1.lowered_ir_digest
+    assert digest_file(stage2.object) == digest_file(stage1.object)
+
+    receipt_bytes = File.read!(stage2.bootstrap_receipt)
+    receipt = JSON.decode!(receipt_bytes)
+    assert receipt_bytes == Batata.Memory.canonical_json(receipt) <> "\n"
+    assert receipt["source_kernel_identity"] == stage1_identity
+    assert receipt["lowered_ir_sha256"] == stage1.lowered_ir_digest
+    assert receipt["object_sha256"] == digest_file(stage1.object)
+
+    module = control_function_module(ctx)
+    Plan.run!(native_plan(stage2), module)
+    refute MLIR.to_string(module, generic: true) =~ ~r/"ex\./
+    MLIR.Module.destroy(module)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Stage 2 rebuild rejects a Stage 1 artifact from another target", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    stage1 = Build.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
+    stage2_dir = Path.join(tmp_dir, "stage2")
+
+    assert_raise KernelError, ~r/target_mismatch/, fn ->
+      Build.rebuild!(
+        stage2_dir,
+        ctx,
+        stage1,
+        Keyword.put(build_options(), :target, "x86_64-unknown-linux-gnu")
+      )
+    end
+
+    refute File.exists?(Path.join(stage2_dir, "batata-ex-conversion.o"))
+  end
+
+  @tag :tmp_dir
   test "Batata compiler-kernel build rejects implicit fallback policy", %{
     ctx: ctx,
     tmp_dir: tmp_dir
@@ -354,4 +414,9 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   defp target, do: %{"triple" => "host-test", "cpu" => "generic", "features" => []}
+
+  defp digest_file(path) do
+    "sha256:" <>
+      (path |> File.read!() |> then(&:crypto.hash(:sha256, &1)) |> Base.encode16(case: :lower))
+  end
 end
