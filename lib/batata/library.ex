@@ -28,31 +28,15 @@ defmodule Batata.Library do
     reject_unknown_options!(opts)
     library_name = validate_library_name!(Keyword.fetch!(opts, :library_name))
     dependency_pins = validate_dependency_pins!(Keyword.fetch!(opts, :dependency_pins))
-    snapshot = Frontend.from_source(source)
-    reject_entry_point!(snapshot)
-    exports = normalize_exports!(Keyword.fetch!(opts, :exports), snapshot)
-
-    signature_overrides =
-      Map.new(exports, &{{&1.function, &1.arity}, List.duplicate(:scalar, &1.arity)})
-
-    scalar_result_overrides = MapSet.new(exports, &{&1.function, &1.arity})
-
-    module =
-      source
-      |> Batata.compile(ctx,
-        memory_policy: Keyword.get(opts, :memory_policy, :disabled),
-        signature_overrides: signature_overrides,
-        scalar_result_overrides: scalar_result_overrides
-      )
-      |> reject_term_runtime!()
-      |> Lower.to_llvm(ctx)
-      |> MLIR.verify!()
-
     File.mkdir_p!(output_dir)
     object_path = Path.join(output_dir, "batata-library.o")
     library_path = Path.join(output_dir, AOT.library_name(library_name))
 
-    AOT.emit_object!(module, object_path)
+    %{snapshot: snapshot, exports: exports} =
+      compile_object!(source, object_path, ctx, Keyword.fetch!(opts, :exports),
+        memory_policy: Keyword.get(opts, :memory_policy, :disabled)
+      )
+
     AOT.link_shared_library!(object_path, library_path, exports)
 
     receipt_exports =
@@ -86,6 +70,34 @@ defmodule Batata.Library do
       artifact_index: metadata.artifact_index,
       manifest: metadata.manifest
     }
+  end
+
+  @doc false
+  @spec compile_object!(String.t(), Path.t(), MLIR.Context.t(), [export()], keyword()) :: map()
+  def compile_object!(source, object_path, ctx, requested_exports, opts \\ []) do
+    snapshot = Frontend.from_source(source)
+    reject_entry_point!(snapshot)
+    exports = normalize_exports!(requested_exports, snapshot)
+
+    signature_overrides =
+      Map.new(exports, &{{&1.function, &1.arity}, List.duplicate(:scalar, &1.arity)})
+
+    scalar_result_overrides = MapSet.new(exports, &{&1.function, &1.arity})
+
+    module =
+      source
+      |> Batata.compile(ctx,
+        memory_policy: Keyword.get(opts, :memory_policy, :disabled),
+        signature_overrides: signature_overrides,
+        scalar_result_overrides: scalar_result_overrides
+      )
+      |> reject_term_runtime!()
+      |> Lower.to_llvm(ctx)
+      |> MLIR.verify!()
+
+    File.mkdir_p!(Path.dirname(object_path))
+    AOT.emit_object!(module, object_path)
+    %{snapshot: snapshot, exports: exports, object: object_path}
   end
 
   defp reject_entry_point!(%Frontend.Module{definitions: definitions}) do

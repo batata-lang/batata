@@ -33,11 +33,14 @@ defmodule Batata.AOT do
   end
 
   @doc false
-  @spec link_shared_library!(Path.t(), Path.t(), [map()]) :: Path.t()
-  def link_shared_library!(object_path, library_path, exports) do
+  @spec link_shared_library!(Path.t(), Path.t(), [map()], keyword()) :: Path.t()
+  def link_shared_library!(object_path, library_path, exports, opts \\ []) do
     {compiler, compiler_prefix} = shared_library_compiler!()
     shim_path = Path.join(Path.dirname(library_path), ".batata-library-exports.c")
-    {export_args, export_control_path} = export_control(exports, library_path)
+    public_symbols = Keyword.get(opts, :public_symbols, Enum.map(exports, & &1.symbol))
+    extra_sources = Keyword.get(opts, :extra_sources, [])
+    compiler_args = Keyword.get(opts, :compiler_args, [])
+    {export_args, export_control_path} = export_control(public_symbols, library_path)
     File.write!(shim_path, export_shim(exports))
 
     try do
@@ -45,7 +48,10 @@ defmodule Batata.AOT do
         compiler,
         compiler_prefix ++
           shared_library_args() ++
-          export_args ++ ["-fPIC", "-O2", shim_path, object_path, "-o", library_path]
+          export_args ++
+          compiler_args ++
+          ["-fPIC", "-O2", shim_path, object_path] ++
+          extra_sources ++ ["-o", library_path]
       )
     after
       File.rm(shim_path)
@@ -134,9 +140,7 @@ defmodule Batata.AOT do
     end
   end
 
-  defp export_control(exports, library_path) do
-    symbols = Enum.map(exports, & &1.symbol)
-
+  defp export_control(symbols, library_path) do
     case :os.type() do
       {:unix, :darwin} ->
         args = Enum.map(symbols, &"-Wl,-exported_symbol,_#{&1}")
