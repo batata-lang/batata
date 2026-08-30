@@ -89,6 +89,65 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 78 -> 19
       kind == 79 -> 22
       kind == 80 -> 14
+      kind == 81 -> 16
+      kind == 82 -> 20
+      kind == 83 -> 17
+      kind == 84 -> 17
+      kind == 85 -> 16
+      kind == 86 -> 19
+      kind == 87 -> 17
+      kind == 88 -> 20
+      kind == 89 -> 17
+      kind == 90 -> 15
+      kind == 91 -> 18
+      kind == 92 -> 24
+      kind == 93 -> 21
+      kind == 94 -> 18
+      kind == 96 -> 24
+      kind == 97 -> 17
+      kind == 98 -> 23
+      kind == 99 -> 22
+      kind == 100 -> 31
+      kind == 101 -> 29
+      kind == 102 -> 21
+      kind == 103 -> 18
+      kind == 104 -> 20
+      kind == 105 -> 23
+      kind == 106 -> 25
+      kind == 107 -> 26
+      kind == 108 -> 24
+      kind == 109 -> 20
+      kind == 110 -> 23
+      kind == 111 -> 23
+      kind == 112 -> 21
+      kind == 113 -> 26
+      kind == 114 -> 18
+      kind == 115 -> 21
+      kind == 116 -> 17
+      kind == 117 -> 23
+      kind == 118 -> 24
+      kind == 119 -> 26
+      kind == 120 -> 27
+      kind == 121 -> 30
+      kind == 122 -> 32
+      kind == 123 -> 25
+      kind == 124 -> 27
+      kind == 125 -> 31
+      kind == 126 -> 29
+      kind == 127 -> 26
+      kind == 128 -> 31
+      kind == 129 -> 33
+      kind == 130 -> 36
+      kind == 131 -> 21
+      kind == 132 -> 19
+      kind == 133 -> 19
+      kind == 134 -> 17
+      kind == 135 -> 23
+      kind == 136 -> 20
+      kind == 137 -> 18
+      kind == 138 -> 19
+      kind == 139 -> 13
+      kind == 140 -> 13
       true -> -1
     end
   end
@@ -420,6 +479,243 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 79 and index == 5 -> 0x7265
       kind == 80 and index == 2 -> 0x695F6F74
       kind == 80 and index == 3 -> 0x746E
+      kind >= 81 and kind <= 135 and index == 0 -> 0x742E7865
+      kind >= 81 and kind <= 135 and index == 1 -> 0x2E6D7265
+      kind == 81 and index == 2 -> 0x6C5F7165
+      kind == 81 and index == 3 -> 0x65736F6F
+      kind == 82 and index == 2 -> 0x7473696C
+      kind == 82 and index == 3 -> 0x616C665F
+      kind == 82 and index == 4 -> 0x6E657474
+      kind == 83 and index == 2 -> 0x7473696C
+      kind == 83 and index == 3 -> 0x6165685F
+      kind == 83 and index == 4 -> 0x64
+      kind == 84 and index == 2 -> 0x7473696C
+      kind == 84 and index == 3 -> 0x6961745F
+      kind == 84 and index == 4 -> 0x6C
+      kind == 85 and index == 2 -> 0x7473696C
+      kind == 85 and index == 3 -> 0x7465675F
+      kind == 86 and index == 2 -> 0x7473696C
+      kind == 86 and index == 3 -> 0x6E656C5F
+      kind == 86 and index == 4 -> 0x687467
+      kind == 87 and index == 2 -> 0x6C707574
+      kind == 87 and index == 3 -> 0x65675F65
+      kind == 87 and index == 4 -> 0x74
+      kind == 88 and index == 2 -> 0x6C707574
+      kind == 88 and index == 3 -> 0x656C5F65
+      kind == 88 and index == 4 -> 0x6874676E
+      kind == 89 and index == 2 -> 0x5F70616D
+      kind == 89 and index == 3 -> 0x63746566
+      kind == 89 and index == 4 -> 0x68
+      kind == 90 and index == 2 -> 0x5F70616D
+      kind == 90 and index == 3 -> 0x747570
+      kind == 91 and index == 2 -> 0x5F70616D
+      kind == 91 and index == 3 -> 0x676E656C
+      kind == 91 and index == 4 -> 0x6874
+      kind == 92 and index == 2 -> 0x7370616D
+      kind == 92 and index == 3 -> 0x665F7465
+      kind == 92 and index == 4 -> 0x5F6D6F72
+      kind == 92 and index == 5 -> 0x7473696C
+      kind == 93 and index == 2 -> 0x7370616D
+      kind == 93 and index == 3 -> 0x6D5F7465
+      kind == 93 and index == 4 -> 0x65626D65
+      kind == 93 and index == 5 -> 0x72
+      kind == 94 and index == 2 -> 0x7370616D
+      kind == 94 and index == 3 -> 0x705F7465
+      kind == 94 and index == 4 -> 0x7475
+      kind == 96 and index == 2 -> 0x61646F69
+      kind == 96 and index == 3 -> 0x745F6174
+      kind == 96 and index == 4 -> 0x69625F6F
+      kind == 96 and index == 5 -> 0x7972616E
+      kind == 97 and index == 2 -> 0x616F6C66
+      kind == 97 and index == 3 -> 0x696C5F74
+      kind == 97 and index == 4 -> 0x74
+      kind == 98 and index == 2 -> 0x69727473
+      kind == 98 and index == 3 -> 0x745F676E
+      kind == 98 and index == 4 -> 0x6C665F6F
+      kind == 98 and index == 5 -> 0x74616F
+      kind == 99 and index == 2 -> 0x69727473
+      kind == 99 and index == 3 -> 0x745F676E
+      kind == 99 and index == 4 -> 0x74615F6F
+      kind == 99 and index == 5 -> 0x6D6F
+      kind == 100 and index == 2 -> 0x69727473
+      kind == 100 and index == 3 -> 0x745F676E
+      kind == 100 and index == 4 -> 0x78655F6F
+      kind == 100 and index == 5 -> 0x69747369
+      kind == 100 and index == 6 -> 0x615F676E
+      kind == 100 and index == 7 -> 0x6D6F74
+      kind == 101 and index == 2 -> 0x616F6C66
+      kind == 101 and index == 3 -> 0x6F745F74
+      kind == 101 and index == 4 -> 0x6E69625F
+      kind == 101 and index == 5 -> 0x5F797261
+      kind == 101 and index == 6 -> 0x726F6873
+      kind == 101 and index == 7 -> 0x74
+      kind == 102 and index == 2 -> 0x616E6962
+      kind == 102 and index == 3 -> 0x6C5F7972
+      kind == 102 and index == 4 -> 0x74676E65
+      kind == 102 and index == 5 -> 0x68
+      kind == 103 and index == 2 -> 0x616E6962
+      kind == 103 and index == 3 -> 0x675F7972
+      kind == 103 and index == 4 -> 0x7465
+      kind == 104 and index == 2 -> 0x616E6962
+      kind == 104 and index == 3 -> 0x735F7972
+      kind == 104 and index == 4 -> 0x6563696C
+      kind == 105 and index == 2 -> 0x616E6962
+      kind == 105 and index == 3 -> 0x755F7972
+      kind == 105 and index == 4 -> 0x5F386674
+      kind == 105 and index == 5 -> 0x746567
+      kind == 106 and index == 2 -> 0x616E6962
+      kind == 106 and index == 3 -> 0x755F7972
+      kind == 106 and index == 4 -> 0x5F386674
+      kind == 106 and index == 5 -> 0x74646977
+      kind == 106 and index == 6 -> 0x68
+      kind == 107 and index == 2 -> 0x616E6962
+      kind == 107 and index == 3 -> 0x755F7972
+      kind == 107 and index == 4 -> 0x5F386674
+      kind == 107 and index == 5 -> 0x676E656C
+      kind == 107 and index == 6 -> 0x6874
+      kind == 108 and index == 2 -> 0x69727473
+      kind == 108 and index == 3 -> 0x705F676E
+      kind == 108 and index == 4 -> 0x746E6972
+      kind == 108 and index == 5 -> 0x656C6261
+      kind == 109 and index == 2 -> 0x616E6962
+      kind == 109 and index == 3 -> 0x715F7972
+      kind == 109 and index == 4 -> 0x65746F75
+      kind == 110 and index == 2 -> 0x616E6962
+      kind == 110 and index == 3 -> 0x655F7972
+      kind == 110 and index == 4 -> 0x646F636E
+      kind == 110 and index == 5 -> 0x363165
+      kind == 111 and index == 2 -> 0x616E6962
+      kind == 111 and index == 3 -> 0x645F7972
+      kind == 111 and index == 4 -> 0x646F6365
+      kind == 111 and index == 5 -> 0x363165
+      kind == 112 and index == 2 -> 0x5F746E69
+      kind == 112 and index == 3 -> 0x735F6F74
+      kind == 112 and index == 4 -> 0x6E697274
+      kind == 112 and index == 5 -> 0x67
+      kind == 113 and index == 2 -> 0x5F746E69
+      kind == 113 and index == 3 -> 0x735F6F74
+      kind == 113 and index == 4 -> 0x6E697274
+      kind == 113 and index == 5 -> 0x61625F67
+      kind == 113 and index == 6 -> 0x6573
+      kind == 114 and index == 2 -> 0x5F746E69
+      kind == 114 and index == 3 -> 0x685F6F74
+      kind == 114 and index == 4 -> 0x7865
+      kind == 115 and index == 2 -> 0x69727473
+      kind == 115 and index == 3 -> 0x745F676E
+      kind == 115 and index == 4 -> 0x6E695F6F
+      kind == 115 and index == 5 -> 0x74
+      kind == 116 and index == 2 -> 0x656C6966
+      kind == 116 and index == 3 -> 0x6165725F
+      kind == 116 and index == 4 -> 0x64
+      kind == 117 and index == 2 -> 0x656C6966
+      kind == 117 and index == 3 -> 0x6165725F
+      kind == 117 and index == 4 -> 0x696C5F64
+      kind == 117 and index == 5 -> 0x73656E
+      kind == 118 and index == 2 -> 0x6D756E65
+      kind == 118 and index == 3 -> 0x62617265
+      kind == 118 and index == 4 -> 0x635F656C
+      kind == 118 and index == 5 -> 0x746E756F
+      kind == 119 and index == 2 -> 0x6D756E65
+      kind == 119 and index == 3 -> 0x62617265
+      kind == 119 and index == 4 -> 0x745F656C
+      kind == 119 and index == 5 -> 0x696C5F6F
+      kind == 119 and index == 6 -> 0x7473
+      kind == 120 and index == 2 -> 0x6D756E65
+      kind == 120 and index == 3 -> 0x62617265
+      kind == 120 and index == 4 -> 0x695F656C
+      kind == 120 and index == 5 -> 0x5F6F746E
+      kind == 120 and index == 6 -> 0x70616D
+      kind == 121 and index == 2 -> 0x6D756E65
+      kind == 121 and index == 3 -> 0x62617265
+      kind == 121 and index == 4 -> 0x695F656C
+      kind == 121 and index == 5 -> 0x7265746E
+      kind == 121 and index == 6 -> 0x72657073
+      kind == 121 and index == 7 -> 0x6573
+      kind == 122 and index == 2 -> 0x6D756E65
+      kind == 122 and index == 3 -> 0x62617265
+      kind == 122 and index == 4 -> 0x745F656C
+      kind == 122 and index == 5 -> 0x696C5F6F
+      kind == 122 and index == 6 -> 0x725F7473
+      kind == 122 and index == 7 -> 0x65676E61
+      kind == 123 and index == 2 -> 0x6D756E65
+      kind == 123 and index == 3 -> 0x62617265
+      kind == 123 and index == 4 -> 0x725F656C
+      kind == 123 and index == 5 -> 0x63756465
+      kind == 123 and index == 6 -> 0x65
+      kind == 124 and index == 2 -> 0x6D756E65
+      kind == 124 and index == 3 -> 0x62617265
+      kind == 124 and index == 4 -> 0x725F656C
+      kind == 124 and index == 5 -> 0x63756465
+      kind == 124 and index == 6 -> 0x635F65
+      kind == 125 and index == 2 -> 0x6D756E65
+      kind == 125 and index == 3 -> 0x62617265
+      kind == 125 and index == 4 -> 0x725F656C
+      kind == 125 and index == 5 -> 0x63756465
+      kind == 125 and index == 6 -> 0x61725F65
+      kind == 125 and index == 7 -> 0x65676E
+      kind == 126 and index == 2 -> 0x6D756E65
+      kind == 126 and index == 3 -> 0x62617265
+      kind == 126 and index == 4 -> 0x725F656C
+      kind == 126 and index == 5 -> 0x63756465
+      kind == 126 and index == 6 -> 0x75665F65
+      kind == 126 and index == 7 -> 0x6E
+      kind == 127 and index == 2 -> 0x6D756E65
+      kind == 127 and index == 3 -> 0x62617265
+      kind == 127 and index == 4 -> 0x6D5F656C
+      kind == 127 and index == 5 -> 0x665F7061
+      kind == 127 and index == 6 -> 0x6E75
+      kind == 128 and index == 2 -> 0x6D756E65
+      kind == 128 and index == 3 -> 0x62617265
+      kind == 128 and index == 4 -> 0x6D5F656C
+      kind == 128 and index == 5 -> 0x745F7061
+      kind == 128 and index == 6 -> 0x5F6D7265
+      kind == 128 and index == 7 -> 0x6E7566
+      kind == 129 and index == 2 -> 0x6D756E65
+      kind == 129 and index == 3 -> 0x62617265
+      kind == 129 and index == 4 -> 0x6D5F656C
+      kind == 129 and index == 5 -> 0x745F7061
+      kind == 129 and index == 6 -> 0x5F6D7265
+      kind == 129 and index == 7 -> 0x5F6E7566
+      kind == 129 and index == 8 -> 0x63
+      kind == 130 and index == 2 -> 0x6D756E65
+      kind == 130 and index == 3 -> 0x62617265
+      kind == 130 and index == 4 -> 0x665F656C
+      kind == 130 and index == 5 -> 0x5F74616C
+      kind == 130 and index == 6 -> 0x5F70616D
+      kind == 130 and index == 7 -> 0x6D726574
+      kind == 130 and index == 8 -> 0x6E75665F
+      kind == 131 and index == 2 -> 0x65727473
+      kind == 131 and index == 3 -> 0x665F6D61
+      kind == 131 and index == 4 -> 0x65746C69
+      kind == 131 and index == 5 -> 0x72
+      kind == 132 and index == 2 -> 0x65727473
+      kind == 132 and index == 3 -> 0x745F6D61
+      kind == 132 and index == 4 -> 0x656B61
+      kind == 133 and index == 2 -> 0x65727473
+      kind == 133 and index == 3 -> 0x645F6D61
+      kind == 133 and index == 4 -> 0x706F72
+      kind == 134 and index == 2 -> 0x5F6E7566
+      kind == 134 and index == 3 -> 0x74697261
+      kind == 134 and index == 4 -> 0x79
+      kind == 135 and index == 2 -> 0x5F6E7566
+      kind == 135 and index == 3 -> 0x75736572
+      kind == 135 and index == 4 -> 0x6D5F746C
+      kind == 135 and index == 5 -> 0x65646F
+      kind >= 136 and kind <= 140 and index == 0 -> 0x742E7865
+      kind >= 136 and kind <= 140 and index == 1 -> 0x2E6D7265
+      kind == 136 and index == 2 -> 0x636F7270
+      kind == 136 and index == 3 -> 0x5F737365
+      kind == 136 and index == 4 -> 0x74696177
+      kind == 137 and index == 2 -> 0x6B726F77
+      kind == 137 and index == 3 -> 0x725F7265
+      kind == 137 and index == 4 -> 0x6E75
+      kind == 138 and index == 2 -> 0x63746163
+      kind == 138 and index == 3 -> 0x61765F68
+      kind == 138 and index == 4 -> 0x65756C
+      kind == 139 and index == 2 -> 0x6F726874
+      kind == 139 and index == 3 -> 0x77
+      kind == 140 and index == 2 -> 0x73696172
+      kind == 140 and index == 3 -> 0x65
       true -> -1
     end
   end
@@ -508,6 +804,65 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 78 -> 0
       kind == 79 -> 1
       kind == 80 -> 1
+      kind == 81 -> 2
+      kind == 82 -> 1
+      kind == 83 -> 1
+      kind == 84 -> 1
+      kind == 85 -> 2
+      kind == 86 -> 1
+      kind == 87 -> 2
+      kind == 88 -> 1
+      kind == 89 -> 2
+      kind == 90 -> 3
+      kind == 91 -> 1
+      kind == 92 -> 1
+      kind == 93 -> 2
+      kind == 94 -> 2
+      kind == 96 -> 1
+      kind == 97 -> 1
+      kind == 98 -> 1
+      kind == 99 -> 1
+      kind == 100 -> 1
+      kind == 101 -> 1
+      kind == 102 -> 1
+      kind == 103 -> 2
+      kind == 104 -> 2
+      kind == 105 -> 2
+      kind == 106 -> 2
+      kind == 107 -> 1
+      kind == 108 -> 1
+      kind == 109 -> 1
+      kind == 110 -> 1
+      kind == 111 -> 1
+      kind == 112 -> 1
+      kind == 113 -> 2
+      kind == 114 -> 1
+      kind == 115 -> 1
+      kind == 116 -> 1
+      kind == 117 -> 1
+      kind == 118 -> 1
+      kind == 119 -> 1
+      kind == 120 -> 2
+      kind == 121 -> 2
+      kind == 122 -> 2
+      kind == 123 -> 3
+      kind == 124 -> 4
+      kind == 125 -> 4
+      kind == 126 -> 3
+      kind == 127 -> 2
+      kind == 128 -> 2
+      kind == 129 -> 6
+      kind == 130 -> 2
+      kind == 131 -> 2
+      kind == 132 -> 2
+      kind == 133 -> 2
+      kind == 134 -> 1
+      kind == 135 -> 1
+      kind == 136 -> 1
+      kind == 137 -> 2
+      kind == 138 -> 0
+      kind == 139 -> 1
+      kind == 140 -> 2
       true -> -1
     end
   end
