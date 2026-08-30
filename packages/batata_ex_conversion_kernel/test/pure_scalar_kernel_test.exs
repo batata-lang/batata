@@ -71,7 +71,7 @@ defmodule Batata.ExConversionKernel.PureScalarKernelTest do
     output = Bootstrap.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 158
+    assert length(output.kernel_manifest.patterns) == 159
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)

@@ -534,6 +534,11 @@ defmodule Batata.Signature do
   defp term_call_argument?(value) when is_binary(value) or is_atom(value) or is_list(value),
     do: true
 
+  defp term_call_argument?(value) when is_integer(value), do: not scalar_integer?(value)
+
+  defp term_call_argument?({:-, _, [value]}) when is_integer(value),
+    do: not scalar_integer?(-value)
+
   defp term_call_argument?({:{}, _, values}) when is_list(values), do: true
   defp term_call_argument?({:%{}, _, entries}) when is_list(entries), do: true
   defp term_call_argument?({:fn, _, clauses}) when is_list(clauses), do: true

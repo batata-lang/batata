@@ -34,6 +34,18 @@ defmodule Batata.SignatureTest do
            }
   end
 
+  test "propagates boxed integer literals through local calls" do
+    value = Macro.var(:value, nil)
+    classify = definition(:classify, value, :ok, {:>=, [], [value, 0]})
+    huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
+    main = definition(:main, [], {:classify, [], [huge]})
+
+    assert Batata.Signature.infer([classify, main]) == %{
+             {:classify, 1} => [:term],
+             {:main, 0} => []
+           }
+  end
+
   test "infers atom-context variables like source variables" do
     for context <- [nil, Batata.Frontend.DefaultArgExpand] do
       variable = {:value, [generated: context != nil], context}

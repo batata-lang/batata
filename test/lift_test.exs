@@ -192,23 +192,37 @@ defmodule Batata.LiftTest do
     assert Batata.execute(integer_source("#{packed}"), ctx) == packed
   end
 
-  test "reports boxed integer guard ordering before constructing invalid MLIR", %{ctx: ctx} do
+  test "orders boxed integer guard operands exactly", %{ctx: ctx} do
     huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
 
-    assert_raise Batata.Lift.Error,
-                 ~r/integer guard comparisons with boxed arbitrary-precision literals are unsupported/,
-                 fn ->
-                   lift!(
-                     """
-                     defmodule BoxedIntegerGuard do
-                       def classify(value) when value >= #{huge}, do: :large
-                       def classify(_value), do: :small
-                       def main(), do: classify(#{huge})
-                     end
-                     """,
-                     ctx
-                   )
-                 end
+    source =
+      """
+      defmodule BoxedIntegerGuard do
+        def classify(value) when value >= #{huge}, do: :large
+        def classify(value) when value < -#{huge}, do: :negative
+        def classify(_value), do: :small
+        def main(), do: [classify(#{huge}), classify(#{huge - 1}), classify(-#{huge + 1})]
+      end
+      """
+
+    module = lift!(source, ctx)
+    assert Beaver.MLIR.to_string(module) =~ "ex.integer_compare"
+    assert Batata.execute(source, ctx) == [:large, :small, :negative]
+  end
+
+  test "keeps scalar integer guard ordering on the scalar comparison path", %{ctx: ctx} do
+    source =
+      """
+      defmodule ScalarIntegerGuard do
+        def classify(value) when value >= 1, do: :large
+        def classify(_value), do: :small
+        def main(), do: classify(2)
+      end
+      """
+
+    module = lift!(source, ctx)
+    refute Beaver.MLIR.to_string(module) =~ "ex.integer_compare"
+    assert Batata.execute(source, ctx) == :large
   end
 
   test "lifts tuple and list literals plus predicates into ex IR", %{ctx: ctx} do

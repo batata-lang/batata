@@ -156,6 +156,7 @@ defmodule Batata.Memory.Inventory do
     ex.sub
     ex.term_eq
     ex.term_eq_loose
+    ex.integer_compare
     ex.term_handle_destroy
     ex.term_handle_export
     ex.throw

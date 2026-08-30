@@ -10348,7 +10348,8 @@ defmodule Batata.Lift do
   # calls and explicitly supported integer expressions on bound or outer
   # variables. Other term operations are rejected explicitly.
   defp lift_term_guard(guard_ast, binds, env, ctx, block) do
-    unless GuardSupport.compiler_supported?(guard_ast) do
+    unless GuardSupport.compiler_supported?(guard_ast) or
+             boxed_integer_ordering_guard?(guard_ast) do
       raise Error,
             "unsupported guard on term pattern (only is_* predicates on bound or outer variables): " <>
               inspect(guard_ast)
@@ -10456,33 +10457,58 @@ defmodule Batata.Lift do
   end
 
   defp lower_integer_guard_comparison(left, right, op, env, ctx, block) do
-    {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
-    {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
-    comparison = cmp(left, right, cmp_predicate(op), ctx, block)
+    {left, left_valid, left_mode} = lower_integer_guard_expression(left, env, ctx, block)
+    {right, right_valid, right_mode} = lower_integer_guard_expression(right, env, ctx, block)
+
+    comparison =
+      if left_mode == :scalar and right_mode == :scalar do
+        cmp(left, right, cmp_predicate(op), ctx, block)
+      else
+        left = box_if_scalar(left, ctx, block)
+        right = box_if_scalar(right, ctx, block)
+        ordering = create_op("ex.integer_compare", [left, right], [MLIR.Type.i64()], ctx, block)
+        cmp(ordering, 0, cmp_predicate(op), ctx, block)
+      end
+
     combine([left_valid, right_valid, comparison], ctx, block)
   end
 
   defp lower_integer_guard_expression(integer, _env, ctx, block) when is_integer(integer) do
-    unless scalar_integer_literal?(integer) do
-      raise Error,
-            "integer guard comparisons with boxed arbitrary-precision literals are unsupported: #{integer}"
-    end
-
-    {lit(integer, ctx, block), nil}
+    if scalar_integer_literal?(integer),
+      do: {lit(integer, ctx, block), nil, :scalar},
+      else: {bigint_literal_value(integer, ctx, block), nil, :term}
   end
+
+  defp lower_integer_guard_expression({:-, _, [integer]}, env, ctx, block)
+       when is_integer(integer),
+       do: lower_integer_guard_expression(-integer, env, ctx, block)
 
   defp lower_integer_guard_expression({name, _, context}, env, ctx, block)
        when is_atom(name) and (is_atom(context) or is_nil(context)) do
-    word = env |> Map.fetch!(name) |> box_if_scalar(ctx, block)
-    valid = create_op("ex.is_integer", [word], [MLIR.Type.i64()], ctx, block)
-    scalar = create_op("ex.to_int", [word], [MLIR.Type.i64()], ctx, block)
-    {scalar, valid}
+    value = Map.fetch!(env, name)
+
+    if term_operand?(value) do
+      valid = create_op("ex.is_integer", [value], [MLIR.Type.i64()], ctx, block)
+      {value, valid, :term}
+    else
+      {value, nil, :scalar}
+    end
   end
 
   defp lower_integer_guard_expression({op, _, [left, right]}, env, ctx, block)
        when op in [:+, :-, :*] do
-    {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
-    {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
+    {left, left_valid, left_mode} = lower_integer_guard_expression(left, env, ctx, block)
+    {right, right_valid, right_mode} = lower_integer_guard_expression(right, env, ctx, block)
+
+    left =
+      if left_mode == :term,
+        do: create_op("ex.to_int", [left], [integer_type(ctx)], ctx, block),
+        else: left
+
+    right =
+      if right_mode == :term,
+        do: create_op("ex.to_int", [right], [integer_type(ctx)], ctx, block),
+        else: right
 
     operation =
       case op do
@@ -10492,7 +10518,7 @@ defmodule Batata.Lift do
       end
 
     value = create_op(operation, [left, right], [integer_type(ctx)], ctx, block)
-    {value, combine([left_valid, right_valid], ctx, block)}
+    {value, combine([left_valid, right_valid], ctx, block), :scalar}
   end
 
   defp lower_integer_guard_expression({:rem, _, [left, right]}, env, ctx, block),
@@ -10526,14 +10552,25 @@ defmodule Batata.Lift do
     word = env |> Map.fetch!(name) |> box_if_scalar(ctx, block)
     valid = create_op("ex.is_binary", [word], [MLIR.Type.i64()], ctx, block)
     length = create_op("ex.binary_length", [word], [MLIR.Type.i64()], ctx, block)
-    {length, valid}
+    {length, valid, :scalar}
   end
 
   defp lower_integer_guard_rem(left, right, env, ctx, block) do
-    {left, left_valid} = lower_integer_guard_expression(left, env, ctx, block)
-    {right, right_valid} = lower_integer_guard_expression(right, env, ctx, block)
+    {left, left_valid, left_mode} = lower_integer_guard_expression(left, env, ctx, block)
+    {right, right_valid, right_mode} = lower_integer_guard_expression(right, env, ctx, block)
+
+    left =
+      if left_mode == :term,
+        do: create_op("ex.to_int", [left], [integer_type(ctx)], ctx, block),
+        else: left
+
+    right =
+      if right_mode == :term,
+        do: create_op("ex.to_int", [right], [integer_type(ctx)], ctx, block),
+        else: right
+
     value = create_op("ex.rem", [left, right], [integer_type(ctx)], ctx, block)
-    {value, combine([left_valid, right_valid], ctx, block)}
+    {value, combine([left_valid, right_valid], ctx, block), :scalar}
   end
 
   defp integer_guard_call?({:rem, _, [_left, _right]}), do: true
@@ -10790,7 +10827,27 @@ defmodule Batata.Lift do
        when op in [:==, :!=, :===, :!==],
        do: integer_guard_call?(left) or integer_guard_call?(right)
 
+  defp integer_guard_comparison?({op, _, [_left, _right]} = guard_ast)
+       when op in [:<, :<=, :>, :>=],
+       do: boxed_integer_ordering_guard?(guard_ast)
+
   defp integer_guard_comparison?(_guard_ast), do: false
+
+  defp boxed_integer_ordering_guard?({op, _, [left, right]})
+       when op in [:<, :<=, :>, :>=],
+       do: integer_ordering_guard_operand?(left) and integer_ordering_guard_operand?(right)
+
+  defp boxed_integer_ordering_guard?(_guard_ast), do: false
+
+  defp integer_ordering_guard_operand?(integer) when is_integer(integer), do: true
+
+  defp integer_ordering_guard_operand?({:-, _, [integer]}) when is_integer(integer), do: true
+
+  defp integer_ordering_guard_operand?({name, _, context})
+       when is_atom(name) and (is_atom(context) or is_nil(context)),
+       do: true
+
+  defp integer_ordering_guard_operand?(_operand), do: false
 
   defp add_clause_block(
          clause,
