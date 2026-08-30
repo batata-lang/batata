@@ -4,6 +4,35 @@ defmodule Batata.ExportTest do
   alias Batata
   alias Batata.{Export, Upgrade.Diff}
 
+  test "parses only defined symbols from nm output" do
+    output = """
+    archive.a(member.o):
+    0000000000000000 T batata_entry
+                     U malloc
+    nm: empty.o: no symbols
+    """
+
+    assert Export.parse_defined_symbols(output, :nm) == ["batata_entry"]
+  end
+
+  test "parses PE exports from dumpbin output without treating headings as symbols" do
+    output = """
+      ordinal hint RVA      name
+
+            1    0 00011020 batata_conversion_abi_version
+            2    1 00011100 batata_conversion_manifest
+            3    2 00011180 batata_populate_ex_patterns
+
+      Summary
+    """
+
+    assert Export.parse_defined_symbols(output, :dumpbin) == [
+             "batata_conversion_abi_version",
+             "batata_conversion_manifest",
+             "batata_populate_ex_patterns"
+           ]
+  end
+
   @tag :tmp_dir
   test "build emits an export bundle with metadata", %{ctx: ctx, tmp_dir: tmp_dir} do
     output =
