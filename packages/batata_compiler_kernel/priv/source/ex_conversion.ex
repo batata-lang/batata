@@ -156,6 +156,8 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 146 -> 15
       kind == 147 -> 16
       kind == 148 -> 14
+      kind == 150 -> 23
+      kind == 151 -> 21
       true -> -1
     end
   end
@@ -745,6 +747,16 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 147 and index == 3 -> 0x656C7075
       kind == 148 and index == 2 -> 0x6D5F7369
       kind == 148 and index == 3 -> 0x7061
+      kind >= 150 and kind <= 151 and index == 0 -> 0x742E7865
+      kind >= 150 and kind <= 151 and index == 1 -> 0x2E6D7265
+      kind == 150 and index == 2 -> 0x6C707574
+      kind == 150 and index == 3 -> 0x72665F65
+      kind == 150 and index == 4 -> 0x6C5F6D6F
+      kind == 150 and index == 5 -> 0x747369
+      kind == 151 and index == 2 -> 0x5F70616D
+      kind == 151 and index == 3 -> 0x6D6F7266
+      kind == 151 and index == 4 -> 0x73696C5F
+      kind == 151 and index == 5 -> 0x74
       true -> -1
     end
   end
@@ -893,6 +905,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 139 -> 1
       kind == 140 -> 2
       kind >= 142 and kind <= 148 -> 1
+      kind >= 150 and kind <= 151 -> 1
       true -> -1
     end
   end
@@ -916,6 +929,15 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       length >= 5 and tail5 == 0x2E7465726D -> 1
       length >= 6 and tail6 == 0x2E626F756E64 -> 1
       length >= 8 and reversed_tail == 0x2E756E626F756E64 -> 1
+      true -> 0
+    end
+  end
+
+  def aggregate_accept(kind, arity) do
+    cond do
+      kind == 149 and arity >= 0 -> 1
+      kind == 150 and arity >= 0 -> 1
+      kind == 151 and arity >= 0 and Bitwise.band(arity, 1) == 0 -> 1
       true -> 0
     end
   end

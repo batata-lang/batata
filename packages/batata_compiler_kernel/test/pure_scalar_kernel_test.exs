@@ -70,7 +70,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 148
+    assert length(output.kernel_manifest.patterns) == 151
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -315,6 +315,46 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     invalid_ir = MLIR.to_string(invalid, generic: true)
     assert invalid_ir =~ ~s|"ex.box"|
     refute invalid_ir =~ ~s|"arith.shli"|
+    MLIR.Module.destroy(invalid)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT aggregate constructors match the BEAM reference and reject odd maps", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    assert ctx
+           |> Beaver.Slang.load(Beaver.MLIR.Dialect.Ex)
+           |> MLIR.LogicalResult.success?()
+
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = aggregate_module(ctx)
+    native = aggregate_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+    assert native_ir =~ ~s|callee = @ex.term.tuple_from_list|
+    assert native_ir =~ ~s|callee = @ex.term.map_from_list|
+    refute native_ir =~ ~r/"ex\.(list|tuple|map)"/
+
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+
+    invalid = odd_map_module(ctx)
+
+    assert {:error, %MLIR.Conversion.Error{diagnostics: diagnostics}} =
+             Plan.run(native_plan(output), invalid)
+
+    assert diagnostics != []
+    invalid_ir = MLIR.to_string(invalid, generic: true)
+    assert invalid_ir =~ ~s|"ex.map"|
+    refute invalid_ir =~ ~s|callee = @ex.term.list_cons|
+    refute invalid_ir =~ ~s|callee = @ex.term.map_from_list|
     MLIR.Module.destroy(invalid)
   end
 
@@ -739,6 +779,41 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %boxed_again = "ex.box"(%boxed) : (!ex.term) -> !ex.term
       #{operations}
           func.return %term_6 : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp aggregate_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @aggregates(%first_word: i64, %second_word: i64) -> i64 {
+          %first = "ex.box"(%first_word) : (i64) -> !ex.term
+          %second = "ex.box"(%second_word) : (i64) -> !ex.term
+          %list = "ex.list"(%first, %second) : (!ex.term, !ex.term) -> !ex.term
+          %tuple = "ex.tuple"(%list, %first) : (!ex.term, !ex.term) -> !ex.term
+          %map = "ex.map"(%first, %tuple, %second, %list) : (!ex.term, !ex.term, !ex.term, !ex.term) -> !ex.term
+          %result = "ex.unbox"(%map) : (!ex.term) -> i64
+          func.return %result : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp odd_map_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @odd_map(%word: i64) -> i64 {
+          %term = "ex.box"(%word) : (i64) -> !ex.term
+          %map = "ex.map"(%term) : (!ex.term) -> !ex.term
+          %result = "ex.unbox"(%map) : (!ex.term) -> i64
+          func.return %result : i64
         }
       }
       """,
