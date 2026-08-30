@@ -52,6 +52,18 @@ defmodule Batata.AOTTest do
   end
 
   @tag :tmp_dir
+  test "resolves LLVM sibling tools with the llvm-config executable suffix", %{
+    tmp_dir: tmp_dir
+  } do
+    llvm_config = Path.join(tmp_dir, "llvm-config.exe")
+    mlir_translate = Path.join(tmp_dir, "mlir-translate.exe")
+    File.touch!(llvm_config)
+    File.touch!(mlir_translate)
+
+    assert AOT.llvm_tool!(llvm_config, "mlir-translate") == mlir_translate
+  end
+
+  @tag :tmp_dir
   test "builds a static library and runs it from C", %{ctx: ctx, tmp_dir: tmp_dir} do
     output =
       Batata.build(

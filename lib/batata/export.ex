@@ -193,23 +193,56 @@ defmodule Batata.Export do
     do: raise(ArgumentError, "bundle metadata must be a map")
 
   defp defined_symbols!(path, opts) do
-    nm = System.find_executable("nm") || raise "nm not found on PATH"
-
-    arguments =
-      case {:os.type(), Keyword.fetch!(opts, :exact)} do
-        {{:unix, :darwin}, true} -> ["-gU", path]
-        {_, true} -> ["-g", "--defined-only", path]
-        {_, false} -> ["-g", path]
-      end
-
-    {output, 0} = System.cmd(nm, arguments, stderr_to_stdout: true)
+    {tool, arguments, format} = symbol_command!(path, Keyword.fetch!(opts, :exact))
+    {output, 0} = System.cmd(tool, arguments, stderr_to_stdout: true)
 
     output
-    |> String.split("\n")
-    |> Enum.map(fn line -> line |> String.split() |> List.last() end)
-    |> Enum.reject(&is_nil/1)
+    |> parse_defined_symbols(format)
     |> Enum.map(&normalize_c_symbol/1)
     |> MapSet.new()
+  end
+
+  defp symbol_command!(path, exact?) do
+    case {:os.type(), exact?} do
+      {{:win32, _}, true} ->
+        dumpbin = System.find_executable("dumpbin") || raise "dumpbin not found on PATH"
+        {dumpbin, ["/nologo", "/exports", path], :dumpbin}
+
+      {{:unix, :darwin}, true} ->
+        nm = System.find_executable("nm") || raise "nm not found on PATH"
+        {nm, ["-gU", path], :nm}
+
+      {_, true} ->
+        nm = System.find_executable("nm") || raise "nm not found on PATH"
+        {nm, ["-g", "--defined-only", path], :nm}
+
+      {_, false} ->
+        nm = System.find_executable("nm") || raise "nm not found on PATH"
+        {nm, ["-g", path], :nm}
+    end
+  end
+
+  @doc false
+  def parse_defined_symbols(output, :nm) do
+    output
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      case Regex.run(~r/(?:^|\s)([A-Za-z?])\s+(\S+)\s*$/, line) do
+        [_, type, symbol] when type not in ["U", "u"] -> [symbol]
+        _ -> []
+      end
+    end)
+  end
+
+  def parse_defined_symbols(output, :dumpbin) do
+    output
+    |> String.split("\n")
+    |> Enum.flat_map(fn line ->
+      case Regex.run(~r/^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]+\s+(\S+)/, line) do
+        [_, symbol] -> [symbol]
+        _ -> []
+      end
+    end)
   end
 
   defp normalize_c_symbol(symbol) do

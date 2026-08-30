@@ -8,8 +8,7 @@ defmodule Batata.AOT do
       System.get_env("LLVM_CONFIG_PATH") ||
         raise "LLVM_CONFIG_PATH is required to emit a relocatable AOT object"
 
-    llvm_bin = Path.dirname(llvm_config)
-    mlir_translate = require_tool!(Path.join(llvm_bin, "mlir-translate"), "mlir-translate")
+    mlir_translate = llvm_tool!(llvm_config, "mlir-translate")
     mlir_path = Path.rootname(object_path) <> ".mlir"
     llvm_ir_path = Path.rootname(object_path) <> ".ll"
 
@@ -68,6 +67,26 @@ defmodule Batata.AOT do
       {:win32, _} -> name <> ".dll"
       {:unix, :darwin} -> "lib" <> name <> ".dylib"
       _ -> "lib" <> name <> ".so"
+    end
+  end
+
+  @doc false
+  @spec llvm_tool!(Path.t(), String.t()) :: Path.t()
+  def llvm_tool!(llvm_config, name) do
+    directory = Path.dirname(llvm_config)
+    config_extension = Path.extname(llvm_config)
+
+    candidates =
+      [
+        Path.join(directory, name <> config_extension),
+        Path.join(directory, name),
+        Path.join(directory, name <> ".exe")
+      ]
+      |> Enum.uniq()
+
+    case Enum.find(candidates, &File.regular?/1) do
+      nil -> raise "#{name} not found next to #{llvm_config}"
+      path -> path
     end
   end
 

@@ -1,0 +1,125 @@
+name: Compiler kernel artifacts
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/compiler-kernel.yml
+      - lib/batata/aot.ex
+      - lib/batata/compiler_kernel/**
+      - lib/batata/library.ex
+      - native-deps.lock
+      - packages/batata_compiler_kernel/**
+      - scripts/native_deps/**
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            artifact: linux-x86_64
+          - runner: macos-15
+            artifact: macos-arm64
+          - runner: windows-2022
+            artifact: windows-x86_64
+    concurrency:
+      group: compiler-kernel-${{ github.ref }}-${{ matrix.artifact }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Configure MSVC toolchain
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Mix package managers
+        shell: bash
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      # The current Windows LLVM archive expands beyond the size supported by
+      # Erlang/OTP 27's :erl_tar implementation. Extract it with the runner's
+      # bsdtar, then hand the verified llvm-config path to the resolver.
+      - name: Install pinned LLVM on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm.tar.gz'
+          $directory = Join-Path $env:RUNNER_TEMP 'llvm'
+          Invoke-WebRequest -Uri 'https://github.com/llvm/eudsl/releases/download/llvm/mlir_windows_amd64_20260827%2B6c81b990d.tar.gz' -OutFile $archive
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne 'dd28b40c11c2a52f193766401d46edc94d07f3fae59ed65f77bc12a67431087f') { throw "LLVM SHA-256 mismatch: $actual" }
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          tar -xzf $archive -C $directory
+          if ($LASTEXITCODE -ne 0) { throw "LLVM tar extraction failed: $LASTEXITCODE" }
+          $llvmConfig = Get-ChildItem -Path $directory -Filter llvm-config.exe -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $llvmConfig) { throw 'llvm-config.exe is missing from the pinned LLVM asset' }
+          "BATATA_WINDOWS_LLVM_CONFIG=$llvmConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure pinned native dependencies on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: scripts/native_deps
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: mix batata.native setup
+
+      - name: Configure pinned native dependencies on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: scripts/native_deps
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $compiler = (Get-Command cl.exe -ErrorAction Stop).Source
+          "CC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $toolchain = Join-Path $env:GITHUB_WORKSPACE '.github\cmake\msvc-static-runtime.cmake'
+          "CMAKE_TOOLCHAIN_FILE=$toolchain" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "_CL_=-MT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          mix batata.native setup --llvm-config "$env:BATATA_WINDOWS_LLVM_CONFIG"
+
+      - name: Build Stage 1 and Stage 2 release
+        shell: bash
+        working-directory: scripts/native_deps
+        env:
+          BATATA_REVISION: ${{ github.sha }}
+          BEAVER_REVISION: 94e4b8610d9b9c4f9146c4e820f25725b5d51e33
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_compiler_kernel
+            export BATATA_PATH=../..
+            mix deps.get
+            mix batata.compiler_kernel.release \
+              --output ../../_build/compiler-kernel-release \
+              --compiler-revision "$BATATA_REVISION" \
+              --beaver-revision "$BEAVER_REVISION"
+          '
+
+      - name: Upload verified release
+        uses: actions/upload-artifact@v4
+        with:
+          name: batata-compiler-kernel-${{ matrix.artifact }}-${{ github.sha }}
+          path: _build/compiler-kernel-release
+          if-no-files-found: error
+          retention-days: 14
