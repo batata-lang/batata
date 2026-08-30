@@ -528,6 +528,17 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     assert stage2.lowered_ir_digest == stage1.lowered_ir_digest
     assert digest_file(stage2.object) == digest_file(stage1.object)
 
+    assert_raise Provider.ConfigurationError, ~r/requires a previous-native Stage 2/, fn ->
+      Provider.production_plan!(stage1.kernel_manifest, stage1.library, provider_options())
+    end
+
+    assert %Plan{} =
+             Provider.production_plan!(
+               stage2.kernel_manifest,
+               stage2.library,
+               provider_options()
+             )
+
     receipt_bytes = File.read!(stage2.bootstrap_receipt)
     receipt = JSON.decode!(receipt_bytes)
     assert receipt_bytes == Batata.Memory.canonical_json(receipt) <> "\n"
@@ -594,6 +605,36 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     assert bytes == Batata.Memory.canonical_json(receipt) <> "\n"
     refute MLIR.to_string(module, generic: true) =~ ~r/"ex\./
     MLIR.Module.destroy(module)
+
+    previous_provider = Application.get_env(:batata, :conversion_provider)
+    previous_kernel = Application.get_env(:batata, :compiler_kernel)
+
+    on_exit(fn ->
+      restore_application_env(:conversion_provider, previous_provider)
+      restore_application_env(:compiler_kernel, previous_kernel)
+    end)
+
+    Application.put_env(:batata, :conversion_provider, :native)
+
+    Application.put_env(:batata, :compiler_kernel,
+      manifest: stage2.kernel_manifest_path,
+      artifact: stage2.library,
+      expected: provider_options()
+    )
+
+    configured = control_function_module(ctx)
+    assert ^configured = Batata.Lower.to_func(configured)
+    refute MLIR.to_string(configured, generic: true) =~ ~r/"ex\./
+    MLIR.Module.destroy(configured)
+
+    Application.delete_env(:batata, :compiler_kernel)
+    missing = control_function_module(ctx)
+
+    assert %Provider.ConfigurationError{code: :production_kernel_missing} =
+             assert_raise(Provider.ConfigurationError, fn -> Batata.Lower.to_func(missing) end)
+
+    assert MLIR.to_string(missing, generic: true) =~ ~s|"ex.func"|
+    MLIR.Module.destroy(missing)
   end
 
   @tag :tmp_dir
@@ -1013,6 +1054,9 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   defp target, do: %{"triple" => "host-test", "cpu" => "generic", "features" => []}
+
+  defp restore_application_env(key, nil), do: Application.delete_env(:batata, key)
+  defp restore_application_env(key, value), do: Application.put_env(:batata, key, value)
 
   defp digest_file(path) do
     "sha256:" <>
