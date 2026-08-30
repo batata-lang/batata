@@ -70,7 +70,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 151
+    assert length(output.kernel_manifest.patterns) == 156
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -355,6 +355,49 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     assert invalid_ir =~ ~s|"ex.map"|
     refute invalid_ir =~ ~s|callee = @ex.term.list_cons|
     refute invalid_ir =~ ~s|callee = @ex.term.map_from_list|
+    MLIR.Module.destroy(invalid)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT function values and apply dispatch match the BEAM reference", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    assert ctx
+           |> Beaver.Slang.load(Beaver.MLIR.Dialect.Ex)
+           |> MLIR.LogicalResult.success?()
+
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = function_value_module(ctx)
+    native = function_value_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+
+    for symbol <- ~w(make_fun make_fun_with_arity make_fun_with_signature fun_idx fun_env) do
+      assert native_ir =~ ~s|@ex.term.#{symbol}|
+    end
+
+    assert native_ir =~ ~s|"func.constant"() <{value = @capture}>|
+    assert native_ir =~ ~s|callee = @__fn_dispatch|
+    refute native_ir =~ ~r/"ex\.(apply|func_addr|make_fun)/
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+
+    invalid = invalid_function_value_module(ctx)
+
+    assert {:error, %MLIR.Conversion.Error{diagnostics: diagnostics}} =
+             Plan.run(native_plan(output), invalid)
+
+    assert diagnostics != []
+    invalid_ir = MLIR.to_string(invalid, generic: true)
+    assert invalid_ir =~ ~s|"ex.make_fun"|
+    refute invalid_ir =~ ~s|callee = @ex.term.make_fun|
     MLIR.Module.destroy(invalid)
   end
 
@@ -813,6 +856,46 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %term = "ex.box"(%word) : (i64) -> !ex.term
           %map = "ex.map"(%term) : (!ex.term) -> !ex.term
           %result = "ex.unbox"(%map) : (!ex.term) -> i64
+          func.return %result : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp function_value_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func private @capture(i64) -> i64
+        func.func private @__fn_dispatch(i64, i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+        func.func @function_values(%env: i64, %argument: i64) -> i64 {
+          %boxed = "ex.box"(%env) : (i64) -> !ex.term
+          %legacy = "ex.make_fun"(%boxed) {fn_idx = 7 : i64, env_len = 1 : i64, operandSegmentSizes = array<i32: 1, 0, 0, 0>} : (!ex.term) -> !ex.term
+          %arity = "ex.make_fun_with_arity"(%boxed) {fn_idx = 7 : i64, arity = 1 : i64, env_len = 1 : i64, operandSegmentSizes = array<i32: 1, 0, 0, 0>} : (!ex.term) -> !ex.term
+          %signature = "ex.make_fun_with_signature"(%boxed) {fn_idx = 7 : i64, arity = 1 : i64, result_mode = 0 : i64, env_len = 1 : i64, operandSegmentSizes = array<i32: 1, 0, 0, 0>} : (!ex.term) -> !ex.term
+          %applied = "ex.apply"(%signature, %argument) {arg_count = 1 : i64, operandSegmentSizes = array<i32: 1, 1, 0, 0, 0>} : (!ex.term, i64) -> i64
+          func.return %applied : i64
+        }
+        func.func @address() -> ((i64) -> i64) {
+          %address = "ex.func_addr"() {sym_name = "capture"} : () -> ((i64) -> i64)
+          func.return %address : (i64) -> i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp invalid_function_value_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @invalid_function_value(%env: i64) -> i64 {
+          %boxed = "ex.box"(%env) : (i64) -> !ex.term
+          %closure = "ex.make_fun"(%boxed) {fn_idx = 7 : i64, env_len = 2 : i64, operandSegmentSizes = array<i32: 1, 0, 0, 0>} : (!ex.term) -> !ex.term
+          %result = "ex.unbox"(%closure) : (!ex.term) -> i64
           func.return %result : i64
         }
       }

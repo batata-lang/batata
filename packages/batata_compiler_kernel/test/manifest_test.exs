@@ -18,15 +18,16 @@ defmodule Batata.CompilerKernel.ManifestTest do
     assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
     roots = Enum.map(manifest.patterns, & &1["root"])
-    assert length(roots) == 151
+    assert length(roots) == 156
     assert roots == Enum.sort(roots)
 
     assert MapSet.subset?(
              MapSet.new(~w(
-                 ex.add ex.binary ex.binary_part ex.call ex.cmp ex.div ex.func
+                 ex.add ex.apply ex.binary ex.binary_part ex.call ex.cmp ex.div ex.func ex.func_addr
                  ex.box ex.if ex.is_atom ex.is_binary ex.is_float ex.is_integer
                  ex.is_list ex.is_map ex.is_tuple ex.list ex.lit ex.map ex.mul ex.rem ex.return
-                 ex.sub ex.term_eq ex.to_word ex.tuple ex.unbox ex.yield
+                 ex.make_fun ex.make_fun_with_arity ex.make_fun_with_signature ex.sub ex.term_eq
+                 ex.to_word ex.tuple ex.unbox ex.yield
                )),
              MapSet.new(roots)
            )
