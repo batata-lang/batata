@@ -18,6 +18,11 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 7 -> 10
       kind == 8 -> 11
       kind == 9 -> 9
+      kind == 10 -> 9
+      kind == 11 -> 10
+      kind == 12 -> 19
+      kind == 13 -> 17
+      kind == 14 -> 24
       true -> -1
     end
   end
@@ -52,6 +57,28 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 9 and index == 0 -> 0x2E666373
       kind == 9 and index == 1 -> 0x6C656979
       kind == 9 and index == 2 -> 0x64
+      kind == 10 and index == 0 -> 0x636E7566
+      kind == 10 and index == 1 -> 0x6C61632E
+      kind == 10 and index == 2 -> 0x6C
+      kind == 11 and index == 0 -> 0x742E7865
+      kind == 11 and index == 1 -> 0x2E6D7265
+      kind == 11 and index == 2 -> 0x7165
+      kind == 12 and index == 0 -> 0x742E7865
+      kind == 12 and index == 1 -> 0x2E6D7265
+      kind == 12 and index == 2 -> 0x616E6962
+      kind == 12 and index == 3 -> 0x705F7972
+      kind == 12 and index == 4 -> 0x747261
+      kind == 13 and index == 0 -> 0x742E7865
+      kind == 13 and index == 1 -> 0x2E6D7265
+      kind == 13 and index == 2 -> 0x7473696C
+      kind == 13 and index == 3 -> 0x6E6F635F
+      kind == 13 and index == 4 -> 0x73
+      kind == 14 and index == 0 -> 0x742E7865
+      kind == 14 and index == 1 -> 0x2E6D7265
+      kind == 14 and index == 2 -> 0x616E6962
+      kind == 14 and index == 3 -> 0x665F7972
+      kind == 14 and index == 4 -> 0x5F6D6F72
+      kind == 14 and index == 5 -> 0x7473696C
       true -> -1
     end
   end
@@ -68,6 +95,16 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       length == 3 and word == 0x656C75 -> 7
       length == 3 and word == 0x746775 -> 8
       length == 3 and word == 0x656775 -> 9
+      true -> -1
+    end
+  end
+
+  def runtime_arity(kind) do
+    cond do
+      kind == 11 -> 2
+      kind == 12 -> 3
+      kind == 13 -> 2
+      kind == 14 -> 1
       true -> -1
     end
   end

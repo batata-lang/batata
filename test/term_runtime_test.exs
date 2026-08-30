@@ -1,6 +1,17 @@
 defmodule Batata.TermRuntimeTest do
   use ExUnit.Case, async: true
 
+  test "derives a stable identity from the checked-in runtime ABI" do
+    expected =
+      Batata.TermRuntime.native_dir()
+      |> Path.join("ABI.md")
+      |> File.read!()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    assert Batata.TermRuntime.abi_digest() == "sha256:" <> expected
+  end
+
   @tag :tmp_dir
   test "publishes one complete static runtime under concurrent demand", %{tmp_dir: tmp_dir} do
     path = Batata.TermRuntime.static_lib_path(dir: tmp_dir)

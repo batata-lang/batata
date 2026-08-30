@@ -15,13 +15,19 @@ defmodule Batata.CompilerKernel.ManifestTest do
     manifest = Manifest.build!(artifact, manifest_options())
 
     assert manifest.provider == CompilerKernel.provider()
+    assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
-    assert length(manifest.patterns) == 10
+    assert length(manifest.patterns) == 13
 
     assert Enum.map(manifest.patterns, & &1["root"]) ==
-             ~w(ex.add ex.cmp ex.div ex.lit ex.mul ex.rem ex.sub ex.to_word ex.unbox ex.yield)
+             ~w(ex.add ex.binary ex.binary_part ex.cmp ex.div ex.lit ex.mul ex.rem ex.sub ex.term_eq ex.to_word ex.unbox ex.yield)
 
-    assert manifest.capabilities == ["ir.attribute.v1", "ir.scalar.v1", "pattern.register"]
+    assert manifest.capabilities == [
+             "ir.attribute.v1",
+             "ir.scalar.v1",
+             "ir.symbol.v1",
+             "pattern.register"
+           ]
 
     assert manifest.bootstrap == %{
              "stage" => "stage1",
@@ -67,6 +73,7 @@ defmodule Batata.CompilerKernel.ManifestTest do
       compiler_revision: "batata-fixture-revision",
       beaver_revision: "beaver-fixture-revision",
       dialect_schema_digest: @digest,
+      runtime_abi_digest: Batata.TermRuntime.abi_digest(),
       target: %{"triple" => "host-test", "cpu" => "generic", "features" => []},
       bootstrap_provenance: "beaver-stage0:sha256:fixture"
     ]

@@ -19,17 +19,24 @@ defmodule Batata.CompilerKernel.Manifest do
   }
   @patterns [
     %{"name" => "batata.ex.add", "root" => "ex.add", "version" => "1"},
+    %{"name" => "batata.ex.binary", "root" => "ex.binary", "version" => "1"},
+    %{
+      "name" => "batata.ex.binary_part",
+      "root" => "ex.binary_part",
+      "version" => "1"
+    },
     %{"name" => "batata.ex.cmp", "root" => "ex.cmp", "version" => "1"},
     %{"name" => "batata.ex.div", "root" => "ex.div", "version" => "1"},
     %{"name" => "batata.ex.lit", "root" => "ex.lit", "version" => "1"},
     %{"name" => "batata.ex.mul", "root" => "ex.mul", "version" => "1"},
     %{"name" => "batata.ex.rem", "root" => "ex.rem", "version" => "1"},
     %{"name" => "batata.ex.sub", "root" => "ex.sub", "version" => "1"},
+    %{"name" => "batata.ex.term_eq", "root" => "ex.term_eq", "version" => "1"},
     %{"name" => "batata.ex.to_word", "root" => "ex.to_word", "version" => "1"},
     %{"name" => "batata.ex.unbox", "root" => "ex.unbox", "version" => "1"},
     %{"name" => "batata.ex.yield", "root" => "ex.yield", "version" => "1"}
   ]
-  @capabilities ["ir.attribute.v1", "ir.scalar.v1", "pattern.register"]
+  @capabilities ["ir.attribute.v1", "ir.scalar.v1", "ir.symbol.v1", "pattern.register"]
   @allowed_options [
     :beaver_revision,
     :bootstrap_provenance,
@@ -58,7 +65,7 @@ defmodule Batata.CompilerKernel.Manifest do
       "beaver_revision" => Keyword.fetch!(opts, :beaver_revision),
       "llvm_revision" => CompilationRuntime.llvm_revision(),
       "dialect_schema_digest" => Keyword.fetch!(opts, :dialect_schema_digest),
-      "runtime_abi_digest" => Keyword.get(opts, :runtime_abi_digest, "none"),
+      "runtime_abi_digest" => Keyword.fetch!(opts, :runtime_abi_digest),
       "patterns" => Keyword.get(opts, :patterns, @patterns),
       "capabilities" => Keyword.get(opts, :capabilities, @capabilities),
       "target" => Keyword.fetch!(opts, :target),
