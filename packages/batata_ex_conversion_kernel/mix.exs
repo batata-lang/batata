@@ -1,14 +1,14 @@
-defmodule BatataCompilerKernel.MixProject do
+defmodule BatataExConversionKernel.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :batata_compiler_kernel,
+      app: :batata_ex_conversion_kernel,
       version: "0.1.0-dev",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      name: "Batata Compiler Kernel",
+      name: "Batata Ex Conversion Kernel",
       description: "Batata-owned native Ex conversion kernel artifacts and bootstrap receipts",
       package: package()
     ]

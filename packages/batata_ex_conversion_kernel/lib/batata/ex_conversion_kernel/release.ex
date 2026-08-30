@@ -1,6 +1,6 @@
-defmodule Batata.CompilerKernel.Release do
+defmodule Batata.ExConversionKernel.Release do
   @moduledoc """
-  Builds an auditable Stage 1/2 compiler-kernel release directory.
+  Builds an auditable Stage 1/2 Ex conversion kernel release directory.
 
   All identity inputs are explicit except the Ex schema, term runtime ABI,
   LLVM revision, and frozen Stage 0 digest, which are read from the exact
@@ -8,9 +8,9 @@ defmodule Batata.CompilerKernel.Release do
   paths so the same artifact layout can be uploaded from any runner.
   """
 
-  alias Batata.CompilerKernel
-  alias Batata.CompilerKernel.Build
-  alias Batata.CompilerKernel.Performance
+  alias Batata.ExConversionKernel
+  alias Batata.ExConversionKernel.Bootstrap
+  alias Batata.ExConversionKernel.Performance
   alias Batata.Memory
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex.Stage0
@@ -23,8 +23,8 @@ defmodule Batata.CompilerKernel.Release do
           index: map(),
           index_path: Path.t(),
           performance_receipt: Path.t(),
-          stage1: Build.output(),
-          stage2: Build.output()
+          stage1: Bootstrap.output(),
+          stage2: Bootstrap.output()
         }
 
   @doc "Builds Stage 1 and Stage 2, verifies both, and writes the release index."
@@ -35,8 +35,8 @@ defmodule Batata.CompilerKernel.Release do
     output_dir = Path.expand(output_dir)
     build_opts = build_options(opts)
 
-    stage1 = Build.build!(Path.join(output_dir, "stage1"), ctx, build_opts)
-    stage2 = Build.rebuild!(Path.join(output_dir, "stage2"), ctx, stage1, build_opts)
+    stage1 = Bootstrap.build!(Path.join(output_dir, "stage1"), ctx, build_opts)
+    stage2 = Bootstrap.rebuild!(Path.join(output_dir, "stage2"), ctx, stage1, build_opts)
 
     verify_output!(stage1, "stage1", "cpp-bootstrap")
     verify_output!(stage2, "stage2", "previous-native")
@@ -75,10 +75,12 @@ defmodule Batata.CompilerKernel.Release do
 
     cond do
       missing != [] ->
-        raise ArgumentError, "missing compiler-kernel release options: #{inspect(missing)}"
+        raise ArgumentError,
+              "missing Ex conversion kernel release options: #{inspect(missing)}"
 
       unknown != [] ->
-        raise ArgumentError, "unknown compiler-kernel release options: #{inspect(unknown)}"
+        raise ArgumentError,
+              "unknown Ex conversion kernel release options: #{inspect(unknown)}"
 
       true ->
         opts
@@ -126,14 +128,14 @@ defmodule Batata.CompilerKernel.Release do
   defp release_index(stage1, stage2, performance, opts) do
     %{
       "schema_version" => 1,
-      "artifact_kind" => "batata-compiler-kernel-release",
+      "artifact_kind" => "batata-ex-conversion-kernel-release",
       "compiler_revision" => Keyword.fetch!(opts, :compiler_revision),
       "beaver_revision" => Keyword.fetch!(opts, :beaver_revision),
       "llvm_revision" => MLIR.CompilationRuntime.llvm_revision(),
       "dialect_schema_digest" => ExDialect.schema_digest(),
       "runtime_abi_digest" => Batata.TermRuntime.abi_digest(),
       "target" => Keyword.fetch!(opts, :target),
-      "stage0" => CompilerKernel.seed_manifest!(),
+      "stage0" => ExConversionKernel.seed_manifest!(),
       "stages" => [stage_entry(stage1, "stage1"), stage_entry(stage2, "stage2")],
       "performance_receipt" => %{
         "path" => "performance-receipt.json",
@@ -141,7 +143,8 @@ defmodule Batata.CompilerKernel.Release do
         "callback_free" => performance["callback_free"],
         "sizes" => performance["sizes"]
       },
-      "production_kernel_identity" => KernelManifest.identity_digest(stage2.kernel_manifest)
+      "production_ex_conversion_kernel_identity" =>
+        KernelManifest.identity_digest(stage2.kernel_manifest)
     }
   end
 

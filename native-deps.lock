@@ -1,3 +1,3 @@
 BEAVER_GIT_URL=https://github.com/beaver-lodge/beaver.git
-BEAVER_GIT_REF=stack/148-freeze-stage0
-BEAVER_GIT_SHA=94e4b8610d9b9c4f9146c4e820f25725b5d51e33
+BEAVER_GIT_REF=main
+BEAVER_GIT_SHA=44c3a5258420d7ebd1d60059decc47ea8480c5e0

@@ -1,15 +1,15 @@
-defmodule Batata.CompilerKernel.PureScalarKernelTest do
+defmodule Batata.ExConversionKernel.PureScalarKernelTest do
   use ExUnit.Case, async: false
 
-  alias Batata.CompilerKernel.Build
-  alias Batata.CompilerKernel.Provider
+  alias Batata.ExConversionKernel.Bootstrap
+  alias Batata.ExConversionKernel.Provider
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Kernel.Error, as: KernelError
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
   alias Beaver.MLIR.Conversion.Plan
 
-  @beaver_revision "94e4b8610d9b9c4f9146c4e820f25725b5d51e33"
+  @beaver_revision "44c3a5258420d7ebd1d60059decc47ea8480c5e0"
   @digest Beaver.MLIR.Dialect.Ex.schema_digest()
   @stage0_digest Beaver.MLIR.Conversion.Ex.Stage0.identity_digest()
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
@@ -68,7 +68,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
     assert length(output.kernel_manifest.patterns) == 158
@@ -105,7 +105,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     module = input_module(ctx, "eq")
 
     assert %KernelError{code: :target_mismatch} =
@@ -122,7 +122,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   @tag :tmp_dir
   @tag timeout: 180_000
   test "Batata AOT ex.yield matches the frozen native seed", %{ctx: ctx, tmp_dir: tmp_dir} do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     stage0 = yield_module(ctx)
     native = yield_module(ctx)
 
@@ -142,7 +142,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     stage0 = runtime_module(ctx)
     native = runtime_module(ctx)
 
@@ -169,7 +169,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     module = runtime_module(ctx)
 
     assert %KernelError{code: :runtime_abi_mismatch} =
@@ -189,7 +189,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = lifecycle_module(ctx)
     native = lifecycle_module(ctx)
 
@@ -223,7 +223,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = scheduler_module(ctx)
     native = scheduler_module(ctx)
 
@@ -248,7 +248,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = term_library_module(ctx)
     native = term_library_module(ctx)
 
@@ -282,7 +282,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
            |> Beaver.Slang.load(Beaver.MLIR.Dialect.Ex)
            |> MLIR.LogicalResult.success?()
 
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = boxing_predicate_module(ctx)
     native = boxing_predicate_module(ctx)
 
@@ -329,7 +329,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
            |> Beaver.Slang.load(Beaver.MLIR.Dialect.Ex)
            |> MLIR.LogicalResult.success?()
 
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = aggregate_module(ctx)
     native = aggregate_module(ctx)
 
@@ -369,7 +369,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
            |> Beaver.Slang.load(Beaver.MLIR.Dialect.Ex)
            |> MLIR.LogicalResult.success?()
 
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = function_value_module(ctx)
     native = function_value_module(ctx)
 
@@ -408,7 +408,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = try_module(ctx)
     native = try_module(ctx)
 
@@ -454,7 +454,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
     reference = control_function_module(ctx)
     native = control_function_module(ctx)
 
@@ -479,7 +479,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build!(tmp_dir, ctx, build_options())
+    output = Bootstrap.build!(tmp_dir, ctx, build_options())
 
     module =
       MLIR.Module.create!(
@@ -510,8 +510,8 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    stage1 = Build.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
-    stage2 = Build.rebuild!(Path.join(tmp_dir, "stage2"), ctx, stage1, build_options())
+    stage1 = Bootstrap.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
+    stage2 = Bootstrap.rebuild!(Path.join(tmp_dir, "stage2"), ctx, stage1, build_options())
 
     stage1_identity =
       KernelManifest.identity_digest(stage1.kernel_manifest)
@@ -559,11 +559,11 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    stage1 = Build.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
+    stage1 = Bootstrap.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
     stage2_dir = Path.join(tmp_dir, "stage2")
 
     assert_raise KernelError, ~r/target_mismatch/, fn ->
-      Build.rebuild!(
+      Bootstrap.rebuild!(
         stage2_dir,
         ctx,
         stage1,
@@ -580,8 +580,8 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    stage1 = Build.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
-    stage2 = Build.rebuild!(Path.join(tmp_dir, "stage2"), ctx, stage1, build_options())
+    stage1 = Bootstrap.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
+    stage2 = Bootstrap.rebuild!(Path.join(tmp_dir, "stage2"), ctx, stage1, build_options())
     receipt_path = Path.join(tmp_dir, "production-conversion-receipt.json")
     module = control_function_module(ctx)
 
@@ -608,16 +608,16 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     MLIR.Module.destroy(module)
 
     previous_provider = Application.get_env(:batata, :conversion_provider)
-    previous_kernel = Application.get_env(:batata, :compiler_kernel)
+    previous_kernel = Application.get_env(:batata, :ex_conversion_kernel)
 
     on_exit(fn ->
       restore_application_env(:conversion_provider, previous_provider)
-      restore_application_env(:compiler_kernel, previous_kernel)
+      restore_application_env(:ex_conversion_kernel, previous_kernel)
     end)
 
     Application.put_env(:batata, :conversion_provider, :native)
 
-    Application.put_env(:batata, :compiler_kernel,
+    Application.put_env(:batata, :ex_conversion_kernel,
       manifest: stage2.kernel_manifest_path,
       artifact: stage2.library,
       expected: provider_options()
@@ -628,7 +628,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     refute MLIR.to_string(configured, generic: true) =~ ~r/"ex\./
     MLIR.Module.destroy(configured)
 
-    Application.delete_env(:batata, :compiler_kernel)
+    Application.delete_env(:batata, :ex_conversion_kernel)
     missing = control_function_module(ctx)
 
     assert %Provider.ConfigurationError{code: :production_kernel_missing} =
@@ -639,22 +639,22 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   @tag :tmp_dir
-  test "Batata compiler-kernel build rejects implicit fallback policy", %{
+  test "Batata Ex conversion kernel bootstrap rejects implicit fallback policy", %{
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    assert_raise ArgumentError, ~r/unknown compiler-kernel build options/, fn ->
-      Build.build!(tmp_dir, ctx, Keyword.put(build_options(), :fallback, :stage0))
+    assert_raise ArgumentError, ~r/unknown Ex conversion kernel bootstrap options/, fn ->
+      Bootstrap.build!(tmp_dir, ctx, Keyword.put(build_options(), :fallback, :stage0))
     end
   end
 
   @tag :tmp_dir
-  test "Batata compiler-kernel build rejects Stage 0 provenance drift", %{
+  test "Batata Ex conversion kernel bootstrap rejects Stage 0 provenance drift", %{
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
     assert_raise ArgumentError, ~r/bootstrap provenance must match/, fn ->
-      Build.build!(tmp_dir, ctx, Keyword.put(build_options(), :bootstrap_provenance, "drift"))
+      Bootstrap.build!(tmp_dir, ctx, Keyword.put(build_options(), :bootstrap_provenance, "drift"))
     end
 
     refute File.exists?(Path.join(tmp_dir, "batata-ex-conversion.o"))

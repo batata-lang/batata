@@ -1,14 +1,14 @@
-name: Compiler kernel artifacts
+name: Batata Ex conversion kernel artifacts
 
 on:
   pull_request:
     paths:
-      - .github/workflows/compiler-kernel.yml
+      - .github/workflows/ex-conversion-kernel.yml
       - lib/batata/aot.ex
-      - lib/batata/compiler_kernel/**
+      - lib/batata/ex_conversion_kernel/**
       - lib/batata/library.ex
       - native-deps.lock
-      - packages/batata_compiler_kernel/**
+      - packages/batata_ex_conversion_kernel/**
       - scripts/native_deps/**
   push:
     branches: [main]
@@ -31,7 +31,7 @@ jobs:
           - runner: windows-2022
             artifact: windows-x86_64
     concurrency:
-      group: compiler-kernel-${{ github.ref }}-${{ matrix.artifact }}
+      group: ex-conversion-kernel-${{ github.ref }}-${{ matrix.artifact }}
       cancel-in-progress: true
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -104,14 +104,14 @@ jobs:
         working-directory: scripts/native_deps
         env:
           BATATA_REVISION: ${{ github.sha }}
-          BEAVER_REVISION: 94e4b8610d9b9c4f9146c4e820f25725b5d51e33
+          BEAVER_REVISION: 44c3a5258420d7ebd1d60059decc47ea8480c5e0
         run: |
           mix batata.native exec -- bash -c '
-            cd packages/batata_compiler_kernel
+            cd packages/batata_ex_conversion_kernel
             export BATATA_PATH=../..
             mix deps.get
-            mix batata.compiler_kernel.release \
-              --output ../../_build/compiler-kernel-release \
+            mix batata.ex_conversion_kernel.release \
+              --output ../../_build/batata-ex-conversion-kernel-release \
               --compiler-revision "$BATATA_REVISION" \
               --beaver-revision "$BEAVER_REVISION"
           '
@@ -119,7 +119,7 @@ jobs:
       - name: Upload verified release
         uses: actions/upload-artifact@v4
         with:
-          name: batata-compiler-kernel-${{ matrix.artifact }}-${{ github.sha }}
-          path: _build/compiler-kernel-release
+          name: batata-ex-conversion-kernel-${{ matrix.artifact }}-${{ github.sha }}
+          path: _build/batata-ex-conversion-kernel-release
           if-no-files-found: error
           retention-days: 14

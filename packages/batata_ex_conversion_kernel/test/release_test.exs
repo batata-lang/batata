@@ -1,12 +1,12 @@
-defmodule Batata.CompilerKernel.ReleaseTest do
+defmodule Batata.ExConversionKernel.ReleaseTest do
   use ExUnit.Case, async: false
 
-  alias Batata.CompilerKernel.Release
+  alias Batata.ExConversionKernel.Release
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
   alias Beaver.MLIR.Dialect.Ex, as: ExDialect
 
-  @beaver_revision "94e4b8610d9b9c4f9146c4e820f25725b5d51e33"
+  @beaver_revision "44c3a5258420d7ebd1d60059decc47ea8480c5e0"
 
   setup do
     ctx = MLIR.Context.create()
@@ -26,7 +26,7 @@ defmodule Batata.CompilerKernel.ReleaseTest do
     assert File.regular?(output.performance_receipt)
     assert output.stage2.kernel_manifest.bootstrap["seed"] == "previous-native"
 
-    assert output.index["production_kernel_identity"] ==
+    assert output.index["production_ex_conversion_kernel_identity"] ==
              KernelManifest.identity_digest(output.stage2.kernel_manifest)
 
     assert Enum.map(output.index["stages"], & &1["stage"]) == ~w(stage1 stage2)
@@ -53,7 +53,7 @@ defmodule Batata.CompilerKernel.ReleaseTest do
   test "rejects incomplete release identity before creating output", %{ctx: ctx, tmp_dir: tmp_dir} do
     output_dir = Path.join(tmp_dir, "release")
 
-    assert_raise ArgumentError, ~r/missing compiler-kernel release options/, fn ->
+    assert_raise ArgumentError, ~r/missing Ex conversion kernel release options/, fn ->
       Release.build!(output_dir, ctx, compiler_revision: "batata-fixture")
     end
 

@@ -89,11 +89,11 @@ jobs:
             mix test --warnings-as-errors
           '
 
-      - name: Test Batata Compiler Kernel package
+      - name: Test Batata Ex Conversion Kernel package
         working-directory: scripts/native_deps
         run: |
           mix batata.native exec -- bash -c '
-            cd packages/batata_compiler_kernel
+            cd packages/batata_ex_conversion_kernel
             export BATATA_PATH=../..
             export MIX_ENV=test
             mix deps.get
