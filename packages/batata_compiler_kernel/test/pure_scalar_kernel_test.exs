@@ -12,6 +12,47 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   @beaver_revision "2b0a1a32153fdef59affc439460cc9ce95b301c7"
   @digest "sha256:" <> String.duplicate("a", 64)
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
+  @scheduler_shapes [
+    {"ex.self", [], "!ex.term"},
+    {"ex.send", ["!ex.term", "!ex.term"], "!ex.term"},
+    {"ex.receive", [], "!ex.term"},
+    {"ex.mailbox_clear", [], "!ex.term"},
+    {"ex.spawn", ["!ex.term"], "!ex.term"},
+    {"ex.schedule_next", [], "i64"},
+    {"ex.current_entry", [], "i64"},
+    {"ex.process_done", ["i64"], "i64"},
+    {"ex.process_exit", ["!ex.term"], "!ex.term"},
+    {"ex.process_exit_reason", ["!ex.term"], "!ex.term"},
+    {"ex.process_trap_exit", ["i64"], "i64"},
+    {"ex.link", ["!ex.term", "!ex.term", "!ex.term"], "!ex.term"},
+    {"ex.unlink", ["!ex.term"], "i64"},
+    {"ex.exit", ["!ex.term", "!ex.term", "!ex.term", "!ex.term"], "!ex.term"},
+    {"ex.monitor", ["!ex.term", "!ex.term", "!ex.term", "!ex.term"], "!ex.term"},
+    {"ex.demonitor", ["!ex.term"], "i64"},
+    {"ex.processes_runnable", [], "i64"},
+    {"ex.process_result", ["!ex.term"], "i64"},
+    {"ex.cont_save", ["i64", "i64", "i64"], "i64"},
+    {"ex.receive_cont_save", ["i64", "i64", "i64"], "i64"},
+    {"ex.cont_pending", [], "i64"},
+    {"ex.cont_active", [], "i64"},
+    {"ex.cont_clear", [], "i64"},
+    {"ex.cont_load_arg", [], "i64"},
+    {"ex.cont_load_acc", [], "i64"},
+    {"ex.cont_load_cursor", [], "i64"},
+    {"ex.clock_init", ["i64"], "i64"},
+    {"ex.reduction_tick", ["i64"], "i64"},
+    {"ex.yield_mark", [], "i64"},
+    {"ex.mailbox_len", [], "i64"},
+    {"ex.mailbox_peek", ["i64"], "!ex.term"},
+    {"ex.mailbox_remove", ["i64"], "i64"},
+    {"ex.nil_word", [], "!ex.term"},
+    {"ex.monotonic_time", [], "i64"},
+    {"ex.receive_start", [], "i64"},
+    {"ex.receive_start_set", ["i64"], "i64"},
+    {"ex.native_time", [], "i64"},
+    {"ex.unique_integer", ["i64"], "i64"},
+    {"ex.to_int", ["!ex.term"], "i64"}
+  ]
 
   setup do
     ctx = MLIR.Context.create()
@@ -29,7 +70,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 40
+    assert length(output.kernel_manifest.patterns) == 79
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -169,6 +210,31 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
             process_table_reset
           ) do
       refute native_ir =~ ~s|"ex.#{root}"|
+    end
+
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT scheduler and actor kernel matches the BEAM reference", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = scheduler_module(ctx)
+    native = scheduler_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+
+    for {root, _operand_types, _result_type} <- @scheduler_shapes do
+      refute native_ir =~ ~s|"#{root}"|
     end
 
     MLIR.Module.destroy(reference)
@@ -505,6 +571,36 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %result_destroy = "ex.result_destroy"(%result) : (i64) -> i64
           %runtime_destroy = "ex.runtime_destroy"(%runtime) : (i64) -> i64
           func.return %runtime_destroy : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp scheduler_module(ctx) do
+    operations =
+      @scheduler_shapes
+      |> Enum.with_index()
+      |> Enum.map_join("\n", fn {{root, operand_types, result_type}, index} ->
+        operands =
+          Enum.map_join(operand_types, ", ", fn
+            "i64" -> "%int"
+            "!ex.term" -> "%term"
+          end)
+
+        operand_types = Enum.join(operand_types, ", ")
+
+        "          %v#{index} = \"#{root}\"(#{operands}) : (#{operand_types}) -> #{result_type}"
+      end)
+
+    MLIR.Module.create!(
+      """
+      module {
+        func.func @scheduler(%int: i64) -> i64 {
+          %term = "ex.to_word"(%int) : (i64) -> !ex.term
+      #{operations}
+          func.return %v#{length(@scheduler_shapes) - 1} : i64
         }
       }
       """,

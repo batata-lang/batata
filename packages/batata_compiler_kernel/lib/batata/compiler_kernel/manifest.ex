@@ -49,6 +49,45 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.runtime_destroy
     ex.runtime_enter
     ex.runtime_leave
+    ex.self
+    ex.send
+    ex.receive
+    ex.mailbox_clear
+    ex.spawn
+    ex.schedule_next
+    ex.current_entry
+    ex.process_done
+    ex.process_exit
+    ex.process_exit_reason
+    ex.process_trap_exit
+    ex.link
+    ex.unlink
+    ex.exit
+    ex.monitor
+    ex.demonitor
+    ex.processes_runnable
+    ex.process_result
+    ex.cont_save
+    ex.receive_cont_save
+    ex.cont_pending
+    ex.cont_active
+    ex.cont_clear
+    ex.cont_load_arg
+    ex.cont_load_acc
+    ex.cont_load_cursor
+    ex.clock_init
+    ex.reduction_tick
+    ex.yield_mark
+    ex.mailbox_len
+    ex.mailbox_peek
+    ex.mailbox_remove
+    ex.nil_word
+    ex.monotonic_time
+    ex.receive_start
+    ex.receive_start_set
+    ex.native_time
+    ex.unique_integer
+    ex.to_int
     ex.sub
     ex.term_eq
     ex.term_export
