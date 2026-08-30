@@ -17,29 +17,53 @@ defmodule Batata.CompilerKernel.Manifest do
     "manifest" => "batata_conversion_manifest",
     "populate" => "batata_populate_ex_patterns"
   }
-  @patterns [
-    %{"name" => "batata.ex.add", "root" => "ex.add", "version" => "1"},
-    %{"name" => "batata.ex.binary", "root" => "ex.binary", "version" => "1"},
-    %{
-      "name" => "batata.ex.binary_part",
-      "root" => "ex.binary_part",
-      "version" => "1"
-    },
-    %{"name" => "batata.ex.call", "root" => "ex.call", "version" => "1"},
-    %{"name" => "batata.ex.cmp", "root" => "ex.cmp", "version" => "1"},
-    %{"name" => "batata.ex.div", "root" => "ex.div", "version" => "1"},
-    %{"name" => "batata.ex.func", "root" => "ex.func", "version" => "1"},
-    %{"name" => "batata.ex.if", "root" => "ex.if", "version" => "1"},
-    %{"name" => "batata.ex.lit", "root" => "ex.lit", "version" => "1"},
-    %{"name" => "batata.ex.mul", "root" => "ex.mul", "version" => "1"},
-    %{"name" => "batata.ex.rem", "root" => "ex.rem", "version" => "1"},
-    %{"name" => "batata.ex.return", "root" => "ex.return", "version" => "1"},
-    %{"name" => "batata.ex.sub", "root" => "ex.sub", "version" => "1"},
-    %{"name" => "batata.ex.term_eq", "root" => "ex.term_eq", "version" => "1"},
-    %{"name" => "batata.ex.to_word", "root" => "ex.to_word", "version" => "1"},
-    %{"name" => "batata.ex.unbox", "root" => "ex.unbox", "version" => "1"},
-    %{"name" => "batata.ex.yield", "root" => "ex.yield", "version" => "1"}
-  ]
+  @pattern_roots ~w(
+    ex.add
+    ex.binary
+    ex.binary_part
+    ex.call
+    ex.cmp
+    ex.div
+    ex.exported_clone
+    ex.exported_destroy
+    ex.exported_get
+    ex.exported_length
+    ex.func
+    ex.if
+    ex.lit
+    ex.mul
+    ex.process_table_reset
+    ex.rem
+    ex.result_atom_name
+    ex.result_create
+    ex.result_destroy
+    ex.result_exception_kind
+    ex.result_exception_reason
+    ex.result_root_kind
+    ex.result_root_word
+    ex.result_term_get
+    ex.result_term_kind
+    ex.result_term_length
+    ex.return
+    ex.runtime_create
+    ex.runtime_destroy
+    ex.runtime_enter
+    ex.runtime_leave
+    ex.sub
+    ex.term_eq
+    ex.term_export
+    ex.term_handle_destroy
+    ex.term_handle_export
+    ex.term_import
+    ex.to_word
+    ex.unbox
+    ex.yield
+  )
+  @patterns @pattern_roots
+            |> Enum.sort()
+            |> Enum.map(fn root ->
+              %{"name" => "batata." <> root, "root" => root, "version" => "1"}
+            end)
   @capabilities [
     "ir.attribute.v1",
     "ir.region.v1",

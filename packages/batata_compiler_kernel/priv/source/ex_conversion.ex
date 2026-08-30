@@ -27,6 +27,29 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 16 -> 6
       kind == 17 -> 11
       kind == 18 -> 9
+      kind == 19 -> 22
+      kind == 20 -> 21
+      kind == 21 -> 21
+      kind == 22 -> 23
+      kind == 23 -> 21
+      kind == 24 -> 22
+      kind == 25 -> 24
+      kind == 26 -> 24
+      kind == 27 -> 29
+      kind == 28 -> 31
+      kind == 29 -> 24
+      kind == 30 -> 24
+      kind == 31 -> 26
+      kind == 32 -> 23
+      kind == 33 -> 14
+      kind == 34 -> 14
+      kind == 35 -> 22
+      kind == 36 -> 24
+      kind == 37 -> 23
+      kind == 38 -> 20
+      kind == 39 -> 21
+      kind == 40 -> 22
+      kind == 41 -> 27
       true -> -1
     end
   end
@@ -94,6 +117,145 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 18 and index == 0 -> 0x636E7566
       kind == 18 and index == 1 -> 0x6E75662E
       kind == 18 and index == 2 -> 0x63
+      kind == 19 and index == 0 -> 0x742E7865
+      kind == 19 and index == 1 -> 0x2E6D7265
+      kind == 19 and index == 2 -> 0x746E7572
+      kind == 19 and index == 3 -> 0x5F656D69
+      kind == 19 and index == 4 -> 0x61657263
+      kind == 19 and index == 5 -> 0x6574
+      kind == 20 and index == 0 -> 0x742E7865
+      kind == 20 and index == 1 -> 0x2E6D7265
+      kind == 20 and index == 2 -> 0x746E7572
+      kind == 20 and index == 3 -> 0x5F656D69
+      kind == 20 and index == 4 -> 0x65746E65
+      kind == 20 and index == 5 -> 0x72
+      kind == 21 and index == 0 -> 0x742E7865
+      kind == 21 and index == 1 -> 0x2E6D7265
+      kind == 21 and index == 2 -> 0x746E7572
+      kind == 21 and index == 3 -> 0x5F656D69
+      kind == 21 and index == 4 -> 0x7661656C
+      kind == 21 and index == 5 -> 0x65
+      kind == 22 and index == 0 -> 0x742E7865
+      kind == 22 and index == 1 -> 0x2E6D7265
+      kind == 22 and index == 2 -> 0x746E7572
+      kind == 22 and index == 3 -> 0x5F656D69
+      kind == 22 and index == 4 -> 0x74736564
+      kind == 22 and index == 5 -> 0x796F72
+      kind == 23 and index == 0 -> 0x742E7865
+      kind == 23 and index == 1 -> 0x2E6D7265
+      kind == 23 and index == 2 -> 0x75736572
+      kind == 23 and index == 3 -> 0x635F746C
+      kind == 23 and index == 4 -> 0x74616572
+      kind == 23 and index == 5 -> 0x65
+      kind == 24 and index == 0 -> 0x742E7865
+      kind == 24 and index == 1 -> 0x2E6D7265
+      kind == 24 and index == 2 -> 0x75736572
+      kind == 24 and index == 3 -> 0x645F746C
+      kind == 24 and index == 4 -> 0x72747365
+      kind == 24 and index == 5 -> 0x796F
+      kind == 25 and index == 0 -> 0x742E7865
+      kind == 25 and index == 1 -> 0x2E6D7265
+      kind == 25 and index == 2 -> 0x75736572
+      kind == 25 and index == 3 -> 0x725F746C
+      kind == 25 and index == 4 -> 0x5F746F6F
+      kind == 25 and index == 5 -> 0x646E696B
+      kind == 26 and index == 0 -> 0x742E7865
+      kind == 26 and index == 1 -> 0x2E6D7265
+      kind == 26 and index == 2 -> 0x75736572
+      kind == 26 and index == 3 -> 0x725F746C
+      kind == 26 and index == 4 -> 0x5F746F6F
+      kind == 26 and index == 5 -> 0x64726F77
+      kind == 27 and index == 0 -> 0x742E7865
+      kind == 27 and index == 1 -> 0x2E6D7265
+      kind == 27 and index == 2 -> 0x75736572
+      kind == 27 and index == 3 -> 0x655F746C
+      kind == 27 and index == 4 -> 0x70656378
+      kind == 27 and index == 5 -> 0x6E6F6974
+      kind == 27 and index == 6 -> 0x6E696B5F
+      kind == 27 and index == 7 -> 0x64
+      kind == 28 and index == 0 -> 0x742E7865
+      kind == 28 and index == 1 -> 0x2E6D7265
+      kind == 28 and index == 2 -> 0x75736572
+      kind == 28 and index == 3 -> 0x655F746C
+      kind == 28 and index == 4 -> 0x70656378
+      kind == 28 and index == 5 -> 0x6E6F6974
+      kind == 28 and index == 6 -> 0x6165725F
+      kind == 28 and index == 7 -> 0x6E6F73
+      kind == 29 and index == 0 -> 0x742E7865
+      kind == 29 and index == 1 -> 0x2E6D7265
+      kind == 29 and index == 2 -> 0x75736572
+      kind == 29 and index == 3 -> 0x745F746C
+      kind == 29 and index == 4 -> 0x5F6D7265
+      kind == 29 and index == 5 -> 0x646E696B
+      kind == 30 and index == 0 -> 0x742E7865
+      kind == 30 and index == 1 -> 0x2E6D7265
+      kind == 30 and index == 2 -> 0x75736572
+      kind == 30 and index == 3 -> 0x615F746C
+      kind == 30 and index == 4 -> 0x5F6D6F74
+      kind == 30 and index == 5 -> 0x656D616E
+      kind == 31 and index == 0 -> 0x742E7865
+      kind == 31 and index == 1 -> 0x2E6D7265
+      kind == 31 and index == 2 -> 0x75736572
+      kind == 31 and index == 3 -> 0x745F746C
+      kind == 31 and index == 4 -> 0x5F6D7265
+      kind == 31 and index == 5 -> 0x676E656C
+      kind == 31 and index == 6 -> 0x6874
+      kind == 32 and index == 0 -> 0x742E7865
+      kind == 32 and index == 1 -> 0x2E6D7265
+      kind == 32 and index == 2 -> 0x75736572
+      kind == 32 and index == 3 -> 0x745F746C
+      kind == 32 and index == 4 -> 0x5F6D7265
+      kind == 32 and index == 5 -> 0x746567
+      kind == 33 and index == 0 -> 0x742E7865
+      kind == 33 and index == 1 -> 0x2E6D7265
+      kind == 33 and index == 2 -> 0x6F707865
+      kind == 33 and index == 3 -> 0x7472
+      kind == 34 and index == 0 -> 0x742E7865
+      kind == 34 and index == 1 -> 0x2E6D7265
+      kind == 34 and index == 2 -> 0x6F706D69
+      kind == 34 and index == 3 -> 0x7472
+      kind == 35 and index == 0 -> 0x742E7865
+      kind == 35 and index == 1 -> 0x2E6D7265
+      kind == 35 and index == 2 -> 0x6F707865
+      kind == 35 and index == 3 -> 0x64657472
+      kind == 35 and index == 4 -> 0x6F6C635F
+      kind == 35 and index == 5 -> 0x656E
+      kind == 36 and index == 0 -> 0x742E7865
+      kind == 36 and index == 1 -> 0x2E6D7265
+      kind == 36 and index == 2 -> 0x6F707865
+      kind == 36 and index == 3 -> 0x64657472
+      kind == 36 and index == 4 -> 0x7365645F
+      kind == 36 and index == 5 -> 0x796F7274
+      kind == 37 and index == 0 -> 0x742E7865
+      kind == 37 and index == 1 -> 0x2E6D7265
+      kind == 37 and index == 2 -> 0x6F707865
+      kind == 37 and index == 3 -> 0x64657472
+      kind == 37 and index == 4 -> 0x6E656C5F
+      kind == 37 and index == 5 -> 0x687467
+      kind == 38 and index == 0 -> 0x742E7865
+      kind == 38 and index == 1 -> 0x2E6D7265
+      kind == 38 and index == 2 -> 0x6F707865
+      kind == 38 and index == 3 -> 0x64657472
+      kind == 38 and index == 4 -> 0x7465675F
+      kind == 39 and index == 0 -> 0x742E7865
+      kind == 39 and index == 1 -> 0x2E6D7265
+      kind == 39 and index == 2 -> 0x646E6168
+      kind == 39 and index == 3 -> 0x655F656C
+      kind == 39 and index == 4 -> 0x726F7078
+      kind == 39 and index == 5 -> 0x74
+      kind == 40 and index == 0 -> 0x742E7865
+      kind == 40 and index == 1 -> 0x2E6D7265
+      kind == 40 and index == 2 -> 0x646E6168
+      kind == 40 and index == 3 -> 0x645F656C
+      kind == 40 and index == 4 -> 0x72747365
+      kind == 40 and index == 5 -> 0x796F
+      kind == 41 and index == 0 -> 0x742E7865
+      kind == 41 and index == 1 -> 0x2E6D7265
+      kind == 41 and index == 2 -> 0x636F7270
+      kind == 41 and index == 3 -> 0x5F737365
+      kind == 41 and index == 4 -> 0x6C626174
+      kind == 41 and index == 5 -> 0x65725F65
+      kind == 41 and index == 6 -> 0x746573
       true -> -1
     end
   end
@@ -120,6 +282,29 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 12 -> 3
       kind == 13 -> 2
       kind == 14 -> 1
+      kind == 19 -> 0
+      kind == 20 -> 1
+      kind == 21 -> 0
+      kind == 22 -> 1
+      kind == 23 -> 2
+      kind == 24 -> 1
+      kind == 25 -> 1
+      kind == 26 -> 1
+      kind == 27 -> 1
+      kind == 28 -> 1
+      kind == 29 -> 2
+      kind == 30 -> 2
+      kind == 31 -> 2
+      kind == 32 -> 3
+      kind == 33 -> 2
+      kind == 34 -> 2
+      kind == 35 -> 1
+      kind == 36 -> 1
+      kind == 37 -> 1
+      kind == 38 -> 2
+      kind == 39 -> 1
+      kind == 40 -> 1
+      kind == 41 -> 1
       true -> -1
     end
   end
