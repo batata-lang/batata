@@ -7,7 +7,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   alias Beaver.MLIR.Conversion.Kernel.Error, as: KernelError
   alias Beaver.MLIR.Conversion.Plan
 
-  @beaver_revision "1e1be0205ae31d5804064f230b74d76a6e80ba2b"
+  @beaver_revision "4ffdd072c9d0c08075f35e7a4906111cc2225081"
   @digest "sha256:" <> String.duplicate("a", 64)
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
 
@@ -24,10 +24,10 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build_pure_scalar!(tmp_dir, ctx, build_options())
+    output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 10
+    assert length(output.kernel_manifest.patterns) == 13
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -61,7 +61,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
-    output = Build.build_pure_scalar!(tmp_dir, ctx, build_options())
+    output = Build.build!(tmp_dir, ctx, build_options())
     module = input_module(ctx, "eq")
 
     assert %KernelError{code: :target_mismatch} =
@@ -78,7 +78,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   @tag :tmp_dir
   @tag timeout: 180_000
   test "Batata AOT ex.yield matches the frozen native seed", %{ctx: ctx, tmp_dir: tmp_dir} do
-    output = Build.build_pure_scalar!(tmp_dir, ctx, build_options())
+    output = Build.build!(tmp_dir, ctx, build_options())
     stage0 = yield_module(ctx)
     native = yield_module(ctx)
 
@@ -93,16 +93,67 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT runtime-call kernel matches the frozen C++ Stage 0", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    stage0 = runtime_module(ctx)
+    native = runtime_module(ctx)
+
+    Plan.run!(ExConversion.plan(), stage0)
+    Plan.run!(native_plan(output), native)
+
+    stage0_ir = MLIR.to_string(stage0, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == stage0_ir
+
+    for symbol <- ~w(ex.term.eq ex.term.binary_part ex.term.list_cons ex.term.binary_from_list) do
+      assert length(Regex.scan(~r/sym_name = "#{Regex.escape(symbol)}"/, native_ir)) == 1
+    end
+
+    assert length(Regex.scan(~r/callee = @ex\.term\.list_cons/, native_ir)) == 2
+    refute native_ir =~ ~r/"ex\.(term_eq|binary_part|binary)"/
+    MLIR.Module.destroy(stage0)
+    MLIR.Module.destroy(native)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT kernel rejects runtime ABI drift before conversion", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    module = runtime_module(ctx)
+
+    assert %KernelError{code: :runtime_abi_mismatch} =
+             assert_raise(KernelError, fn ->
+               Plan.run!(native_plan(output, target(), @digest), module)
+             end)
+
+    rendered = MLIR.to_string(module)
+    assert rendered =~ "ex.term_eq"
+    refute rendered =~ "ex.term.eq"
+    MLIR.Module.destroy(module)
+  end
+
+  @tag :tmp_dir
   test "Batata compiler-kernel build rejects implicit fallback policy", %{
     ctx: ctx,
     tmp_dir: tmp_dir
   } do
     assert_raise ArgumentError, ~r/unknown compiler-kernel build options/, fn ->
-      Build.build_pure_scalar!(tmp_dir, ctx, Keyword.put(build_options(), :fallback, :stage0))
+      Build.build!(tmp_dir, ctx, Keyword.put(build_options(), :fallback, :stage0))
     end
   end
 
-  defp native_plan(output, expected_target \\ target()) do
+  defp native_plan(
+         output,
+         expected_target \\ target(),
+         expected_runtime_abi \\ Batata.TermRuntime.abi_digest()
+       ) do
     Plan.new(mode: :full, folding_mode: :after_patterns, build_materializations: true)
     |> Plan.add_legal_dialect("builtin")
     |> Plan.add_legal_dialect("func")
@@ -116,9 +167,9 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
       expected: [
         beaver_revision: @beaver_revision,
         dialect_schema_digest: @digest,
-        runtime_abi_digest: "none",
+        runtime_abi_digest: expected_runtime_abi,
         target: expected_target,
-        capabilities: ["ir.attribute.v1", "ir.scalar.v1", "pattern.register"]
+        capabilities: ["ir.attribute.v1", "ir.scalar.v1", "ir.symbol.v1", "pattern.register"]
       ]
     )
   end
@@ -178,11 +229,32 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     )
   end
 
+  defp runtime_module(ctx) do
+    MLIR.Module.create!(
+      """
+      module {
+        func.func @runtime(%a: i64, %b: i64, %start: i64) -> i64 {
+          %term_a = "ex.to_word"(%a) : (i64) -> !ex.term
+          %term_b = "ex.to_word"(%b) : (i64) -> !ex.term
+          %term_start = "ex.to_word"(%start) : (i64) -> !ex.term
+          %eq = "ex.term_eq"(%term_a, %term_b) : (!ex.term, !ex.term) -> i64
+          %part = "ex.binary_part"(%term_a, %term_start, %term_b) : (!ex.term, !ex.term, !ex.term) -> !ex.term
+          %binary = "ex.binary"(%term_a, %part) : (!ex.term, !ex.term) -> !ex.term
+          %word = "ex.unbox"(%binary) : (!ex.term) -> i64
+          func.return %word : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
   defp build_options do
     [
-      compiler_revision: "batata-stage1-pure-scalar-fixture",
+      compiler_revision: "batata-stage1-kernel-fixture",
       beaver_revision: @beaver_revision,
       dialect_schema_digest: @digest,
+      runtime_abi_digest: Batata.TermRuntime.abi_digest(),
       target: target(),
       bootstrap_provenance: "beaver-stage0:#{@beaver_revision}",
       dependency_pins: %{

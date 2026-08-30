@@ -2,7 +2,7 @@ defmodule Batata.CompilerKernel.Build do
   @moduledoc """
   Builds the Batata-authored Ex conversion source into a native kernel.
 
-  Stage 0 compiles the scalar Batata source to one PIC object. A small C ABI
+  Stage 0 compiles the Batata conversion source to one PIC object. A small C ABI
   adapter transports opaque MLIR handles and calls those Batata AOT symbols on
   the same conversion worker; it contains no BEAM or NIF calls. The final
   dynamic export allowlist contains only the three versioned kernel entrypoints.
@@ -17,7 +17,8 @@ defmodule Batata.CompilerKernel.Build do
     %{function: :pattern_accept, arity: 4, symbol: "batata_kernel_pattern_accept"},
     %{function: :target_length, arity: 1, symbol: "batata_kernel_target_length"},
     %{function: :target_word, arity: 2, symbol: "batata_kernel_target_word"},
-    %{function: :cmp_predicate, arity: 2, symbol: "batata_kernel_cmp_predicate"}
+    %{function: :cmp_predicate, arity: 2, symbol: "batata_kernel_cmp_predicate"},
+    %{function: :runtime_arity, arity: 1, symbol: "batata_kernel_runtime_arity"}
   ]
   @allowed_options [
     :beaver_path,
@@ -40,9 +41,9 @@ defmodule Batata.CompilerKernel.Build do
           build_manifest: Path.t()
         }
 
-  @doc "Builds the Stage 1 pure-scalar compiler-kernel artifact and receipts."
-  @spec build_pure_scalar!(Path.t(), Beaver.MLIR.Context.t(), keyword()) :: output()
-  def build_pure_scalar!(output_dir, ctx, opts)
+  @doc "Builds the Stage 1 compiler-kernel artifact and receipts."
+  @spec build!(Path.t(), Beaver.MLIR.Context.t(), keyword()) :: output()
+  def build!(output_dir, ctx, opts)
       when is_binary(output_dir) and is_list(opts) do
     reject_unknown_options!(opts)
     File.mkdir_p!(output_dir)
@@ -109,7 +110,7 @@ defmodule Batata.CompilerKernel.Build do
       compiler_revision: Keyword.fetch!(opts, :compiler_revision),
       beaver_revision: Keyword.fetch!(opts, :beaver_revision),
       dialect_schema_digest: Keyword.fetch!(opts, :dialect_schema_digest),
-      runtime_abi_digest: Keyword.get(opts, :runtime_abi_digest, "none"),
+      runtime_abi_digest: Keyword.fetch!(opts, :runtime_abi_digest),
       target: Keyword.fetch!(opts, :target),
       bootstrap_provenance: Keyword.fetch!(opts, :bootstrap_provenance)
     ]

@@ -18,6 +18,19 @@ defmodule Batata.TermRuntime do
     |> Path.join("native")
   end
 
+  @doc "Digest of the declaration-first term runtime ABI contract."
+  @spec abi_digest() :: String.t()
+  def abi_digest do
+    digest =
+      native_dir()
+      |> Path.join("ABI.md")
+      |> File.read!()
+      |> then(&:crypto.hash(:sha256, &1))
+      |> Base.encode16(case: :lower)
+
+    "sha256:" <> digest
+  end
+
   @doc "Directory where built runtime artifacts are written."
   @spec priv_dir() :: Path.t()
   def priv_dir, do: Application.app_dir(:batata, "priv/term_runtime")

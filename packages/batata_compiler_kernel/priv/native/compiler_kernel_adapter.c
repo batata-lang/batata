@@ -22,6 +22,11 @@ enum BatataTargetKind {
   BATATA_TARGET_ARITH_CMPI = 7,
   BATATA_TARGET_ARITH_EXTUI = 8,
   BATATA_TARGET_SCF_YIELD = 9,
+  BATATA_TARGET_FUNC_CALL = 10,
+  BATATA_RUNTIME_TERM_EQ = 11,
+  BATATA_RUNTIME_BINARY_PART = 12,
+  BATATA_RUNTIME_LIST_CONS = 13,
+  BATATA_RUNTIME_BINARY_FROM_LIST = 14,
 };
 
 extern int64_t batata_kernel_pattern_accept(int64_t actual_operands,
@@ -31,6 +36,7 @@ extern int64_t batata_kernel_pattern_accept(int64_t actual_operands,
 extern int64_t batata_kernel_target_length(int64_t kind);
 extern int64_t batata_kernel_target_word(int64_t kind, int64_t index);
 extern int64_t batata_kernel_cmp_predicate(int64_t length, int64_t word);
+extern int64_t batata_kernel_runtime_arity(int64_t kind);
 
 typedef struct {
   const char *name;
@@ -162,6 +168,116 @@ static MlirLogicalResult create_and_replace(
   return host->replaceOperationWithValues(
       rewriter, operation, 1, &replacement_result, diagnostic,
       diagnostic_user_data);
+}
+
+static MlirLogicalResult create_runtime_call(
+    const MlirBeaverCompilerKernelHostAPI *host, MlirOperation anchor,
+    MlirConversionPatternRewriter rewriter, int64_t symbol_kind,
+    intptr_t n_operands, MlirValue *operands, MlirType result_type,
+    MlirLocation location, MlirValue *result, MlirStringCallback diagnostic,
+    void *diagnostic_user_data) {
+  if (n_operands < 0 || n_operands > 3 || !result)
+    return BATATA_FAIL(diagnostic, diagnostic_user_data,
+                       "Batata runtime call exceeds the closed ABI arity");
+
+  MlirType input_types[3];
+  for (intptr_t index = 0; index < n_operands; ++index) {
+    if (mlirLogicalResultIsFailure(host->valueType(
+            operands[index], &input_types[index], diagnostic,
+            diagnostic_user_data)))
+      return mlirLogicalResultFailure();
+  }
+
+  char symbol_storage[32];
+  MlirStringRef symbol;
+  if (mlirLogicalResultIsFailure(target_name(
+          symbol_kind, symbol_storage, sizeof(symbol_storage), &symbol,
+          diagnostic, diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->ensureFunctionDeclaration(
+          anchor, rewriter, symbol, n_operands, input_types, 1, &result_type,
+          diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  MlirAttribute callee;
+  MlirNamedAttribute named_callee;
+  if (mlirLogicalResultIsFailure(host->flatSymbolRefAttribute(
+          rewriter, symbol, &callee, diagnostic, diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->namedAttribute(
+          rewriter, mlirStringRefCreate("callee", 6), callee, &named_callee,
+          diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  char call_storage[16];
+  MlirStringRef call_target;
+  if (mlirLogicalResultIsFailure(target_name(
+          BATATA_TARGET_FUNC_CALL, call_storage, sizeof(call_storage),
+          &call_target, diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  MlirBeaverCompilerKernelOperation descriptor = {
+      sizeof(MlirBeaverCompilerKernelOperation),
+      call_target,
+      location,
+      n_operands,
+      operands,
+      1,
+      &result_type,
+      1,
+      &named_callee,
+  };
+
+  MlirOperation call;
+  if (mlirLogicalResultIsFailure(host->createOperation(
+          rewriter, &descriptor, &call, diagnostic, diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->operationResult(
+          call, 0, result, diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  return mlirLogicalResultSuccess();
+}
+
+static MlirLogicalResult create_integer_constant(
+    const MlirBeaverCompilerKernelHostAPI *host,
+    MlirConversionPatternRewriter rewriter, MlirLocation location,
+    MlirType type, int64_t integer, MlirValue *result,
+    MlirStringCallback diagnostic, void *diagnostic_user_data) {
+  MlirAttribute value;
+  MlirNamedAttribute named_value;
+  if (mlirLogicalResultIsFailure(host->integerAttribute(
+          type, integer, &value, diagnostic, diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->namedAttribute(
+          rewriter, mlirStringRefCreate("value", 5), value, &named_value,
+          diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  char target_storage[16];
+  MlirStringRef target;
+  if (mlirLogicalResultIsFailure(target_name(
+          BATATA_TARGET_ARITH_CONSTANT, target_storage, sizeof(target_storage),
+          &target, diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  MlirBeaverCompilerKernelOperation descriptor = {
+      sizeof(MlirBeaverCompilerKernelOperation),
+      target,
+      location,
+      0,
+      NULL,
+      1,
+      &type,
+      1,
+      &named_value,
+  };
+
+  MlirOperation constant;
+  if (mlirLogicalResultIsFailure(host->createOperation(
+          rewriter, &descriptor, &constant, diagnostic,
+          diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->operationResult(
+          constant, 0, result, diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  return mlirLogicalResultSuccess();
 }
 
 static MlirLogicalResult binary_rewrite(
@@ -376,6 +492,87 @@ static MlirLogicalResult yield_rewrite(
                             diagnostic_user_data);
 }
 
+static MlirLogicalResult runtime_call_rewrite(
+    const MlirBeaverCompilerKernelHostAPI *host, MlirOperation operation,
+    intptr_t n_operands, MlirValue *operands,
+    MlirConversionPatternRewriter rewriter, MlirTypeConverter type_converter,
+    void *user_data, MlirStringCallback diagnostic,
+    void *diagnostic_user_data) {
+  const BatataPattern *pattern = (const BatataPattern *)user_data;
+  if (!pattern)
+    return mlirLogicalResultFailure();
+
+  int64_t expected_arity = batata_kernel_runtime_arity(pattern->target_kind);
+  MlirType result_type;
+  MlirLocation location;
+  MlirValue result;
+
+  if (expected_arity < 0 ||
+      mlirLogicalResultIsFailure(validate_shape(
+          host, operation, n_operands, expected_arity, 1, diagnostic,
+          diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(source_result_type(
+          host, operation, type_converter, &result_type, diagnostic,
+          diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->operationLocation(
+          operation, &location, diagnostic, diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(create_runtime_call(
+          host, operation, rewriter, pattern->target_kind, n_operands, operands,
+          result_type, location, &result, diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  return host->replaceOperationWithValues(rewriter, operation, 1, &result,
+                                          diagnostic, diagnostic_user_data);
+}
+
+static MlirLogicalResult binary_term_rewrite(
+    const MlirBeaverCompilerKernelHostAPI *host, MlirOperation operation,
+    intptr_t n_operands, MlirValue *operands,
+    MlirConversionPatternRewriter rewriter, MlirTypeConverter type_converter,
+    void *user_data, MlirStringCallback diagnostic,
+    void *diagnostic_user_data) {
+  (void)user_data;
+  MlirType result_type;
+  MlirType word_type;
+  MlirLocation location;
+
+  if (mlirLogicalResultIsFailure(validate_shape(
+          host, operation, n_operands, n_operands, 1, diagnostic,
+          diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(source_result_type(
+          host, operation, type_converter, &result_type, diagnostic,
+          diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->integerType(
+          rewriter, 64, &word_type, diagnostic, diagnostic_user_data)) ||
+      mlirLogicalResultIsFailure(host->operationLocation(
+          operation, &location, diagnostic, diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  MlirValue tail;
+  if (mlirLogicalResultIsFailure(create_integer_constant(
+          host, rewriter, location, word_type, 1, &tail, diagnostic,
+          diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  for (intptr_t index = n_operands; index > 0; --index) {
+    MlirValue arguments[2] = {operands[index - 1], tail};
+    if (mlirLogicalResultIsFailure(create_runtime_call(
+            host, operation, rewriter, BATATA_RUNTIME_LIST_CONS, 2, arguments,
+            word_type, location, &tail, diagnostic, diagnostic_user_data)))
+      return mlirLogicalResultFailure();
+  }
+
+  MlirValue binary;
+  if (mlirLogicalResultIsFailure(create_runtime_call(
+          host, operation, rewriter, BATATA_RUNTIME_BINARY_FROM_LIST, 1, &tail,
+          result_type, location, &binary, diagnostic,
+          diagnostic_user_data)))
+    return mlirLogicalResultFailure();
+
+  return host->replaceOperationWithValues(rewriter, operation, 1, &binary,
+                                          diagnostic, diagnostic_user_data);
+}
+
 #define BATATA_PATTERN(name_literal, root_literal, kind, callback)             \
   {                                                                            \
     name_literal, sizeof(name_literal) - 1, root_literal,                       \
@@ -385,6 +582,9 @@ static MlirLogicalResult yield_rewrite(
 static const BatataPattern patterns[] = {
     BATATA_PATTERN("batata.ex.add", "ex.add", BATATA_TARGET_ARITH_ADDI,
                    binary_rewrite),
+    BATATA_PATTERN("batata.ex.binary", "ex.binary", 0, binary_term_rewrite),
+    BATATA_PATTERN("batata.ex.binary_part", "ex.binary_part",
+                   BATATA_RUNTIME_BINARY_PART, runtime_call_rewrite),
     BATATA_PATTERN("batata.ex.cmp", "ex.cmp", BATATA_TARGET_ARITH_CMPI,
                    cmp_rewrite),
     BATATA_PATTERN("batata.ex.div", "ex.div", BATATA_TARGET_ARITH_DIVSI,
@@ -397,6 +597,8 @@ static const BatataPattern patterns[] = {
                    binary_rewrite),
     BATATA_PATTERN("batata.ex.sub", "ex.sub", BATATA_TARGET_ARITH_SUBI,
                    binary_rewrite),
+    BATATA_PATTERN("batata.ex.term_eq", "ex.term_eq", BATATA_RUNTIME_TERM_EQ,
+                   runtime_call_rewrite),
     BATATA_PATTERN("batata.ex.to_word", "ex.to_word", 0, identity_rewrite),
     BATATA_PATTERN("batata.ex.unbox", "ex.unbox", 0, identity_rewrite),
     BATATA_PATTERN("batata.ex.yield", "ex.yield", BATATA_TARGET_SCF_YIELD,
@@ -423,7 +625,8 @@ BATATA_KERNEL_EXPORT MlirLogicalResult batata_populate_ex_patterns(
       !host->createOperation || !host->replaceOperationWithValues ||
       !host->operationAttribute || !host->attributeStringValue ||
       !host->integerType || !host->integerAttribute || !host->namedAttribute ||
-      !host->operationCounts)
+      !host->operationCounts || !host->flatSymbolRefAttribute ||
+      !host->ensureFunctionDeclaration)
     return mlirLogicalResultFailure();
 
   for (intptr_t index = 0;
