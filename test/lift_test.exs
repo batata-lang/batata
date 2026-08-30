@@ -702,6 +702,21 @@ defmodule Batata.LiftTest do
     assert "ex.rem" in names
   end
 
+  test "normalizes qualified Kernel.div/2 to the scalar division path", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main(), do: Kernel.div(17, 5)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.div" in names
+  end
+
   test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
     codepoint = Macro.var(:codepoint, nil)
 

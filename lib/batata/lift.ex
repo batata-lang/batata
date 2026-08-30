@@ -6153,6 +6153,10 @@ defmodule Batata.Lift do
     lift_expr({:rem, [], [left, right]}, ctx, block, env)
   end
 
+  defp lift_stdlib_call(Kernel, :div, [left, right], ctx, block, env) do
+    lift_expr({:div, [], [left, right]}, ctx, block, env)
+  end
+
   defp lift_stdlib_call(String, :duplicate, [binary, count], ctx, block, env)
        when is_binary(binary) and is_integer(count) and count >= 0 do
     result_size = byte_size(binary) * count
