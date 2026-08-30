@@ -1,0 +1,6 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/tmp/
+/batata_compiler_kernel-*.tar

@@ -9,6 +9,8 @@
         "packages/batata_jason/{lib,test}/**/*.{ex,exs}",
         "packages/batata_decimal/{mix,.formatter}.exs",
         "packages/batata_decimal/{lib,test}/**/*.{ex,exs}",
+        "packages/batata_compiler_kernel/{mix,.formatter}.exs",
+        "packages/batata_compiler_kernel/{lib,test}/**/*.{ex,exs}",
         "packages/batata_godot/{mix,.formatter}.exs",
         "packages/batata_godot/{lib,test}/**/*.{ex,exs}",
         "packages/batata_wings/{mix,.formatter}.exs",

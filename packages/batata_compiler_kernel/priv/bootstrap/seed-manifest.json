@@ -1,0 +1,1 @@
+{"patterns":[{"name":"beaver.stage0.ex.add","root":"ex.add","version":"1"}],"provider":"beaver.ex-bootstrap","schema_version":1,"source_subset":"pure-scalar-v1","stage":"stage0","seed":"cpp-bootstrap"}
