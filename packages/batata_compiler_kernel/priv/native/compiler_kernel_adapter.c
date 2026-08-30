@@ -1,6 +1,8 @@
 #include "mlir-c/Beaver/CompilerKernel.h"
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #ifndef BATATA_KERNEL_IDENTITY
 #error "BATATA_KERNEL_IDENTITY must be defined"
@@ -205,12 +207,20 @@ extern int64_t batata_kernel_try_accept(int64_t operands, int64_t results,
                                         int64_t regions,
                                         int64_t body_arguments,
                                         int64_t catch_arguments);
+extern int64_t batata_kernel_pattern_count(void);
+extern int64_t batata_kernel_pattern_namespace_length(void);
+extern int64_t batata_kernel_pattern_namespace_word(int64_t index);
+extern int64_t batata_kernel_pattern_root_length(int64_t pattern);
+extern int64_t batata_kernel_pattern_root_word(int64_t pattern, int64_t index);
+extern int64_t batata_kernel_pattern_target(int64_t pattern);
+extern int64_t batata_kernel_pattern_action(int64_t pattern);
 
 typedef struct {
-  const char *name;
+  char name[96];
   intptr_t name_length;
-  const char *root;
+  char root[80];
   intptr_t root_length;
+  int64_t pattern_id;
   int64_t target_kind;
   MlirBeaverCompilerKernelRewriteFn rewrite;
 } BatataPattern;
@@ -1743,7 +1753,7 @@ static MlirLogicalResult unsupported_var_rewrite(
   (void)type_converter;
   (void)user_data;
   return BATATA_FAIL(diagnostic, diagnostic_user_data,
-                     "ex.var without ex.bind is unsupported by the compiler kernel");
+                     "source variable materialization is incomplete");
 }
 
 static MlirLogicalResult func_rewrite(
@@ -1872,330 +1882,111 @@ static MlirLogicalResult func_rewrite(
       rewriter, replacement, operation, 1, diagnostic, diagnostic_user_data);
 }
 
-#define BATATA_PATTERN(name_literal, root_literal, kind, callback)             \
-  {                                                                            \
-    name_literal, sizeof(name_literal) - 1, root_literal,                       \
-        sizeof(root_literal) - 1, kind, callback                               \
+enum BatataRewriteAction {
+  BATATA_ACTION_AGGREGATE = 1,
+  BATATA_ACTION_APPLY = 2,
+  BATATA_ACTION_BINARY = 3,
+  BATATA_ACTION_BINARY_TERM = 4,
+  BATATA_ACTION_BOX = 5,
+  BATATA_ACTION_CALL = 6,
+  BATATA_ACTION_CMP = 7,
+  BATATA_ACTION_FUNC_ADDR = 8,
+  BATATA_ACTION_FUNC = 9,
+  BATATA_ACTION_FUNCTION_VALUE = 10,
+  BATATA_ACTION_IDENTITY = 11,
+  BATATA_ACTION_IF = 12,
+  BATATA_ACTION_LITERAL = 13,
+  BATATA_ACTION_PREDICATE = 14,
+  BATATA_ACTION_RETURN = 15,
+  BATATA_ACTION_RUNTIME_CALL = 16,
+  BATATA_ACTION_TRY = 17,
+  BATATA_ACTION_UNSUPPORTED = 18,
+  BATATA_ACTION_YIELD = 19,
+};
+
+static MlirBeaverCompilerKernelRewriteFn rewrite_for_action(int64_t action) {
+  switch (action) {
+  case BATATA_ACTION_AGGREGATE:
+    return aggregate_rewrite;
+  case BATATA_ACTION_APPLY:
+    return apply_rewrite;
+  case BATATA_ACTION_BINARY:
+    return binary_rewrite;
+  case BATATA_ACTION_BINARY_TERM:
+    return binary_term_rewrite;
+  case BATATA_ACTION_BOX:
+    return box_rewrite;
+  case BATATA_ACTION_CALL:
+    return call_rewrite;
+  case BATATA_ACTION_CMP:
+    return cmp_rewrite;
+  case BATATA_ACTION_FUNC_ADDR:
+    return func_addr_rewrite;
+  case BATATA_ACTION_FUNC:
+    return func_rewrite;
+  case BATATA_ACTION_FUNCTION_VALUE:
+    return function_value_rewrite;
+  case BATATA_ACTION_IDENTITY:
+    return identity_rewrite;
+  case BATATA_ACTION_IF:
+    return if_rewrite;
+  case BATATA_ACTION_LITERAL:
+    return literal_rewrite;
+  case BATATA_ACTION_PREDICATE:
+    return predicate_rewrite;
+  case BATATA_ACTION_RETURN:
+    return return_rewrite;
+  case BATATA_ACTION_RUNTIME_CALL:
+    return runtime_call_rewrite;
+  case BATATA_ACTION_TRY:
+    return try_rewrite;
+  case BATATA_ACTION_UNSUPPORTED:
+    return unsupported_var_rewrite;
+  case BATATA_ACTION_YIELD:
+    return yield_rewrite;
+  default:
+    return NULL;
+  }
+}
+
+static MlirLogicalResult decode_namespace(char *storage, intptr_t capacity,
+                                          intptr_t *length) {
+  int64_t source_length = batata_kernel_pattern_namespace_length();
+  if (!storage || !length || source_length <= 0 || source_length > capacity)
+    return mlirLogicalResultFailure();
+
+  for (int64_t offset = 0; offset < source_length; offset += 4) {
+    int64_t word = batata_kernel_pattern_namespace_word(offset / 4);
+    if (word < 0 || word > UINT32_MAX)
+      return mlirLogicalResultFailure();
+    int64_t remaining = source_length - offset;
+    decode_word((uint32_t)word, storage + offset, remaining < 4 ? remaining : 4);
   }
 
-static const BatataPattern patterns[] = {
-    BATATA_PATTERN("batata.ex.add", "ex.add", BATATA_TARGET_ARITH_ADDI,
-                   binary_rewrite),
-    BATATA_PATTERN("batata.ex.apply", "ex.apply", BATATA_TARGET_FN_DISPATCH,
-                   apply_rewrite),
-    BATATA_PATTERN("batata.ex.binary", "ex.binary", 0, binary_term_rewrite),
-    BATATA_PATTERN("batata.ex.binary_decode16", "ex.binary_decode16", BATATA_RUNTIME_BINARY_DECODE16,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_encode16", "ex.binary_encode16", BATATA_RUNTIME_BINARY_ENCODE16,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_from_list", "ex.binary_from_list", BATATA_RUNTIME_BINARY_FROM_LIST,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_get", "ex.binary_get", BATATA_RUNTIME_BINARY_GET,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_length", "ex.binary_length", BATATA_RUNTIME_BINARY_LENGTH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_part", "ex.binary_part",
-                   BATATA_RUNTIME_BINARY_PART, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_quote", "ex.binary_quote", BATATA_RUNTIME_BINARY_QUOTE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_slice", "ex.binary_slice", BATATA_RUNTIME_BINARY_SLICE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_utf8_get", "ex.binary_utf8_get", BATATA_RUNTIME_BINARY_UTF8_GET,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_utf8_length", "ex.binary_utf8_length", BATATA_RUNTIME_BINARY_UTF8_LENGTH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.binary_utf8_width", "ex.binary_utf8_width", BATATA_RUNTIME_BINARY_UTF8_WIDTH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.box", "ex.box", 0, box_rewrite),
-    BATATA_PATTERN("batata.ex.call", "ex.call", BATATA_TARGET_FUNC_CALL,
-                   call_rewrite),
-    BATATA_PATTERN("batata.ex.catch_value", "ex.catch_value", BATATA_RUNTIME_CATCH_VALUE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.clock_init", "ex.clock_init", BATATA_RUNTIME_CLOCK_INIT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cmp", "ex.cmp", BATATA_TARGET_ARITH_CMPI,
-                   cmp_rewrite),
-    BATATA_PATTERN("batata.ex.cont_active", "ex.cont_active", BATATA_RUNTIME_CONT_ACTIVE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cont_clear", "ex.cont_clear", BATATA_RUNTIME_CONT_CLEAR,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cont_load_acc", "ex.cont_load_acc", BATATA_RUNTIME_CONT_LOAD_ACC,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cont_load_arg", "ex.cont_load_arg", BATATA_RUNTIME_CONT_LOAD_ARG,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cont_load_cursor", "ex.cont_load_cursor", BATATA_RUNTIME_CONT_LOAD_CURSOR,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cont_pending", "ex.cont_pending", BATATA_RUNTIME_CONT_PENDING,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.cont_save", "ex.cont_save", BATATA_RUNTIME_CONT_SAVE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.current_entry", "ex.current_entry", BATATA_RUNTIME_CURRENT_ENTRY,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.demonitor", "ex.demonitor", BATATA_RUNTIME_DEMONITOR,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.div", "ex.div", BATATA_TARGET_ARITH_DIVSI,
-                   binary_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_count", "ex.enumerable_count", BATATA_RUNTIME_ENUMERABLE_COUNT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_flat_map_term_fun", "ex.enumerable_flat_map_term_fun", BATATA_RUNTIME_ENUMERABLE_FLAT_MAP_TERM_FUN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_intersperse", "ex.enumerable_intersperse", BATATA_RUNTIME_ENUMERABLE_INTERSPERSE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_into_map", "ex.enumerable_into_map", BATATA_RUNTIME_ENUMERABLE_INTO_MAP,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_map_fun", "ex.enumerable_map_fun", BATATA_RUNTIME_ENUMERABLE_MAP_FUN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_map_term_fun", "ex.enumerable_map_term_fun", BATATA_RUNTIME_ENUMERABLE_MAP_TERM_FUN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_map_term_fun_c", "ex.enumerable_map_term_fun_c", BATATA_RUNTIME_ENUMERABLE_MAP_TERM_FUN_C,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_reduce", "ex.enumerable_reduce", BATATA_RUNTIME_ENUMERABLE_REDUCE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_reduce_c", "ex.enumerable_reduce_c", BATATA_RUNTIME_ENUMERABLE_REDUCE_C,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_reduce_fun", "ex.enumerable_reduce_fun", BATATA_RUNTIME_ENUMERABLE_REDUCE_FUN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_reduce_range", "ex.enumerable_reduce_range", BATATA_RUNTIME_ENUMERABLE_REDUCE_RANGE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_to_list", "ex.enumerable_to_list", BATATA_RUNTIME_ENUMERABLE_TO_LIST,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.enumerable_to_list_range", "ex.enumerable_to_list_range", BATATA_RUNTIME_ENUMERABLE_TO_LIST_RANGE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.exit", "ex.exit", BATATA_RUNTIME_EXIT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.exported_clone", "ex.exported_clone",
-                   BATATA_RUNTIME_EXPORTED_CLONE, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.exported_destroy", "ex.exported_destroy",
-                   BATATA_RUNTIME_EXPORTED_DESTROY, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.exported_get", "ex.exported_get",
-                   BATATA_RUNTIME_EXPORTED_GET, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.exported_length", "ex.exported_length",
-                   BATATA_RUNTIME_EXPORTED_LENGTH, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.file_read", "ex.file_read", BATATA_RUNTIME_FILE_READ,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.file_read_lines", "ex.file_read_lines", BATATA_RUNTIME_FILE_READ_LINES,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.float_lit", "ex.float_lit", BATATA_RUNTIME_FLOAT_LIT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.float_to_binary_short", "ex.float_to_binary_short", BATATA_RUNTIME_FLOAT_TO_BINARY_SHORT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.fun_arity", "ex.fun_arity", BATATA_RUNTIME_FUN_ARITY,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.fun_result_mode", "ex.fun_result_mode", BATATA_RUNTIME_FUN_RESULT_MODE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.func", "ex.func", BATATA_TARGET_FUNC_FUNC,
-                   func_rewrite),
-    BATATA_PATTERN("batata.ex.func_addr", "ex.func_addr",
-                   BATATA_TARGET_FUNC_CONSTANT, func_addr_rewrite),
-    BATATA_PATTERN("batata.ex.if", "ex.if", BATATA_TARGET_SCF_IF, if_rewrite),
-    BATATA_PATTERN("batata.ex.int_to_hex", "ex.int_to_hex", BATATA_RUNTIME_INT_TO_HEX,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.int_to_string", "ex.int_to_string", BATATA_RUNTIME_INT_TO_STRING,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.int_to_string_base", "ex.int_to_string_base", BATATA_RUNTIME_INT_TO_STRING_BASE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.iodata_to_binary", "ex.iodata_to_binary", BATATA_RUNTIME_IODATA_TO_BINARY,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.is_atom", "ex.is_atom", BATATA_RUNTIME_IS_ATOM,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.is_binary", "ex.is_binary", BATATA_RUNTIME_IS_BINARY,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.is_float", "ex.is_float", BATATA_RUNTIME_IS_FLOAT,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.is_integer", "ex.is_integer", BATATA_RUNTIME_IS_INTEGER,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.is_list", "ex.is_list", BATATA_RUNTIME_IS_LIST,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.is_map", "ex.is_map", BATATA_RUNTIME_IS_MAP,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.is_tuple", "ex.is_tuple", BATATA_RUNTIME_IS_TUPLE,
-                   predicate_rewrite),
-    BATATA_PATTERN("batata.ex.link", "ex.link", BATATA_RUNTIME_LINK,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.list", "ex.list", BATATA_AGGREGATE_LIST,
-                   aggregate_rewrite),
-    BATATA_PATTERN("batata.ex.list_cons", "ex.list_cons",
-                   BATATA_RUNTIME_LIST_CONS, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.list_flatten", "ex.list_flatten", BATATA_RUNTIME_LIST_FLATTEN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.list_get", "ex.list_get", BATATA_RUNTIME_LIST_GET,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.list_head", "ex.list_head", BATATA_RUNTIME_LIST_HEAD,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.list_length", "ex.list_length", BATATA_RUNTIME_LIST_LENGTH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.list_tail", "ex.list_tail", BATATA_RUNTIME_LIST_TAIL,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.lit", "ex.lit", BATATA_TARGET_ARITH_CONSTANT,
-                   literal_rewrite),
-    BATATA_PATTERN("batata.ex.mailbox_clear", "ex.mailbox_clear", BATATA_RUNTIME_MAILBOX_CLEAR,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mailbox_len", "ex.mailbox_len", BATATA_RUNTIME_MAILBOX_LEN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mailbox_peek", "ex.mailbox_peek", BATATA_RUNTIME_MAILBOX_PEEK,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mailbox_remove", "ex.mailbox_remove", BATATA_RUNTIME_MAILBOX_REMOVE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.make_fun", "ex.make_fun",
-                   BATATA_RUNTIME_MAKE_FUN, function_value_rewrite),
-    BATATA_PATTERN("batata.ex.make_fun_with_arity", "ex.make_fun_with_arity",
-                   BATATA_RUNTIME_MAKE_FUN_WITH_ARITY,
-                   function_value_rewrite),
-    BATATA_PATTERN("batata.ex.make_fun_with_signature",
-                   "ex.make_fun_with_signature",
-                   BATATA_RUNTIME_MAKE_FUN_WITH_SIGNATURE,
-                   function_value_rewrite),
-    BATATA_PATTERN("batata.ex.map", "ex.map", BATATA_RUNTIME_MAP_FROM_LIST,
-                   aggregate_rewrite),
-    BATATA_PATTERN("batata.ex.map_fetch", "ex.map_fetch", BATATA_RUNTIME_MAP_FETCH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.map_length", "ex.map_length", BATATA_RUNTIME_MAP_LENGTH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.map_put", "ex.map_put", BATATA_RUNTIME_MAP_PUT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mapset_from_list", "ex.mapset_from_list", BATATA_RUNTIME_MAPSET_FROM_LIST,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mapset_member", "ex.mapset_member", BATATA_RUNTIME_MAPSET_MEMBER,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mapset_put", "ex.mapset_put", BATATA_RUNTIME_MAPSET_PUT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.monitor", "ex.monitor", BATATA_RUNTIME_MONITOR,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.monotonic_time", "ex.monotonic_time", BATATA_RUNTIME_MONOTONIC_TIME,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.mul", "ex.mul", BATATA_TARGET_ARITH_MULI,
-                   binary_rewrite),
-    BATATA_PATTERN("batata.ex.native_time", "ex.native_time", BATATA_RUNTIME_NATIVE_TIME,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.nil_word", "ex.nil_word", BATATA_RUNTIME_NIL,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_done", "ex.process_done", BATATA_RUNTIME_PROCESS_DONE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_exit", "ex.process_exit", BATATA_RUNTIME_PROCESS_EXIT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_exit_reason", "ex.process_exit_reason", BATATA_RUNTIME_PROCESS_EXIT_REASON,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_result", "ex.process_result", BATATA_RUNTIME_PROCESS_RESULT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_table_reset", "ex.process_table_reset",
-                   BATATA_RUNTIME_PROCESS_TABLE_RESET, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_trap_exit", "ex.process_trap_exit", BATATA_RUNTIME_PROCESS_TRAP_EXIT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.process_wait", "ex.process_wait", BATATA_RUNTIME_PROCESS_WAIT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.processes_runnable", "ex.processes_runnable", BATATA_RUNTIME_PROCESSES_RUNNABLE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.raise", "ex.raise", BATATA_RUNTIME_RAISE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.receive", "ex.receive", BATATA_RUNTIME_RECEIVE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.receive_cont_save", "ex.receive_cont_save", BATATA_RUNTIME_RECEIVE_CONT_SAVE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.receive_start", "ex.receive_start", BATATA_RUNTIME_RECEIVE_START,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.receive_start_set", "ex.receive_start_set", BATATA_RUNTIME_RECEIVE_START_SET,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.reduction_tick", "ex.reduction_tick", BATATA_RUNTIME_CLOCK_TICK,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.rem", "ex.rem", BATATA_TARGET_ARITH_REMSI,
-                   binary_rewrite),
-    BATATA_PATTERN("batata.ex.result_atom_name", "ex.result_atom_name",
-                   BATATA_RUNTIME_RESULT_ATOM_NAME, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_create", "ex.result_create",
-                   BATATA_RUNTIME_RESULT_CREATE, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_destroy", "ex.result_destroy",
-                   BATATA_RUNTIME_RESULT_DESTROY, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_exception_kind",
-                   "ex.result_exception_kind",
-                   BATATA_RUNTIME_RESULT_EXCEPTION_KIND,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_exception_reason",
-                   "ex.result_exception_reason",
-                   BATATA_RUNTIME_RESULT_EXCEPTION_REASON,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_root_kind", "ex.result_root_kind",
-                   BATATA_RUNTIME_RESULT_ROOT_KIND, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_root_word", "ex.result_root_word",
-                   BATATA_RUNTIME_RESULT_ROOT_WORD, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_term_get", "ex.result_term_get",
-                   BATATA_RUNTIME_RESULT_TERM_GET, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_term_kind", "ex.result_term_kind",
-                   BATATA_RUNTIME_RESULT_TERM_KIND, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.result_term_length", "ex.result_term_length",
-                   BATATA_RUNTIME_RESULT_TERM_LENGTH, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.return", "ex.return",
-                   BATATA_TARGET_FUNC_RETURN, return_rewrite),
-    BATATA_PATTERN("batata.ex.runtime_create", "ex.runtime_create",
-                   BATATA_RUNTIME_RUNTIME_CREATE, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.runtime_destroy", "ex.runtime_destroy",
-                   BATATA_RUNTIME_RUNTIME_DESTROY, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.runtime_enter", "ex.runtime_enter",
-                   BATATA_RUNTIME_RUNTIME_ENTER, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.runtime_leave", "ex.runtime_leave",
-                   BATATA_RUNTIME_RUNTIME_LEAVE, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.schedule_next", "ex.schedule_next", BATATA_RUNTIME_SCHEDULE_NEXT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.self", "ex.self", BATATA_RUNTIME_SELF,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.send", "ex.send", BATATA_RUNTIME_SEND,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.spawn", "ex.spawn", BATATA_RUNTIME_SPAWN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.stream_drop", "ex.stream_drop", BATATA_RUNTIME_STREAM_DROP,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.stream_filter", "ex.stream_filter", BATATA_RUNTIME_STREAM_FILTER,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.stream_take", "ex.stream_take", BATATA_RUNTIME_STREAM_TAKE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.string_printable", "ex.string_printable", BATATA_RUNTIME_STRING_PRINTABLE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.string_to_atom", "ex.string_to_atom", BATATA_RUNTIME_STRING_TO_ATOM,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.string_to_existing_atom", "ex.string_to_existing_atom", BATATA_RUNTIME_STRING_TO_EXISTING_ATOM,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.string_to_float", "ex.string_to_float", BATATA_RUNTIME_STRING_TO_FLOAT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.string_to_int", "ex.string_to_int", BATATA_RUNTIME_STRING_TO_INT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.sub", "ex.sub", BATATA_TARGET_ARITH_SUBI,
-                   binary_rewrite),
-    BATATA_PATTERN("batata.ex.term_eq", "ex.term_eq", BATATA_RUNTIME_TERM_EQ,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.term_eq_loose", "ex.term_eq_loose", BATATA_RUNTIME_TERM_EQ_LOOSE,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.term_export", "ex.term_export",
-                   BATATA_RUNTIME_TERM_EXPORT, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.term_handle_destroy", "ex.term_handle_destroy",
-                   BATATA_RUNTIME_HANDLE_DESTROY, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.term_handle_export", "ex.term_handle_export",
-                   BATATA_RUNTIME_HANDLE_EXPORT, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.term_import", "ex.term_import",
-                   BATATA_RUNTIME_TERM_IMPORT, runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.throw", "ex.throw", BATATA_RUNTIME_THROW,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.to_int", "ex.to_int", BATATA_RUNTIME_TO_INT,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.to_word", "ex.to_word", 0, identity_rewrite),
-    BATATA_PATTERN("batata.ex.try", "ex.try", 0, try_rewrite),
-    BATATA_PATTERN("batata.ex.tuple", "ex.tuple", BATATA_RUNTIME_TUPLE_FROM_LIST,
-                   aggregate_rewrite),
-    BATATA_PATTERN("batata.ex.tuple_get", "ex.tuple_get", BATATA_RUNTIME_TUPLE_GET,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.tuple_length", "ex.tuple_length", BATATA_RUNTIME_TUPLE_LENGTH,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.unbox", "ex.unbox", 0, identity_rewrite),
-    BATATA_PATTERN("batata.ex.unique_integer", "ex.unique_integer", BATATA_RUNTIME_UNIQUE_INTEGER,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.unlink", "ex.unlink", BATATA_RUNTIME_UNLINK,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.var", "ex.var", 0, unsupported_var_rewrite),
-    BATATA_PATTERN("batata.ex.worker_run", "ex.worker_run", BATATA_RUNTIME_WORKER_RUN,
-                   runtime_call_rewrite),
-    BATATA_PATTERN("batata.ex.yield", "ex.yield", BATATA_TARGET_SCF_YIELD,
-                   yield_rewrite),
-    BATATA_PATTERN("batata.ex.yield_mark", "ex.yield_mark", BATATA_RUNTIME_YIELD_MARK,
-                   runtime_call_rewrite),
-};
+  *length = source_length;
+  return mlirLogicalResultSuccess();
+}
+
+static MlirLogicalResult decode_pattern_root(int64_t pattern, char *storage,
+                                             intptr_t capacity,
+                                             intptr_t *length) {
+  int64_t source_length = batata_kernel_pattern_root_length(pattern);
+  if (!storage || !length || source_length <= 0 || source_length > capacity)
+    return mlirLogicalResultFailure();
+
+  for (int64_t offset = 0; offset < source_length; offset += 4) {
+    int64_t word = batata_kernel_pattern_root_word(pattern, offset / 4);
+    if (word < 0 || word > UINT32_MAX)
+      return mlirLogicalResultFailure();
+    int64_t remaining = source_length - offset;
+    decode_word((uint32_t)word, storage + offset, remaining < 4 ? remaining : 4);
+  }
+
+  *length = source_length;
+  return mlirLogicalResultSuccess();
+}
+
+static void destroy_pattern(void *user_data) { free(user_data); }
 
 BATATA_KERNEL_EXPORT uint32_t batata_conversion_abi_version(void) {
   return MLIR_BEAVER_COMPILER_KERNEL_ABI_VERSION;
@@ -2233,9 +2024,39 @@ BATATA_KERNEL_EXPORT MlirLogicalResult batata_populate_ex_patterns(
       batata_kernel_structural_limit(BATATA_LIMIT_REGIONS) != 2)
     return mlirLogicalResultFailure();
 
-  for (intptr_t index = 0;
-       index < (intptr_t)(sizeof(patterns) / sizeof(patterns[0])); ++index) {
-    const BatataPattern *source = &patterns[index];
+  int64_t pattern_count = batata_kernel_pattern_count();
+  char pattern_namespace[32];
+  intptr_t namespace_length;
+  if (pattern_count <= 0 || pattern_count > 256 ||
+      mlirLogicalResultIsFailure(decode_namespace(
+          pattern_namespace, sizeof(pattern_namespace), &namespace_length)))
+    return BATATA_FAIL(diagnostic, diagnostic_user_data,
+                       "Batata pattern registry metadata is invalid");
+
+  for (int64_t index = 0; index < pattern_count; ++index) {
+    BatataPattern *source = (BatataPattern *)calloc(1, sizeof(BatataPattern));
+    if (!source)
+      return BATATA_FAIL(diagnostic, diagnostic_user_data,
+                         "Batata pattern registry allocation failed");
+
+    source->pattern_id = index;
+    source->target_kind = batata_kernel_pattern_target(index);
+    source->rewrite = rewrite_for_action(batata_kernel_pattern_action(index));
+    if (!source->rewrite || source->target_kind < 0 ||
+        mlirLogicalResultIsFailure(decode_pattern_root(
+            index, source->root, sizeof(source->root), &source->root_length)) ||
+        namespace_length + source->root_length >
+            (intptr_t)sizeof(source->name)) {
+      destroy_pattern(source);
+      return BATATA_FAIL(diagnostic, diagnostic_user_data,
+                         "Batata pattern descriptor is invalid");
+    }
+
+    memcpy(source->name, pattern_namespace, (size_t)namespace_length);
+    memcpy(source->name + namespace_length, source->root,
+           (size_t)source->root_length);
+    source->name_length = namespace_length + source->root_length;
+
     MlirBeaverCompilerKernelPattern descriptor = {
         sizeof(MlirBeaverCompilerKernelPattern),
         mlirStringRefCreate(source->name, source->name_length),
@@ -2243,14 +2064,16 @@ BATATA_KERNEL_EXPORT MlirLogicalResult batata_populate_ex_patterns(
         mlirStringRefCreate("1", 1),
         1,
         source->rewrite,
-        NULL,
+        destroy_pattern,
         (void *)source,
     };
 
     if (mlirLogicalResultIsFailure(host->addPattern(
-            host_context, pattern_set, type_converter, &descriptor)))
+            host_context, pattern_set, type_converter, &descriptor))) {
+      destroy_pattern(source);
       return BATATA_FAIL(diagnostic, diagnostic_user_data,
                          "Batata pattern registration failed");
+    }
   }
 
   return mlirLogicalResultSuccess();
