@@ -19,6 +19,7 @@ defmodule Batata.CompilerKernel.Manifest do
   }
   @pattern_roots ~w(
     ex.add
+    ex.apply
     ex.binary
     ex.binary_part
     ex.box
@@ -30,6 +31,7 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.exported_get
     ex.exported_length
     ex.func
+    ex.func_addr
     ex.if
     ex.is_atom
     ex.is_binary
@@ -112,6 +114,9 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.mapset_from_list
     ex.mapset_member
     ex.mapset_put
+    ex.make_fun
+    ex.make_fun_with_arity
+    ex.make_fun_with_signature
     ex.binary_from_list
     ex.iodata_to_binary
     ex.float_lit

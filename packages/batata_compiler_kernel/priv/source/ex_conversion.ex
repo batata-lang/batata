@@ -158,6 +158,13 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 148 -> 14
       kind == 150 -> 23
       kind == 151 -> 21
+      kind == 152 -> 16
+      kind == 153 -> 27
+      kind == 154 -> 31
+      kind == 155 -> 15
+      kind == 156 -> 15
+      kind == 157 -> 13
+      kind == 158 -> 13
       true -> -1
     end
   end
@@ -757,6 +764,27 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 151 and index == 3 -> 0x6D6F7266
       kind == 151 and index == 4 -> 0x73696C5F
       kind == 151 and index == 5 -> 0x74
+      kind >= 152 and kind <= 156 and index == 0 -> 0x742E7865
+      kind >= 152 and kind <= 156 and index == 1 -> 0x2E6D7265
+      kind >= 152 and kind <= 154 and index == 2 -> 0x656B616D
+      kind >= 152 and kind <= 154 and index == 3 -> 0x6E75665F
+      kind >= 153 and kind <= 154 and index == 4 -> 0x7469775F
+      kind == 153 and index == 5 -> 0x72615F68
+      kind == 153 and index == 6 -> 0x797469
+      kind == 154 and index == 5 -> 0x69735F68
+      kind == 154 and index == 6 -> 0x74616E67
+      kind == 154 and index == 7 -> 0x657275
+      kind >= 155 and kind <= 156 and index == 2 -> 0x5F6E7566
+      kind == 155 and index == 3 -> 0x786469
+      kind == 156 and index == 3 -> 0x766E65
+      kind == 157 and index == 0 -> 0x6E665F5F
+      kind == 157 and index == 1 -> 0x7369645F
+      kind == 157 and index == 2 -> 0x63746170
+      kind == 157 and index == 3 -> 0x68
+      kind == 158 and index == 0 -> 0x636E7566
+      kind == 158 and index == 1 -> 0x6E6F632E
+      kind == 158 and index == 2 -> 0x6E617473
+      kind == 158 and index == 3 -> 0x74
       true -> -1
     end
   end
@@ -906,6 +934,11 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 140 -> 2
       kind >= 142 and kind <= 148 -> 1
       kind >= 150 and kind <= 151 -> 1
+      kind == 152 -> 6
+      kind == 153 -> 7
+      kind == 154 -> 8
+      kind == 155 -> 1
+      kind == 156 -> 2
       true -> -1
     end
   end
@@ -938,6 +971,38 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 149 and arity >= 0 -> 1
       kind == 150 and arity >= 0 -> 1
       kind == 151 and arity >= 0 and Bitwise.band(arity, 1) == 0 -> 1
+      true -> 0
+    end
+  end
+
+  def function_value_accept(kind, operands, arity, result_mode, env_len) do
+    env_matches =
+      Bitwise.band(
+        Bitwise.band(env_len >= 0, env_len <= 4),
+        operands == env_len
+      )
+
+    cond do
+      kind == 152 -> env_matches
+
+      kind == 153 ->
+        Bitwise.band(env_matches, Bitwise.band(arity >= 0, arity <= 4))
+
+      kind == 154 ->
+        Bitwise.band(
+          env_matches,
+          Bitwise.band(
+            Bitwise.band(arity >= 0, arity <= 4),
+            Bitwise.band(result_mode >= 0, result_mode <= 1)
+          )
+        )
+
+      kind == 157 ->
+        Bitwise.band(
+          Bitwise.band(arity >= 0, arity <= 4),
+          operands == arity + 1
+        )
+
       true -> 0
     end
   end

@@ -22,7 +22,12 @@ defmodule Batata.CompilerKernel.Build do
     %{function: :runtime_arity, arity: 1, symbol: "batata_kernel_runtime_arity"},
     %{function: :structural_limit, arity: 1, symbol: "batata_kernel_structural_limit"},
     %{function: :term_type_accept, arity: 2, symbol: "batata_kernel_term_type_accept"},
-    %{function: :aggregate_accept, arity: 2, symbol: "batata_kernel_aggregate_accept"}
+    %{function: :aggregate_accept, arity: 2, symbol: "batata_kernel_aggregate_accept"},
+    %{
+      function: :function_value_accept,
+      arity: 5,
+      symbol: "batata_kernel_function_value_accept"
+    }
   ]
   @allowed_options [
     :beaver_path,
