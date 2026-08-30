@@ -3904,46 +3904,7 @@ defmodule Batata.Lift do
     {right_value, env} = lift_expr(right, ctx, block, env)
 
     if term_operand?(left_value) or term_operand?(right_value) do
-      if op in [:<, :<=, :>, :>=] do
-        unless integer_ordering_operands?([left, right], [left_value, right_value], env) do
-          raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
-        end
-
-        [left_value, right_value] =
-          refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
-
-        {
-          create_op(
-            "ex.cmp",
-            [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
-            [MLIR.Type.i64()],
-            ctx,
-            block
-          ),
-          env
-        }
-      else
-        eq =
-          create_op(
-            "ex.term_eq",
-            [box_if_scalar(left_value, ctx, block), box_if_scalar(right_value, ctx, block)],
-            [MLIR.Type.i64()],
-            ctx,
-            block
-          )
-
-        if op in [:==, :===] do
-          {eq, env}
-        else
-          {create_op(
-             "ex.cmp",
-             [eq, lit(0, ctx, block), predicate: MLIR.Attribute.string("eq")],
-             [MLIR.Type.i64()],
-             ctx,
-             block
-           ), env}
-        end
-      end
+      lift_term_comparison(op, left, right, left_value, right_value, ctx, block, env)
     else
       {
         create_op(
@@ -4762,6 +4723,50 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp lift_term_comparison(op, left, right, left_value, right_value, ctx, block, env)
+       when op in [:<, :<=, :>, :>=] do
+    unless integer_ordering_operands?([left, right], [left_value, right_value], env) do
+      raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
+    end
+
+    [left_value, right_value] =
+      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
+    {
+      create_op(
+        "ex.cmp",
+        [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
+        [MLIR.Type.i64()],
+        ctx,
+        block
+      ),
+      env
+    }
+  end
+
+  defp lift_term_comparison(op, _left, _right, left_value, right_value, ctx, block, env) do
+    eq =
+      create_op(
+        "ex.term_eq",
+        [box_if_scalar(left_value, ctx, block), box_if_scalar(right_value, ctx, block)],
+        [MLIR.Type.i64()],
+        ctx,
+        block
+      )
+
+    if op in [:==, :===] do
+      {eq, env}
+    else
+      {create_op(
+         "ex.cmp",
+         [eq, lit(0, ctx, block), predicate: MLIR.Attribute.string("eq")],
+         [MLIR.Type.i64()],
+         ctx,
+         block
+       ), env}
+    end
   end
 
   defp cond_to_if!([{:->, _, [[true], body]} | _rest]), do: body
