@@ -27,7 +27,8 @@ defmodule Batata.CompilerKernel.Build do
       function: :function_value_accept,
       arity: 5,
       symbol: "batata_kernel_function_value_accept"
-    }
+    },
+    %{function: :try_accept, arity: 5, symbol: "batata_kernel_try_accept"}
   ]
   @allowed_options [
     :beaver_path,
