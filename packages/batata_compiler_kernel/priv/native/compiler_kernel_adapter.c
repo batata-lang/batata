@@ -1141,8 +1141,9 @@ int64_t batata_compiler_abi_replace_regions(int64_t operation_handle_value,
   return 1;
 }
 
-int64_t batata_compiler_abi_builder_create_call(int64_t symbol_id,
-                                                int64_t result_type_handle) {
+int64_t batata_compiler_abi_builder_prepare_call(int64_t symbol_id,
+                                                 int64_t callee_name_id,
+                                                 int64_t result_type_handle) {
   char symbol_storage[80];
   MlirStringRef symbol;
   MlirType input_types[BATATA_MAX_BUILDER_VALUES];
@@ -1167,33 +1168,98 @@ int64_t batata_compiler_abi_builder_create_call(int64_t symbol_id,
           invocation->diagnostic, invocation->diagnostic_user_data)))
     return fail_invocation();
 
-  MlirAttribute callee;
-  MlirNamedAttribute named_callee;
-  if (mlirLogicalResultIsFailure(invocation->host->flatSymbolRefAttribute(
-          invocation->rewriter, symbol, &callee, invocation->diagnostic,
-          invocation->diagnostic_user_data)) ||
-      mlirLogicalResultIsFailure(invocation->host->namedAttribute(
-          invocation->rewriter, mlirStringRefCreate("callee", 6), callee,
-          &named_callee, invocation->diagnostic,
-          invocation->diagnostic_user_data)))
+  invocation->builder_result_count = 1;
+  invocation->builder_results[0] = result_type;
+  if (add_flat_symbol_attribute(symbol, callee_name_id) != 1)
     return fail_invocation();
+  return 1;
+}
 
-  char call_storage[80];
-  MlirStringRef call_name;
-  if (mlirLogicalResultIsFailure(target_name(
-          BATATA_TARGET_FUNC_CALL, call_storage, sizeof(call_storage),
-          &call_name, invocation->diagnostic,
-          invocation->diagnostic_user_data)))
+int64_t batata_compiler_abi_builder_create_call(int64_t symbol_id,
+                                                int64_t callee_name_id,
+                                                int64_t result_type_handle) {
+  if (batata_compiler_abi_builder_prepare_call(
+          symbol_id, callee_name_id, result_type_handle) != 1)
     return fail_invocation();
+  return batata_compiler_abi_builder_create();
+}
 
-  MlirBeaverCompilerKernelOperation descriptor = {
-      sizeof(MlirBeaverCompilerKernelOperation), call_name,
-      invocation->builder_location, invocation->builder_operand_count,
-      invocation->builder_operands, 1, &result_type, 1, &named_callee};
-  MlirOperation operation;
-  if (mlirLogicalResultIsFailure(invocation->host->createOperation(
-          invocation->rewriter, &descriptor, &operation,
+int64_t batata_compiler_abi_llvm_pointer_type(int64_t address_space) {
+  MlirType type;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation || address_space < 0 || address_space > UINT32_MAX ||
+      mlirLogicalResultIsFailure(invocation->host->llvmPointerType(
+          invocation->rewriter, (unsigned)address_space, &type,
           invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return type_handle(type);
+}
+
+int64_t batata_compiler_abi_dense_i32_array_attribute(int64_t count,
+                                                       int64_t first,
+                                                       int64_t second) {
+  int32_t values[2];
+  MlirAttribute attribute;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation || count < 0 || count > 2 || first < INT32_MIN ||
+      first > INT32_MAX || second < INT32_MIN || second > INT32_MAX)
+    return fail_invocation();
+  values[0] = (int32_t)first;
+  values[1] = (int32_t)second;
+  if (mlirLogicalResultIsFailure(invocation->host->denseI32ArrayAttribute(
+          invocation->rewriter, count, count == 0 ? NULL : values, &attribute,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return attribute_handle(attribute);
+}
+
+int64_t batata_compiler_abi_builder_create_at_block_start(
+    int64_t block_handle_value) {
+  MlirOperation operation;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation)
+    return fail_invocation();
+  MlirBeaverCompilerKernelOperation descriptor = {
+      sizeof(MlirBeaverCompilerKernelOperation),
+      invocation->builder_name,
+      invocation->builder_location,
+      invocation->builder_operand_count,
+      invocation->builder_operands,
+      invocation->builder_result_count,
+      invocation->builder_results,
+      invocation->builder_attribute_count,
+      invocation->builder_attributes,
+  };
+  if (mlirLogicalResultIsFailure(
+          invocation->host->createOperationAtBlockStart(
+              invocation->rewriter, block_from_handle(block_handle_value),
+              &descriptor, &operation, invocation->diagnostic,
+              invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return operation_handle(operation);
+}
+
+int64_t batata_compiler_abi_builder_create_before(
+    int64_t operation_handle_value) {
+  MlirOperation operation;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation)
+    return fail_invocation();
+  MlirBeaverCompilerKernelOperation descriptor = {
+      sizeof(MlirBeaverCompilerKernelOperation),
+      invocation->builder_name,
+      invocation->builder_location,
+      invocation->builder_operand_count,
+      invocation->builder_operands,
+      invocation->builder_result_count,
+      invocation->builder_results,
+      invocation->builder_attribute_count,
+      invocation->builder_attributes,
+  };
+  if (mlirLogicalResultIsFailure(invocation->host->createOperationBefore(
+          invocation->rewriter, operation_from_handle(operation_handle_value),
+          &descriptor, &operation, invocation->diagnostic,
+          invocation->diagnostic_user_data)))
     return fail_invocation();
   return operation_handle(operation);
 }
@@ -2672,7 +2738,7 @@ static MlirBeaverCompilerKernelRewriteFn rewrite_for_action(int64_t action) {
   case BATATA_ACTION_RUNTIME_CALL:
     return source_rewrite;
   case BATATA_ACTION_TRY:
-    return try_rewrite;
+    return source_rewrite;
   case BATATA_ACTION_UNSUPPORTED:
     return source_rewrite;
   case BATATA_ACTION_YIELD:

@@ -182,6 +182,10 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 208 -> 11
       kind == 209 -> 9
       kind == 210 -> 13
+      kind == 211 -> 9
+      kind == 212 -> 9
+      kind == 213 -> 19
+      kind == 214 -> 15
       true -> -1
     end
   end
@@ -849,6 +853,21 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 210 and index == 1 -> 0x6E6F6974
       kind == 210 and index == 2 -> 0x7079745F
       kind == 210 and index == 3 -> 0x65
+      kind == 211 and index == 0 -> 0x6D656C65
+      kind == 211 and index == 1 -> 0x7079745F
+      kind == 211 and index == 2 -> 0x65
+      kind == 212 and index == 0 -> 0x67696C61
+      kind == 212 and index == 1 -> 0x6E656D6E
+      kind == 212 and index == 2 -> 0x74
+      kind == 213 and index == 0 -> 0x7265706F
+      kind == 213 and index == 1 -> 0x53646E61
+      kind == 213 and index == 2 -> 0x656D6765
+      kind == 213 and index == 3 -> 0x6953746E
+      kind == 213 and index == 4 -> 0x73657A
+      kind == 214 and index == 0 -> 0x625F706F
+      kind == 214 and index == 1 -> 0x6C646E75
+      kind == 214 and index == 2 -> 0x69735F65
+      kind == 214 and index == 3 -> 0x73657A
       true -> -1
     end
   end
@@ -1062,6 +1081,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       action == 14 -> rewrite_predicate(target)
       action == 15 -> rewrite_return(target)
       action == 16 -> rewrite_runtime_call(target)
+      action == 17 -> rewrite_try()
       action == 19 -> rewrite_yield(target)
       true -> 0
     end
@@ -1144,6 +1164,122 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
     end
   end
 
+  defp rewrite_try() do
+    operands = CompilerABI.Host.source_operand_count()
+    converted = CompilerABI.Host.converted_operand_count()
+    results = CompilerABI.Host.source_result_count()
+    regions = CompilerABI.Host.operation_region_count()
+
+    if operands == converted and regions == 2 do
+      body = CompilerABI.Host.single_region_block(0)
+      catch_block = CompilerABI.Host.single_region_block(1)
+      body_arguments = CompilerABI.Host.block_argument_count(body)
+      catch_arguments = CompilerABI.Host.block_argument_count(catch_block)
+
+      if try_accept(operands, results, regions, body_arguments, catch_arguments) == 1 do
+        body_terminator = CompilerABI.Host.block_terminator(body)
+        catch_terminator = CompilerABI.Host.block_terminator(catch_block)
+        result_type = converted_result_type(0)
+
+        if body_terminator != 0 and catch_terminator != 0 and
+             CompilerABI.Host.type_is_i64(result_type) == 1 do
+          rewrite_try_operations(catch_block, body_terminator, result_type)
+        else
+          0
+        end
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_try_operations(catch_block, body_terminator, result_type) do
+    location = CompilerABI.Host.operation_location()
+    i1 = CompilerABI.Host.integer_type(1)
+    i8 = CompilerABI.Host.integer_type(8)
+    i64 = CompilerABI.Host.integer_type(64)
+    pointer = CompilerABI.Host.llvm_pointer_type(0)
+    size = call_zero(162, i64, location) |> CompilerABI.Host.operation_result(0)
+    elem_type = CompilerABI.Host.type_attribute(i8)
+    alignment = CompilerABI.Host.integer_attribute(i64, 8)
+
+    buffer =
+      if CompilerABI.Host.builder_reset(159, location) == 1 and
+           CompilerABI.Host.builder_add_operand(size) == 1 and
+           CompilerABI.Host.builder_add_result_type(pointer) == 1 and
+           CompilerABI.Host.builder_add_attribute(211, elem_type) == 1 and
+           CompilerABI.Host.builder_add_attribute(212, alignment) == 1 do
+        CompilerABI.Host.builder_create()
+        |> CompilerABI.Host.operation_result(0)
+      else
+        0
+      end
+
+    push = call_one(163, buffer, i64, location)
+    setjmp_address = call_zero(164, i64, location) |> CompilerABI.Host.operation_result(0)
+
+    function_pointer =
+      if CompilerABI.Host.builder_reset(160, location) == 1 and
+           CompilerABI.Host.builder_add_operand(setjmp_address) == 1 and
+           CompilerABI.Host.builder_add_result_type(pointer) == 1 do
+        CompilerABI.Host.builder_create()
+        |> CompilerABI.Host.operation_result(0)
+      else
+        0
+      end
+
+    operand_segments = CompilerABI.Host.dense_i32_array_attribute(2, 2, 0)
+    bundle_sizes = CompilerABI.Host.dense_i32_array_attribute(0, 0, 0)
+
+    saved =
+      if push != 0 and CompilerABI.Host.builder_reset(161, location) == 1 and
+           CompilerABI.Host.builder_add_operand(function_pointer) == 1 and
+           CompilerABI.Host.builder_add_operand(buffer) == 1 and
+           CompilerABI.Host.builder_add_result_type(i64) == 1 and
+           CompilerABI.Host.builder_add_attribute(213, operand_segments) == 1 and
+           CompilerABI.Host.builder_add_attribute(214, bundle_sizes) == 1 do
+        CompilerABI.Host.builder_create()
+        |> CompilerABI.Host.operation_result(0)
+      else
+        0
+      end
+
+    zero = integer_constant(i64, 0, location)
+    predicate = CompilerABI.Host.integer_attribute(i64, 0)
+
+    condition =
+      if CompilerABI.Host.builder_reset(7, location) == 1 and
+           CompilerABI.Host.builder_add_operand(saved) == 1 and
+           CompilerABI.Host.builder_add_operand(zero) == 1 and
+           CompilerABI.Host.builder_add_result_type(i1) == 1 and
+           CompilerABI.Host.builder_add_attribute(202, predicate) == 1 do
+        CompilerABI.Host.builder_create()
+        |> CompilerABI.Host.operation_result(0)
+      else
+        0
+      end
+
+    replacement =
+      if CompilerABI.Host.builder_reset(16, location) == 1 and
+           CompilerABI.Host.builder_add_operand(condition) == 1 and
+           CompilerABI.Host.builder_add_result_type(result_type) == 1 do
+        CompilerABI.Host.builder_create_with_regions(2)
+      else
+        0
+      end
+
+    if replacement != 0 and CompilerABI.Host.builder_reset(10, location) == 1 and
+         CompilerABI.Host.builder_prepare_call(165, 203, i64) == 1 and
+         CompilerABI.Host.builder_create_at_block_start(catch_block) != 0 and
+         CompilerABI.Host.builder_create_before(body_terminator) != 0 do
+      CompilerABI.Host.replace_regions(replacement, 2)
+    else
+      0
+    end
+  end
+
   defp rewrite_binary(target) do
     if valid_shape(2, 1) == 1 do
       result_type = converted_result_type(0)
@@ -1197,7 +1333,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       if CompilerABI.Host.builder_reset(10, location) == 1 and
            stage_converted_operands(0, arity) == 1 do
         target
-        |> CompilerABI.Host.builder_create_call(result_type)
+        |> CompilerABI.Host.builder_create_call(203, result_type)
         |> replace_created_result()
       else
         0
@@ -1363,7 +1499,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
            stage_converted_operands(0, count) == 1 and
            stage_zero_padding(env_len, zero) == 1 do
         target
-        |> CompilerABI.Host.builder_create_call(result_type)
+        |> CompilerABI.Host.builder_create_call(203, result_type)
         |> replace_created_result()
       else
         0
@@ -1695,10 +1831,18 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
     end
   end
 
+  defp call_zero(target, result_type, location) do
+    if CompilerABI.Host.builder_reset(10, location) == 1 do
+      CompilerABI.Host.builder_create_call(target, 203, result_type)
+    else
+      0
+    end
+  end
+
   defp call_one(target, operand, result_type, location) do
     if CompilerABI.Host.builder_reset(10, location) == 1 and
          CompilerABI.Host.builder_add_operand(operand) == 1 do
-      CompilerABI.Host.builder_create_call(target, result_type)
+      CompilerABI.Host.builder_create_call(target, 203, result_type)
     else
       0
     end
@@ -1708,7 +1852,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
     if CompilerABI.Host.builder_reset(10, location) == 1 and
          CompilerABI.Host.builder_add_operand(first) == 1 and
          CompilerABI.Host.builder_add_operand(second) == 1 do
-      CompilerABI.Host.builder_create_call(target, result_type)
+      CompilerABI.Host.builder_create_call(target, 203, result_type)
     else
       0
     end

@@ -93,7 +93,12 @@ defmodule Batata.CompilerKernel.Build do
                         {:type_attribute, [:type], :attribute},
                         {:builder_create_with_regions, [:count], :operation},
                         {:replace_regions, [:operation, :count], :status},
-                        {:builder_create_call, [:index, :type], :operation},
+                        {:llvm_pointer_type, [:count], :type},
+                        {:dense_i32_array_attribute, [:count, :word, :word], :attribute},
+                        {:builder_prepare_call, [:index, :index, :type], :status},
+                        {:builder_create_call, [:index, :index, :type], :operation},
+                        {:builder_create_at_block_start, [:block], :operation},
+                        {:builder_create_before, [:operation], :operation},
                         {:operation_result, [:operation, :index], :value},
                         {:replace_one, [:value], :status},
                         {:replace_none, [], :status}
