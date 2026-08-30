@@ -17,13 +17,14 @@ defmodule Batata.CompilerKernel.ManifestTest do
     assert manifest.provider == CompilerKernel.provider()
     assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
-    assert length(manifest.patterns) == 13
+    assert length(manifest.patterns) == 17
 
     assert Enum.map(manifest.patterns, & &1["root"]) ==
-             ~w(ex.add ex.binary ex.binary_part ex.cmp ex.div ex.lit ex.mul ex.rem ex.sub ex.term_eq ex.to_word ex.unbox ex.yield)
+             ~w(ex.add ex.binary ex.binary_part ex.call ex.cmp ex.div ex.func ex.if ex.lit ex.mul ex.rem ex.return ex.sub ex.term_eq ex.to_word ex.unbox ex.yield)
 
     assert manifest.capabilities == [
              "ir.attribute.v1",
+             "ir.region.v1",
              "ir.scalar.v1",
              "ir.symbol.v1",
              "pattern.register"

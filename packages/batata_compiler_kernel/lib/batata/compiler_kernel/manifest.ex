@@ -25,18 +25,28 @@ defmodule Batata.CompilerKernel.Manifest do
       "root" => "ex.binary_part",
       "version" => "1"
     },
+    %{"name" => "batata.ex.call", "root" => "ex.call", "version" => "1"},
     %{"name" => "batata.ex.cmp", "root" => "ex.cmp", "version" => "1"},
     %{"name" => "batata.ex.div", "root" => "ex.div", "version" => "1"},
+    %{"name" => "batata.ex.func", "root" => "ex.func", "version" => "1"},
+    %{"name" => "batata.ex.if", "root" => "ex.if", "version" => "1"},
     %{"name" => "batata.ex.lit", "root" => "ex.lit", "version" => "1"},
     %{"name" => "batata.ex.mul", "root" => "ex.mul", "version" => "1"},
     %{"name" => "batata.ex.rem", "root" => "ex.rem", "version" => "1"},
+    %{"name" => "batata.ex.return", "root" => "ex.return", "version" => "1"},
     %{"name" => "batata.ex.sub", "root" => "ex.sub", "version" => "1"},
     %{"name" => "batata.ex.term_eq", "root" => "ex.term_eq", "version" => "1"},
     %{"name" => "batata.ex.to_word", "root" => "ex.to_word", "version" => "1"},
     %{"name" => "batata.ex.unbox", "root" => "ex.unbox", "version" => "1"},
     %{"name" => "batata.ex.yield", "root" => "ex.yield", "version" => "1"}
   ]
-  @capabilities ["ir.attribute.v1", "ir.scalar.v1", "ir.symbol.v1", "pattern.register"]
+  @capabilities [
+    "ir.attribute.v1",
+    "ir.region.v1",
+    "ir.scalar.v1",
+    "ir.symbol.v1",
+    "pattern.register"
+  ]
   @allowed_options [
     :beaver_revision,
     :bootstrap_provenance,

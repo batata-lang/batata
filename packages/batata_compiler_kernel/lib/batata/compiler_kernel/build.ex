@@ -18,7 +18,8 @@ defmodule Batata.CompilerKernel.Build do
     %{function: :target_length, arity: 1, symbol: "batata_kernel_target_length"},
     %{function: :target_word, arity: 2, symbol: "batata_kernel_target_word"},
     %{function: :cmp_predicate, arity: 2, symbol: "batata_kernel_cmp_predicate"},
-    %{function: :runtime_arity, arity: 1, symbol: "batata_kernel_runtime_arity"}
+    %{function: :runtime_arity, arity: 1, symbol: "batata_kernel_runtime_arity"},
+    %{function: :structural_limit, arity: 1, symbol: "batata_kernel_structural_limit"}
   ]
   @allowed_options [
     :beaver_path,

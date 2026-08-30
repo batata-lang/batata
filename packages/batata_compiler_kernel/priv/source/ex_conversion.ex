@@ -23,6 +23,10 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 12 -> 19
       kind == 13 -> 17
       kind == 14 -> 24
+      kind == 15 -> 12
+      kind == 16 -> 6
+      kind == 17 -> 11
+      kind == 18 -> 9
       true -> -1
     end
   end
@@ -79,6 +83,17 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 14 and index == 3 -> 0x665F7972
       kind == 14 and index == 4 -> 0x5F6D6F72
       kind == 14 and index == 5 -> 0x7473696C
+      kind == 15 and index == 0 -> 0x74697261
+      kind == 15 and index == 1 -> 0x72742E68
+      kind == 15 and index == 2 -> 0x69636E75
+      kind == 16 and index == 0 -> 0x2E666373
+      kind == 16 and index == 1 -> 0x6669
+      kind == 17 and index == 0 -> 0x636E7566
+      kind == 17 and index == 1 -> 0x7465722E
+      kind == 17 and index == 2 -> 0x6E7275
+      kind == 18 and index == 0 -> 0x636E7566
+      kind == 18 and index == 1 -> 0x6E75662E
+      kind == 18 and index == 2 -> 0x63
       true -> -1
     end
   end
@@ -105,6 +120,14 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 12 -> 3
       kind == 13 -> 2
       kind == 14 -> 1
+      true -> -1
+    end
+  end
+
+  def structural_limit(kind) do
+    cond do
+      kind == 1 -> 8
+      kind == 2 -> 2
       true -> -1
     end
   end
