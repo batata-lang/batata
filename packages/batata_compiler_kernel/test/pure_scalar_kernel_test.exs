@@ -9,7 +9,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
   alias Beaver.MLIR.Conversion.Plan
 
-  @beaver_revision "2b0a1a32153fdef59affc439460cc9ce95b301c7"
+  @beaver_revision "282d2b1d5ab5b2711b41dd19708526dc3019c52a"
   @digest "sha256:" <> String.duplicate("a", 64)
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
   @scheduler_shapes [
@@ -70,7 +70,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 140
+    assert length(output.kernel_manifest.patterns) == 148
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -273,6 +273,53 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
 
   @tag :tmp_dir
   @tag timeout: 180_000
+  test "Batata AOT boxing and term predicates preserve source-type semantics", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    assert ctx
+           |> Beaver.Slang.load(Beaver.MLIR.Dialect.Ex)
+           |> MLIR.LogicalResult.success?()
+
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = boxing_predicate_module(ctx)
+    native = boxing_predicate_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+    assert native_ir =~ ~s|"arith.shli"|
+
+    for symbol <- ~w(is_integer is_float is_atom is_binary is_list is_tuple is_map) do
+      assert native_ir =~ ~s|callee = @ex.term.#{symbol}|
+      refute native_ir =~ ~s|"ex.#{symbol}"|
+    end
+
+    refute native_ir =~ ~s|"ex.box"|
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+
+    invalid =
+      MLIR.Module.create!(
+        ~S[module { func.func @invalid(%value: f64) -> !ex.term { %0 = "ex.box"(%value) : (f64) -> !ex.term func.return %0 : !ex.term } }],
+        ctx: ctx
+      )
+
+    assert {:error, %MLIR.Conversion.Error{diagnostics: diagnostics}} =
+             Plan.run(native_plan(output), invalid)
+
+    assert diagnostics != []
+    invalid_ir = MLIR.to_string(invalid, generic: true)
+    assert invalid_ir =~ ~s|"ex.box"|
+    refute invalid_ir =~ ~s|"arith.shli"|
+    MLIR.Module.destroy(invalid)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
   test "Batata AOT region/function kernel matches the Stage 0 and BEAM seed", %{
     ctx: ctx,
     tmp_dir: tmp_dir
@@ -455,6 +502,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           "ir.region.v1",
           "ir.scalar.v1",
           "ir.symbol.v1",
+          "ir.type.v1",
           "pattern.register"
         ]
       ]
@@ -662,6 +710,35 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %thrown = "ex.throw"(%caught) : (!ex.term) -> !ex.term
           %raised = "ex.raise"(%thrown, %worked) : (!ex.term, i64) -> !ex.term
           func.return %mode : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp boxing_predicate_module(ctx) do
+    predicates = ~w(is_integer is_float is_atom is_binary is_list is_tuple is_map)
+
+    operations =
+      predicates
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {predicate, index} ->
+        [
+          ~s|          %scalar_#{index} = "ex.#{predicate}"(%scalar) : (i64) -> i64|,
+          ~s|          %term_#{index} = "ex.#{predicate}"(%boxed_again) : (!ex.term) -> i64|
+        ]
+      end)
+      |> Enum.join("\n")
+
+    MLIR.Module.create!(
+      """
+      module {
+        func.func @boxing_predicates(%scalar: i64) -> i64 {
+          %boxed = "ex.box"(%scalar) : (i64) -> !ex.term
+          %boxed_again = "ex.box"(%boxed) : (!ex.term) -> !ex.term
+      #{operations}
+          func.return %term_6 : i64
         }
       }
       """,
