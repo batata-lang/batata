@@ -1924,6 +1924,37 @@ defmodule Batata.ExecuteTest do
     assert {107, 18, 4, 9} == Batata.execute(source, ctx)
   end
 
+  test "runtime-refines integer ordering from term patterns", %{ctx: ctx} do
+    source = """
+    defmodule PatternIntegerOrdering do
+      def compare(pair) do
+        {left, right} = pair
+        alias_of_left = left
+        {left < right, left <= right, alias_of_left > right, alias_of_left >= right}
+      end
+
+      def main(), do: {compare({3, 7}), compare({7, 3})}
+    end
+    """
+
+    assert {{1, 1, 0, 0}, {0, 0, 1, 1}} == Batata.execute(source, ctx)
+  end
+
+  test "rejects non-integer ordering from term patterns at runtime", %{ctx: ctx} do
+    source = """
+    defmodule InvalidPatternIntegerOrdering do
+      def main() do
+        {left, right} = {:atom, 7}
+        left > right
+      end
+    end
+    """
+
+    assert_raise ArgumentError, ~r/integer arithmetic requires integer operands/, fn ->
+      Batata.execute(source, ctx)
+    end
+  end
+
   test "rejects non-integer term-pattern arithmetic at runtime", %{ctx: ctx} do
     source = """
     defmodule Math do

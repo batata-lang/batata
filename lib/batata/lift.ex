@@ -37,6 +37,7 @@ defmodule Batata.Lift do
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @current_function_key {__MODULE__, :current_function}
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
+  @term_pattern_names_key {__MODULE__, :term_pattern_names}
   @ex_type_cache_key {__MODULE__, :ex_type_cache}
   @ex_type_names ~w(term bound unbound)
   @min_scalar_integer -9_223_372_036_854_775_808
@@ -359,7 +360,11 @@ defmodule Batata.Lift do
                :|||,
                :"^^^",
                :<<<,
-               :>>>
+               :>>>,
+               :<,
+               :<=,
+               :>,
+               :>=
              ] and is_list(args) ->
           {node, true}
 
@@ -401,6 +406,9 @@ defmodule Batata.Lift do
 
         {:case, _, [_value, [do: clauses]]} = node, false ->
           {node, Enum.any?(clauses, &case_clause_has_term_pattern?/1)}
+
+        {:=, _, [pattern, _value]} = node, false ->
+          {node, term_pattern?(pattern)}
 
         node, false ->
           {node, false}
@@ -3896,29 +3904,45 @@ defmodule Batata.Lift do
     {right_value, env} = lift_expr(right, ctx, block, env)
 
     if term_operand?(left_value) or term_operand?(right_value) do
-      unless op in [:==, :!=, :===, :!==] do
-        raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
-      end
+      if op in [:<, :<=, :>, :>=] do
+        unless integer_ordering_operands?([left, right], [left_value, right_value], env) do
+          raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
+        end
 
-      eq =
-        create_op(
-          "ex.term_eq",
-          [box_if_scalar(left_value, ctx, block), box_if_scalar(right_value, ctx, block)],
-          [MLIR.Type.i64()],
-          ctx,
-          block
-        )
+        [left_value, right_value] =
+          refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
 
-      if op in [:==, :===] do
-        {eq, env}
+        {
+          create_op(
+            "ex.cmp",
+            [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          ),
+          env
+        }
       else
-        {create_op(
-           "ex.cmp",
-           [eq, lit(0, ctx, block), predicate: MLIR.Attribute.string("eq")],
-           [MLIR.Type.i64()],
-           ctx,
-           block
-         ), env}
+        eq =
+          create_op(
+            "ex.term_eq",
+            [box_if_scalar(left_value, ctx, block), box_if_scalar(right_value, ctx, block)],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          )
+
+        if op in [:==, :===] do
+          {eq, env}
+        else
+          {create_op(
+             "ex.cmp",
+             [eq, lit(0, ctx, block), predicate: MLIR.Attribute.string("eq")],
+             [MLIR.Type.i64()],
+             ctx,
+             block
+           ), env}
+        end
       end
     else
       {
@@ -4057,7 +4081,13 @@ defmodule Batata.Lift do
   defp lift_expr({:=, _, [{var, _, context}, rhs]}, ctx, block, env)
        when is_variable_ast(var, context) do
     {value, env} = lift_expr(rhs, ctx, block, env)
-    {value, Map.put(env, var, value)}
+
+    env =
+      env
+      |> Map.put(var, value)
+      |> maybe_mark_term_pattern_alias(var, rhs)
+
+    {value, env}
   end
 
   defp lift_expr({:=, _, [pattern, rhs]}, ctx, block, env) do
@@ -4067,7 +4097,10 @@ defmodule Batata.Lift do
     {_match_cond, binds} =
       build_match(pattern, value, ctx, block, false, Map.get(env, @struct_schema_key), env)
 
-    {value, Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)}
+    env = Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)
+    names = binds |> Enum.map(&elem(&1, 0)) |> MapSet.new()
+    env = Map.update(env, @term_pattern_names_key, names, &MapSet.union(&1, names))
+    {value, env}
   end
 
   # Anonymous-function marker produced by `extract_all_fns/1`: the literal
@@ -10323,6 +10356,38 @@ defmodule Batata.Lift do
   end
 
   defp term_parameter?(_ast, _env), do: false
+
+  defp integer_ordering_operands?(asts, values, env) do
+    operands = Enum.zip(asts, values)
+
+    Enum.any?(operands, fn {ast, value} ->
+      term_operand?(value) and term_pattern_binding?(ast, env)
+    end) and
+      Enum.all?(operands, fn {ast, value} ->
+        not term_operand?(value) or term_parameter?(ast, env) or bound_variable?(ast, env)
+      end)
+  end
+
+  defp bound_variable?({name, _, context}, env) when is_variable_ast(name, context),
+    do: Map.has_key?(env, name)
+
+  defp bound_variable?(_ast, _env), do: false
+
+  defp term_pattern_binding?({name, _, context}, env) when is_variable_ast(name, context) do
+    env
+    |> Map.get(@term_pattern_names_key, MapSet.new())
+    |> MapSet.member?(name)
+  end
+
+  defp term_pattern_binding?(_ast, _env), do: false
+
+  defp maybe_mark_term_pattern_alias(env, name, rhs) do
+    if term_pattern_binding?(rhs, env) do
+      Map.update(env, @term_pattern_names_key, MapSet.new([name]), &MapSet.put(&1, name))
+    else
+      env
+    end
+  end
 
   defp deferred_scalar_call?({name, _, arguments})
        when is_atom(name) and is_list(arguments) and
