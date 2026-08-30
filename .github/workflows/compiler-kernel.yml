@@ -1,0 +1,86 @@
+name: Compiler kernel artifacts
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/compiler-kernel.yml
+      - lib/batata/aot.ex
+      - lib/batata/compiler_kernel/**
+      - lib/batata/library.ex
+      - native-deps.lock
+      - packages/batata_compiler_kernel/**
+      - scripts/native_deps/**
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            artifact: linux-x86_64
+          - runner: macos-15
+            artifact: macos-arm64
+          - runner: windows-2022
+            artifact: windows-x86_64
+    concurrency:
+      group: compiler-kernel-${{ github.ref }}-${{ matrix.artifact }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: 1.20.3
+          otp-version: 27.3
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install Mix package managers
+        shell: bash
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Configure pinned native dependencies
+        shell: bash
+        working-directory: scripts/native_deps
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: mix batata.native setup
+
+      - name: Build Stage 1 and Stage 2 release
+        shell: bash
+        working-directory: scripts/native_deps
+        env:
+          BATATA_REVISION: ${{ github.sha }}
+          BEAVER_REVISION: 94e4b8610d9b9c4f9146c4e820f25725b5d51e33
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_compiler_kernel
+            export BATATA_PATH=../..
+            mix deps.get
+            mix batata.compiler_kernel.release \
+              --output ../../_build/compiler-kernel-release \
+              --compiler-revision "$BATATA_REVISION" \
+              --beaver-revision "$BEAVER_REVISION"
+          '
+
+      - name: Upload verified release
+        uses: actions/upload-artifact@v4
+        with:
+          name: batata-compiler-kernel-${{ matrix.artifact }}-${{ github.sha }}
+          path: _build/compiler-kernel-release
+          if-no-files-found: error
+          retention-days: 14

@@ -46,3 +46,22 @@ artifact digest or identity drifts, or the manifest is not a
 `previous-native` Stage 2 build. Bootstrap tools and reference tests must opt
 in explicitly with `conversion_provider: :cpp_bootstrap`; production never
 falls back to it.
+
+## Release artifacts
+
+Build the frozen Stage 0 → Stage 1 → Stage 2 chain for the current host with
+explicit source identities:
+
+```sh
+mix batata.compiler_kernel.release \
+  --output _build/compiler-kernel-release \
+  --compiler-revision "$BATATA_REVISION" \
+  --beaver-revision "$BEAVER_REVISION"
+```
+
+The output contains separate Stage 1 and Stage 2 directories plus a canonical
+`release-index.json`. The index binds both shared libraries and receipts to the
+compiler revision, Beaver/LLVM revisions, Ex schema digest, term-runtime ABI,
+target, and frozen Stage 0 identity. Its paths are relative and can be uploaded
+without embedding the runner workspace. GitHub Actions builds this layout on
+Linux x86-64, macOS arm64, and Windows x86-64.
