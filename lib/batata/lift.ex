@@ -6149,6 +6149,10 @@ defmodule Batata.Lift do
   # Dates are gregorian days (i64) in the slice: `Date.new(y, m, d)` with
   # integer literals is folded at lift time, so `a..b` over dates reuses the
   # integer range paths.
+  defp lift_stdlib_call(Kernel, :rem, [left, right], ctx, block, env) do
+    lift_expr({:rem, [], [left, right]}, ctx, block, env)
+  end
+
   defp lift_stdlib_call(String, :duplicate, [binary, count], ctx, block, env)
        when is_binary(binary) and is_integer(count) and count >= 0 do
     result_size = byte_size(binary) * count

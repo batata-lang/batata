@@ -297,6 +297,8 @@ defmodule Batata.StdlibTest do
       assert 3 == execute("Kernel.length([1, 2, 3])", ctx)
       assert 56 == execute("List.first([7, 8])", ctx)
       assert 1 == execute("Kernel.is_list([1])", ctx)
+      assert 2 == execute("Kernel.rem(17, 5)", ctx)
+      assert -2 == execute("Kernel.rem(-17, 5)", ctx)
     end
 
     test "copies binaries through direct and captured :binary.copy/1 calls", %{ctx: ctx} do
