@@ -9,7 +9,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
   alias Beaver.MLIR.Conversion.Plan
 
-  @beaver_revision "282d2b1d5ab5b2711b41dd19708526dc3019c52a"
+  @beaver_revision "10a1ae46bb0865823c1359e133041103405ae501"
   @digest "sha256:" <> String.duplicate("a", 64)
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
   @scheduler_shapes [
@@ -70,7 +70,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 156
+    assert length(output.kernel_manifest.patterns) == 158
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -399,6 +399,52 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     assert invalid_ir =~ ~s|"ex.make_fun"|
     refute invalid_ir =~ ~s|callee = @ex.term.make_fun|
     MLIR.Module.destroy(invalid)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT try lowering matches Stage 0 and ex.var fails closed", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = try_module(ctx)
+    native = try_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+    assert native_ir =~ ~s|"llvm.alloca"|
+    assert native_ir =~ ~s|"llvm.inttoptr"|
+    assert native_ir =~ ~s|"llvm.call"|
+    assert length(Regex.scan(~r/callee = @ex\.term\.try_pop/, native_ir)) == 2
+    refute native_ir =~ ~s|"ex.try"|
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+
+    malformed = malformed_try_module(ctx)
+
+    assert {:error, %MLIR.Conversion.Error{diagnostics: malformed_diagnostics}} =
+             Plan.run(native_plan(output), malformed)
+
+    assert malformed_diagnostics != []
+    malformed_ir = MLIR.to_string(malformed, generic: true)
+    assert malformed_ir =~ ~s|"ex.try"|
+    refute malformed_ir =~ ~s|"llvm.alloca"|
+    MLIR.Module.destroy(malformed)
+
+    variable = var_module(ctx)
+
+    assert {:error, %MLIR.Conversion.Error{diagnostics: var_diagnostics}} =
+             Plan.run(native_plan(output), variable)
+
+    assert var_diagnostics != []
+    var_ir = MLIR.to_string(variable, generic: true)
+    assert var_ir =~ ~s|"ex.var"|
+    MLIR.Module.destroy(variable)
   end
 
   @tag :tmp_dir
@@ -900,6 +946,53 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
         }
       }
       """,
+      ctx: ctx
+    )
+  end
+
+  defp try_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @try_control() -> i64 {
+          %result = "ex.try"() ({
+            %body = arith.constant 7 : i64
+            "ex.yield"(%body) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+          }, {
+            %caught = arith.constant 9 : i64
+            "ex.yield"(%caught) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+          }) : () -> i64
+          func.return %result : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp malformed_try_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @malformed_try() -> i64 {
+          %seed = arith.constant 1 : i64
+          %result = "ex.try"() ({
+          ^bb0(%argument: i64):
+            "ex.yield"(%argument) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+          }, {
+            "ex.yield"(%seed) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+          }) : () -> i64
+          func.return %result : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp var_module(ctx) do
+    MLIR.Module.create!(
+      ~S[module { func.func @unsupported_var() -> !ex.unbound { %0 = "ex.var"() {name = "value"} : () -> !ex.unbound func.return %0 : !ex.unbound } }],
       ctx: ctx
     )
   end

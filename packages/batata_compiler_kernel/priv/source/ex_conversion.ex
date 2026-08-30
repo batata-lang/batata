@@ -165,6 +165,13 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 156 -> 15
       kind == 157 -> 13
       kind == 158 -> 13
+      kind == 159 -> 11
+      kind == 160 -> 13
+      kind == 161 -> 9
+      kind == 162 -> 20
+      kind == 163 -> 16
+      kind == 164 -> 19
+      kind == 165 -> 15
       true -> -1
     end
   end
@@ -785,6 +792,28 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 158 and index == 1 -> 0x6E6F632E
       kind == 158 and index == 2 -> 0x6E617473
       kind == 158 and index == 3 -> 0x74
+      kind == 159 and index == 0 -> 0x6D766C6C
+      kind == 159 and index == 1 -> 0x6C6C612E
+      kind == 159 and index == 2 -> 0x61636F
+      kind == 160 and index == 0 -> 0x6D766C6C
+      kind == 160 and index == 1 -> 0x746E692E
+      kind == 160 and index == 2 -> 0x74706F74
+      kind == 160 and index == 3 -> 0x72
+      kind == 161 and index == 0 -> 0x6D766C6C
+      kind == 161 and index == 1 -> 0x6C61632E
+      kind == 161 and index == 2 -> 0x6C
+      kind >= 162 and kind <= 165 and index == 0 -> 0x742E7865
+      kind >= 162 and kind <= 165 and index == 1 -> 0x2E6D7265
+      kind == 162 and index == 2 -> 0x5F706D6A
+      kind == 162 and index == 3 -> 0x5F667562
+      kind == 162 and index == 4 -> 0x657A6973
+      kind == 163 and index == 2 -> 0x5F797274
+      kind == 163 and index == 3 -> 0x68737570
+      kind == 164 and index == 2 -> 0x6A746573
+      kind == 164 and index == 3 -> 0x615F706D
+      kind == 164 and index == 4 -> 0x726464
+      kind == 165 and index == 2 -> 0x5F797274
+      kind == 165 and index == 3 -> 0x706F70
       true -> -1
     end
   end
@@ -983,7 +1012,8 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       )
 
     cond do
-      kind == 152 -> env_matches
+      kind == 152 ->
+        env_matches
 
       kind == 153 ->
         Bitwise.band(env_matches, Bitwise.band(arity >= 0, arity <= 4))
@@ -1003,7 +1033,18 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
           operands == arity + 1
         )
 
-      true -> 0
+      true ->
+        0
     end
+  end
+
+  def try_accept(operands, results, regions, body_arguments, catch_arguments) do
+    Bitwise.band(
+      Bitwise.band(operands == 0, results == 1),
+      Bitwise.band(
+        regions == 2,
+        Bitwise.band(body_arguments == 0, catch_arguments == 0)
+      )
+    )
   end
 end

@@ -171,8 +171,10 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.term_handle_export
     ex.term_import
     ex.to_word
+    ex.try
     ex.tuple
     ex.unbox
+    ex.var
     ex.yield
   )
   @patterns @pattern_roots
