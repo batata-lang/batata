@@ -252,6 +252,10 @@ typedef struct {
   intptr_t builder_operand_count;
   intptr_t builder_result_count;
   intptr_t builder_attribute_count;
+  MlirType function_inputs[BATATA_MAX_VALUES];
+  MlirType function_results[BATATA_MAX_VALUES];
+  intptr_t function_input_count;
+  intptr_t function_result_count;
 } BatataInvocation;
 
 static BATATA_THREAD_LOCAL BatataInvocation *current_invocation;
@@ -586,6 +590,10 @@ static int64_t location_handle(MlirLocation location) {
   return (int64_t)(intptr_t)location.ptr;
 }
 
+static int64_t block_handle(MlirBlock block) {
+  return (int64_t)(intptr_t)block.ptr;
+}
+
 static MlirValue value_from_handle(int64_t handle) {
   MlirValue value = {(void *)(intptr_t)handle};
   return value;
@@ -609,6 +617,11 @@ static MlirOperation operation_from_handle(int64_t handle) {
 static MlirLocation location_from_handle(int64_t handle) {
   MlirLocation location = {(void *)(intptr_t)handle};
   return location;
+}
+
+static MlirBlock block_from_handle(int64_t handle) {
+  MlirBlock block = {(void *)(intptr_t)handle};
+  return block;
 }
 
 int64_t batata_compiler_abi_healthy(void) {
@@ -947,6 +960,185 @@ int64_t batata_compiler_abi_builder_create(void) {
           invocation->diagnostic, invocation->diagnostic_user_data)))
     return fail_invocation();
   return operation_handle(operation);
+}
+
+int64_t batata_compiler_abi_operation_region_count(void) {
+  intptr_t count;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->operationRegionCount(
+          invocation->operation, &count, invocation->diagnostic,
+          invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return count;
+}
+
+int64_t batata_compiler_abi_single_region_block(int64_t region_index) {
+  MlirBlock block;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->singleRegionBlock(
+          invocation->operation, region_index, &block, invocation->diagnostic,
+          invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return block_handle(block);
+}
+
+int64_t batata_compiler_abi_block_argument_count(int64_t block_handle_value) {
+  intptr_t count;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->blockArgumentCount(
+          block_from_handle(block_handle_value), &count, invocation->diagnostic,
+          invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return count;
+}
+
+int64_t batata_compiler_abi_block_argument(int64_t block_handle_value,
+                                            int64_t index) {
+  MlirValue argument;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->blockArgument(
+          block_from_handle(block_handle_value), index, &argument,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return value_handle(argument);
+}
+
+int64_t batata_compiler_abi_block_terminator(int64_t block_handle_value) {
+  MlirOperation terminator;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->blockTerminator(
+          block_from_handle(block_handle_value), &terminator,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return operation_handle(terminator);
+}
+
+static int64_t operation_count(int64_t operation_handle_value,
+                               int want_results) {
+  intptr_t operands;
+  intptr_t results;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->operationCounts(
+          operation_from_handle(operation_handle_value), &operands, &results,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return want_results ? results : operands;
+}
+
+int64_t batata_compiler_abi_operation_operand_count(
+    int64_t operation_handle_value) {
+  return operation_count(operation_handle_value, 0);
+}
+
+int64_t batata_compiler_abi_operation_result_count(
+    int64_t operation_handle_value) {
+  return operation_count(operation_handle_value, 1);
+}
+
+int64_t batata_compiler_abi_operation_operand(int64_t operation_handle_value,
+                                               int64_t index) {
+  MlirValue operand;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->operationOperand(
+          operation_from_handle(operation_handle_value), index, &operand,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return value_handle(operand);
+}
+
+int64_t batata_compiler_abi_function_type_reset(void) {
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation)
+    return fail_invocation();
+  invocation->function_input_count = 0;
+  invocation->function_result_count = 0;
+  return 1;
+}
+
+int64_t batata_compiler_abi_function_type_add_input(
+    int64_t type_handle_value) {
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation || invocation->function_input_count >= BATATA_MAX_VALUES)
+    return fail_invocation();
+  invocation->function_inputs[invocation->function_input_count++] =
+      type_from_handle(type_handle_value);
+  return 1;
+}
+
+int64_t batata_compiler_abi_function_type_add_result(
+    int64_t type_handle_value) {
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation || invocation->function_result_count >= BATATA_MAX_VALUES)
+    return fail_invocation();
+  invocation->function_results[invocation->function_result_count++] =
+      type_from_handle(type_handle_value);
+  return 1;
+}
+
+int64_t batata_compiler_abi_function_type_create(void) {
+  MlirType type;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->functionType(
+          invocation->rewriter, invocation->function_input_count,
+          invocation->function_inputs, invocation->function_result_count,
+          invocation->function_results, &type, invocation->diagnostic,
+          invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return type_handle(type);
+}
+
+int64_t batata_compiler_abi_type_attribute(int64_t type_handle_value) {
+  MlirAttribute attribute;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation ||
+      mlirLogicalResultIsFailure(invocation->host->typeAttribute(
+          type_from_handle(type_handle_value), &attribute,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return attribute_handle(attribute);
+}
+
+int64_t batata_compiler_abi_builder_create_with_regions(int64_t region_count) {
+  MlirOperation operation;
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation || region_count < 0 || region_count > 2)
+    return fail_invocation();
+  MlirBeaverCompilerKernelOperation descriptor = {
+      sizeof(MlirBeaverCompilerKernelOperation),
+      invocation->builder_name,
+      invocation->builder_location,
+      invocation->builder_operand_count,
+      invocation->builder_operands,
+      invocation->builder_result_count,
+      invocation->builder_results,
+      invocation->builder_attribute_count,
+      invocation->builder_attributes,
+  };
+  if (mlirLogicalResultIsFailure(invocation->host->createOperationWithRegions(
+          invocation->rewriter, &descriptor, region_count, &operation,
+          invocation->diagnostic, invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return operation_handle(operation);
+}
+
+int64_t batata_compiler_abi_replace_regions(int64_t operation_handle_value,
+                                            int64_t region_count) {
+  BatataInvocation *invocation = current_invocation;
+  if (!invocation || region_count < 0 || region_count > 2 ||
+      mlirLogicalResultIsFailure(invocation->host->replaceOperationWithRegions(
+          invocation->rewriter, operation_from_handle(operation_handle_value),
+          invocation->operation, region_count, invocation->diagnostic,
+          invocation->diagnostic_user_data)))
+    return fail_invocation();
+  return 1;
 }
 
 int64_t batata_compiler_abi_builder_create_call(int64_t symbol_id,
@@ -2464,13 +2656,13 @@ static MlirBeaverCompilerKernelRewriteFn rewrite_for_action(int64_t action) {
   case BATATA_ACTION_FUNC_ADDR:
     return source_rewrite;
   case BATATA_ACTION_FUNC:
-    return func_rewrite;
+    return source_rewrite;
   case BATATA_ACTION_FUNCTION_VALUE:
     return source_rewrite;
   case BATATA_ACTION_IDENTITY:
     return source_rewrite;
   case BATATA_ACTION_IF:
-    return if_rewrite;
+    return source_rewrite;
   case BATATA_ACTION_LITERAL:
     return source_rewrite;
   case BATATA_ACTION_PREDICATE:

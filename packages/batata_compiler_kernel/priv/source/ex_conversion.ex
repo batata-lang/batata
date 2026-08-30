@@ -181,6 +181,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 207 -> 7
       kind == 208 -> 11
       kind == 209 -> 9
+      kind == 210 -> 13
       true -> -1
     end
   end
@@ -844,6 +845,10 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 209 and index == 0 -> 0x5F677261
       kind == 209 and index == 1 -> 0x6E756F63
       kind == 209 and index == 2 -> 0x74
+      kind == 210 and index == 0 -> 0x636E7566
+      kind == 210 and index == 1 -> 0x6E6F6974
+      kind == 210 and index == 2 -> 0x7079745F
+      kind == 210 and index == 3 -> 0x65
       true -> -1
     end
   end
@@ -1049,14 +1054,93 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       action == 6 -> rewrite_call(target)
       action == 7 -> rewrite_cmp()
       action == 8 -> rewrite_func_addr(target)
+      action == 9 -> rewrite_func(target)
       action == 10 -> rewrite_function_value(target)
       action == 11 -> rewrite_identity()
+      action == 12 -> rewrite_if(target)
       action == 13 -> rewrite_literal(target)
       action == 14 -> rewrite_predicate(target)
       action == 15 -> rewrite_return(target)
       action == 16 -> rewrite_runtime_call(target)
       action == 19 -> rewrite_yield(target)
       true -> 0
+    end
+  end
+
+  defp rewrite_func(target) do
+    regions = CompilerABI.Host.operation_region_count()
+
+    if valid_shape(0, 0) == 1 and regions == 1 do
+      block = CompilerABI.Host.single_region_block(0)
+      arguments = CompilerABI.Host.block_argument_count(block)
+      terminator = CompilerABI.Host.block_terminator(block)
+      returns = CompilerABI.Host.operation_operand_count(terminator)
+      terminator_results = CompilerABI.Host.operation_result_count(terminator)
+
+      counts_accepted =
+        Bitwise.band(
+          Bitwise.band(arguments >= 0, arguments <= structural_limit(1)),
+          Bitwise.band(
+            Bitwise.band(returns >= 0, returns <= structural_limit(1)),
+            terminator_results == 0
+          )
+        )
+
+      if counts_accepted == 1 and CompilerABI.Host.function_type_reset() == 1 and
+           stage_block_argument_types(block, 0, arguments) == 1 and
+           stage_operation_operand_types(terminator, 0, returns) == 1 do
+        function_type = CompilerABI.Host.function_type_create()
+        function_type_attribute = CompilerABI.Host.type_attribute(function_type)
+        symbol = CompilerABI.Host.operation_attribute(205)
+        symbol_length = CompilerABI.Host.attribute_string_length(symbol)
+        location = CompilerABI.Host.operation_location()
+
+        if symbol_length > 0 and CompilerABI.Host.builder_reset(target, location) == 1 and
+             CompilerABI.Host.builder_add_attribute(205, symbol) == 1 and
+             CompilerABI.Host.builder_add_attribute(210, function_type_attribute) == 1 do
+          CompilerABI.Host.builder_create_with_regions(1)
+          |> CompilerABI.Host.replace_regions(1)
+        else
+          0
+        end
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_if(target) do
+    results = CompilerABI.Host.source_result_count()
+
+    counts_accepted =
+      Bitwise.band(results >= 0, results <= structural_limit(1))
+
+    if counts_accepted == 1 and valid_shape(1, results) == 1 do
+      location = CompilerABI.Host.operation_location()
+      i1 = CompilerABI.Host.integer_type(1)
+
+      condition =
+        if CompilerABI.Host.builder_reset(15, location) == 1 and
+             CompilerABI.Host.builder_add_operand(CompilerABI.Host.converted_operand(0)) == 1 and
+             CompilerABI.Host.builder_add_result_type(i1) == 1 do
+          CompilerABI.Host.builder_create()
+          |> CompilerABI.Host.operation_result(0)
+        else
+          0
+        end
+
+      if condition != 0 and CompilerABI.Host.builder_reset(target, location) == 1 and
+           CompilerABI.Host.builder_add_operand(condition) == 1 and
+           stage_converted_result_types(0, results) == 1 do
+        CompilerABI.Host.builder_create_with_regions(2)
+        |> CompilerABI.Host.replace_regions(2)
+      else
+        0
+      end
+    else
+      0
     end
   end
 
@@ -1484,6 +1568,60 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
            |> CompilerABI.Host.converted_operand()
            |> CompilerABI.Host.builder_add_operand() == 1 do
         stage_converted_operands(index + 1, count)
+      else
+        0
+      end
+    end
+  end
+
+  defp stage_converted_result_types(index, count) do
+    if index == count do
+      1
+    else
+      converted_type =
+        index
+        |> CompilerABI.Host.source_result()
+        |> CompilerABI.Host.value_type()
+        |> CompilerABI.Host.convert_type()
+
+      if index < count and CompilerABI.Host.builder_add_result_type(converted_type) == 1 do
+        stage_converted_result_types(index + 1, count)
+      else
+        0
+      end
+    end
+  end
+
+  defp stage_block_argument_types(block, index, count) do
+    if index == count do
+      1
+    else
+      converted_type =
+        block
+        |> CompilerABI.Host.block_argument(index)
+        |> CompilerABI.Host.value_type()
+        |> CompilerABI.Host.convert_type()
+
+      if index < count and CompilerABI.Host.function_type_add_input(converted_type) == 1 do
+        stage_block_argument_types(block, index + 1, count)
+      else
+        0
+      end
+    end
+  end
+
+  defp stage_operation_operand_types(operation, index, count) do
+    if index == count do
+      1
+    else
+      converted_type =
+        operation
+        |> CompilerABI.Host.operation_operand(index)
+        |> CompilerABI.Host.value_type()
+        |> CompilerABI.Host.convert_type()
+
+      if index < count and CompilerABI.Host.function_type_add_result(converted_type) == 1 do
+        stage_operation_operand_types(operation, index + 1, count)
       else
         0
       end
