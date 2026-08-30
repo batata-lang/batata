@@ -16,6 +16,9 @@ defmodule Batata.CompilerKernel.SourceOwnershipTest do
 
     refute adapter =~ "BATATA_PATTERN("
     refute adapter =~ "static const BatataPattern patterns[]"
+    refute adapter =~ "BATATA_TARGET_"
+    refute adapter =~ "BATATA_RUNTIME_"
+    refute adapter =~ ~r/static MlirLogicalResult (?!source_rewrite)[a-z_]+_rewrite/
     refute adapter =~ ~r/"(?:batata\.)?ex\.[^"]+"/
   end
 end

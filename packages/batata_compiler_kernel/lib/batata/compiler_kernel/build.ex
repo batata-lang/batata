@@ -16,20 +16,8 @@ defmodule Batata.CompilerKernel.Build do
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
 
   @semantic_exports [
-    %{function: :pattern_accept, arity: 4, symbol: "batata_kernel_pattern_accept"},
     %{function: :target_length, arity: 1, symbol: "batata_kernel_target_length"},
     %{function: :target_word, arity: 2, symbol: "batata_kernel_target_word"},
-    %{function: :cmp_predicate, arity: 2, symbol: "batata_kernel_cmp_predicate"},
-    %{function: :runtime_arity, arity: 1, symbol: "batata_kernel_runtime_arity"},
-    %{function: :structural_limit, arity: 1, symbol: "batata_kernel_structural_limit"},
-    %{function: :term_type_accept, arity: 2, symbol: "batata_kernel_term_type_accept"},
-    %{function: :aggregate_accept, arity: 2, symbol: "batata_kernel_aggregate_accept"},
-    %{
-      function: :function_value_accept,
-      arity: 5,
-      symbol: "batata_kernel_function_value_accept"
-    },
-    %{function: :try_accept, arity: 5, symbol: "batata_kernel_try_accept"},
     %{function: :pattern_count, arity: 0, symbol: "batata_kernel_pattern_count"},
     %{
       function: :pattern_namespace_length,
@@ -47,8 +35,6 @@ defmodule Batata.CompilerKernel.Build do
       symbol: "batata_kernel_pattern_root_length"
     },
     %{function: :pattern_root_word, arity: 2, symbol: "batata_kernel_pattern_root_word"},
-    %{function: :pattern_target, arity: 1, symbol: "batata_kernel_pattern_target"},
-    %{function: :pattern_action, arity: 1, symbol: "batata_kernel_pattern_action"},
     %{function: :rewrite, arity: 1, symbol: "batata_kernel_rewrite"}
   ]
   @compiler_abi_calls [
