@@ -40,6 +40,7 @@ defmodule Batata.ExConversionKernel.Manifest do
     ex.is_list
     ex.is_map
     ex.is_tuple
+    ex.integer_compare
     ex.lit
     ex.mul
     ex.process_table_reset

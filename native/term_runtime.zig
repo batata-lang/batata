@@ -255,6 +255,40 @@ fn bigint_eq(left: i64, right: i64) bool {
     return std.mem.eql(u8, bigint_bytes(left)[0..left_len], bigint_bytes(right)[0..left_len]);
 }
 
+fn integer_decimal(word: i64, buffer: *[21]u8) ?[]const u8 {
+    if (is_int(word)) {
+        return std.fmt.bufPrint(buffer, "{d}", .{word_payload(word)}) catch null;
+    }
+    if (!is_bigint(word)) return null;
+    return bigint_bytes(word)[0..bigint_len(word)];
+}
+
+fn compare_integer_magnitude(left: []const u8, right: []const u8) i64 {
+    if (left.len < right.len) return -1;
+    if (left.len > right.len) return 1;
+    return switch (std.mem.order(u8, left, right)) {
+        .lt => -1,
+        .eq => 0,
+        .gt => 1,
+    };
+}
+
+fn integer_compare(left: i64, right: i64) ?i64 {
+    var left_buffer: [21]u8 = undefined;
+    var right_buffer: [21]u8 = undefined;
+    const left_decimal = integer_decimal(left, &left_buffer) orelse return null;
+    const right_decimal = integer_decimal(right, &right_buffer) orelse return null;
+    const left_negative = left_decimal[0] == '-';
+    const right_negative = right_decimal[0] == '-';
+
+    if (left_negative != right_negative) return if (left_negative) -1 else 1;
+
+    const left_magnitude = if (left_negative) left_decimal[1..] else left_decimal;
+    const right_magnitude = if (right_negative) right_decimal[1..] else right_decimal;
+    const magnitude_order = compare_integer_magnitude(left_magnitude, right_magnitude);
+    return if (left_negative) -magnitude_order else magnitude_order;
+}
+
 // Actor scheduling model (#35): a single process with a FIFO mailbox and a
 // reduction clock. `Clock.used` is charged by `ex.term.clock_tick` before
 // effectful steps / loop back-edges; when it exceeds `budget` the compiled
@@ -4208,6 +4242,13 @@ pub fn ex_term_eq(left: i64, right: i64) callconv(.c) i64 {
     return if (term_eq(left, right)) 1 else 0;
 }
 
+/// Exact ordering for immediate and boxed arbitrary-precision integers.
+/// Callers validate the operands with `ex.term.is_integer`; zero is the
+/// deliberately harmless fallback for non-integer words.
+pub fn ex_term_integer_compare(left: i64, right: i64) callconv(.c) i64 {
+    return integer_compare(left, right) orelse 0;
+}
+
 /// BEAM-style loose equality: integers and floats compare by numeric value,
 /// including when nested in tuples, lists, or maps. Other terms keep the
 /// runtime's structural equality semantics.
@@ -5230,6 +5271,32 @@ test "boxed integer literals preserve canonical arbitrary precision equality" {
             ex_term_is_nil_word(ex_term_bigint_lit(test_binary_from_string(invalid))),
         );
     }
+}
+
+test "integer comparison is exact across immediate and boxed representations" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const zero = @as(i64, 0) << @intCast(tag_shift);
+    const one = @as(i64, 1) << @intCast(tag_shift);
+    const negative_one = @as(i64, -1) << @intCast(tag_shift);
+    const huge = ex_term_bigint_lit(test_binary_from_string("10000000000000000000000000000000000000000"));
+    const larger = ex_term_bigint_lit(test_binary_from_string("10000000000000000000000000000000000000001"));
+    const negative_huge = ex_term_bigint_lit(test_binary_from_string("-10000000000000000000000000000000000000000"));
+    const negative_larger = ex_term_bigint_lit(test_binary_from_string("-10000000000000000000000000000000000000001"));
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_integer_compare(zero, zero));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_integer_compare(negative_one, one));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_integer_compare(one, huge));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_integer_compare(huge, one));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_integer_compare(huge, larger));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_integer_compare(negative_huge, negative_larger));
+    try std.testing.expectEqual(@as(i64, -1), ex_term_integer_compare(negative_huge, zero));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_integer_compare(huge, huge));
 }
 
 test "string to float preserves finite binary64 values and rejects invalid syntax" {

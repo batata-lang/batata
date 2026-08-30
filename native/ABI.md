@@ -250,6 +250,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.list_get` | `(list: i64, index: i64) -> i64` | element at index; nil for empty/non-lists or out of range |
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
 | `ex.term.eq` | `(left: i64, right: i64) -> i64` | deep equality: exact for immediate and boxed integers, structural for containers |
+| `ex.term.integer_compare` | `(left: i64, right: i64) -> i64` | exact integer ordering across immediate and boxed arbitrary-precision representations; returns `-1`, `0`, or `1` |
 | `ex.term.eq_loose` | `(left: i64, right: i64) -> i64` | BEAM-style loose equality: numeric immediate-int/float coercion plus boxed-integer equality, recursively structural for containers |
 | `ex.term.binary_length` | `(binary: i64) -> i64` | byte length; 0 for non-binaries |
 | `ex.term.binary_from_bytes` | `(bytes: ptr, length: i64) -> i64` | copies host bytes into a runtime-owned binary; nil on failure |
