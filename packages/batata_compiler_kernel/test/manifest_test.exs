@@ -17,10 +17,33 @@ defmodule Batata.CompilerKernel.ManifestTest do
     assert manifest.provider == CompilerKernel.provider()
     assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
-    assert length(manifest.patterns) == 17
+    roots = Enum.map(manifest.patterns, & &1["root"])
+    assert length(roots) == 40
+    assert roots == Enum.sort(roots)
 
-    assert Enum.map(manifest.patterns, & &1["root"]) ==
-             ~w(ex.add ex.binary ex.binary_part ex.call ex.cmp ex.div ex.func ex.if ex.lit ex.mul ex.rem ex.return ex.sub ex.term_eq ex.to_word ex.unbox ex.yield)
+    assert MapSet.subset?(
+             MapSet.new(~w(
+                 ex.add ex.binary ex.binary_part ex.call ex.cmp ex.div ex.func
+                 ex.if ex.lit ex.mul ex.rem ex.return ex.sub ex.term_eq
+                 ex.to_word ex.unbox ex.yield
+               )),
+             MapSet.new(roots)
+           )
+
+    assert MapSet.subset?(
+             MapSet.new(~w(
+                 ex.runtime_create ex.runtime_enter ex.runtime_leave
+                 ex.runtime_destroy ex.result_create ex.result_destroy
+                 ex.result_root_kind ex.result_root_word
+                 ex.result_exception_kind ex.result_exception_reason
+                 ex.result_term_kind ex.result_atom_name
+                 ex.result_term_length ex.result_term_get ex.term_export
+                 ex.term_import ex.exported_clone ex.exported_destroy
+                 ex.exported_length ex.exported_get ex.term_handle_export
+                 ex.term_handle_destroy ex.process_table_reset
+               )),
+             MapSet.new(roots)
+           )
 
     assert manifest.capabilities == [
              "ir.attribute.v1",

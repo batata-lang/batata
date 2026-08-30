@@ -29,7 +29,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 17
+    assert length(output.kernel_manifest.patterns) == 40
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -139,6 +139,40 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     assert rendered =~ "ex.term_eq"
     refute rendered =~ "ex.term.eq"
     MLIR.Module.destroy(module)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT lifecycle kernel matches the BEAM reference", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = lifecycle_module(ctx)
+    native = lifecycle_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+
+    for root <-
+          ~w(
+            runtime_create runtime_enter runtime_leave runtime_destroy
+            result_create result_destroy result_root_kind result_root_word
+            result_exception_kind result_exception_reason result_term_kind
+            result_atom_name result_term_length result_term_get term_export
+            term_import exported_clone exported_destroy exported_length
+            exported_get term_handle_export term_handle_destroy
+            process_table_reset
+          ) do
+      refute native_ir =~ ~s|"ex.#{root}"|
+    end
+
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
   end
 
   @tag :tmp_dir
@@ -436,6 +470,42 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %4 = "ex.call"(%3, %1) {callee = "add", arity = 2 : i64, operandSegmentSizes = array<i32: 1, 1, 0, 0, 0, 0, 0, 0>} : (i64, i64) -> i64
           "ex.return"(%4) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
         }) {sym_name = "main"} : () -> ()
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp lifecycle_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @lifecycle(%word: i64) -> i64 {
+          %runtime = "ex.runtime_create"() : () -> i64
+          %entered = "ex.runtime_enter"(%runtime) : (i64) -> i64
+          %left = "ex.runtime_leave"() : () -> i64
+          %result = "ex.result_create"(%runtime, %word) : (i64, i64) -> i64
+          %root_kind = "ex.result_root_kind"(%result) : (i64) -> i64
+          %root_word = "ex.result_root_word"(%result) : (i64) -> i64
+          %exception_kind = "ex.result_exception_kind"(%result) : (i64) -> i64
+          %exception_reason = "ex.result_exception_reason"(%result) : (i64) -> i64
+          %term_kind = "ex.result_term_kind"(%result, %word) : (i64, i64) -> i64
+          %atom_name = "ex.result_atom_name"(%result, %word) : (i64, i64) -> i64
+          %term_length = "ex.result_term_length"(%result, %word) : (i64, i64) -> i64
+          %term_get = "ex.result_term_get"(%result, %word, %word) : (i64, i64, i64) -> i64
+          %exported = "ex.term_export"(%result, %word) : (i64, i64) -> i64
+          %imported = "ex.term_import"(%runtime, %exported) : (i64, i64) -> i64
+          %clone = "ex.exported_clone"(%exported) : (i64) -> i64
+          %exported_length = "ex.exported_length"(%clone) : (i64) -> i64
+          %exported_get = "ex.exported_get"(%clone, %word) : (i64, i64) -> i64
+          %handle_export = "ex.term_handle_export"(%imported) : (i64) -> i64
+          %handle_destroy = "ex.term_handle_destroy"(%imported) : (i64) -> i64
+          %exported_destroy = "ex.exported_destroy"(%clone) : (i64) -> i64
+          %reset = "ex.process_table_reset"(%word) : (i64) -> i64
+          %result_destroy = "ex.result_destroy"(%result) : (i64) -> i64
+          %runtime_destroy = "ex.runtime_destroy"(%runtime) : (i64) -> i64
+          func.return %runtime_destroy : i64
+        }
       }
       """,
       ctx: ctx
