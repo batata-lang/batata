@@ -88,6 +88,67 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.native_time
     ex.unique_integer
     ex.to_int
+    ex.term_eq_loose
+    ex.list_flatten
+    ex.list_head
+    ex.list_tail
+    ex.list_get
+    ex.list_length
+    ex.tuple_get
+    ex.tuple_length
+    ex.map_fetch
+    ex.map_put
+    ex.map_length
+    ex.mapset_from_list
+    ex.mapset_member
+    ex.mapset_put
+    ex.binary_from_list
+    ex.iodata_to_binary
+    ex.float_lit
+    ex.string_to_float
+    ex.string_to_atom
+    ex.string_to_existing_atom
+    ex.float_to_binary_short
+    ex.binary_length
+    ex.binary_get
+    ex.binary_slice
+    ex.binary_utf8_get
+    ex.binary_utf8_width
+    ex.binary_utf8_length
+    ex.string_printable
+    ex.binary_quote
+    ex.binary_encode16
+    ex.binary_decode16
+    ex.int_to_string
+    ex.int_to_string_base
+    ex.int_to_hex
+    ex.string_to_int
+    ex.file_read
+    ex.file_read_lines
+    ex.enumerable_count
+    ex.enumerable_to_list
+    ex.enumerable_into_map
+    ex.enumerable_intersperse
+    ex.enumerable_to_list_range
+    ex.enumerable_reduce
+    ex.enumerable_reduce_c
+    ex.enumerable_reduce_range
+    ex.enumerable_reduce_fun
+    ex.enumerable_map_fun
+    ex.enumerable_map_term_fun
+    ex.enumerable_map_term_fun_c
+    ex.enumerable_flat_map_term_fun
+    ex.stream_filter
+    ex.stream_take
+    ex.stream_drop
+    ex.fun_arity
+    ex.fun_result_mode
+    ex.list_cons
+    ex.process_wait
+    ex.worker_run
+    ex.catch_value
+    ex.throw
+    ex.raise
     ex.sub
     ex.term_eq
     ex.term_export

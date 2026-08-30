@@ -70,7 +70,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 79
+    assert length(output.kernel_manifest.patterns) == 140
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -235,6 +235,36 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
 
     for {root, _operand_types, _result_type} <- @scheduler_shapes do
       refute native_ir =~ ~s|"#{root}"|
+    end
+
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT term-library kernel matches the BEAM reference", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = term_library_module(ctx)
+    native = term_library_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+
+    for root <-
+          ~w(
+            list_flatten map_put string_to_existing_atom binary_utf8_width
+            enumerable_reduce_c enumerable_map_term_fun_c fun_result_mode
+            list_cons process_wait worker_run catch_value throw raise
+          ) do
+      refute native_ir =~ ~s|"ex.#{root}"|
     end
 
     MLIR.Module.destroy(reference)
@@ -601,6 +631,37 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %term = "ex.to_word"(%int) : (i64) -> !ex.term
       #{operations}
           func.return %v#{length(@scheduler_shapes) - 1} : i64
+        }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp term_library_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @term_library(
+          %int: i64,
+          %fun1: (i64) -> i64,
+          %fun8: (i64, i64, i64, i64, i64, i64, i64, i64) -> i64
+        ) -> i64 {
+          %term = "ex.to_word"(%int) : (i64) -> !ex.term
+          %list = "ex.list_flatten"(%term) : (!ex.term) -> !ex.term
+          %map = "ex.map_put"(%list, %term, %term) : (!ex.term, !ex.term, !ex.term) -> !ex.term
+          %atom = "ex.string_to_existing_atom"(%term) : (!ex.term) -> !ex.term
+          %width = "ex.binary_utf8_width"(%atom, %int) : (!ex.term, i64) -> i64
+          %reduced = "ex.enumerable_reduce_c"(%map, %int, %width, %int) : (!ex.term, i64, i64, i64) -> i64
+          %mapped = "ex.enumerable_map_term_fun_c"(%map, %fun8, %int, %width, %reduced, %int) : (!ex.term, (i64, i64, i64, i64, i64, i64, i64, i64) -> i64, i64, i64, i64, i64) -> !ex.term
+          %mode = "ex.fun_result_mode"(%mapped) : (!ex.term) -> i64
+          %cons = "ex.list_cons"(%mapped, %term) : (!ex.term, !ex.term) -> !ex.term
+          %waited = "ex.process_wait"(%int) : (i64) -> i64
+          %worked = "ex.worker_run"(%waited, %fun1) : (i64, (i64) -> i64) -> i64
+          %caught = "ex.catch_value"() : () -> !ex.term
+          %thrown = "ex.throw"(%caught) : (!ex.term) -> !ex.term
+          %raised = "ex.raise"(%thrown, %worked) : (!ex.term, i64) -> !ex.term
+          func.return %mode : i64
         }
       }
       """,
