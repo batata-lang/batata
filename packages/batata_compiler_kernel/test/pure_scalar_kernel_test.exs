@@ -7,7 +7,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   alias Beaver.MLIR.Conversion.Kernel.Error, as: KernelError
   alias Beaver.MLIR.Conversion.Plan
 
-  @beaver_revision "4ffdd072c9d0c08075f35e7a4906111cc2225081"
+  @beaver_revision "2b0a1a32153fdef59affc439460cc9ce95b301c7"
   @digest "sha256:" <> String.duplicate("a", 64)
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
 
@@ -27,7 +27,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     output = Build.build!(tmp_dir, ctx, build_options())
     assert File.regular?(output.library)
     assert File.regular?(output.kernel_manifest_path)
-    assert length(output.kernel_manifest.patterns) == 13
+    assert length(output.kernel_manifest.patterns) == 17
 
     for predicate <- @predicates do
       stage0 = input_module(ctx, predicate)
@@ -140,6 +140,62 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT region/function kernel matches the Stage 0 and BEAM seed", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+    reference = control_function_module(ctx)
+    native = control_function_module(ctx)
+
+    Plan.run!(ExConversion.plan(), reference)
+    Plan.run!(native_plan(output), native)
+
+    reference_ir = MLIR.to_string(reference, generic: true)
+    native_ir = MLIR.to_string(native, generic: true)
+    assert native_ir == reference_ir
+    assert native_ir =~ ~s|"func.func"()|
+    assert native_ir =~ ~s|"func.call"|
+    assert native_ir =~ ~s|"scf.if"|
+    assert native_ir =~ ~s|"func.return"|
+    refute native_ir =~ ~r/"ex\.(func|call|if|return|yield)"/
+    MLIR.Module.destroy(reference)
+    MLIR.Module.destroy(native)
+  end
+
+  @tag :tmp_dir
+  @tag timeout: 180_000
+  test "Batata AOT call conversion rejects arity drift without partial IR", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    output = Build.build!(tmp_dir, ctx, build_options())
+
+    module =
+      MLIR.Module.create!(
+        ~S"""
+        module {
+          func.func @bad_call(%a: i64, %b: i64) -> i64 {
+            %0 = "ex.call"(%a, %b) {callee = "add", arity = 1 : i64, operandSegmentSizes = array<i32: 1, 1, 0, 0, 0, 0, 0, 0>} : (i64, i64) -> i64
+            func.return %0 : i64
+          }
+        }
+        """,
+        ctx: ctx
+      )
+
+    assert {:error, %MLIR.Conversion.Error{diagnostics: diagnostics}} =
+             Plan.run(native_plan(output), module)
+
+    assert diagnostics != []
+    rendered = MLIR.to_string(module, generic: true)
+    assert rendered =~ ~s|"ex.call"|
+    refute rendered =~ ~s|"func.call"|
+    MLIR.Module.destroy(module)
+  end
+
+  @tag :tmp_dir
   test "Batata compiler-kernel build rejects implicit fallback policy", %{
     ctx: ctx,
     tmp_dir: tmp_dir
@@ -169,7 +225,13 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
         dialect_schema_digest: @digest,
         runtime_abi_digest: expected_runtime_abi,
         target: expected_target,
-        capabilities: ["ir.attribute.v1", "ir.scalar.v1", "ir.symbol.v1", "pattern.register"]
+        capabilities: [
+          "ir.attribute.v1",
+          "ir.region.v1",
+          "ir.scalar.v1",
+          "ir.symbol.v1",
+          "pattern.register"
+        ]
       ]
     )
   end
@@ -243,6 +305,33 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
           %word = "ex.unbox"(%binary) : (!ex.term) -> i64
           func.return %word : i64
         }
+      }
+      """,
+      ctx: ctx
+    )
+  end
+
+  defp control_function_module(ctx) do
+    MLIR.Module.create!(
+      ~S"""
+      module {
+        func.func @add(%a: i64, %b: i64) -> i64 {
+          %result = arith.addi %a, %b : i64
+          func.return %result : i64
+        }
+        "ex.func"() ({
+        ^bb0:
+          %0 = "ex.lit"() {value = 1 : i64} : () -> i64
+          %1 = "ex.lit"() {value = 2 : i64} : () -> i64
+          %2 = "ex.cmp"(%0, %1) {predicate = "slt"} : (i64, i64) -> i64
+          %3 = "ex.if"(%2) ({
+            "ex.yield"(%0) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+          }, {
+            "ex.yield"(%1) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+          }) {operandSegmentSizes = array<i32: 1>} : (i64) -> i64
+          %4 = "ex.call"(%3, %1) {callee = "add", arity = 2 : i64, operandSegmentSizes = array<i32: 1, 1, 0, 0, 0, 0, 0, 0>} : (i64, i64) -> i64
+          "ex.return"(%4) {operandSegmentSizes = array<i32: 1>} : (i64) -> ()
+        }) {sym_name = "main"} : () -> ()
       }
       """,
       ctx: ctx
