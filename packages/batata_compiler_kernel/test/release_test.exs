@@ -23,6 +23,7 @@ defmodule Batata.CompilerKernel.ReleaseTest do
     assert File.regular?(output.stage1.library)
     assert File.regular?(output.stage2.library)
     assert File.regular?(output.index_path)
+    assert File.regular?(output.performance_receipt)
     assert output.stage2.kernel_manifest.bootstrap["seed"] == "previous-native"
 
     assert output.index["production_kernel_identity"] ==
@@ -30,6 +31,18 @@ defmodule Batata.CompilerKernel.ReleaseTest do
 
     assert Enum.map(output.index["stages"], & &1["stage"]) == ~w(stage1 stage2)
     assert output.index["dialect_schema_digest"] == ExDialect.schema_digest()
+    assert output.index["performance_receipt"]["callback_free"] == true
+    assert output.index["performance_receipt"]["sizes"] == [4, 16]
+
+    performance = output.performance_receipt |> File.read!() |> JSON.decode!()
+    assert performance["callback_free"] == true
+
+    for sample <- performance["samples"] do
+      assert sample["stage0"]["beam"]["callback_count"] == 0
+      assert sample["stage2"]["beam"]["callback_count"] == 0
+      assert sample["stage0"]["status"] == "ok"
+      assert sample["stage2"]["status"] == "ok"
+    end
 
     bytes = File.read!(output.index_path)
     assert bytes == Batata.Memory.canonical_json(output.index) <> "\n"
@@ -51,7 +64,8 @@ defmodule Batata.CompilerKernel.ReleaseTest do
     [
       compiler_revision: "batata-release-fixture",
       beaver_revision: @beaver_revision,
-      target: %{"triple" => "host-test", "cpu" => "generic", "features" => []}
+      target: %{"triple" => "host-test", "cpu" => "generic", "features" => []},
+      profile_sizes: [4, 16]
     ]
   end
 end
