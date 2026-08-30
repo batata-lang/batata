@@ -18,7 +18,7 @@ defmodule Batata.CompilerKernel.ManifestTest do
     assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
     roots = Enum.map(manifest.patterns, & &1["root"])
-    assert length(roots) == 40
+    assert length(roots) == 79
     assert roots == Enum.sort(roots)
 
     assert MapSet.subset?(
