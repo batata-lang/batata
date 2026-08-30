@@ -25,6 +25,7 @@ defmodule Batata.Lift do
   alias Batata.Frontend.GuardSupport
   alias Batata.Symbol
   alias Batata.Transform.PatternPlan
+  alias Beaver.Changeset
   alias Beaver.MLIR
   alias Beaver.MLIR.Dialect.Ex
   alias Beaver.Walker
@@ -35,6 +36,7 @@ defmodule Batata.Lift do
   @integer_guard_modes_key {__MODULE__, :integer_guard_modes}
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
+  @compiler_abi_calls_key {__MODULE__, :compiler_abi_calls}
   @current_function_key {__MODULE__, :current_function}
   @current_function_signature_key {__MODULE__, :current_function_signature}
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
@@ -46,6 +48,11 @@ defmodule Batata.Lift do
   @min_term_integer -1_152_921_504_606_846_976
   @max_term_integer 1_152_921_504_606_846_975
   @max_compile_time_binary_bytes 1_048_576
+  @compiler_abi_symbol_pattern ~r/^batata_compiler_abi_[A-Za-z0-9_]*$/
+  @compiler_abi_types ~w(
+    attribute block context count flag index location operation region rewriter status
+    type type_converter value word
+  )a
 
   defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
 
@@ -104,14 +111,19 @@ defmodule Batata.Lift do
       |> Batata.Signature.infer()
       |> apply_signature_overrides!(definitions, opts)
 
+    compiler_abi_calls = normalize_compiler_abi_calls!(opts)
+
     module_env = %{
       @known_atoms_key => known_atoms,
       @struct_schema_key => schemas,
       @arg_modes_key => argument_modes,
       @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
       @no_return_functions_key => no_return_functions,
-      @scalar_result_functions_key => scalar_result_functions
+      @scalar_result_functions_key => scalar_result_functions,
+      @compiler_abi_calls_key => compiler_abi_calls
     }
+
+    lift_compiler_abi_declarations(compiler_abi_calls, ctx, body)
 
     groups =
       definitions
@@ -168,6 +180,86 @@ defmodule Batata.Lift do
     end
 
     MapSet.union(inferred, overrides)
+  end
+
+  defp normalize_compiler_abi_calls!(opts) do
+    configured = Keyword.get(opts, :compiler_abi_calls, %{})
+
+    unless is_map(configured) do
+      raise Error, ":compiler_abi_calls must be a map"
+    end
+
+    calls =
+      Enum.reduce(configured, %{}, fn
+        {{module, function, arity} = signature, descriptor}, acc
+        when is_atom(module) and is_atom(function) and is_integer(arity) and arity >= 0 and
+               is_map(descriptor) ->
+          descriptor = normalize_compiler_abi_descriptor!(signature, descriptor)
+          Map.put(acc, signature, descriptor)
+
+        {signature, descriptor}, _acc ->
+          raise Error,
+                "invalid compiler ABI call: #{inspect(signature)} => #{inspect(descriptor)}"
+      end)
+
+    calls
+    |> Map.values()
+    |> Enum.group_by(& &1.symbol)
+    |> Enum.each(fn {symbol, descriptors} ->
+      signatures = MapSet.new(descriptors, &{&1.arguments, &1.result})
+
+      if MapSet.size(signatures) != 1 do
+        raise Error, "compiler ABI symbol has inconsistent signatures: #{symbol}"
+      end
+    end)
+
+    calls
+  end
+
+  defp normalize_compiler_abi_descriptor!(signature, descriptor) do
+    allowed = MapSet.new([:symbol, :arguments, :result])
+    unknown = descriptor |> Map.keys() |> MapSet.new() |> MapSet.difference(allowed)
+    symbol = Map.get(descriptor, :symbol)
+    arguments = Map.get(descriptor, :arguments)
+    result = Map.get(descriptor, :result)
+    {_module, _function, arity} = signature
+
+    unless MapSet.size(unknown) == 0 and is_binary(symbol) and
+             Regex.match?(@compiler_abi_symbol_pattern, symbol) and is_list(arguments) and
+             length(arguments) == arity and Enum.all?(arguments, &(&1 in @compiler_abi_types)) and
+             result in @compiler_abi_types do
+      raise Error,
+            "invalid compiler ABI descriptor for #{inspect(signature)}: #{inspect(descriptor)}"
+    end
+
+    %{symbol: symbol, arguments: arguments, result: result}
+  end
+
+  defp lift_compiler_abi_declarations(calls, ctx, body) do
+    calls
+    |> Map.values()
+    |> Enum.uniq_by(& &1.symbol)
+    |> Enum.sort_by(& &1.symbol)
+    |> Enum.each(fn descriptor ->
+      i64 = MLIR.Type.i64(ctx: ctx)
+
+      declaration =
+        %Changeset{
+          name: "func.func",
+          context: ctx,
+          location: MLIR.Location.unknown(ctx: ctx)
+        }
+        |> Changeset.add_argument(sym_name: MLIR.Attribute.string(descriptor.symbol))
+        |> Changeset.add_argument(sym_visibility: MLIR.Attribute.string("private"))
+        |> Changeset.add_argument(
+          function_type:
+            MLIR.Type.function(List.duplicate(i64, length(descriptor.arguments)), [i64])
+        )
+        |> Changeset.add_argument(MLIR.CAPI.mlirRegionCreate())
+        |> MLIR.Operation.create()
+
+      MLIR.Block.append(body, declaration)
+    end)
   end
 
   defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers, _process_cap),
@@ -4004,7 +4096,7 @@ defmodule Batata.Lift do
         lift_bitwise(name, arguments, ctx, block, env)
 
       {:ok, module} ->
-        lift_stdlib_call(module, name, arguments, ctx, block, env)
+        lift_remote_call(module, name, arguments, ctx, block, env)
 
       :error ->
         raise Error, "unsupported AST in the current slice: #{inspect(module_ast)}.#{name}"
@@ -4498,7 +4590,7 @@ defmodule Batata.Lift do
         {lower_map_field_access(box_term(base, ctx, block), field, ctx, block), env}
 
       :error ->
-        lift_stdlib_call(name, field, [], ctx, block, env)
+        lift_remote_call(name, field, [], ctx, block, env)
     end
   end
 
@@ -4506,7 +4598,7 @@ defmodule Batata.Lift do
        when is_atom(field) do
     case module_ref(base_ast) do
       {:ok, module} ->
-        lift_stdlib_call(module, field, [], ctx, block, env)
+        lift_remote_call(module, field, [], ctx, block, env)
 
       :error ->
         {base, env} = lift_expr(base_ast, ctx, block, env)
@@ -4519,7 +4611,7 @@ defmodule Batata.Lift do
        when is_atom(fun) and is_list(args) do
     case module_ref(mod_ast) do
       {:ok, module} ->
-        lift_stdlib_call(module, fun, args, ctx, block, env)
+        lift_remote_call(module, fun, args, ctx, block, env)
 
       :error ->
         raise Error, "unsupported AST in the current slice: #{inspect(mod_ast)}.#{fun}"
@@ -6639,6 +6731,44 @@ defmodule Batata.Lift do
         raise Error,
               "unsupported stdlib call: #{inspect(module)}.#{fun}/#{length(args)}"
     end
+  end
+
+  defp lift_remote_call(module, function, arguments, ctx, block, env) do
+    signature = {module, function, length(arguments)}
+
+    case Map.fetch(Map.fetch!(env, @compiler_abi_calls_key), signature) do
+      {:ok, descriptor} ->
+        lift_compiler_abi_call(signature, descriptor, arguments, ctx, block, env)
+
+      :error ->
+        lift_stdlib_call(module, function, arguments, ctx, block, env)
+    end
+  end
+
+  defp lift_compiler_abi_call(signature, descriptor, arguments, ctx, block, env) do
+    {values, env} =
+      Enum.map_reduce(arguments, env, fn argument, env ->
+        {value, env} = lift_expr(argument, ctx, block, env)
+        value = lift_value(value, ctx, block, env)
+
+        if term_operand?(value) do
+          raise Error,
+                "compiler ABI call #{inspect(signature)} requires scalar opaque handles"
+        end
+
+        {value, env}
+      end)
+
+    value =
+      create_op(
+        "func.call",
+        values ++ [callee: MLIR.Attribute.flat_symbol_ref(descriptor.symbol, ctx: ctx)],
+        [MLIR.Type.i64(ctx: ctx)],
+        ctx,
+        block
+      )
+
+    {value, env}
   end
 
   defp date_struct_days(value, ctx, block) do

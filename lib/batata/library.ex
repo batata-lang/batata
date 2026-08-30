@@ -98,6 +98,7 @@ defmodule Batata.Library do
     module =
       source
       |> Batata.compile(ctx,
+        compiler_abi_calls: Keyword.get(opts, :compiler_abi_calls, %{}),
         memory_policy: Keyword.get(opts, :memory_policy, :disabled),
         signature_overrides: signature_overrides,
         scalar_result_overrides: scalar_result_overrides

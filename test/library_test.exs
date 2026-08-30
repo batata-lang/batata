@@ -1,7 +1,7 @@
 defmodule Batata.LibraryTest do
   use Batata.Case, async: true
 
-  alias Batata.{Export, Library}
+  alias Batata.{Export, Library, Lift}
   alias Batata.Test.Subprocess
   alias Beaver.MLIR.CompilationRuntime
 
@@ -100,6 +100,64 @@ defmodule Batata.LibraryTest do
         Keyword.put(base_options(), :exports, [
           %{function: :identity, arity: 1, symbol: "identity"}
         ])
+      )
+    end
+  end
+
+  @tag :tmp_dir
+  test "compile_object emits only explicitly typed compiler ABI calls", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    object = Path.join(tmp_dir, "compiler-abi.o")
+
+    output =
+      Library.compile_object!(
+        """
+        defmodule CompilerKernel do
+          def operation_result(operation, index) do
+            CompilerABI.Host.operation_result(operation, index)
+          end
+        end
+        """,
+        object,
+        ctx,
+        [%{function: :operation_result, arity: 2, symbol: "kernel_operation_result"}],
+        compiler_abi_calls: %{
+          {CompilerABI.Host, :operation_result, 2} => %{
+            symbol: "batata_compiler_abi_operation_result",
+            arguments: [:operation, :index],
+            result: :value
+          }
+        }
+      )
+
+    assert output.object == object
+    assert File.regular?(object)
+  end
+
+  test "compiler ABI calls fail closed without an exact typed allowlist", %{ctx: ctx} do
+    source = """
+    defmodule CompilerKernel do
+      def operation_result(operation, index) do
+        CompilerABI.Host.operation_result(operation, index)
+      end
+    end
+    """
+
+    assert_raise Lift.Error, ~r/unsupported stdlib call/, fn ->
+      Batata.compile(source, ctx)
+    end
+
+    assert_raise Lift.Error, ~r/invalid compiler ABI descriptor/, fn ->
+      Batata.compile(source, ctx,
+        compiler_abi_calls: %{
+          {CompilerABI.Host, :operation_result, 2} => %{
+            symbol: "puts",
+            arguments: [:operation, :index],
+            result: :value
+          }
+        }
       )
     end
   end
