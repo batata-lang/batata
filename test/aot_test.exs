@@ -4,9 +4,52 @@ defmodule Batata.AOTTest do
   @moduletag timeout: 180_000
 
   alias Batata
+  alias Batata.{AOT, Export}
   alias Batata.Test.Subprocess
 
   @child_timeout 15_000
+
+  @tag :tmp_dir
+  test "shared-library export control hides internal AOT bridge symbols", %{tmp_dir: tmp_dir} do
+    internal_source = Path.join(tmp_dir, "internal.c")
+    entry_source = Path.join(tmp_dir, "entry.c")
+    object = Path.join(tmp_dir, "internal.o")
+    library = Path.join(tmp_dir, AOT.library_name("export_control"))
+
+    File.write!(
+      internal_source,
+      "#include <stdint.h>\nint64_t internal_seed(void) { return 42; }\n"
+    )
+
+    File.write!(entry_source, """
+    #include <stdint.h>
+    #if defined(_WIN32)
+    #define TEST_EXPORT __declspec(dllexport)
+    #else
+    #define TEST_EXPORT __attribute__((visibility("default")))
+    #endif
+    extern int64_t batata_internal_bridge(void);
+    TEST_EXPORT int64_t batata_public_entry(void) {
+      return batata_internal_bridge();
+    }
+    """)
+
+    {_, 0} =
+      System.cmd("zig", ["cc", "-c", internal_source, "-o", object], stderr_to_stdout: true)
+
+    AOT.link_shared_library!(
+      object,
+      library,
+      [%{arity: 0, internal_symbol: "internal_seed", symbol: "batata_internal_bridge"}],
+      extra_sources: [entry_source],
+      public_symbols: ["batata_public_entry"]
+    )
+
+    assert :ok =
+             Export.verify_exact_symbols!(library, [
+               %{"function" => "entry", "symbol" => "batata_public_entry"}
+             ])
+  end
 
   @tag :tmp_dir
   test "builds a static library and runs it from C", %{ctx: ctx, tmp_dir: tmp_dir} do

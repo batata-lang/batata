@@ -41,7 +41,7 @@ defmodule Batata.AOT do
     extra_sources = Keyword.get(opts, :extra_sources, [])
     compiler_args = Keyword.get(opts, :compiler_args, [])
     {export_args, export_control_path} = export_control(public_symbols, library_path)
-    File.write!(shim_path, export_shim(exports))
+    File.write!(shim_path, export_shim(exports, public_symbols))
 
     try do
       run_tool!(
@@ -71,9 +71,14 @@ defmodule Batata.AOT do
     end
   end
 
-  defp export_shim(exports) do
+  defp export_shim(exports, public_symbols) do
+    public_symbols = MapSet.new(public_symbols)
     declarations = Enum.map_join(exports, "\n", &export_declaration/1)
-    wrappers = Enum.map_join(exports, "\n\n", &export_wrapper/1)
+
+    wrappers =
+      Enum.map_join(exports, "\n\n", fn export ->
+        export_wrapper(export, MapSet.member?(public_symbols, export.symbol))
+      end)
 
     """
     #include <stdint.h>
@@ -94,9 +99,14 @@ defmodule Batata.AOT do
     "extern int64_t #{internal}(#{c_parameters(arity)});"
   end
 
-  defp export_wrapper(%{arity: arity, internal_symbol: internal, symbol: symbol}) do
+  defp export_wrapper(
+         %{arity: arity, internal_symbol: internal, symbol: symbol},
+         public?
+       ) do
+    visibility = if public?, do: "BATATA_EXPORT ", else: ""
+
     """
-    BATATA_EXPORT int64_t #{symbol}(#{c_parameters(arity)}) {
+    #{visibility}int64_t #{symbol}(#{c_parameters(arity)}) {
       return #{internal}(#{c_arguments(arity)});
     }
     """
