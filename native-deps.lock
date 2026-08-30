@@ -1,3 +1,3 @@
 BEAVER_GIT_URL=https://github.com/beaver-lodge/beaver.git
-BEAVER_GIT_REF=stack/148-kernel-control-flow-abi
-BEAVER_GIT_SHA=10a1ae46bb0865823c1359e133041103405ae501
+BEAVER_GIT_REF=stack/148-freeze-stage0
+BEAVER_GIT_SHA=94e4b8610d9b9c4f9146c4e820f25725b5d51e33

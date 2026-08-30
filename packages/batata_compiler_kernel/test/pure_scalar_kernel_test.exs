@@ -9,8 +9,9 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
   alias Beaver.MLIR.Conversion.Plan
 
-  @beaver_revision "10a1ae46bb0865823c1359e133041103405ae501"
-  @digest "sha256:" <> String.duplicate("a", 64)
+  @beaver_revision "94e4b8610d9b9c4f9146c4e820f25725b5d51e33"
+  @digest Beaver.MLIR.Dialect.Ex.schema_digest()
+  @stage0_digest Beaver.MLIR.Conversion.Ex.Stage0.identity_digest()
   @predicates ~w(eq ne slt sle sgt sge ult ule ugt uge)
   @scheduler_shapes [
     {"ex.self", [], "!ex.term"},
@@ -647,6 +648,18 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
     end
   end
 
+  @tag :tmp_dir
+  test "Batata compiler-kernel build rejects Stage 0 provenance drift", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    assert_raise ArgumentError, ~r/bootstrap provenance must match/, fn ->
+      Build.build!(tmp_dir, ctx, Keyword.put(build_options(), :bootstrap_provenance, "drift"))
+    end
+
+    refute File.exists?(Path.join(tmp_dir, "batata-ex-conversion.o"))
+  end
+
   defp native_plan(
          output,
          expected_target \\ target(),
@@ -1045,7 +1058,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
       dialect_schema_digest: @digest,
       runtime_abi_digest: Batata.TermRuntime.abi_digest(),
       target: target(),
-      bootstrap_provenance: "beaver-stage0:#{@beaver_revision}",
+      bootstrap_provenance: "beaver-stage0:#{@stage0_digest}",
       dependency_pins: %{
         "beaver" => @beaver_revision,
         "llvm" => MLIR.CompilationRuntime.llvm_revision()
