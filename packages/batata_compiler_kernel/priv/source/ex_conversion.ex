@@ -148,6 +148,14 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 138 -> 19
       kind == 139 -> 13
       kind == 140 -> 13
+      kind == 141 -> 10
+      kind == 142 -> 18
+      kind == 143 -> 16
+      kind == 144 -> 15
+      kind == 145 -> 17
+      kind == 146 -> 15
+      kind == 147 -> 16
+      kind == 148 -> 14
       true -> -1
     end
   end
@@ -716,6 +724,27 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 139 and index == 3 -> 0x77
       kind == 140 and index == 2 -> 0x73696172
       kind == 140 and index == 3 -> 0x65
+      kind == 141 and index == 0 -> 0x74697261
+      kind == 141 and index == 1 -> 0x68732E68
+      kind == 141 and index == 2 -> 0x696C
+      kind >= 142 and kind <= 148 and index == 0 -> 0x742E7865
+      kind >= 142 and kind <= 148 and index == 1 -> 0x2E6D7265
+      kind == 142 and index == 2 -> 0x695F7369
+      kind == 142 and index == 3 -> 0x6765746E
+      kind == 142 and index == 4 -> 0x7265
+      kind == 143 and index == 2 -> 0x665F7369
+      kind == 143 and index == 3 -> 0x74616F6C
+      kind == 144 and index == 2 -> 0x615F7369
+      kind == 144 and index == 3 -> 0x6D6F74
+      kind == 145 and index == 2 -> 0x625F7369
+      kind == 145 and index == 3 -> 0x72616E69
+      kind == 145 and index == 4 -> 0x79
+      kind == 146 and index == 2 -> 0x6C5F7369
+      kind == 146 and index == 3 -> 0x747369
+      kind == 147 and index == 2 -> 0x745F7369
+      kind == 147 and index == 3 -> 0x656C7075
+      kind == 148 and index == 2 -> 0x6D5F7369
+      kind == 148 and index == 3 -> 0x7061
       true -> -1
     end
   end
@@ -863,6 +892,7 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 138 -> 0
       kind == 139 -> 1
       kind == 140 -> 2
+      kind >= 142 and kind <= 148 -> 1
       true -> -1
     end
   end
@@ -872,6 +902,21 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 1 -> 8
       kind == 2 -> 2
       true -> -1
+    end
+  end
+
+  def term_type_accept(length, reversed_tail) do
+    tail5 = Bitwise.band(reversed_tail, 0xFFFFFFFFFF)
+    tail6 = Bitwise.band(reversed_tail, 0xFFFFFFFFFFFF)
+
+    cond do
+      length == 4 and reversed_tail == 0x7465726D -> 1
+      length == 5 and reversed_tail == 0x626F756E64 -> 1
+      length == 7 and reversed_tail == 0x756E626F756E64 -> 1
+      length >= 5 and tail5 == 0x2E7465726D -> 1
+      length >= 6 and tail6 == 0x2E626F756E64 -> 1
+      length >= 8 and reversed_tail == 0x2E756E626F756E64 -> 1
+      true -> 0
     end
   end
 end

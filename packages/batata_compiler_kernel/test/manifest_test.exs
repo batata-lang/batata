@@ -18,13 +18,14 @@ defmodule Batata.CompilerKernel.ManifestTest do
     assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
     roots = Enum.map(manifest.patterns, & &1["root"])
-    assert length(roots) == 140
+    assert length(roots) == 148
     assert roots == Enum.sort(roots)
 
     assert MapSet.subset?(
              MapSet.new(~w(
                  ex.add ex.binary ex.binary_part ex.call ex.cmp ex.div ex.func
-                 ex.if ex.lit ex.mul ex.rem ex.return ex.sub ex.term_eq
+                 ex.box ex.if ex.is_atom ex.is_binary ex.is_float ex.is_integer
+                 ex.is_list ex.is_map ex.is_tuple ex.lit ex.mul ex.rem ex.return ex.sub ex.term_eq
                  ex.to_word ex.unbox ex.yield
                )),
              MapSet.new(roots)
@@ -50,6 +51,7 @@ defmodule Batata.CompilerKernel.ManifestTest do
              "ir.region.v1",
              "ir.scalar.v1",
              "ir.symbol.v1",
+             "ir.type.v1",
              "pattern.register"
            ]
 

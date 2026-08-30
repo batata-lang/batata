@@ -21,6 +21,7 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.add
     ex.binary
     ex.binary_part
+    ex.box
     ex.call
     ex.cmp
     ex.div
@@ -30,6 +31,13 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.exported_length
     ex.func
     ex.if
+    ex.is_atom
+    ex.is_binary
+    ex.is_float
+    ex.is_integer
+    ex.is_list
+    ex.is_map
+    ex.is_tuple
     ex.lit
     ex.mul
     ex.process_table_reset
@@ -169,6 +177,7 @@ defmodule Batata.CompilerKernel.Manifest do
     "ir.region.v1",
     "ir.scalar.v1",
     "ir.symbol.v1",
+    "ir.type.v1",
     "pattern.register"
   ]
   @allowed_options [
