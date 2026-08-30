@@ -11,8 +11,8 @@ defmodule Batata.CompilerKernel.Build do
   alias Batata.{AOT, Export, Library, Memory}
   alias Batata.CompilerKernel
   alias Batata.CompilerKernel.Manifest
+  alias Batata.CompilerKernel.Provider
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
-  alias Beaver.MLIR.Conversion.Plan
 
   @semantic_exports [
     %{function: :pattern_accept, arity: 4, symbol: "batata_kernel_pattern_accept"},
@@ -79,7 +79,13 @@ defmodule Batata.CompilerKernel.Build do
       "source_kernel_identity" => source_identity
     }
 
-    do_build!(output_dir, ctx, opts, kernel_plan(manifest, library, opts), bootstrap)
+    do_build!(
+      output_dir,
+      ctx,
+      opts,
+      Provider.plan!(manifest, library, provider_options(opts)),
+      bootstrap
+    )
   end
 
   defp do_build!(output_dir, ctx, opts, conversion_plan, bootstrap) do
@@ -172,25 +178,13 @@ defmodule Batata.CompilerKernel.Build do
     ]
   end
 
-  defp kernel_plan(manifest, library, opts) do
-    Plan.new(mode: :full, folding_mode: :after_patterns, build_materializations: true)
-    |> Plan.add_legal_dialect("builtin")
-    |> Plan.add_legal_dialect("func")
-    |> Plan.add_legal_dialect("arith")
-    |> Plan.add_legal_dialect("cf")
-    |> Plan.add_legal_dialect("scf")
-    |> Plan.add_legal_dialect("llvm")
-    |> Plan.add_illegal_dialect("ex")
-    |> Plan.add_conversion_map(~w(!ex.term !ex.bound !ex.unbound), "i64")
-    |> Plan.add_external_pattern_population(manifest, library,
-      expected: [
-        beaver_revision: Keyword.fetch!(opts, :beaver_revision),
-        dialect_schema_digest: Keyword.fetch!(opts, :dialect_schema_digest),
-        runtime_abi_digest: Keyword.fetch!(opts, :runtime_abi_digest),
-        target: Keyword.fetch!(opts, :target),
-        capabilities: manifest.capabilities
-      ]
-    )
+  defp provider_options(opts) do
+    Keyword.take(opts, [
+      :beaver_revision,
+      :dialect_schema_digest,
+      :runtime_abi_digest,
+      :target
+    ])
   end
 
   defp write_bootstrap_receipt!(
