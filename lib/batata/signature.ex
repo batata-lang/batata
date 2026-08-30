@@ -53,6 +53,8 @@ defmodule Batata.Signature do
                             {Kernel, :length, 1},
                             {:erlang, :length, 1}
                           ])
+  @min_scalar_integer -9_223_372_036_854_775_808
+  @max_scalar_integer 9_223_372_036_854_775_807
 
   defguardp is_variable_ast(name, context) when is_atom(name) and is_atom(context)
 
@@ -196,12 +198,14 @@ defmodule Batata.Signature do
   end
 
   defp result_kind(integer, _proven, _no_return_functions, _scalar_variables)
-       when is_integer(integer),
-       do: :scalar
+       when is_integer(integer) do
+    if scalar_integer?(integer), do: :scalar, else: :term
+  end
 
   defp result_kind({:-, _, [integer]}, _proven, _no_return_functions, _scalar_variables)
-       when is_integer(integer),
-       do: :scalar
+       when is_integer(integer) do
+    if scalar_integer?(-integer), do: :scalar, else: :term
+  end
 
   defp result_kind({:__block__, _, expressions}, proven, no_return_functions, scalar_variables)
        when expressions != [],
@@ -852,10 +856,13 @@ defmodule Batata.Signature do
 
   defp term_case_clause?(_clause), do: false
 
-  defp term_case_pattern?(pattern),
-    do: not (is_integer(pattern) or plain_variable(pattern) != nil)
+  defp term_case_pattern?(pattern), do: not scalar_pattern?(pattern)
 
-  defp scalar_pattern?(pattern), do: is_integer(pattern) or plain_variable(pattern) != nil
+  defp scalar_pattern?(pattern) when is_integer(pattern), do: scalar_integer?(pattern)
+  defp scalar_pattern?(pattern), do: plain_variable(pattern) != nil
+
+  defp scalar_integer?(integer),
+    do: integer >= @min_scalar_integer and integer <= @max_scalar_integer
 
   defp merge_modes(left, right) do
     Enum.zip_with(left, right, fn

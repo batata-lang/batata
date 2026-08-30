@@ -249,8 +249,8 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.list_tail` | `(list: i64) -> i64` | tail; nil for empty/non-lists |
 | `ex.term.list_get` | `(list: i64, index: i64) -> i64` | element at index; nil for empty/non-lists or out of range |
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
-| `ex.term.eq` | `(left: i64, right: i64) -> i64` | deep equality: exact for immediates, structural for containers |
-| `ex.term.eq_loose` | `(left: i64, right: i64) -> i64` | BEAM-style loose equality: numeric int/float coercion, recursively structural for containers |
+| `ex.term.eq` | `(left: i64, right: i64) -> i64` | deep equality: exact for immediate and boxed integers, structural for containers |
+| `ex.term.eq_loose` | `(left: i64, right: i64) -> i64` | BEAM-style loose equality: numeric immediate-int/float coercion plus boxed-integer equality, recursively structural for containers |
 | `ex.term.binary_length` | `(binary: i64) -> i64` | byte length; 0 for non-binaries |
 | `ex.term.binary_from_bytes` | `(bytes: ptr, length: i64) -> i64` | copies host bytes into a runtime-owned binary; nil on failure |
 | `ex.term.binary_copy` | `(binary: i64, destination: ptr, capacity: i64) -> i64` | copies a binary into host storage; byte length or -1 on failure |
@@ -267,6 +267,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.int_to_string_base` | `(word: i64, base: i64) -> i64` | base 2..36 uppercase binary of a tagged integer term; nil for non-integers / invalid base |
 | `ex.term.int_to_hex` | `(word: i64) -> i64` | uppercase hexadecimal binary with `0x` prefix; nil for non-integers |
 | `ex.term.string_to_int` | `(binary: i64) -> i64` | scalar i64 parsed from a decimal binary (optionally signed); 0 for invalid input or overflow |
+| `ex.term.bigint_lit` | `(binary: i64) -> i64` | canonical decimal binary to an immediate signed-61 integer or arena-owned boxed integer; nil for invalid input |
 | `ex.term.string_to_atom` | `(binary: i64) -> i64` | bounded runtime-local UTF-8 atom intern; integer-zero for invalid input, tagged integer one for limits |
 | `ex.term.string_to_existing_atom` | `(binary: i64) -> i64` | lookup in the bounded runtime-local atom table; integer-zero for invalid input, overlong names, or misses |
 | `ex.term.float_to_binary_short` | `(float: i64) -> i64` | BEAM-compatible shortest round-trip binary for a finite boxed float; nil for invalid terms |
@@ -280,7 +281,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.binary_from_list` | `(list: i64) -> i64` | integer byte list -> binary |
 | `ex.term.iodata_to_binary` | `(iodata: i64) -> i64` | recursively flatten nested byte lists and binaries; nil for invalid iodata |
 | `ex.term.list_flatten` | `(list: i64) -> i64` | recursively flatten proper nested lists while preserving non-list leaves; integer-zero sentinel for invalid lists |
-| `ex.term.is_integer` | `(word: i64) -> i64` | 1 if int |
+| `ex.term.is_integer` | `(word: i64) -> i64` | 1 if immediate or boxed integer |
 | `ex.term.is_atom` | `(word: i64) -> i64` | 1 if atom (incl. nil) |
 | `ex.term.is_binary` | `(word: i64) -> i64` | 1 if binary |
 | `ex.term.is_list` | `(word: i64) -> i64` | 1 if list (incl. `[]`) |
