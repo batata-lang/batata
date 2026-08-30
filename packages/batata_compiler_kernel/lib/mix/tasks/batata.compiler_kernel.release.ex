@@ -25,7 +25,8 @@ defmodule Mix.Tasks.Batata.CompilerKernel.Release do
     beaver_revision: :string,
     target_triple: :string,
     target_cpu: :string,
-    target_features: :string
+    target_features: :string,
+    profile_sizes: :string
   ]
 
   @impl Mix.Task
@@ -45,7 +46,8 @@ defmodule Mix.Tasks.Batata.CompilerKernel.Release do
         Release.build!(Keyword.get(opts, :output, "_build/compiler-kernel-release"), ctx,
           compiler_revision: required!(opts, :compiler_revision),
           beaver_revision: required!(opts, :beaver_revision),
-          target: target(opts)
+          target: target(opts),
+          profile_sizes: profile_sizes(opts)
         )
 
       Mix.shell().info("compiler-kernel release: #{output.index_path}")
@@ -73,6 +75,20 @@ defmodule Mix.Tasks.Batata.CompilerKernel.Release do
       "cpu" => Keyword.get(opts, :target_cpu, "generic"),
       "features" => features
     }
+  end
+
+  defp profile_sizes(opts) do
+    opts
+    |> Keyword.get(:profile_sizes, "32,256,2048")
+    |> String.split(",", trim: true)
+    |> Enum.map(fn value ->
+      case Integer.parse(String.trim(value)) do
+        {size, ""} when size > 0 -> size
+        _ -> Mix.raise("--profile-sizes must contain positive integers")
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.sort()
   end
 
   defp required!(opts, key), do: Keyword.get(opts, key) || Mix.raise("--#{key} is required")

@@ -65,3 +65,10 @@ compiler revision, Beaver/LLVM revisions, Ex schema digest, term-runtime ABI,
 target, and frozen Stage 0 identity. Its paths are relative and can be uploaded
 without embedding the runner workspace. GitHub Actions builds this layout on
 Linux x86-64, macOS arm64, and Windows x86-64.
+
+Each release also contains `performance-receipt.json`, a fixed scaling curve
+over the frozen scalar seed. It records wall time, process CPU, peak RSS,
+native wait, callback aggregates, and IR inventories for C++ Stage 0 and native
+Stage 2. The build fails if either path crosses the BEAM callback boundary or
+if their canonical IR differs. Timing values remain observational so scheduler
+noise does not become a flaky percentage gate.
