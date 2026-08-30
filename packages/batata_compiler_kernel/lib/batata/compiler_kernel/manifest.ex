@@ -69,6 +69,7 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.process_exit_reason
     ex.process_trap_exit
     ex.link
+    ex.list
     ex.unlink
     ex.exit
     ex.monitor
@@ -89,6 +90,7 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.mailbox_len
     ex.mailbox_peek
     ex.mailbox_remove
+    ex.map
     ex.nil_word
     ex.monotonic_time
     ex.receive_start
@@ -164,6 +166,7 @@ defmodule Batata.CompilerKernel.Manifest do
     ex.term_handle_export
     ex.term_import
     ex.to_word
+    ex.tuple
     ex.unbox
     ex.yield
   )
