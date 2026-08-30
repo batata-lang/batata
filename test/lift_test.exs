@@ -687,6 +687,21 @@ defmodule Batata.LiftTest do
     refute "ex.unbound" in names
   end
 
+  test "normalizes qualified Kernel.rem/2 to the scalar remainder path", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main(), do: Kernel.rem(17, 5)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.rem" in names
+  end
+
   test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
     codepoint = Macro.var(:codepoint, nil)
 
