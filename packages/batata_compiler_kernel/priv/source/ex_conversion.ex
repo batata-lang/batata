@@ -172,6 +172,8 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 163 -> 16
       kind == 164 -> 19
       kind == 165 -> 15
+      kind == 201 -> 5
+      kind == 202 -> 9
       true -> -1
     end
   end
@@ -814,6 +816,11 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 164 and index == 4 -> 0x726464
       kind == 165 and index == 2 -> 0x5F797274
       kind == 165 and index == 3 -> 0x706F70
+      kind == 201 and index == 0 -> 0x756C6176
+      kind == 201 and index == 1 -> 0x65
+      kind == 202 and index == 0 -> 0x64657270
+      kind == 202 and index == 1 -> 0x74616369
+      kind == 202 and index == 2 -> 0x65
       true -> -1
     end
   end
@@ -1002,6 +1009,359 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 151 and arity >= 0 and Bitwise.band(arity, 1) == 0 -> 1
       true -> 0
     end
+  end
+
+  # Rewrite orchestration runs in Batata-compiled code. CompilerABI.Host is an
+  # explicit allowlisted scalar ABI whose values are borrowed opaque handles.
+  def rewrite(pattern) do
+    action = pattern_action(pattern)
+    target = pattern_target(pattern)
+
+    cond do
+      action == 1 -> rewrite_aggregate(target)
+      action == 3 -> rewrite_binary(target)
+      action == 4 -> rewrite_binary_term()
+      action == 5 -> rewrite_box()
+      action == 7 -> rewrite_cmp()
+      action == 11 -> rewrite_identity()
+      action == 13 -> rewrite_literal(target)
+      action == 14 -> rewrite_predicate(target)
+      action == 16 -> rewrite_runtime_call(target)
+      action == 19 -> rewrite_yield(target)
+      true -> 0
+    end
+  end
+
+  defp rewrite_binary(target) do
+    if valid_shape(2, 1) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+
+      if CompilerABI.Host.builder_reset(target, location) == 1 and
+           stage_converted_operands(0, 2) == 1 and
+           CompilerABI.Host.builder_add_result_type(result_type) == 1 do
+        replace_created_result(CompilerABI.Host.builder_create())
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_identity() do
+    if valid_shape(1, 1) == 1 do
+      CompilerABI.Host.replace_one(CompilerABI.Host.converted_operand(0))
+    else
+      0
+    end
+  end
+
+  defp rewrite_literal(target) do
+    if valid_shape(0, 1) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      value = CompilerABI.Host.operation_attribute(201)
+
+      if CompilerABI.Host.builder_reset(target, location) == 1 and
+           CompilerABI.Host.builder_add_result_type(result_type) == 1 and
+           CompilerABI.Host.builder_add_attribute(201, value) == 1 do
+        replace_created_result(CompilerABI.Host.builder_create())
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_runtime_call(target) do
+    arity = runtime_arity(target)
+
+    if arity >= 0 and valid_shape(arity, 1) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+
+      if CompilerABI.Host.builder_reset(10, location) == 1 and
+           stage_converted_operands(0, arity) == 1 do
+        target
+        |> CompilerABI.Host.builder_create_call(result_type)
+        |> replace_created_result()
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_yield(target) do
+    count = CompilerABI.Host.converted_operand_count()
+
+    if valid_shape(count, 0) == 1 do
+      location = CompilerABI.Host.operation_location()
+
+      if CompilerABI.Host.builder_reset(target, location) == 1 and
+           stage_converted_operands(0, count) == 1 and
+           CompilerABI.Host.builder_create() != 0 do
+        CompilerABI.Host.replace_none()
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_box() do
+    if valid_shape(1, 1) == 1 do
+      source_word(CompilerABI.Host.converted_operand(0))
+      |> CompilerABI.Host.replace_one()
+    else
+      0
+    end
+  end
+
+  defp rewrite_predicate(target) do
+    if valid_shape(1, 1) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      word = source_word(CompilerABI.Host.converted_operand(0))
+
+      call_one(target, word, result_type, location)
+      |> replace_created_result()
+    else
+      0
+    end
+  end
+
+  defp rewrite_cmp() do
+    if valid_shape(2, 1) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      predicate = CompilerABI.Host.operation_attribute(202)
+      length = CompilerABI.Host.attribute_string_length(predicate)
+      word = CompilerABI.Host.attribute_string_word(predicate, 0)
+      code = cmp_predicate(length, word)
+
+      if length > 0 and length <= 4 and code >= 0 do
+        i1 = CompilerABI.Host.integer_type(1)
+        code_attribute = CompilerABI.Host.integer_attribute(result_type, code)
+
+        if CompilerABI.Host.builder_reset(7, location) == 1 and
+             stage_converted_operands(0, 2) == 1 and
+             CompilerABI.Host.builder_add_result_type(i1) == 1 and
+             CompilerABI.Host.builder_add_attribute(202, code_attribute) == 1 do
+          cmp_result =
+            CompilerABI.Host.builder_create()
+            |> CompilerABI.Host.operation_result(0)
+
+          if CompilerABI.Host.builder_reset(8, location) == 1 and
+               CompilerABI.Host.builder_add_operand(cmp_result) == 1 and
+               CompilerABI.Host.builder_add_result_type(result_type) == 1 do
+            replace_created_result(CompilerABI.Host.builder_create())
+          else
+            0
+          end
+        else
+          0
+        end
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_binary_term() do
+    count = CompilerABI.Host.converted_operand_count()
+
+    if valid_shape(count, 1) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      word_type = CompilerABI.Host.integer_type(64)
+      tail = integer_constant(word_type, 1, location)
+      list = build_term_list(count, tail, word_type, location)
+
+      call_one(14, list, result_type, location)
+      |> replace_created_result()
+    else
+      0
+    end
+  end
+
+  defp rewrite_aggregate(target) do
+    count = CompilerABI.Host.converted_operand_count()
+
+    if aggregate_accept(target, count) == 1 and valid_shape(count, 1) == 1 and
+         converted_operands_are_i64(0, count) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      tail = integer_constant(result_type, 1, location)
+      list = build_term_list(count, tail, result_type, location)
+
+      result =
+        if target == 149 do
+          list
+        else
+          target
+          |> call_one(list, result_type, location)
+          |> CompilerABI.Host.operation_result(0)
+        end
+
+      CompilerABI.Host.replace_one(result)
+    else
+      0
+    end
+  end
+
+  defp valid_shape(expected_operands, expected_results) do
+    source_operands = CompilerABI.Host.source_operand_count()
+    source_results = CompilerABI.Host.source_result_count()
+    converted_operands = CompilerABI.Host.converted_operand_count()
+
+    Bitwise.band(
+      CompilerABI.Host.healthy(),
+      Bitwise.band(
+        source_operands == converted_operands,
+        pattern_accept(
+          source_operands,
+          source_results,
+          expected_operands,
+          expected_results
+        )
+      )
+    )
+  end
+
+  defp converted_result_type(index) do
+    index
+    |> CompilerABI.Host.source_result()
+    |> CompilerABI.Host.value_type()
+    |> CompilerABI.Host.convert_type()
+  end
+
+  defp stage_converted_operands(index, count) do
+    if index == count do
+      1
+    else
+      if index < count and
+           index
+           |> CompilerABI.Host.converted_operand()
+           |> CompilerABI.Host.builder_add_operand() == 1 do
+        stage_converted_operands(index + 1, count)
+      else
+        0
+      end
+    end
+  end
+
+  defp converted_operands_are_i64(index, count) do
+    if index == count do
+      1
+    else
+      is_i64 =
+        index
+        |> CompilerABI.Host.converted_operand()
+        |> CompilerABI.Host.value_type()
+        |> CompilerABI.Host.type_is_i64()
+
+      if index < count and is_i64 == 1 do
+        converted_operands_are_i64(index + 1, count)
+      else
+        0
+      end
+    end
+  end
+
+  defp source_word(converted) do
+    original_type =
+      0
+      |> CompilerABI.Host.source_operand()
+      |> CompilerABI.Host.value_type()
+
+    converted_type = CompilerABI.Host.value_type(converted)
+
+    if CompilerABI.Host.type_is_i64(converted_type) == 1 do
+      if CompilerABI.Host.type_is_i64(original_type) == 1 do
+        location = CompilerABI.Host.operation_location()
+        shift = integer_constant(converted_type, 3, location)
+        create_binary(141, converted, shift, converted_type, location)
+      else
+        length = CompilerABI.Host.dynamic_type_length(original_type)
+        tail = CompilerABI.Host.dynamic_type_tail(original_type)
+
+        if term_type_accept(length, tail) == 1, do: converted, else: 0
+      end
+    else
+      0
+    end
+  end
+
+  defp integer_constant(type, value, location) do
+    attribute = CompilerABI.Host.integer_attribute(type, value)
+
+    if CompilerABI.Host.builder_reset(1, location) == 1 and
+         CompilerABI.Host.builder_add_result_type(type) == 1 and
+         CompilerABI.Host.builder_add_attribute(201, attribute) == 1 do
+      CompilerABI.Host.builder_create()
+      |> CompilerABI.Host.operation_result(0)
+    else
+      0
+    end
+  end
+
+  defp create_binary(target, left, right, result_type, location) do
+    if CompilerABI.Host.builder_reset(target, location) == 1 and
+         CompilerABI.Host.builder_add_operand(left) == 1 and
+         CompilerABI.Host.builder_add_operand(right) == 1 and
+         CompilerABI.Host.builder_add_result_type(result_type) == 1 do
+      CompilerABI.Host.builder_create()
+      |> CompilerABI.Host.operation_result(0)
+    else
+      0
+    end
+  end
+
+  defp call_one(target, operand, result_type, location) do
+    if CompilerABI.Host.builder_reset(10, location) == 1 and
+         CompilerABI.Host.builder_add_operand(operand) == 1 do
+      CompilerABI.Host.builder_create_call(target, result_type)
+    else
+      0
+    end
+  end
+
+  defp call_two(target, first, second, result_type, location) do
+    if CompilerABI.Host.builder_reset(10, location) == 1 and
+         CompilerABI.Host.builder_add_operand(first) == 1 and
+         CompilerABI.Host.builder_add_operand(second) == 1 do
+      CompilerABI.Host.builder_create_call(target, result_type)
+    else
+      0
+    end
+  end
+
+  defp build_term_list(index, tail, word_type, location) do
+    if index == 0 do
+      tail
+    else
+      head = CompilerABI.Host.converted_operand(index - 1)
+
+      next =
+        13
+        |> call_two(head, tail, word_type, location)
+        |> CompilerABI.Host.operation_result(0)
+
+      build_term_list(index - 1, next, word_type, location)
+    end
+  end
+
+  defp replace_created_result(operation) do
+    operation
+    |> CompilerABI.Host.operation_result(0)
+    |> CompilerABI.Host.replace_one()
   end
 
   def function_value_accept(kind, operands, arity, result_mode, env_len) do

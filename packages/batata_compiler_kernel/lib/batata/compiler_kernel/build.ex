@@ -48,8 +48,46 @@ defmodule Batata.CompilerKernel.Build do
     },
     %{function: :pattern_root_word, arity: 2, symbol: "batata_kernel_pattern_root_word"},
     %{function: :pattern_target, arity: 1, symbol: "batata_kernel_pattern_target"},
-    %{function: :pattern_action, arity: 1, symbol: "batata_kernel_pattern_action"}
+    %{function: :pattern_action, arity: 1, symbol: "batata_kernel_pattern_action"},
+    %{function: :rewrite, arity: 1, symbol: "batata_kernel_rewrite"}
   ]
+  @compiler_abi_calls [
+                        {:healthy, [], :flag},
+                        {:converted_operand_count, [], :count},
+                        {:source_operand_count, [], :count},
+                        {:source_result_count, [], :count},
+                        {:converted_operand, [:index], :value},
+                        {:source_operand, [:index], :value},
+                        {:source_result, [:index], :value},
+                        {:operation_location, [], :location},
+                        {:value_type, [:value], :type},
+                        {:convert_type, [:type], :type},
+                        {:type_is_i64, [:type], :flag},
+                        {:dynamic_type_length, [:type], :count},
+                        {:dynamic_type_tail, [:type], :word},
+                        {:operation_attribute, [:index], :attribute},
+                        {:attribute_string_length, [:attribute], :count},
+                        {:attribute_string_word, [:attribute, :index], :word},
+                        {:integer_type, [:count], :type},
+                        {:integer_attribute, [:type, :word], :attribute},
+                        {:builder_reset, [:index, :location], :status},
+                        {:builder_add_operand, [:value], :status},
+                        {:builder_add_result_type, [:type], :status},
+                        {:builder_add_attribute, [:index, :attribute], :status},
+                        {:builder_create, [], :operation},
+                        {:builder_create_call, [:index, :type], :operation},
+                        {:operation_result, [:operation, :index], :value},
+                        {:replace_one, [:value], :status},
+                        {:replace_none, [], :status}
+                      ]
+                      |> Map.new(fn {function, arguments, result} ->
+                        {{CompilerABI.Host, function, length(arguments)},
+                         %{
+                           symbol: "batata_compiler_abi_#{function}",
+                           arguments: arguments,
+                           result: result
+                         }}
+                      end)
   @allowed_options [
     :beaver_path,
     :beaver_revision,
@@ -123,7 +161,11 @@ defmodule Batata.CompilerKernel.Build do
     object_path = Path.join(output_dir, "batata-ex-conversion.o")
     library_path = Path.join(output_dir, AOT.library_name("batata_ex_conversion"))
 
-    compile_options = [conversion_plan: conversion_plan || ExConversion.plan()]
+    compile_options = [
+      compiler_abi_calls: @compiler_abi_calls,
+      conversion_plan: conversion_plan || ExConversion.plan(),
+      scalar_module: true
+    ]
 
     %{
       exports: semantic_exports,
