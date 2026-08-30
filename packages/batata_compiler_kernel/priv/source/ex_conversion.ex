@@ -174,6 +174,13 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 165 -> 15
       kind == 201 -> 5
       kind == 202 -> 9
+      kind == 203 -> 6
+      kind == 204 -> 5
+      kind == 205 -> 8
+      kind == 206 -> 6
+      kind == 207 -> 7
+      kind == 208 -> 11
+      kind == 209 -> 9
       true -> -1
     end
   end
@@ -821,6 +828,22 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       kind == 202 and index == 0 -> 0x64657270
       kind == 202 and index == 1 -> 0x74616369
       kind == 202 and index == 2 -> 0x65
+      kind == 203 and index == 0 -> 0x6C6C6163
+      kind == 203 and index == 1 -> 0x6565
+      kind == 204 and index == 0 -> 0x74697261
+      kind == 204 and index == 1 -> 0x79
+      kind == 205 and index == 0 -> 0x5F6D7973
+      kind == 205 and index == 1 -> 0x656D616E
+      kind == 206 and index == 0 -> 0x695F6E66
+      kind == 206 and index == 1 -> 0x7864
+      kind == 207 and index == 0 -> 0x5F766E65
+      kind == 207 and index == 1 -> 0x6E656C
+      kind == 208 and index == 0 -> 0x75736572
+      kind == 208 and index == 1 -> 0x6D5F746C
+      kind == 208 and index == 2 -> 0x65646F
+      kind == 209 and index == 0 -> 0x5F677261
+      kind == 209 and index == 1 -> 0x6E756F63
+      kind == 209 and index == 2 -> 0x74
       true -> -1
     end
   end
@@ -1019,13 +1042,18 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
 
     cond do
       action == 1 -> rewrite_aggregate(target)
+      action == 2 -> rewrite_apply()
       action == 3 -> rewrite_binary(target)
       action == 4 -> rewrite_binary_term()
       action == 5 -> rewrite_box()
+      action == 6 -> rewrite_call(target)
       action == 7 -> rewrite_cmp()
+      action == 8 -> rewrite_func_addr(target)
+      action == 10 -> rewrite_function_value(target)
       action == 11 -> rewrite_identity()
       action == 13 -> rewrite_literal(target)
       action == 14 -> rewrite_predicate(target)
+      action == 15 -> rewrite_return(target)
       action == 16 -> rewrite_runtime_call(target)
       action == 19 -> rewrite_yield(target)
       true -> 0
@@ -1215,6 +1243,211 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
       0
     end
   end
+
+  defp rewrite_function_value(target) do
+    count = CompilerABI.Host.converted_operand_count()
+    fn_idx = integer_operation_attribute(206)
+    env_len = integer_operation_attribute(207)
+    arity = if target >= 153, do: integer_operation_attribute(204), else: -1
+    result_mode = if target == 154, do: integer_operation_attribute(208), else: -1
+
+    if function_value_accept(target, count, arity, result_mode, env_len) == 1 and
+         valid_shape(env_len, 1) == 1 and converted_operands_are_i64(0, count) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      fn_idx_value = integer_constant(result_type, fn_idx, location)
+
+      arity_value =
+        if target >= 153, do: integer_constant(result_type, arity, location), else: 0
+
+      result_mode_value =
+        if target == 154, do: integer_constant(result_type, result_mode, location), else: 0
+
+      env_len_value = integer_constant(result_type, env_len, location)
+      zero = integer_constant(result_type, 0, location)
+
+      if CompilerABI.Host.type_is_i64(result_type) == 1 and
+           CompilerABI.Host.builder_reset(10, location) == 1 and
+           stage_function_metadata(
+             target,
+             fn_idx_value,
+             arity_value,
+             result_mode_value,
+             env_len_value
+           ) ==
+             1 and
+           stage_converted_operands(0, count) == 1 and
+           stage_zero_padding(env_len, zero) == 1 do
+        target
+        |> CompilerABI.Host.builder_create_call(result_type)
+        |> replace_created_result()
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_apply() do
+    count = CompilerABI.Host.converted_operand_count()
+    arg_count = integer_operation_attribute(209)
+
+    if function_value_accept(157, count, arg_count, -1, -1) == 1 and
+         valid_shape(arg_count + 1, 1) == 1 and converted_operands_are_i64(0, count) == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+      closure = CompilerABI.Host.converted_operand(0)
+      fn_idx = call_result(call_one(155, closure, result_type, location))
+      env0 = closure_env(closure, 0, result_type, location)
+      env1 = closure_env(closure, 1, result_type, location)
+      env2 = closure_env(closure, 2, result_type, location)
+      env3 = closure_env(closure, 3, result_type, location)
+      zero = integer_constant(result_type, 0, location)
+
+      if CompilerABI.Host.type_is_i64(result_type) == 1 and
+           CompilerABI.Host.builder_reset(10, location) == 1 and
+           CompilerABI.Host.builder_add_operand(fn_idx) == 1 and
+           CompilerABI.Host.builder_add_operand(env0) == 1 and
+           CompilerABI.Host.builder_add_operand(env1) == 1 and
+           CompilerABI.Host.builder_add_operand(env2) == 1 and
+           CompilerABI.Host.builder_add_operand(env3) == 1 and
+           stage_converted_operands(1, count) == 1 and
+           stage_zero_padding(arg_count, zero) == 1 and
+           CompilerABI.Host.builder_add_result_type(result_type) == 1 and
+           CompilerABI.Host.builder_add_flat_symbol(203, 157) == 1 do
+        replace_created_result(CompilerABI.Host.builder_create())
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_func_addr(target) do
+    if valid_shape(0, 1) == 1 do
+      symbol = CompilerABI.Host.operation_attribute(205)
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+
+      if CompilerABI.Host.builder_reset(target, location) == 1 and
+           CompilerABI.Host.builder_add_result_type(result_type) == 1 and
+           CompilerABI.Host.builder_add_flat_symbol_from_attribute(201, symbol) == 1 do
+        replace_created_result(CompilerABI.Host.builder_create())
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_call(target) do
+    count = CompilerABI.Host.converted_operand_count()
+    arity = integer_operation_attribute(204)
+    callee = CompilerABI.Host.operation_attribute(203)
+
+    shape_accepted =
+      Bitwise.band(
+        Bitwise.band(count >= 0, count <= structural_limit(1)),
+        Bitwise.band(arity == count, valid_shape(count, 1) == 1)
+      )
+
+    if shape_accepted == 1 do
+      result_type = converted_result_type(0)
+      location = CompilerABI.Host.operation_location()
+
+      if CompilerABI.Host.builder_reset(target, location) == 1 and
+           stage_converted_operands(0, count) == 1 and
+           CompilerABI.Host.builder_add_result_type(result_type) == 1 and
+           CompilerABI.Host.builder_add_flat_symbol_from_attribute(203, callee) == 1 do
+        replace_created_result(CompilerABI.Host.builder_create())
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp rewrite_return(target) do
+    count = CompilerABI.Host.converted_operand_count()
+
+    if count >= 0 and count <= 1 and valid_shape(count, 0) == 1 do
+      location = CompilerABI.Host.operation_location()
+
+      if CompilerABI.Host.builder_reset(target, location) == 1 and
+           stage_converted_operands(0, count) == 1 and
+           CompilerABI.Host.builder_create() != 0 do
+        CompilerABI.Host.replace_none()
+      else
+        0
+      end
+    else
+      0
+    end
+  end
+
+  defp integer_operation_attribute(name_id) do
+    name_id
+    |> CompilerABI.Host.operation_attribute()
+    |> CompilerABI.Host.attribute_integer_value()
+  end
+
+  defp stage_function_metadata(
+         target,
+         fn_idx_value,
+         arity_value,
+         result_mode_value,
+         env_len_value
+       ) do
+    if CompilerABI.Host.builder_add_operand(fn_idx_value) == 1 do
+      cond do
+        target == 152 ->
+          CompilerABI.Host.builder_add_operand(env_len_value)
+
+        target == 153 ->
+          Bitwise.band(
+            CompilerABI.Host.builder_add_operand(arity_value),
+            CompilerABI.Host.builder_add_operand(env_len_value)
+          )
+
+        target == 154 ->
+          Bitwise.band(
+            CompilerABI.Host.builder_add_operand(arity_value),
+            Bitwise.band(
+              CompilerABI.Host.builder_add_operand(result_mode_value),
+              CompilerABI.Host.builder_add_operand(env_len_value)
+            )
+          )
+
+        true ->
+          0
+      end
+    else
+      0
+    end
+  end
+
+  defp stage_zero_padding(index, zero) do
+    if index == 4 do
+      1
+    else
+      if index >= 0 and index < 4 and CompilerABI.Host.builder_add_operand(zero) == 1 do
+        stage_zero_padding(index + 1, zero)
+      else
+        0
+      end
+    end
+  end
+
+  defp closure_env(closure, index, result_type, location) do
+    index_value = integer_constant(result_type, index, location)
+    call_two(156, closure, index_value, result_type, location) |> call_result()
+  end
+
+  defp call_result(operation), do: CompilerABI.Host.operation_result(operation, 0)
 
   defp valid_shape(expected_operands, expected_results) do
     source_operands = CompilerABI.Host.source_operand_count()
