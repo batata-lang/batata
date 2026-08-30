@@ -494,6 +494,15 @@ defmodule Batata do
     value
   end
 
+  defp materialize_word(jit, handle, word, 8, _atoms) do
+    length = result_length(jit, handle, word)
+
+    0..(length - 1)//1
+    |> Enum.map(&invoke_i64(jit, "__batata_result_term_get", [handle, word, &1]))
+    |> :erlang.list_to_binary()
+    |> String.to_integer()
+  end
+
   defp materialize_word(_jit, _handle, _word, kind, _atoms) do
     raise ResultError, "invalid native term kind #{kind}"
   end
@@ -805,6 +814,12 @@ defmodule Batata do
       if (kind == 6) return -1;
       length = __batata_result_term_length(handle, word);
       if (length < 0) return -1;
+      if (kind == 8) {
+        for (int64_t i = 0; i < length; i++) {
+          if (putchar((int)__batata_result_term_get(handle, word, i)) == EOF) return -1;
+        }
+        return 0;
+      }
       if (kind == 5) {
         if (putchar('"') == EOF) return -1;
         for (int64_t i = 0; i < length; i++) {

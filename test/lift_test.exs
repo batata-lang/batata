@@ -176,25 +176,39 @@ defmodule Batata.LiftTest do
     assert Batata.execute(integer_source("[0 - 1_152_921_504_606_846_976]"), ctx) == [min]
   end
 
-  test "rejects integer literals outside the signed 61-bit term domain", %{ctx: ctx} do
-    for literal <- [
-          "1_152_921_504_606_846_976",
-          "-1_152_921_504_606_846_977",
-          "10_000_000_000_000_000_000",
-          "-9_223_372_036_854_775_808"
-        ] do
-      error =
-        assert_raise Batata.Lift.Error, fn ->
-          Batata.compile(integer_source("[#{literal}]"), ctx)
-        end
+  test "materializes boxed integer literals outside the signed 61-bit domain", %{ctx: ctx} do
+    max = 1_152_921_504_606_846_976
+    min = -1_152_921_504_606_846_977
+    huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
 
-      assert error.message =~ ~r/outside the signed (61-bit term|64-bit scalar) domain/
-    end
+    assert Batata.execute(integer_source("#{max}"), ctx) == max
+    assert Batata.execute(integer_source("[#{min}, #{huge}]"), ctx) == [min, huge]
+    assert Batata.execute(integer_source("#{huge} === #{huge}"), ctx) == 1
+    assert Batata.execute(integer_source("#{huge} !== #{huge + 1}"), ctx) == 1
   end
 
-  test "keeps the full i64 scalar path for packed runtime representations", %{ctx: ctx} do
+  test "materializes integers from the former full-i64 scalar range", %{ctx: ctx} do
     packed = 6_311_074_175_999_999_996
     assert Batata.execute(integer_source("#{packed}"), ctx) == packed
+  end
+
+  test "reports boxed integer guard ordering before constructing invalid MLIR", %{ctx: ctx} do
+    huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
+
+    assert_raise Batata.Lift.Error,
+                 ~r/integer guard comparisons with boxed arbitrary-precision literals are unsupported/,
+                 fn ->
+                   lift!(
+                     """
+                     defmodule BoxedIntegerGuard do
+                       def classify(value) when value >= #{huge}, do: :large
+                       def classify(_value), do: :small
+                       def main(), do: classify(#{huge})
+                     end
+                     """,
+                     ctx
+                   )
+                 end
   end
 
   test "lifts tuple and list literals plus predicates into ex IR", %{ctx: ctx} do

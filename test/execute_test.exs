@@ -1940,6 +1940,24 @@ defmodule Batata.ExecuteTest do
     assert {{1, 1, 0, 0}, {0, 0, 1, 1}} == Batata.execute(source, ctx)
   end
 
+  test "matches boxed integer literal clauses with fallthrough", %{ctx: ctx} do
+    source = """
+    defmodule BigIntegerPattern do
+      def classify(10_000_000_000_000_000_000_000_000_000_000_000_000), do: :positive
+      def classify(-10_000_000_000_000_000_000_000_000_000_000_000_001), do: :negative
+      def classify(_value), do: :other
+
+      def main() do
+        {classify(10_000_000_000_000_000_000_000_000_000_000_000_000),
+         classify(-10_000_000_000_000_000_000_000_000_000_000_000_001),
+         classify(10_000_000_000_000_000_000_000_000_000_000_000_002)}
+      end
+    end
+    """
+
+    assert {:positive, :negative, :other} == Batata.execute(source, ctx)
+  end
+
   test "rejects non-integer ordering from term patterns at runtime", %{ctx: ctx} do
     source = """
     defmodule InvalidPatternIntegerOrdering do

@@ -3705,18 +3705,20 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr(integer, ctx, block, env) when is_integer(integer) do
-    validate_scalar_integer_literal!(integer)
-
-    {
-      create_op(
-        "ex.lit",
-        [value: MLIR.Attribute.integer(MLIR.Type.i64(), integer)],
-        [MLIR.Type.i64()],
-        ctx,
-        block
-      ),
-      env
-    }
+    if scalar_integer_literal?(integer) do
+      {
+        create_op(
+          "ex.lit",
+          [value: MLIR.Attribute.integer(MLIR.Type.i64(), integer)],
+          [MLIR.Type.i64()],
+          ctx,
+          block
+        ),
+        env
+      }
+    else
+      lift_bigint_literal(integer, ctx, block, env)
+    end
   end
 
   defp lift_expr(float, ctx, block, env) when is_float(float) do
@@ -3744,10 +3746,10 @@ defmodule Batata.Lift do
   # before generic call lifting so the minimum tagged integer remains
   # representable while values outside the term domain fail deterministically.
   defp lift_expr({:-, _, [integer]}, ctx, block, env) when is_integer(integer),
-    do: lift_expr(validate_scalar_integer_literal!(-integer), ctx, block, env)
+    do: lift_expr(-integer, ctx, block, env)
 
   defp lift_expr({:+, _, [integer]}, ctx, block, env) when is_integer(integer),
-    do: lift_expr(validate_scalar_integer_literal!(integer), ctx, block, env)
+    do: lift_expr(integer, ctx, block, env)
 
   defp lift_expr({:sigil_c, _, [{:<<>>, _, [contents]}, []]} = ast, ctx, block, env)
        when is_binary(contents) do
@@ -4998,14 +5000,14 @@ defmodule Batata.Lift do
     {value, env}
   end
 
-  defp validate_term_integer_literal!(integer)
-       when integer >= @min_term_integer and integer <= @max_term_integer,
-       do: integer
+  defp term_integer_literal?(integer),
+    do: integer >= @min_term_integer and integer <= @max_term_integer
 
-  defp validate_term_integer_literal!(integer) do
-    raise Error,
-          "integer literal #{integer} is outside the signed 61-bit term domain " <>
-            "(#{@min_term_integer}..#{@max_term_integer})"
+  defp scalar_integer_literal?(integer),
+    do: integer >= @min_scalar_integer and integer <= @max_scalar_integer
+
+  defp lift_bigint_literal(integer, ctx, block, env) do
+    {bigint_literal_value(integer, ctx, block), env}
   end
 
   defp validate_scalar_integer_literal!(integer)
@@ -9772,17 +9774,17 @@ defmodule Batata.Lift do
     end
   end
 
-  defp do_build_match(integer, value, ctx, block, _pattern_env) when is_integer(integer) do
-    lit =
-      create_op(
-        "ex.lit",
-        [value: MLIR.Attribute.integer(MLIR.Type.i64(), integer)],
-        [MLIR.Type.i64()],
-        ctx,
-        block
-      )
+  defp do_build_match({:-, _, [integer]}, value, ctx, block, pattern_env)
+       when is_integer(integer),
+       do: do_build_match(-integer, value, ctx, block, pattern_env)
 
-    boxed = box_term(lit, ctx, block)
+  defp do_build_match({:+, _, [integer]}, value, ctx, block, pattern_env)
+       when is_integer(integer),
+       do: do_build_match(integer, value, ctx, block, pattern_env)
+
+  defp do_build_match(integer, value, ctx, block, pattern_env) when is_integer(integer) do
+    {literal, _env} = lift_expr(integer, ctx, block, pattern_env)
+    boxed = box_if_scalar(literal, ctx, block)
     {create_op("ex.term_eq", [value, boxed], [MLIR.Type.i64()], ctx, block), []}
   end
 
@@ -10460,8 +10462,14 @@ defmodule Batata.Lift do
     combine([left_valid, right_valid, comparison], ctx, block)
   end
 
-  defp lower_integer_guard_expression(integer, _env, ctx, block) when is_integer(integer),
-    do: {lit(integer, ctx, block), nil}
+  defp lower_integer_guard_expression(integer, _env, ctx, block) when is_integer(integer) do
+    unless scalar_integer_literal?(integer) do
+      raise Error,
+            "integer guard comparisons with boxed arbitrary-precision literals are unsupported: #{integer}"
+    end
+
+    {lit(integer, ctx, block), nil}
+  end
 
   defp lower_integer_guard_expression({name, _, context}, env, ctx, block)
        when is_atom(name) and (is_atom(context) or is_nil(context)) do
@@ -10681,6 +10689,8 @@ defmodule Batata.Lift do
   end
 
   defp lit(value, ctx, block) do
+    value = validate_scalar_integer_literal!(value)
+
     create_op(
       "ex.lit",
       [value: MLIR.Attribute.integer(MLIR.Type.i64(), value)],
@@ -10723,6 +10733,11 @@ defmodule Batata.Lift do
 
   defp term_pattern?({:=, _, [left, right]}), do: term_pattern?(left) or term_pattern?(right)
   defp term_pattern?({:%, _, _}), do: true
+  defp term_pattern?(integer) when is_integer(integer), do: not scalar_integer_literal?(integer)
+
+  defp term_pattern?({:-, _, [integer]}) when is_integer(integer),
+    do: not scalar_integer_literal?(-integer)
+
   defp term_pattern?(pattern) when is_atom(pattern), do: true
   defp term_pattern?(pattern) when is_binary(pattern), do: true
 
@@ -10746,6 +10761,7 @@ defmodule Batata.Lift do
   end
 
   defp parse_pattern(integer) when is_integer(integer), do: {[integer], []}
+  defp parse_pattern({:-, _, [integer]}) when is_integer(integer), do: {[-integer], []}
 
   defp parse_pattern({name, _, context}) when is_variable_ast(name, context) do
     if name == :_ do
@@ -10832,22 +10848,48 @@ defmodule Batata.Lift do
   end
 
   defp box_term(value, ctx, block) do
-    validate_boxed_integer_literal!(value)
-    create_op("ex.box", [value], [ex_type("term", ctx)], ctx, block)
+    case integer_literal_value(value) do
+      {:ok, integer} ->
+        if term_integer_literal?(integer),
+          do: create_op("ex.box", [value], [ex_type("term", ctx)], ctx, block),
+          else: bigint_literal_value(integer, ctx, block)
+
+      :error ->
+        create_op("ex.box", [value], [ex_type("term", ctx)], ctx, block)
+    end
   end
 
-  defp validate_boxed_integer_literal!(value) do
+  defp integer_literal_value(value) do
     with false <- term_operand?(value),
          {:ok, owner} <- MLIR.Value.owner(value),
          "ex.lit" <- MLIR.Operation.name(owner),
          attribute when not is_nil(attribute) <- Beaver.Walker.attributes(owner)[:value] do
-      attribute
-      |> MLIR.CAPI.mlirIntegerAttrGetValueInt()
-      |> Beaver.Native.to_term()
-      |> validate_term_integer_literal!()
+      {:ok, attribute |> MLIR.CAPI.mlirIntegerAttrGetValueInt() |> Beaver.Native.to_term()}
     else
-      _ -> :ok
+      _ -> :error
     end
+  end
+
+  defp bigint_literal_value(integer, ctx, block) do
+    bytes =
+      integer
+      |> Integer.to_string()
+      |> :binary.bin_to_list()
+      |> Enum.map(fn byte ->
+        value =
+          create_op(
+            "ex.lit",
+            [value: MLIR.Attribute.integer(MLIR.Type.i64(), byte)],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          )
+
+        create_op("ex.box", [value], [ex_type("term", ctx)], ctx, block)
+      end)
+
+    decimal = create_term_op("ex.binary", bytes, ctx, block)
+    create_op("ex.bigint_lit", [decimal], [ex_type("term", ctx)], ctx, block)
   end
 
   defp lift_map_entries(entries, ctx, block, env) do

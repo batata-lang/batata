@@ -25,10 +25,13 @@ const tag_binary: usize = 5;
 const tag_fun: usize = 6;
 const fun_arity_marker: u64 = @as(u64, 1) << 61;
 const fun_signature_marker: u64 = @as(u64, 1) << 60;
-// Tag 7 is shared by arena-owned boxed floats and immediate runtime-local
+// Tag 7 is shared by arena-owned boxed numbers and immediate runtime-local
 // words. The latter carry runtime_local_marker and are never arena pointers.
 const tag_float: usize = 7;
 const tag_runtime_local: usize = 7;
+const result_kind_bigint: i64 = 8;
+const boxed_float_kind: i64 = 1;
+const boxed_bigint_kind: i64 = 2;
 
 // Dynamic atoms occupy the high half of the atom payload space, disjoint from
 // Batata's non-negative compile-time literal hashes. Their names live in the
@@ -54,7 +57,8 @@ const nil_word: i64 = 1;
 //   binary: [len: i64] [packed byte: u8 ... len] [alignment padding]
 //   list:   cons cells [head: i64] [tail: i64]
 //   fun:    [fn_idx: i64] [env_len: i64] [env: i64 ... env_len]
-//   float:  [IEEE-754 bits: u64]
+//   float:  [kind: i64] [IEEE-754 bits: u64]
+//   bigint: [kind: i64] [decimal byte len: i64] [packed canonical decimal bytes]
 
 // Runtime instances own execution state. The compatibility path lazily binds
 // one instance per OS thread; explicit handles let future actor workers enter
@@ -217,9 +221,38 @@ fn fun_env_offset(fun: i64) usize {
     return if (fun_has_signature(fun)) 4 else if (fun_has_arity(fun)) 3 else 2;
 }
 
+fn boxed_words(word: i64) [*]const i64 {
+    return @ptrFromInt(@as(usize, @bitCast(word)) & ~tag_mask);
+}
+
+fn boxed_kind(word: i64) i64 {
+    return boxed_words(word)[0];
+}
+
+fn is_boxed_float(word: i64) bool {
+    return word_tag(word) == tag_float and runtime_local_kind(word) == null and boxed_kind(word) == boxed_float_kind;
+}
+
+fn is_bigint(word: i64) bool {
+    return word_tag(word) == tag_float and runtime_local_kind(word) == null and boxed_kind(word) == boxed_bigint_kind;
+}
+
 fn float_bits(float: i64) u64 {
-    const payload: *const i64 = @ptrFromInt(@as(usize, @bitCast(float)) & ~tag_mask);
-    return @bitCast(payload.*);
+    return @bitCast(boxed_words(float)[1]);
+}
+
+fn bigint_len(word: i64) usize {
+    return @intCast(boxed_words(word)[1]);
+}
+
+fn bigint_bytes(word: i64) [*]const u8 {
+    return @ptrFromInt((@as(usize, @bitCast(word)) & ~tag_mask) + 2 * @sizeOf(i64));
+}
+
+fn bigint_eq(left: i64, right: i64) bool {
+    const left_len = bigint_len(left);
+    if (left_len != bigint_len(right)) return false;
+    return std.mem.eql(u8, bigint_bytes(left)[0..left_len], bigint_bytes(right)[0..left_len]);
 }
 
 // Actor scheduling model (#35): a single process with a FIFO mailbox and a
@@ -944,7 +977,10 @@ fn result_term_kind_locked(slot: *ResultSlot, word: i64) i64 {
     const tag = word_tag(word);
     if (tag == tag_int or tag == tag_atom) return @intCast(tag);
     if (slot.runtime) |instance| {
-        if (runtime_owns_word(instance, word)) return @intCast(tag);
+        if (runtime_owns_word(instance, word)) {
+            if (tag == tag_float and is_bigint(word)) return result_kind_bigint;
+            return @intCast(tag);
+        }
     }
     return -1;
 }
@@ -1459,7 +1495,7 @@ pub fn ex_term_result_root_kind(handle: i64) callconv(.c) i64 {
     result_lock.lock();
     defer result_lock.unlock();
     const slot = result_slot_locked(handle) orelse return -1;
-    if (runtime_owns_word(slot.runtime.?, slot.word)) return @intCast(word_tag(slot.word));
+    if (runtime_owns_word(slot.runtime.?, slot.word)) return result_term_kind_locked(slot, slot.word);
     if (dynamic_atom_index(slot.word) != null) return tag_atom;
     if (runtime_local_kind(slot.word) != null) return -1;
     return 0;
@@ -1505,6 +1541,7 @@ pub fn ex_term_result_term_length(handle: i64, word: i64) callconv(.c) i64 {
         tag_binary => @intCast(binary_len(word)),
         tag_fun => @intCast(fun_env_len(word)),
         tag_float => 1,
+        result_kind_bigint => @intCast(bigint_len(word)),
         else => -1,
     };
 }
@@ -1521,6 +1558,7 @@ pub fn ex_term_result_term_get(handle: i64, word: i64, index_word: i64) callconv
         tag_map => if (index < map_len(word) * 2) map_entries(word)[index] else -1,
         tag_binary => if (index < binary_len(word)) binary_bytes(word)[index] else -1,
         tag_float => if (index == 0) @bitCast(float_bits(word)) else -1,
+        result_kind_bigint => if (index < bigint_len(word)) bigint_bytes(word)[index] else -1,
         tag_fun => if (index == 0)
             fun_words(word)[0]
         else if (index <= fun_env_len(word))
@@ -1549,6 +1587,7 @@ const codec_cons: u8 = 4;
 const codec_map: u8 = 5;
 const codec_binary: u8 = 6;
 const codec_float: u8 = 7;
+const codec_bigint: u8 = 8;
 
 fn checkedAdd(a: usize, b: usize) CodecError!usize {
     const value = std.math.add(usize, a, b) catch return error.Limit;
@@ -1618,10 +1657,24 @@ fn encodedTermSize(instance: *Runtime, word: i64, root_scalar: bool, depth: usiz
             if (!runtime_owns_bytes(instance, address, total_bytes)) return error.Invalid;
             break :blk try checkedAdd(1 + @sizeOf(u32), len);
         },
-        tag_float => if (runtime_local_kind(word) == null)
-            1 + @sizeOf(i64)
-        else
-            error.Unsupported,
+        tag_float => blk: {
+            if (runtime_local_kind(word) != null) return error.Unsupported;
+            const address = @as(usize, @bitCast(word)) & ~tag_mask;
+            if (!runtime_owns_bytes(instance, address, 2 * @sizeOf(i64))) return error.Invalid;
+            break :blk switch (boxed_kind(word)) {
+                boxed_float_kind => 1 + @sizeOf(i64),
+                boxed_bigint_kind => size: {
+                    const raw_len = boxed_words(word)[1];
+                    if (raw_len <= 0) return error.Invalid;
+                    const len: usize = @intCast(raw_len);
+                    const payload_words = (try checkedAdd(len, @sizeOf(i64) - 1)) / @sizeOf(i64);
+                    const total_bytes = try checkedMul(try checkedAdd(payload_words, 2), @sizeOf(i64));
+                    if (!runtime_owns_bytes(instance, address, total_bytes)) return error.Invalid;
+                    break :size try checkedAdd(1 + @sizeOf(u32), len);
+                },
+                else => error.Invalid,
+            };
+        },
         tag_fun => error.Unsupported,
         else => error.Invalid,
     };
@@ -1653,13 +1706,20 @@ fn encodeTerm(instance: *Runtime, word: i64, root_scalar: bool, bytes: []u8, cur
         tag_list => codec_cons,
         tag_map => codec_map,
         tag_binary => codec_binary,
-        tag_float => codec_float,
+        tag_float => if (is_bigint(word)) codec_bigint else codec_float,
         else => unreachable,
     };
     cursor.* += 1;
     switch (tag) {
         tag_int, tag_atom => writeI64(bytes, cursor, word),
-        tag_float => writeI64(bytes, cursor, @bitCast(float_bits(word))),
+        tag_float => if (is_bigint(word)) {
+            const len = bigint_len(word);
+            writeU32(bytes, cursor, @intCast(len));
+            @memcpy(bytes[cursor.* .. cursor.* + len], bigint_bytes(word)[0..len]);
+            cursor.* += len;
+        } else {
+            writeI64(bytes, cursor, @bitCast(float_bits(word)));
+        },
         tag_tuple => {
             const len = tuple_len(word);
             writeU32(bytes, cursor, @intCast(len));
@@ -1952,7 +2012,13 @@ fn decodedWords(decoder: *Decoder, depth: usize, root: bool) CodecError!usize {
         },
         codec_float => blk: {
             _ = try decoder.readI64();
-            break :blk 1;
+            break :blk 2;
+        },
+        codec_bigint => blk: {
+            const len = try decoder.readU32();
+            if (len == 0) return error.Invalid;
+            try decoder.skip(len);
+            break :blk try checkedAdd(2, (try checkedAdd(len, @sizeOf(i64) - 1)) / @sizeOf(i64));
         },
         else => error.Invalid,
     };
@@ -2003,8 +2069,22 @@ fn decodeTerm(decoder: *Decoder, storage: [*]i64, next: *usize, root: bool, root
         },
         codec_float => blk: {
             const start = next.*;
-            next.* += 1;
-            storage[start] = try decoder.readI64();
+            next.* += 2;
+            storage[start] = boxed_float_kind;
+            storage[start + 1] = try decoder.readI64();
+            break :blk word_from_ptr(storage + start, tag_float);
+        },
+        codec_bigint => blk: {
+            const len = try decoder.readU32();
+            if (len == 0) return error.Invalid;
+            const payload_words = (@as(usize, len) + @sizeOf(i64) - 1) / @sizeOf(i64);
+            const start = next.*;
+            next.* += payload_words + 2;
+            storage[start] = boxed_bigint_kind;
+            storage[start + 1] = len;
+            const destination: [*]u8 = @ptrFromInt(@intFromPtr(storage + start) + 2 * @sizeOf(i64));
+            @memcpy(destination[0..len], decoder.bytes[decoder.cursor .. decoder.cursor + len]);
+            decoder.cursor += len;
             break :blk word_from_ptr(storage + start, tag_float);
         },
         else => error.Invalid,
@@ -4151,8 +4231,8 @@ fn term_eq_loose(left: i64, right: i64) bool {
 
     const ltag = word_tag(left);
     const rtag = word_tag(right);
-    const left_float = ltag == tag_float and runtime_local_kind(left) == null;
-    const right_float = rtag == tag_float and runtime_local_kind(right) == null;
+    const left_float = ltag == tag_float and is_boxed_float(left);
+    const right_float = rtag == tag_float and is_boxed_float(right);
 
     if (ltag == tag_int and right_float) return numeric_eq(left, right);
     if (rtag == tag_int and left_float) return numeric_eq(right, left);
@@ -4200,6 +4280,9 @@ fn term_eq_loose(left: i64, right: i64) bool {
             return true;
         },
         tag_float => {
+            if (is_bigint(left) or is_bigint(right)) {
+                return is_bigint(left) and is_bigint(right) and bigint_eq(left, right);
+            }
             const a: f64 = @bitCast(float_bits(left));
             const b: f64 = @bitCast(float_bits(right));
             return a == b;
@@ -4254,20 +4337,62 @@ fn term_eq(left: i64, right: i64) bool {
             }
             return true;
         },
-        tag_float => return float_bits(left) == float_bits(right),
+        tag_float => {
+            if (is_bigint(left) or is_bigint(right)) {
+                return is_bigint(left) and is_bigint(right) and bigint_eq(left, right);
+            }
+            return float_bits(left) == float_bits(right);
+        },
         else => return false,
     }
 }
 
 /// Boxes an IEEE-754 binary64 bit pattern as a first-class dynamic term.
 pub fn ex_term_float_lit(bits: i64) callconv(.c) i64 {
-    const payload = alloc_words(1) orelse return nil_word;
-    payload[0] = bits;
+    const payload = alloc_words(2) orelse return nil_word;
+    payload[0] = boxed_float_kind;
+    payload[1] = bits;
+    return word_from_ptr(payload, tag_float);
+}
+
+fn canonical_decimal_integer(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+    const digits = if (bytes[0] == '-') bytes[1..] else bytes;
+    if (digits.len == 0 or (digits.len > 1 and digits[0] == '0')) return false;
+    for (digits) |byte| {
+        if (byte < '0' or byte > '9') return false;
+    }
+    return true;
+}
+
+/// Constructs an integer term from a canonical base-10 binary. Values in the
+/// immediate signed-61 domain keep the zero-allocation representation; larger
+/// values retain their canonical bytes in an arena-owned boxed integer.
+pub fn ex_term_bigint_lit(binary: i64) callconv(.c) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const bytes = binary_bytes(binary)[0..binary_len(binary)];
+    if (!canonical_decimal_integer(bytes)) return nil_word;
+
+    const immediate_min = -(@as(i64, 1) << 60);
+    const immediate_max = (@as(i64, 1) << 60) - 1;
+    if (std.fmt.parseInt(i64, bytes, 10)) |value| {
+        if (value >= immediate_min and value <= immediate_max) {
+            return value * (@as(i64, 1) << @intCast(tag_shift));
+        }
+    } else |_| {}
+
+    const payload_words = (bytes.len + @sizeOf(i64) - 1) / @sizeOf(i64);
+    const payload = alloc_words(payload_words + 2) orelse return nil_word;
+    payload[0] = boxed_bigint_kind;
+    payload[1] = @intCast(bytes.len);
+    @memset(payload[2 .. payload_words + 2], 0);
+    const destination: [*]u8 = @ptrFromInt(@intFromPtr(payload) + 2 * @sizeOf(i64));
+    @memcpy(destination[0..bytes.len], bytes);
     return word_from_ptr(payload, tag_float);
 }
 
 pub fn ex_term_is_float(word: i64) callconv(.c) i64 {
-    return if (word_tag(word) == tag_float and runtime_local_kind(word) == null) 1 else 0;
+    return if (is_boxed_float(word)) 1 else 0;
 }
 
 /// Returns the IEEE-754 binary64 payload for an arena-owned float term.
@@ -4312,7 +4437,7 @@ fn ensure_float_marker(src: []const u8, out: []u8) []const u8 {
 /// below that boundary it uses the shorter valid spelling (decimal on equal
 /// length).
 pub fn ex_term_float_to_binary_short(word: i64) callconv(.c) i64 {
-    if (word_tag(word) != tag_float or runtime_local_kind(word) != null) return nil_word;
+    if (!is_boxed_float(word)) return nil_word;
     const value: f64 = @bitCast(float_bits(word));
     if (!std.math.isFinite(value)) return nil_word;
 
@@ -5027,7 +5152,7 @@ pub fn ex_term_iodata_to_binary(iodata: i64) callconv(.c) i64 {
 }
 
 pub fn ex_term_is_integer(word: i64) callconv(.c) i64 {
-    return if (is_int(word)) 1 else 0;
+    return if (is_int(word) or is_bigint(word)) 1 else 0;
 }
 
 pub fn ex_term_is_atom(word: i64) callconv(.c) i64 {
@@ -5075,6 +5200,36 @@ test "boxed floats share tag 7 without colliding with runtime-local words" {
     try std.testing.expectEqual(@as(u64, @bitCast(@as(f64, -0.0))), @as(u64, @bitCast(ex_term_float_bits(value))));
     try std.testing.expectEqual(@as(i64, 0), ex_term_is_float(runtime_local_word(runtime_local_ref, 42)));
     try std.testing.expectEqual(@as(i64, 0), ex_term_float_bits(1));
+}
+
+test "boxed integer literals preserve canonical arbitrary precision equality" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const immediate = ex_term_bigint_lit(test_binary_from_string("1152921504606846975"));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_integer(immediate));
+    try std.testing.expectEqual(@as(i64, 1152921504606846975) * 8, immediate);
+
+    const positive = ex_term_bigint_lit(test_binary_from_string("1152921504606846976"));
+    const positive_copy = ex_term_bigint_lit(test_binary_from_string("1152921504606846976"));
+    const negative = ex_term_bigint_lit(test_binary_from_string("-1152921504606846977"));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_integer(positive));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_is_integer(negative));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_is_float(positive));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(positive, positive_copy));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq_loose(positive, positive_copy));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_eq(positive, negative));
+
+    for ([_][]const u8{ "", "-", "01", "-01", "+1", "1.0" }) |invalid| {
+        try std.testing.expectEqual(
+            @as(i64, 1),
+            ex_term_is_nil_word(ex_term_bigint_lit(test_binary_from_string(invalid))),
+        );
+    }
 }
 
 test "string to float preserves finite binary64 values and rejects invalid syntax" {
@@ -7131,6 +7286,34 @@ test "term pins block reset until released and export leases protect snapshots" 
     finish_export(lease.runtime);
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(storage_runtime));
     try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(copy));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
+}
+
+test "portable codec preserves boxed integer bytes across runtime ownership" {
+    const decimal = "100000000000000000000000000000000000000000000000000000000000000000000";
+    const source_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(source_runtime));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    const bigint = ex_term_bigint_lit(test_binary_from_string(decimal));
+    const result = ex_term_result_create(source_runtime, bigint);
+    try std.testing.expect(result > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const exported = ex_term_export(result, bigint);
+    try std.testing.expect(exported > 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(result));
+
+    const target_runtime = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(target_runtime));
+    const imported = ex_term_import(target_runtime, exported);
+    try std.testing.expect(imported > 0);
+    const imported_word = ex_term_handle_root_word(imported);
+    try std.testing.expect(is_bigint(imported_word));
+    try std.testing.expectEqual(decimal.len, bigint_len(imported_word));
+    try std.testing.expect(std.mem.eql(u8, decimal, bigint_bytes(imported_word)[0..decimal.len]));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+
+    try std.testing.expectEqual(@as(i64, 0), ex_term_handle_destroy(imported));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_destroy(target_runtime));
     try std.testing.expectEqual(@as(i64, 0), ex_term_exported_destroy(exported));
 }
 
