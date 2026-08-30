@@ -1038,6 +1038,1163 @@ defmodule Batata.CompilerKernel.Native.ExConversion do
     end
   end
 
+  # The compiled Batata source is the only pattern registry. The native
+  # trampoline decodes these scalar words without embedding dialect roots.
+  def pattern_count(), do: 158
+
+  def pattern_namespace_length(), do: 7
+
+  def pattern_namespace_word(index) do
+    cond do
+      index == 0 -> 0x61746162
+      index == 1 -> 0x2E6174
+      true -> -1
+    end
+  end
+
+  def pattern_root_length(pattern) do
+    cond do
+      pattern == 0 -> 6
+      pattern == 1 -> 8
+      pattern == 2 -> 9
+      pattern == 3 -> 18
+      pattern == 4 -> 18
+      pattern == 5 -> 19
+      pattern == 6 -> 13
+      pattern == 7 -> 16
+      pattern == 8 -> 14
+      pattern == 9 -> 15
+      pattern == 10 -> 15
+      pattern == 11 -> 18
+      pattern == 12 -> 21
+      pattern == 13 -> 20
+      pattern == 14 -> 6
+      pattern == 15 -> 7
+      pattern == 16 -> 14
+      pattern == 17 -> 13
+      pattern == 18 -> 6
+      pattern == 19 -> 14
+      pattern == 20 -> 13
+      pattern == 21 -> 16
+      pattern == 22 -> 16
+      pattern == 23 -> 19
+      pattern == 24 -> 15
+      pattern == 25 -> 12
+      pattern == 26 -> 16
+      pattern == 27 -> 12
+      pattern == 28 -> 6
+      pattern == 29 -> 19
+      pattern == 30 -> 31
+      pattern == 31 -> 25
+      pattern == 32 -> 22
+      pattern == 33 -> 21
+      pattern == 34 -> 26
+      pattern == 35 -> 28
+      pattern == 36 -> 20
+      pattern == 37 -> 22
+      pattern == 38 -> 24
+      pattern == 39 -> 26
+      pattern == 40 -> 21
+      pattern == 41 -> 27
+      pattern == 42 -> 7
+      pattern == 43 -> 17
+      pattern == 44 -> 19
+      pattern == 45 -> 15
+      pattern == 46 -> 18
+      pattern == 47 -> 12
+      pattern == 48 -> 18
+      pattern == 49 -> 12
+      pattern == 50 -> 24
+      pattern == 51 -> 12
+      pattern == 52 -> 18
+      pattern == 53 -> 7
+      pattern == 54 -> 12
+      pattern == 55 -> 5
+      pattern == 56 -> 13
+      pattern == 57 -> 16
+      pattern == 58 -> 21
+      pattern == 59 -> 19
+      pattern == 60 -> 10
+      pattern == 61 -> 12
+      pattern == 62 -> 11
+      pattern == 63 -> 13
+      pattern == 64 -> 10
+      pattern == 65 -> 9
+      pattern == 66 -> 11
+      pattern == 67 -> 7
+      pattern == 68 -> 7
+      pattern == 69 -> 12
+      pattern == 70 -> 15
+      pattern == 71 -> 11
+      pattern == 72 -> 12
+      pattern == 73 -> 14
+      pattern == 74 -> 12
+      pattern == 75 -> 6
+      pattern == 76 -> 16
+      pattern == 77 -> 14
+      pattern == 78 -> 15
+      pattern == 79 -> 17
+      pattern == 80 -> 11
+      pattern == 81 -> 22
+      pattern == 82 -> 26
+      pattern == 83 -> 6
+      pattern == 84 -> 12
+      pattern == 85 -> 13
+      pattern == 86 -> 10
+      pattern == 87 -> 19
+      pattern == 88 -> 16
+      pattern == 89 -> 13
+      pattern == 90 -> 10
+      pattern == 91 -> 17
+      pattern == 92 -> 6
+      pattern == 93 -> 14
+      pattern == 94 -> 11
+      pattern == 95 -> 15
+      pattern == 96 -> 15
+      pattern == 97 -> 22
+      pattern == 98 -> 17
+      pattern == 99 -> 22
+      pattern == 100 -> 20
+      pattern == 101 -> 15
+      pattern == 102 -> 21
+      pattern == 103 -> 8
+      pattern == 104 -> 10
+      pattern == 105 -> 20
+      pattern == 106 -> 16
+      pattern == 107 -> 20
+      pattern == 108 -> 17
+      pattern == 109 -> 6
+      pattern == 110 -> 19
+      pattern == 111 -> 16
+      pattern == 112 -> 17
+      pattern == 113 -> 24
+      pattern == 114 -> 26
+      pattern == 115 -> 19
+      pattern == 116 -> 19
+      pattern == 117 -> 18
+      pattern == 118 -> 19
+      pattern == 119 -> 21
+      pattern == 120 -> 9
+      pattern == 121 -> 17
+      pattern == 122 -> 18
+      pattern == 123 -> 16
+      pattern == 124 -> 16
+      pattern == 125 -> 16
+      pattern == 126 -> 7
+      pattern == 127 -> 7
+      pattern == 128 -> 8
+      pattern == 129 -> 14
+      pattern == 130 -> 16
+      pattern == 131 -> 14
+      pattern == 132 -> 19
+      pattern == 133 -> 17
+      pattern == 134 -> 26
+      pattern == 135 -> 18
+      pattern == 136 -> 16
+      pattern == 137 -> 6
+      pattern == 138 -> 10
+      pattern == 139 -> 16
+      pattern == 140 -> 14
+      pattern == 141 -> 22
+      pattern == 142 -> 21
+      pattern == 143 -> 14
+      pattern == 144 -> 8
+      pattern == 145 -> 9
+      pattern == 146 -> 10
+      pattern == 147 -> 6
+      pattern == 148 -> 8
+      pattern == 149 -> 12
+      pattern == 150 -> 15
+      pattern == 151 -> 8
+      pattern == 152 -> 17
+      pattern == 153 -> 9
+      pattern == 154 -> 6
+      pattern == 155 -> 13
+      pattern == 156 -> 8
+      pattern == 157 -> 13
+      true -> -1
+    end
+  end
+
+  def pattern_root_word(pattern, index) do
+    cond do
+      pattern == 0 and index == 0 -> 0x612E7865
+      pattern == 0 and index == 1 -> 0x6464
+      pattern == 1 and index == 0 -> 0x612E7865
+      pattern == 1 and index == 1 -> 0x796C7070
+      pattern == 2 and index == 0 -> 0x622E7865
+      pattern == 2 and index == 1 -> 0x72616E69
+      pattern == 2 and index == 2 -> 0x79
+      pattern == 3 and index == 0 -> 0x622E7865
+      pattern == 3 and index == 1 -> 0x72616E69
+      pattern == 3 and index == 2 -> 0x65645F79
+      pattern == 3 and index == 3 -> 0x65646F63
+      pattern == 3 and index == 4 -> 0x3631
+      pattern == 4 and index == 0 -> 0x622E7865
+      pattern == 4 and index == 1 -> 0x72616E69
+      pattern == 4 and index == 2 -> 0x6E655F79
+      pattern == 4 and index == 3 -> 0x65646F63
+      pattern == 4 and index == 4 -> 0x3631
+      pattern == 5 and index == 0 -> 0x622E7865
+      pattern == 5 and index == 1 -> 0x72616E69
+      pattern == 5 and index == 2 -> 0x72665F79
+      pattern == 5 and index == 3 -> 0x6C5F6D6F
+      pattern == 5 and index == 4 -> 0x747369
+      pattern == 6 and index == 0 -> 0x622E7865
+      pattern == 6 and index == 1 -> 0x72616E69
+      pattern == 6 and index == 2 -> 0x65675F79
+      pattern == 6 and index == 3 -> 0x74
+      pattern == 7 and index == 0 -> 0x622E7865
+      pattern == 7 and index == 1 -> 0x72616E69
+      pattern == 7 and index == 2 -> 0x656C5F79
+      pattern == 7 and index == 3 -> 0x6874676E
+      pattern == 8 and index == 0 -> 0x622E7865
+      pattern == 8 and index == 1 -> 0x72616E69
+      pattern == 8 and index == 2 -> 0x61705F79
+      pattern == 8 and index == 3 -> 0x7472
+      pattern == 9 and index == 0 -> 0x622E7865
+      pattern == 9 and index == 1 -> 0x72616E69
+      pattern == 9 and index == 2 -> 0x75715F79
+      pattern == 9 and index == 3 -> 0x65746F
+      pattern == 10 and index == 0 -> 0x622E7865
+      pattern == 10 and index == 1 -> 0x72616E69
+      pattern == 10 and index == 2 -> 0x6C735F79
+      pattern == 10 and index == 3 -> 0x656369
+      pattern == 11 and index == 0 -> 0x622E7865
+      pattern == 11 and index == 1 -> 0x72616E69
+      pattern == 11 and index == 2 -> 0x74755F79
+      pattern == 11 and index == 3 -> 0x675F3866
+      pattern == 11 and index == 4 -> 0x7465
+      pattern == 12 and index == 0 -> 0x622E7865
+      pattern == 12 and index == 1 -> 0x72616E69
+      pattern == 12 and index == 2 -> 0x74755F79
+      pattern == 12 and index == 3 -> 0x6C5F3866
+      pattern == 12 and index == 4 -> 0x74676E65
+      pattern == 12 and index == 5 -> 0x68
+      pattern == 13 and index == 0 -> 0x622E7865
+      pattern == 13 and index == 1 -> 0x72616E69
+      pattern == 13 and index == 2 -> 0x74755F79
+      pattern == 13 and index == 3 -> 0x775F3866
+      pattern == 13 and index == 4 -> 0x68746469
+      pattern == 14 and index == 0 -> 0x622E7865
+      pattern == 14 and index == 1 -> 0x786F
+      pattern == 15 and index == 0 -> 0x632E7865
+      pattern == 15 and index == 1 -> 0x6C6C61
+      pattern == 16 and index == 0 -> 0x632E7865
+      pattern == 16 and index == 1 -> 0x68637461
+      pattern == 16 and index == 2 -> 0x6C61765F
+      pattern == 16 and index == 3 -> 0x6575
+      pattern == 17 and index == 0 -> 0x632E7865
+      pattern == 17 and index == 1 -> 0x6B636F6C
+      pattern == 17 and index == 2 -> 0x696E695F
+      pattern == 17 and index == 3 -> 0x74
+      pattern == 18 and index == 0 -> 0x632E7865
+      pattern == 18 and index == 1 -> 0x706D
+      pattern == 19 and index == 0 -> 0x632E7865
+      pattern == 19 and index == 1 -> 0x5F746E6F
+      pattern == 19 and index == 2 -> 0x69746361
+      pattern == 19 and index == 3 -> 0x6576
+      pattern == 20 and index == 0 -> 0x632E7865
+      pattern == 20 and index == 1 -> 0x5F746E6F
+      pattern == 20 and index == 2 -> 0x61656C63
+      pattern == 20 and index == 3 -> 0x72
+      pattern == 21 and index == 0 -> 0x632E7865
+      pattern == 21 and index == 1 -> 0x5F746E6F
+      pattern == 21 and index == 2 -> 0x64616F6C
+      pattern == 21 and index == 3 -> 0x6363615F
+      pattern == 22 and index == 0 -> 0x632E7865
+      pattern == 22 and index == 1 -> 0x5F746E6F
+      pattern == 22 and index == 2 -> 0x64616F6C
+      pattern == 22 and index == 3 -> 0x6772615F
+      pattern == 23 and index == 0 -> 0x632E7865
+      pattern == 23 and index == 1 -> 0x5F746E6F
+      pattern == 23 and index == 2 -> 0x64616F6C
+      pattern == 23 and index == 3 -> 0x7275635F
+      pattern == 23 and index == 4 -> 0x726F73
+      pattern == 24 and index == 0 -> 0x632E7865
+      pattern == 24 and index == 1 -> 0x5F746E6F
+      pattern == 24 and index == 2 -> 0x646E6570
+      pattern == 24 and index == 3 -> 0x676E69
+      pattern == 25 and index == 0 -> 0x632E7865
+      pattern == 25 and index == 1 -> 0x5F746E6F
+      pattern == 25 and index == 2 -> 0x65766173
+      pattern == 26 and index == 0 -> 0x632E7865
+      pattern == 26 and index == 1 -> 0x65727275
+      pattern == 26 and index == 2 -> 0x655F746E
+      pattern == 26 and index == 3 -> 0x7972746E
+      pattern == 27 and index == 0 -> 0x642E7865
+      pattern == 27 and index == 1 -> 0x6E6F6D65
+      pattern == 27 and index == 2 -> 0x726F7469
+      pattern == 28 and index == 0 -> 0x642E7865
+      pattern == 28 and index == 1 -> 0x7669
+      pattern == 29 and index == 0 -> 0x652E7865
+      pattern == 29 and index == 1 -> 0x656D756E
+      pattern == 29 and index == 2 -> 0x6C626172
+      pattern == 29 and index == 3 -> 0x6F635F65
+      pattern == 29 and index == 4 -> 0x746E75
+      pattern == 30 and index == 0 -> 0x652E7865
+      pattern == 30 and index == 1 -> 0x656D756E
+      pattern == 30 and index == 2 -> 0x6C626172
+      pattern == 30 and index == 3 -> 0x6C665F65
+      pattern == 30 and index == 4 -> 0x6D5F7461
+      pattern == 30 and index == 5 -> 0x745F7061
+      pattern == 30 and index == 6 -> 0x5F6D7265
+      pattern == 30 and index == 7 -> 0x6E7566
+      pattern == 31 and index == 0 -> 0x652E7865
+      pattern == 31 and index == 1 -> 0x656D756E
+      pattern == 31 and index == 2 -> 0x6C626172
+      pattern == 31 and index == 3 -> 0x6E695F65
+      pattern == 31 and index == 4 -> 0x73726574
+      pattern == 31 and index == 5 -> 0x73726570
+      pattern == 31 and index == 6 -> 0x65
+      pattern == 32 and index == 0 -> 0x652E7865
+      pattern == 32 and index == 1 -> 0x656D756E
+      pattern == 32 and index == 2 -> 0x6C626172
+      pattern == 32 and index == 3 -> 0x6E695F65
+      pattern == 32 and index == 4 -> 0x6D5F6F74
+      pattern == 32 and index == 5 -> 0x7061
+      pattern == 33 and index == 0 -> 0x652E7865
+      pattern == 33 and index == 1 -> 0x656D756E
+      pattern == 33 and index == 2 -> 0x6C626172
+      pattern == 33 and index == 3 -> 0x616D5F65
+      pattern == 33 and index == 4 -> 0x75665F70
+      pattern == 33 and index == 5 -> 0x6E
+      pattern == 34 and index == 0 -> 0x652E7865
+      pattern == 34 and index == 1 -> 0x656D756E
+      pattern == 34 and index == 2 -> 0x6C626172
+      pattern == 34 and index == 3 -> 0x616D5F65
+      pattern == 34 and index == 4 -> 0x65745F70
+      pattern == 34 and index == 5 -> 0x665F6D72
+      pattern == 34 and index == 6 -> 0x6E75
+      pattern == 35 and index == 0 -> 0x652E7865
+      pattern == 35 and index == 1 -> 0x656D756E
+      pattern == 35 and index == 2 -> 0x6C626172
+      pattern == 35 and index == 3 -> 0x616D5F65
+      pattern == 35 and index == 4 -> 0x65745F70
+      pattern == 35 and index == 5 -> 0x665F6D72
+      pattern == 35 and index == 6 -> 0x635F6E75
+      pattern == 36 and index == 0 -> 0x652E7865
+      pattern == 36 and index == 1 -> 0x656D756E
+      pattern == 36 and index == 2 -> 0x6C626172
+      pattern == 36 and index == 3 -> 0x65725F65
+      pattern == 36 and index == 4 -> 0x65637564
+      pattern == 37 and index == 0 -> 0x652E7865
+      pattern == 37 and index == 1 -> 0x656D756E
+      pattern == 37 and index == 2 -> 0x6C626172
+      pattern == 37 and index == 3 -> 0x65725F65
+      pattern == 37 and index == 4 -> 0x65637564
+      pattern == 37 and index == 5 -> 0x635F
+      pattern == 38 and index == 0 -> 0x652E7865
+      pattern == 38 and index == 1 -> 0x656D756E
+      pattern == 38 and index == 2 -> 0x6C626172
+      pattern == 38 and index == 3 -> 0x65725F65
+      pattern == 38 and index == 4 -> 0x65637564
+      pattern == 38 and index == 5 -> 0x6E75665F
+      pattern == 39 and index == 0 -> 0x652E7865
+      pattern == 39 and index == 1 -> 0x656D756E
+      pattern == 39 and index == 2 -> 0x6C626172
+      pattern == 39 and index == 3 -> 0x65725F65
+      pattern == 39 and index == 4 -> 0x65637564
+      pattern == 39 and index == 5 -> 0x6E61725F
+      pattern == 39 and index == 6 -> 0x6567
+      pattern == 40 and index == 0 -> 0x652E7865
+      pattern == 40 and index == 1 -> 0x656D756E
+      pattern == 40 and index == 2 -> 0x6C626172
+      pattern == 40 and index == 3 -> 0x6F745F65
+      pattern == 40 and index == 4 -> 0x73696C5F
+      pattern == 40 and index == 5 -> 0x74
+      pattern == 41 and index == 0 -> 0x652E7865
+      pattern == 41 and index == 1 -> 0x656D756E
+      pattern == 41 and index == 2 -> 0x6C626172
+      pattern == 41 and index == 3 -> 0x6F745F65
+      pattern == 41 and index == 4 -> 0x73696C5F
+      pattern == 41 and index == 5 -> 0x61725F74
+      pattern == 41 and index == 6 -> 0x65676E
+      pattern == 42 and index == 0 -> 0x652E7865
+      pattern == 42 and index == 1 -> 0x746978
+      pattern == 43 and index == 0 -> 0x652E7865
+      pattern == 43 and index == 1 -> 0x726F7078
+      pattern == 43 and index == 2 -> 0x5F646574
+      pattern == 43 and index == 3 -> 0x6E6F6C63
+      pattern == 43 and index == 4 -> 0x65
+      pattern == 44 and index == 0 -> 0x652E7865
+      pattern == 44 and index == 1 -> 0x726F7078
+      pattern == 44 and index == 2 -> 0x5F646574
+      pattern == 44 and index == 3 -> 0x74736564
+      pattern == 44 and index == 4 -> 0x796F72
+      pattern == 45 and index == 0 -> 0x652E7865
+      pattern == 45 and index == 1 -> 0x726F7078
+      pattern == 45 and index == 2 -> 0x5F646574
+      pattern == 45 and index == 3 -> 0x746567
+      pattern == 46 and index == 0 -> 0x652E7865
+      pattern == 46 and index == 1 -> 0x726F7078
+      pattern == 46 and index == 2 -> 0x5F646574
+      pattern == 46 and index == 3 -> 0x676E656C
+      pattern == 46 and index == 4 -> 0x6874
+      pattern == 47 and index == 0 -> 0x662E7865
+      pattern == 47 and index == 1 -> 0x5F656C69
+      pattern == 47 and index == 2 -> 0x64616572
+      pattern == 48 and index == 0 -> 0x662E7865
+      pattern == 48 and index == 1 -> 0x5F656C69
+      pattern == 48 and index == 2 -> 0x64616572
+      pattern == 48 and index == 3 -> 0x6E696C5F
+      pattern == 48 and index == 4 -> 0x7365
+      pattern == 49 and index == 0 -> 0x662E7865
+      pattern == 49 and index == 1 -> 0x74616F6C
+      pattern == 49 and index == 2 -> 0x74696C5F
+      pattern == 50 and index == 0 -> 0x662E7865
+      pattern == 50 and index == 1 -> 0x74616F6C
+      pattern == 50 and index == 2 -> 0x5F6F745F
+      pattern == 50 and index == 3 -> 0x616E6962
+      pattern == 50 and index == 4 -> 0x735F7972
+      pattern == 50 and index == 5 -> 0x74726F68
+      pattern == 51 and index == 0 -> 0x662E7865
+      pattern == 51 and index == 1 -> 0x615F6E75
+      pattern == 51 and index == 2 -> 0x79746972
+      pattern == 52 and index == 0 -> 0x662E7865
+      pattern == 52 and index == 1 -> 0x725F6E75
+      pattern == 52 and index == 2 -> 0x6C757365
+      pattern == 52 and index == 3 -> 0x6F6D5F74
+      pattern == 52 and index == 4 -> 0x6564
+      pattern == 53 and index == 0 -> 0x662E7865
+      pattern == 53 and index == 1 -> 0x636E75
+      pattern == 54 and index == 0 -> 0x662E7865
+      pattern == 54 and index == 1 -> 0x5F636E75
+      pattern == 54 and index == 2 -> 0x72646461
+      pattern == 55 and index == 0 -> 0x692E7865
+      pattern == 55 and index == 1 -> 0x66
+      pattern == 56 and index == 0 -> 0x692E7865
+      pattern == 56 and index == 1 -> 0x745F746E
+      pattern == 56 and index == 2 -> 0x65685F6F
+      pattern == 56 and index == 3 -> 0x78
+      pattern == 57 and index == 0 -> 0x692E7865
+      pattern == 57 and index == 1 -> 0x745F746E
+      pattern == 57 and index == 2 -> 0x74735F6F
+      pattern == 57 and index == 3 -> 0x676E6972
+      pattern == 58 and index == 0 -> 0x692E7865
+      pattern == 58 and index == 1 -> 0x745F746E
+      pattern == 58 and index == 2 -> 0x74735F6F
+      pattern == 58 and index == 3 -> 0x676E6972
+      pattern == 58 and index == 4 -> 0x7361625F
+      pattern == 58 and index == 5 -> 0x65
+      pattern == 59 and index == 0 -> 0x692E7865
+      pattern == 59 and index == 1 -> 0x7461646F
+      pattern == 59 and index == 2 -> 0x6F745F61
+      pattern == 59 and index == 3 -> 0x6E69625F
+      pattern == 59 and index == 4 -> 0x797261
+      pattern == 60 and index == 0 -> 0x692E7865
+      pattern == 60 and index == 1 -> 0x74615F73
+      pattern == 60 and index == 2 -> 0x6D6F
+      pattern == 61 and index == 0 -> 0x692E7865
+      pattern == 61 and index == 1 -> 0x69625F73
+      pattern == 61 and index == 2 -> 0x7972616E
+      pattern == 62 and index == 0 -> 0x692E7865
+      pattern == 62 and index == 1 -> 0x6C665F73
+      pattern == 62 and index == 2 -> 0x74616F
+      pattern == 63 and index == 0 -> 0x692E7865
+      pattern == 63 and index == 1 -> 0x6E695F73
+      pattern == 63 and index == 2 -> 0x65676574
+      pattern == 63 and index == 3 -> 0x72
+      pattern == 64 and index == 0 -> 0x692E7865
+      pattern == 64 and index == 1 -> 0x696C5F73
+      pattern == 64 and index == 2 -> 0x7473
+      pattern == 65 and index == 0 -> 0x692E7865
+      pattern == 65 and index == 1 -> 0x616D5F73
+      pattern == 65 and index == 2 -> 0x70
+      pattern == 66 and index == 0 -> 0x692E7865
+      pattern == 66 and index == 1 -> 0x75745F73
+      pattern == 66 and index == 2 -> 0x656C70
+      pattern == 67 and index == 0 -> 0x6C2E7865
+      pattern == 67 and index == 1 -> 0x6B6E69
+      pattern == 68 and index == 0 -> 0x6C2E7865
+      pattern == 68 and index == 1 -> 0x747369
+      pattern == 69 and index == 0 -> 0x6C2E7865
+      pattern == 69 and index == 1 -> 0x5F747369
+      pattern == 69 and index == 2 -> 0x736E6F63
+      pattern == 70 and index == 0 -> 0x6C2E7865
+      pattern == 70 and index == 1 -> 0x5F747369
+      pattern == 70 and index == 2 -> 0x74616C66
+      pattern == 70 and index == 3 -> 0x6E6574
+      pattern == 71 and index == 0 -> 0x6C2E7865
+      pattern == 71 and index == 1 -> 0x5F747369
+      pattern == 71 and index == 2 -> 0x746567
+      pattern == 72 and index == 0 -> 0x6C2E7865
+      pattern == 72 and index == 1 -> 0x5F747369
+      pattern == 72 and index == 2 -> 0x64616568
+      pattern == 73 and index == 0 -> 0x6C2E7865
+      pattern == 73 and index == 1 -> 0x5F747369
+      pattern == 73 and index == 2 -> 0x676E656C
+      pattern == 73 and index == 3 -> 0x6874
+      pattern == 74 and index == 0 -> 0x6C2E7865
+      pattern == 74 and index == 1 -> 0x5F747369
+      pattern == 74 and index == 2 -> 0x6C696174
+      pattern == 75 and index == 0 -> 0x6C2E7865
+      pattern == 75 and index == 1 -> 0x7469
+      pattern == 76 and index == 0 -> 0x6D2E7865
+      pattern == 76 and index == 1 -> 0x626C6961
+      pattern == 76 and index == 2 -> 0x635F786F
+      pattern == 76 and index == 3 -> 0x7261656C
+      pattern == 77 and index == 0 -> 0x6D2E7865
+      pattern == 77 and index == 1 -> 0x626C6961
+      pattern == 77 and index == 2 -> 0x6C5F786F
+      pattern == 77 and index == 3 -> 0x6E65
+      pattern == 78 and index == 0 -> 0x6D2E7865
+      pattern == 78 and index == 1 -> 0x626C6961
+      pattern == 78 and index == 2 -> 0x705F786F
+      pattern == 78 and index == 3 -> 0x6B6565
+      pattern == 79 and index == 0 -> 0x6D2E7865
+      pattern == 79 and index == 1 -> 0x626C6961
+      pattern == 79 and index == 2 -> 0x725F786F
+      pattern == 79 and index == 3 -> 0x766F6D65
+      pattern == 79 and index == 4 -> 0x65
+      pattern == 80 and index == 0 -> 0x6D2E7865
+      pattern == 80 and index == 1 -> 0x5F656B61
+      pattern == 80 and index == 2 -> 0x6E7566
+      pattern == 81 and index == 0 -> 0x6D2E7865
+      pattern == 81 and index == 1 -> 0x5F656B61
+      pattern == 81 and index == 2 -> 0x5F6E7566
+      pattern == 81 and index == 3 -> 0x68746977
+      pattern == 81 and index == 4 -> 0x6972615F
+      pattern == 81 and index == 5 -> 0x7974
+      pattern == 82 and index == 0 -> 0x6D2E7865
+      pattern == 82 and index == 1 -> 0x5F656B61
+      pattern == 82 and index == 2 -> 0x5F6E7566
+      pattern == 82 and index == 3 -> 0x68746977
+      pattern == 82 and index == 4 -> 0x6769735F
+      pattern == 82 and index == 5 -> 0x7574616E
+      pattern == 82 and index == 6 -> 0x6572
+      pattern == 83 and index == 0 -> 0x6D2E7865
+      pattern == 83 and index == 1 -> 0x7061
+      pattern == 84 and index == 0 -> 0x6D2E7865
+      pattern == 84 and index == 1 -> 0x665F7061
+      pattern == 84 and index == 2 -> 0x68637465
+      pattern == 85 and index == 0 -> 0x6D2E7865
+      pattern == 85 and index == 1 -> 0x6C5F7061
+      pattern == 85 and index == 2 -> 0x74676E65
+      pattern == 85 and index == 3 -> 0x68
+      pattern == 86 and index == 0 -> 0x6D2E7865
+      pattern == 86 and index == 1 -> 0x705F7061
+      pattern == 86 and index == 2 -> 0x7475
+      pattern == 87 and index == 0 -> 0x6D2E7865
+      pattern == 87 and index == 1 -> 0x65737061
+      pattern == 87 and index == 2 -> 0x72665F74
+      pattern == 87 and index == 3 -> 0x6C5F6D6F
+      pattern == 87 and index == 4 -> 0x747369
+      pattern == 88 and index == 0 -> 0x6D2E7865
+      pattern == 88 and index == 1 -> 0x65737061
+      pattern == 88 and index == 2 -> 0x656D5F74
+      pattern == 88 and index == 3 -> 0x7265626D
+      pattern == 89 and index == 0 -> 0x6D2E7865
+      pattern == 89 and index == 1 -> 0x65737061
+      pattern == 89 and index == 2 -> 0x75705F74
+      pattern == 89 and index == 3 -> 0x74
+      pattern == 90 and index == 0 -> 0x6D2E7865
+      pattern == 90 and index == 1 -> 0x74696E6F
+      pattern == 90 and index == 2 -> 0x726F
+      pattern == 91 and index == 0 -> 0x6D2E7865
+      pattern == 91 and index == 1 -> 0x746F6E6F
+      pattern == 91 and index == 2 -> 0x63696E6F
+      pattern == 91 and index == 3 -> 0x6D69745F
+      pattern == 91 and index == 4 -> 0x65
+      pattern == 92 and index == 0 -> 0x6D2E7865
+      pattern == 92 and index == 1 -> 0x6C75
+      pattern == 93 and index == 0 -> 0x6E2E7865
+      pattern == 93 and index == 1 -> 0x76697461
+      pattern == 93 and index == 2 -> 0x69745F65
+      pattern == 93 and index == 3 -> 0x656D
+      pattern == 94 and index == 0 -> 0x6E2E7865
+      pattern == 94 and index == 1 -> 0x775F6C69
+      pattern == 94 and index == 2 -> 0x64726F
+      pattern == 95 and index == 0 -> 0x702E7865
+      pattern == 95 and index == 1 -> 0x65636F72
+      pattern == 95 and index == 2 -> 0x645F7373
+      pattern == 95 and index == 3 -> 0x656E6F
+      pattern == 96 and index == 0 -> 0x702E7865
+      pattern == 96 and index == 1 -> 0x65636F72
+      pattern == 96 and index == 2 -> 0x655F7373
+      pattern == 96 and index == 3 -> 0x746978
+      pattern == 97 and index == 0 -> 0x702E7865
+      pattern == 97 and index == 1 -> 0x65636F72
+      pattern == 97 and index == 2 -> 0x655F7373
+      pattern == 97 and index == 3 -> 0x5F746978
+      pattern == 97 and index == 4 -> 0x73616572
+      pattern == 97 and index == 5 -> 0x6E6F
+      pattern == 98 and index == 0 -> 0x702E7865
+      pattern == 98 and index == 1 -> 0x65636F72
+      pattern == 98 and index == 2 -> 0x725F7373
+      pattern == 98 and index == 3 -> 0x6C757365
+      pattern == 98 and index == 4 -> 0x74
+      pattern == 99 and index == 0 -> 0x702E7865
+      pattern == 99 and index == 1 -> 0x65636F72
+      pattern == 99 and index == 2 -> 0x745F7373
+      pattern == 99 and index == 3 -> 0x656C6261
+      pattern == 99 and index == 4 -> 0x7365725F
+      pattern == 99 and index == 5 -> 0x7465
+      pattern == 100 and index == 0 -> 0x702E7865
+      pattern == 100 and index == 1 -> 0x65636F72
+      pattern == 100 and index == 2 -> 0x745F7373
+      pattern == 100 and index == 3 -> 0x5F706172
+      pattern == 100 and index == 4 -> 0x74697865
+      pattern == 101 and index == 0 -> 0x702E7865
+      pattern == 101 and index == 1 -> 0x65636F72
+      pattern == 101 and index == 2 -> 0x775F7373
+      pattern == 101 and index == 3 -> 0x746961
+      pattern == 102 and index == 0 -> 0x702E7865
+      pattern == 102 and index == 1 -> 0x65636F72
+      pattern == 102 and index == 2 -> 0x73657373
+      pattern == 102 and index == 3 -> 0x6E75725F
+      pattern == 102 and index == 4 -> 0x6C62616E
+      pattern == 102 and index == 5 -> 0x65
+      pattern == 103 and index == 0 -> 0x722E7865
+      pattern == 103 and index == 1 -> 0x65736961
+      pattern == 104 and index == 0 -> 0x722E7865
+      pattern == 104 and index == 1 -> 0x69656365
+      pattern == 104 and index == 2 -> 0x6576
+      pattern == 105 and index == 0 -> 0x722E7865
+      pattern == 105 and index == 1 -> 0x69656365
+      pattern == 105 and index == 2 -> 0x635F6576
+      pattern == 105 and index == 3 -> 0x5F746E6F
+      pattern == 105 and index == 4 -> 0x65766173
+      pattern == 106 and index == 0 -> 0x722E7865
+      pattern == 106 and index == 1 -> 0x69656365
+      pattern == 106 and index == 2 -> 0x735F6576
+      pattern == 106 and index == 3 -> 0x74726174
+      pattern == 107 and index == 0 -> 0x722E7865
+      pattern == 107 and index == 1 -> 0x69656365
+      pattern == 107 and index == 2 -> 0x735F6576
+      pattern == 107 and index == 3 -> 0x74726174
+      pattern == 107 and index == 4 -> 0x7465735F
+      pattern == 108 and index == 0 -> 0x722E7865
+      pattern == 108 and index == 1 -> 0x63756465
+      pattern == 108 and index == 2 -> 0x6E6F6974
+      pattern == 108 and index == 3 -> 0x6369745F
+      pattern == 108 and index == 4 -> 0x6B
+      pattern == 109 and index == 0 -> 0x722E7865
+      pattern == 109 and index == 1 -> 0x6D65
+      pattern == 110 and index == 0 -> 0x722E7865
+      pattern == 110 and index == 1 -> 0x6C757365
+      pattern == 110 and index == 2 -> 0x74615F74
+      pattern == 110 and index == 3 -> 0x6E5F6D6F
+      pattern == 110 and index == 4 -> 0x656D61
+      pattern == 111 and index == 0 -> 0x722E7865
+      pattern == 111 and index == 1 -> 0x6C757365
+      pattern == 111 and index == 2 -> 0x72635F74
+      pattern == 111 and index == 3 -> 0x65746165
+      pattern == 112 and index == 0 -> 0x722E7865
+      pattern == 112 and index == 1 -> 0x6C757365
+      pattern == 112 and index == 2 -> 0x65645F74
+      pattern == 112 and index == 3 -> 0x6F727473
+      pattern == 112 and index == 4 -> 0x79
+      pattern == 113 and index == 0 -> 0x722E7865
+      pattern == 113 and index == 1 -> 0x6C757365
+      pattern == 113 and index == 2 -> 0x78655F74
+      pattern == 113 and index == 3 -> 0x74706563
+      pattern == 113 and index == 4 -> 0x5F6E6F69
+      pattern == 113 and index == 5 -> 0x646E696B
+      pattern == 114 and index == 0 -> 0x722E7865
+      pattern == 114 and index == 1 -> 0x6C757365
+      pattern == 114 and index == 2 -> 0x78655F74
+      pattern == 114 and index == 3 -> 0x74706563
+      pattern == 114 and index == 4 -> 0x5F6E6F69
+      pattern == 114 and index == 5 -> 0x73616572
+      pattern == 114 and index == 6 -> 0x6E6F
+      pattern == 115 and index == 0 -> 0x722E7865
+      pattern == 115 and index == 1 -> 0x6C757365
+      pattern == 115 and index == 2 -> 0x6F725F74
+      pattern == 115 and index == 3 -> 0x6B5F746F
+      pattern == 115 and index == 4 -> 0x646E69
+      pattern == 116 and index == 0 -> 0x722E7865
+      pattern == 116 and index == 1 -> 0x6C757365
+      pattern == 116 and index == 2 -> 0x6F725F74
+      pattern == 116 and index == 3 -> 0x775F746F
+      pattern == 116 and index == 4 -> 0x64726F
+      pattern == 117 and index == 0 -> 0x722E7865
+      pattern == 117 and index == 1 -> 0x6C757365
+      pattern == 117 and index == 2 -> 0x65745F74
+      pattern == 117 and index == 3 -> 0x675F6D72
+      pattern == 117 and index == 4 -> 0x7465
+      pattern == 118 and index == 0 -> 0x722E7865
+      pattern == 118 and index == 1 -> 0x6C757365
+      pattern == 118 and index == 2 -> 0x65745F74
+      pattern == 118 and index == 3 -> 0x6B5F6D72
+      pattern == 118 and index == 4 -> 0x646E69
+      pattern == 119 and index == 0 -> 0x722E7865
+      pattern == 119 and index == 1 -> 0x6C757365
+      pattern == 119 and index == 2 -> 0x65745F74
+      pattern == 119 and index == 3 -> 0x6C5F6D72
+      pattern == 119 and index == 4 -> 0x74676E65
+      pattern == 119 and index == 5 -> 0x68
+      pattern == 120 and index == 0 -> 0x722E7865
+      pattern == 120 and index == 1 -> 0x72757465
+      pattern == 120 and index == 2 -> 0x6E
+      pattern == 121 and index == 0 -> 0x722E7865
+      pattern == 121 and index == 1 -> 0x69746E75
+      pattern == 121 and index == 2 -> 0x635F656D
+      pattern == 121 and index == 3 -> 0x74616572
+      pattern == 121 and index == 4 -> 0x65
+      pattern == 122 and index == 0 -> 0x722E7865
+      pattern == 122 and index == 1 -> 0x69746E75
+      pattern == 122 and index == 2 -> 0x645F656D
+      pattern == 122 and index == 3 -> 0x72747365
+      pattern == 122 and index == 4 -> 0x796F
+      pattern == 123 and index == 0 -> 0x722E7865
+      pattern == 123 and index == 1 -> 0x69746E75
+      pattern == 123 and index == 2 -> 0x655F656D
+      pattern == 123 and index == 3 -> 0x7265746E
+      pattern == 124 and index == 0 -> 0x722E7865
+      pattern == 124 and index == 1 -> 0x69746E75
+      pattern == 124 and index == 2 -> 0x6C5F656D
+      pattern == 124 and index == 3 -> 0x65766165
+      pattern == 125 and index == 0 -> 0x732E7865
+      pattern == 125 and index == 1 -> 0x64656863
+      pattern == 125 and index == 2 -> 0x5F656C75
+      pattern == 125 and index == 3 -> 0x7478656E
+      pattern == 126 and index == 0 -> 0x732E7865
+      pattern == 126 and index == 1 -> 0x666C65
+      pattern == 127 and index == 0 -> 0x732E7865
+      pattern == 127 and index == 1 -> 0x646E65
+      pattern == 128 and index == 0 -> 0x732E7865
+      pattern == 128 and index == 1 -> 0x6E776170
+      pattern == 129 and index == 0 -> 0x732E7865
+      pattern == 129 and index == 1 -> 0x61657274
+      pattern == 129 and index == 2 -> 0x72645F6D
+      pattern == 129 and index == 3 -> 0x706F
+      pattern == 130 and index == 0 -> 0x732E7865
+      pattern == 130 and index == 1 -> 0x61657274
+      pattern == 130 and index == 2 -> 0x69665F6D
+      pattern == 130 and index == 3 -> 0x7265746C
+      pattern == 131 and index == 0 -> 0x732E7865
+      pattern == 131 and index == 1 -> 0x61657274
+      pattern == 131 and index == 2 -> 0x61745F6D
+      pattern == 131 and index == 3 -> 0x656B
+      pattern == 132 and index == 0 -> 0x732E7865
+      pattern == 132 and index == 1 -> 0x6E697274
+      pattern == 132 and index == 2 -> 0x72705F67
+      pattern == 132 and index == 3 -> 0x61746E69
+      pattern == 132 and index == 4 -> 0x656C62
+      pattern == 133 and index == 0 -> 0x732E7865
+      pattern == 133 and index == 1 -> 0x6E697274
+      pattern == 133 and index == 2 -> 0x6F745F67
+      pattern == 133 and index == 3 -> 0x6F74615F
+      pattern == 133 and index == 4 -> 0x6D
+      pattern == 134 and index == 0 -> 0x732E7865
+      pattern == 134 and index == 1 -> 0x6E697274
+      pattern == 134 and index == 2 -> 0x6F745F67
+      pattern == 134 and index == 3 -> 0x6978655F
+      pattern == 134 and index == 4 -> 0x6E697473
+      pattern == 134 and index == 5 -> 0x74615F67
+      pattern == 134 and index == 6 -> 0x6D6F
+      pattern == 135 and index == 0 -> 0x732E7865
+      pattern == 135 and index == 1 -> 0x6E697274
+      pattern == 135 and index == 2 -> 0x6F745F67
+      pattern == 135 and index == 3 -> 0x6F6C665F
+      pattern == 135 and index == 4 -> 0x7461
+      pattern == 136 and index == 0 -> 0x732E7865
+      pattern == 136 and index == 1 -> 0x6E697274
+      pattern == 136 and index == 2 -> 0x6F745F67
+      pattern == 136 and index == 3 -> 0x746E695F
+      pattern == 137 and index == 0 -> 0x732E7865
+      pattern == 137 and index == 1 -> 0x6275
+      pattern == 138 and index == 0 -> 0x742E7865
+      pattern == 138 and index == 1 -> 0x5F6D7265
+      pattern == 138 and index == 2 -> 0x7165
+      pattern == 139 and index == 0 -> 0x742E7865
+      pattern == 139 and index == 1 -> 0x5F6D7265
+      pattern == 139 and index == 2 -> 0x6C5F7165
+      pattern == 139 and index == 3 -> 0x65736F6F
+      pattern == 140 and index == 0 -> 0x742E7865
+      pattern == 140 and index == 1 -> 0x5F6D7265
+      pattern == 140 and index == 2 -> 0x6F707865
+      pattern == 140 and index == 3 -> 0x7472
+      pattern == 141 and index == 0 -> 0x742E7865
+      pattern == 141 and index == 1 -> 0x5F6D7265
+      pattern == 141 and index == 2 -> 0x646E6168
+      pattern == 141 and index == 3 -> 0x645F656C
+      pattern == 141 and index == 4 -> 0x72747365
+      pattern == 141 and index == 5 -> 0x796F
+      pattern == 142 and index == 0 -> 0x742E7865
+      pattern == 142 and index == 1 -> 0x5F6D7265
+      pattern == 142 and index == 2 -> 0x646E6168
+      pattern == 142 and index == 3 -> 0x655F656C
+      pattern == 142 and index == 4 -> 0x726F7078
+      pattern == 142 and index == 5 -> 0x74
+      pattern == 143 and index == 0 -> 0x742E7865
+      pattern == 143 and index == 1 -> 0x5F6D7265
+      pattern == 143 and index == 2 -> 0x6F706D69
+      pattern == 143 and index == 3 -> 0x7472
+      pattern == 144 and index == 0 -> 0x742E7865
+      pattern == 144 and index == 1 -> 0x776F7268
+      pattern == 145 and index == 0 -> 0x742E7865
+      pattern == 145 and index == 1 -> 0x6E695F6F
+      pattern == 145 and index == 2 -> 0x74
+      pattern == 146 and index == 0 -> 0x742E7865
+      pattern == 146 and index == 1 -> 0x6F775F6F
+      pattern == 146 and index == 2 -> 0x6472
+      pattern == 147 and index == 0 -> 0x742E7865
+      pattern == 147 and index == 1 -> 0x7972
+      pattern == 148 and index == 0 -> 0x742E7865
+      pattern == 148 and index == 1 -> 0x656C7075
+      pattern == 149 and index == 0 -> 0x742E7865
+      pattern == 149 and index == 1 -> 0x656C7075
+      pattern == 149 and index == 2 -> 0x7465675F
+      pattern == 150 and index == 0 -> 0x742E7865
+      pattern == 150 and index == 1 -> 0x656C7075
+      pattern == 150 and index == 2 -> 0x6E656C5F
+      pattern == 150 and index == 3 -> 0x687467
+      pattern == 151 and index == 0 -> 0x752E7865
+      pattern == 151 and index == 1 -> 0x786F626E
+      pattern == 152 and index == 0 -> 0x752E7865
+      pattern == 152 and index == 1 -> 0x7571696E
+      pattern == 152 and index == 2 -> 0x6E695F65
+      pattern == 152 and index == 3 -> 0x65676574
+      pattern == 152 and index == 4 -> 0x72
+      pattern == 153 and index == 0 -> 0x752E7865
+      pattern == 153 and index == 1 -> 0x6E696C6E
+      pattern == 153 and index == 2 -> 0x6B
+      pattern == 154 and index == 0 -> 0x762E7865
+      pattern == 154 and index == 1 -> 0x7261
+      pattern == 155 and index == 0 -> 0x772E7865
+      pattern == 155 and index == 1 -> 0x656B726F
+      pattern == 155 and index == 2 -> 0x75725F72
+      pattern == 155 and index == 3 -> 0x6E
+      pattern == 156 and index == 0 -> 0x792E7865
+      pattern == 156 and index == 1 -> 0x646C6569
+      pattern == 157 and index == 0 -> 0x792E7865
+      pattern == 157 and index == 1 -> 0x646C6569
+      pattern == 157 and index == 2 -> 0x72616D5F
+      pattern == 157 and index == 3 -> 0x6B
+      true -> -1
+    end
+  end
+
+  def pattern_target(pattern) do
+    cond do
+      pattern == 0 -> 2
+      pattern == 1 -> 157
+      pattern == 2 -> 0
+      pattern == 3 -> 111
+      pattern == 4 -> 110
+      pattern == 5 -> 14
+      pattern == 6 -> 103
+      pattern == 7 -> 102
+      pattern == 8 -> 12
+      pattern == 9 -> 109
+      pattern == 10 -> 104
+      pattern == 11 -> 105
+      pattern == 12 -> 107
+      pattern == 13 -> 106
+      pattern == 14 -> 0
+      pattern == 15 -> 10
+      pattern == 16 -> 138
+      pattern == 17 -> 68
+      pattern == 18 -> 7
+      pattern == 19 -> 63
+      pattern == 20 -> 64
+      pattern == 21 -> 66
+      pattern == 22 -> 65
+      pattern == 23 -> 67
+      pattern == 24 -> 62
+      pattern == 25 -> 60
+      pattern == 26 -> 48
+      pattern == 27 -> 57
+      pattern == 28 -> 5
+      pattern == 29 -> 118
+      pattern == 30 -> 130
+      pattern == 31 -> 121
+      pattern == 32 -> 120
+      pattern == 33 -> 127
+      pattern == 34 -> 128
+      pattern == 35 -> 129
+      pattern == 36 -> 123
+      pattern == 37 -> 124
+      pattern == 38 -> 126
+      pattern == 39 -> 125
+      pattern == 40 -> 119
+      pattern == 41 -> 122
+      pattern == 42 -> 55
+      pattern == 43 -> 35
+      pattern == 44 -> 36
+      pattern == 45 -> 38
+      pattern == 46 -> 37
+      pattern == 47 -> 116
+      pattern == 48 -> 117
+      pattern == 49 -> 97
+      pattern == 50 -> 101
+      pattern == 51 -> 134
+      pattern == 52 -> 135
+      pattern == 53 -> 18
+      pattern == 54 -> 158
+      pattern == 55 -> 16
+      pattern == 56 -> 114
+      pattern == 57 -> 112
+      pattern == 58 -> 113
+      pattern == 59 -> 96
+      pattern == 60 -> 144
+      pattern == 61 -> 145
+      pattern == 62 -> 143
+      pattern == 63 -> 142
+      pattern == 64 -> 146
+      pattern == 65 -> 148
+      pattern == 66 -> 147
+      pattern == 67 -> 53
+      pattern == 68 -> 149
+      pattern == 69 -> 13
+      pattern == 70 -> 82
+      pattern == 71 -> 85
+      pattern == 72 -> 83
+      pattern == 73 -> 86
+      pattern == 74 -> 84
+      pattern == 75 -> 1
+      pattern == 76 -> 45
+      pattern == 77 -> 71
+      pattern == 78 -> 72
+      pattern == 79 -> 73
+      pattern == 80 -> 152
+      pattern == 81 -> 153
+      pattern == 82 -> 154
+      pattern == 83 -> 151
+      pattern == 84 -> 89
+      pattern == 85 -> 91
+      pattern == 86 -> 90
+      pattern == 87 -> 92
+      pattern == 88 -> 93
+      pattern == 89 -> 94
+      pattern == 90 -> 56
+      pattern == 91 -> 75
+      pattern == 92 -> 4
+      pattern == 93 -> 78
+      pattern == 94 -> 74
+      pattern == 95 -> 49
+      pattern == 96 -> 50
+      pattern == 97 -> 51
+      pattern == 98 -> 59
+      pattern == 99 -> 41
+      pattern == 100 -> 52
+      pattern == 101 -> 136
+      pattern == 102 -> 58
+      pattern == 103 -> 140
+      pattern == 104 -> 44
+      pattern == 105 -> 61
+      pattern == 106 -> 76
+      pattern == 107 -> 77
+      pattern == 108 -> 69
+      pattern == 109 -> 6
+      pattern == 110 -> 30
+      pattern == 111 -> 23
+      pattern == 112 -> 24
+      pattern == 113 -> 27
+      pattern == 114 -> 28
+      pattern == 115 -> 25
+      pattern == 116 -> 26
+      pattern == 117 -> 32
+      pattern == 118 -> 29
+      pattern == 119 -> 31
+      pattern == 120 -> 17
+      pattern == 121 -> 19
+      pattern == 122 -> 22
+      pattern == 123 -> 20
+      pattern == 124 -> 21
+      pattern == 125 -> 47
+      pattern == 126 -> 42
+      pattern == 127 -> 43
+      pattern == 128 -> 46
+      pattern == 129 -> 133
+      pattern == 130 -> 131
+      pattern == 131 -> 132
+      pattern == 132 -> 108
+      pattern == 133 -> 99
+      pattern == 134 -> 100
+      pattern == 135 -> 98
+      pattern == 136 -> 115
+      pattern == 137 -> 3
+      pattern == 138 -> 11
+      pattern == 139 -> 81
+      pattern == 140 -> 33
+      pattern == 141 -> 40
+      pattern == 142 -> 39
+      pattern == 143 -> 34
+      pattern == 144 -> 139
+      pattern == 145 -> 80
+      pattern == 146 -> 0
+      pattern == 147 -> 0
+      pattern == 148 -> 150
+      pattern == 149 -> 87
+      pattern == 150 -> 88
+      pattern == 151 -> 0
+      pattern == 152 -> 79
+      pattern == 153 -> 54
+      pattern == 154 -> 0
+      pattern == 155 -> 137
+      pattern == 156 -> 9
+      pattern == 157 -> 70
+      true -> -1
+    end
+  end
+
+  def pattern_action(pattern) do
+    cond do
+      pattern == 0 -> 3
+      pattern == 1 -> 2
+      pattern == 2 -> 4
+      pattern == 3 -> 16
+      pattern == 4 -> 16
+      pattern == 5 -> 16
+      pattern == 6 -> 16
+      pattern == 7 -> 16
+      pattern == 8 -> 16
+      pattern == 9 -> 16
+      pattern == 10 -> 16
+      pattern == 11 -> 16
+      pattern == 12 -> 16
+      pattern == 13 -> 16
+      pattern == 14 -> 5
+      pattern == 15 -> 6
+      pattern == 16 -> 16
+      pattern == 17 -> 16
+      pattern == 18 -> 7
+      pattern == 19 -> 16
+      pattern == 20 -> 16
+      pattern == 21 -> 16
+      pattern == 22 -> 16
+      pattern == 23 -> 16
+      pattern == 24 -> 16
+      pattern == 25 -> 16
+      pattern == 26 -> 16
+      pattern == 27 -> 16
+      pattern == 28 -> 3
+      pattern == 29 -> 16
+      pattern == 30 -> 16
+      pattern == 31 -> 16
+      pattern == 32 -> 16
+      pattern == 33 -> 16
+      pattern == 34 -> 16
+      pattern == 35 -> 16
+      pattern == 36 -> 16
+      pattern == 37 -> 16
+      pattern == 38 -> 16
+      pattern == 39 -> 16
+      pattern == 40 -> 16
+      pattern == 41 -> 16
+      pattern == 42 -> 16
+      pattern == 43 -> 16
+      pattern == 44 -> 16
+      pattern == 45 -> 16
+      pattern == 46 -> 16
+      pattern == 47 -> 16
+      pattern == 48 -> 16
+      pattern == 49 -> 16
+      pattern == 50 -> 16
+      pattern == 51 -> 16
+      pattern == 52 -> 16
+      pattern == 53 -> 9
+      pattern == 54 -> 8
+      pattern == 55 -> 12
+      pattern == 56 -> 16
+      pattern == 57 -> 16
+      pattern == 58 -> 16
+      pattern == 59 -> 16
+      pattern == 60 -> 14
+      pattern == 61 -> 14
+      pattern == 62 -> 14
+      pattern == 63 -> 14
+      pattern == 64 -> 14
+      pattern == 65 -> 14
+      pattern == 66 -> 14
+      pattern == 67 -> 16
+      pattern == 68 -> 1
+      pattern == 69 -> 16
+      pattern == 70 -> 16
+      pattern == 71 -> 16
+      pattern == 72 -> 16
+      pattern == 73 -> 16
+      pattern == 74 -> 16
+      pattern == 75 -> 13
+      pattern == 76 -> 16
+      pattern == 77 -> 16
+      pattern == 78 -> 16
+      pattern == 79 -> 16
+      pattern == 80 -> 10
+      pattern == 81 -> 10
+      pattern == 82 -> 10
+      pattern == 83 -> 1
+      pattern == 84 -> 16
+      pattern == 85 -> 16
+      pattern == 86 -> 16
+      pattern == 87 -> 16
+      pattern == 88 -> 16
+      pattern == 89 -> 16
+      pattern == 90 -> 16
+      pattern == 91 -> 16
+      pattern == 92 -> 3
+      pattern == 93 -> 16
+      pattern == 94 -> 16
+      pattern == 95 -> 16
+      pattern == 96 -> 16
+      pattern == 97 -> 16
+      pattern == 98 -> 16
+      pattern == 99 -> 16
+      pattern == 100 -> 16
+      pattern == 101 -> 16
+      pattern == 102 -> 16
+      pattern == 103 -> 16
+      pattern == 104 -> 16
+      pattern == 105 -> 16
+      pattern == 106 -> 16
+      pattern == 107 -> 16
+      pattern == 108 -> 16
+      pattern == 109 -> 3
+      pattern == 110 -> 16
+      pattern == 111 -> 16
+      pattern == 112 -> 16
+      pattern == 113 -> 16
+      pattern == 114 -> 16
+      pattern == 115 -> 16
+      pattern == 116 -> 16
+      pattern == 117 -> 16
+      pattern == 118 -> 16
+      pattern == 119 -> 16
+      pattern == 120 -> 15
+      pattern == 121 -> 16
+      pattern == 122 -> 16
+      pattern == 123 -> 16
+      pattern == 124 -> 16
+      pattern == 125 -> 16
+      pattern == 126 -> 16
+      pattern == 127 -> 16
+      pattern == 128 -> 16
+      pattern == 129 -> 16
+      pattern == 130 -> 16
+      pattern == 131 -> 16
+      pattern == 132 -> 16
+      pattern == 133 -> 16
+      pattern == 134 -> 16
+      pattern == 135 -> 16
+      pattern == 136 -> 16
+      pattern == 137 -> 3
+      pattern == 138 -> 16
+      pattern == 139 -> 16
+      pattern == 140 -> 16
+      pattern == 141 -> 16
+      pattern == 142 -> 16
+      pattern == 143 -> 16
+      pattern == 144 -> 16
+      pattern == 145 -> 16
+      pattern == 146 -> 11
+      pattern == 147 -> 17
+      pattern == 148 -> 1
+      pattern == 149 -> 16
+      pattern == 150 -> 16
+      pattern == 151 -> 11
+      pattern == 152 -> 16
+      pattern == 153 -> 16
+      pattern == 154 -> 18
+      pattern == 155 -> 16
+      pattern == 156 -> 19
+      pattern == 157 -> 16
+      true -> -1
+    end
+  end
+
   def try_accept(operands, results, regions, body_arguments, catch_arguments) do
     Bitwise.band(
       Bitwise.band(operands == 0, results == 1),

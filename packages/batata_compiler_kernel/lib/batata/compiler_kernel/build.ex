@@ -29,7 +29,26 @@ defmodule Batata.CompilerKernel.Build do
       arity: 5,
       symbol: "batata_kernel_function_value_accept"
     },
-    %{function: :try_accept, arity: 5, symbol: "batata_kernel_try_accept"}
+    %{function: :try_accept, arity: 5, symbol: "batata_kernel_try_accept"},
+    %{function: :pattern_count, arity: 0, symbol: "batata_kernel_pattern_count"},
+    %{
+      function: :pattern_namespace_length,
+      arity: 0,
+      symbol: "batata_kernel_pattern_namespace_length"
+    },
+    %{
+      function: :pattern_namespace_word,
+      arity: 1,
+      symbol: "batata_kernel_pattern_namespace_word"
+    },
+    %{
+      function: :pattern_root_length,
+      arity: 1,
+      symbol: "batata_kernel_pattern_root_length"
+    },
+    %{function: :pattern_root_word, arity: 2, symbol: "batata_kernel_pattern_root_word"},
+    %{function: :pattern_target, arity: 1, symbol: "batata_kernel_pattern_target"},
+    %{function: :pattern_action, arity: 1, symbol: "batata_kernel_pattern_action"}
   ]
   @allowed_options [
     :beaver_path,
