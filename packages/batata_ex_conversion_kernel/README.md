@@ -1,4 +1,4 @@
-# Batata Compiler Kernel
+# Batata Ex Conversion Kernel
 
 This package owns Batata's evolving Ex conversion source, native shared
 library, manifest instances, and bootstrap receipts. Beaver owns only the
@@ -10,7 +10,7 @@ The dependency direction is always:
 ```text
 Beaver generic ABI
         ↓
-Batata compiler kernel
+Batata Ex conversion kernel
 ```
 
 The checked-in seed manifest closes the first pure-scalar source subset. It is
@@ -25,8 +25,8 @@ manifest, its shared library, and the exact ABI identity expected by the host:
 
 ```elixir
 config :batata,
-  compiler_kernel: [
-    manifest: "/opt/batata/compiler-kernel.json",
+  ex_conversion_kernel: [
+    manifest: "/opt/batata/ex-conversion-kernel.json",
     artifact: "/opt/batata/libbatata_ex_conversion.so",
     expected: [
       beaver_revision: "<40-hex commit>",
@@ -49,12 +49,12 @@ falls back to it.
 
 ## Release artifacts
 
-Build the frozen Stage 0 → Stage 1 → Stage 2 chain for the current host with
+Bootstrap the frozen Stage 0 → Stage 1 → Stage 2 chain for the current host with
 explicit source identities:
 
 ```sh
-mix batata.compiler_kernel.release \
-  --output _build/compiler-kernel-release \
+mix batata.ex_conversion_kernel.release \
+  --output _build/batata-ex-conversion-kernel-release \
   --compiler-revision "$BATATA_REVISION" \
   --beaver-revision "$BEAVER_REVISION"
 ```

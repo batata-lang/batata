@@ -1,11 +1,11 @@
-defmodule Batata.CompilerKernel.SourceOwnershipTest do
+defmodule Batata.ExConversionKernel.SourceOwnershipTest do
   use ExUnit.Case, async: true
 
-  alias Batata.CompilerKernel
+  alias Batata.ExConversionKernel
 
   test "compiled Batata source owns the complete pattern registry" do
-    source = File.read!(CompilerKernel.conversion_source_path())
-    adapter = File.read!(CompilerKernel.native_adapter_path())
+    source = File.read!(ExConversionKernel.conversion_source_path())
+    adapter = File.read!(ExConversionKernel.native_adapter_path())
 
     for function <- ~w(
       pattern_count pattern_namespace_length pattern_namespace_word

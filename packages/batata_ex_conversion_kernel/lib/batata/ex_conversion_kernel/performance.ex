@@ -1,4 +1,4 @@
-defmodule Batata.CompilerKernel.Performance do
+defmodule Batata.ExConversionKernel.Performance do
   @moduledoc """
   Produces bounded Stage 0 versus Stage 2 conversion performance receipts.
 
@@ -8,7 +8,7 @@ defmodule Batata.CompilerKernel.Performance do
   are hard requirements.
   """
 
-  alias Batata.CompilerKernel.Provider
+  alias Batata.ExConversionKernel.Provider
   alias Batata.Memory
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion

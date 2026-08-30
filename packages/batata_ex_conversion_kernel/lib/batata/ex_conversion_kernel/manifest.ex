@@ -1,4 +1,4 @@
-defmodule Batata.CompilerKernel.Manifest do
+defmodule Batata.ExConversionKernel.Manifest do
   @moduledoc """
   Builds Batata instances of Beaver's provider-neutral compiler-kernel manifest.
 
@@ -8,7 +8,7 @@ defmodule Batata.CompilerKernel.Manifest do
   this module never derives provenance from the current working directory.
   """
 
-  alias Batata.CompilerKernel
+  alias Batata.ExConversionKernel
   alias Beaver.MLIR.CompilationRuntime
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
 
@@ -213,7 +213,7 @@ defmodule Batata.CompilerKernel.Manifest do
     KernelManifest.new!(%{
       "schema_version" => KernelManifest.schema_version(),
       "compiler_kernel_abi_version" => KernelManifest.abi_version(),
-      "provider" => CompilerKernel.provider(),
+      "provider" => ExConversionKernel.provider(),
       "compiler_revision" => Keyword.fetch!(opts, :compiler_revision),
       "beaver_revision" => Keyword.fetch!(opts, :beaver_revision),
       "llvm_revision" => CompilationRuntime.llvm_revision(),
@@ -236,7 +236,7 @@ defmodule Batata.CompilerKernel.Manifest do
   @spec write_sidecar!(KernelManifest.t(), Path.t()) :: Path.t()
   def write_sidecar!(%KernelManifest{} = manifest, output_dir) when is_binary(output_dir) do
     File.mkdir_p!(output_dir)
-    path = Path.join(output_dir, CompilerKernel.sidecar_name())
+    path = Path.join(output_dir, ExConversionKernel.sidecar_name())
     File.write!(path, KernelManifest.encode!(manifest))
     path
   end

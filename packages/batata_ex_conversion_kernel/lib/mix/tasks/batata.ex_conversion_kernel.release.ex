@@ -1,11 +1,11 @@
-defmodule Mix.Tasks.Batata.CompilerKernel.Release do
-  @shortdoc "Builds an auditable Stage 1/2 native compiler-kernel release"
+defmodule Mix.Tasks.Batata.ExConversionKernel.Release do
+  @shortdoc "Builds an auditable Stage 1/2 native Ex conversion kernel release"
 
   @moduledoc """
-  Builds a callback-free compiler-kernel release for the current host.
+  Builds a callback-free Ex conversion kernel release for the current host.
 
-      mix batata.compiler_kernel.release \
-        --output _build/compiler-kernel-release \
+      mix batata.ex_conversion_kernel.release \
+        --output _build/batata-ex-conversion-kernel-release \
         --compiler-revision "$BATATA_REVISION" \
         --beaver-revision "$BEAVER_REVISION"
 
@@ -16,7 +16,7 @@ defmodule Mix.Tasks.Batata.CompilerKernel.Release do
 
   use Mix.Task
 
-  alias Batata.CompilerKernel.Release
+  alias Batata.ExConversionKernel.Release
   alias Beaver.MLIR
 
   @switches [
@@ -34,7 +34,9 @@ defmodule Mix.Tasks.Batata.CompilerKernel.Release do
     {opts, positional, invalid} = OptionParser.parse(args, strict: @switches)
 
     if positional != [] or invalid != [] do
-      Mix.raise("invalid compiler-kernel release arguments: #{inspect(positional ++ invalid)}")
+      Mix.raise(
+        "invalid Ex conversion kernel release arguments: #{inspect(positional ++ invalid)}"
+      )
     end
 
     Mix.Task.run("app.start")
@@ -43,15 +45,20 @@ defmodule Mix.Tasks.Batata.CompilerKernel.Release do
 
     try do
       output =
-        Release.build!(Keyword.get(opts, :output, "_build/compiler-kernel-release"), ctx,
+        Release.build!(
+          Keyword.get(opts, :output, "_build/batata-ex-conversion-kernel-release"),
+          ctx,
           compiler_revision: required!(opts, :compiler_revision),
           beaver_revision: required!(opts, :beaver_revision),
           target: target(opts),
           profile_sizes: profile_sizes(opts)
         )
 
-      Mix.shell().info("compiler-kernel release: #{output.index_path}")
-      Mix.shell().info("production identity: #{output.index["production_kernel_identity"]}")
+      Mix.shell().info("Ex conversion kernel release: #{output.index_path}")
+
+      Mix.shell().info(
+        "production identity: #{output.index["production_ex_conversion_kernel_identity"]}"
+      )
     after
       MLIR.Context.destroy(ctx)
     end

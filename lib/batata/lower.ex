@@ -7,7 +7,7 @@ defmodule Batata.Lower do
   explicit `conversion_provider: :cpp_bootstrap` option.
   """
 
-  alias Batata.CompilerKernel.Provider, as: CompilerKernelProvider
+  alias Batata.ExConversionKernel.Provider, as: ExConversionKernelProvider
   alias Batata.Lower.Trace
   alias Batata.Memory.RuntimeQuota
   alias Beaver.Changeset
@@ -106,7 +106,7 @@ defmodule Batata.Lower do
     end
   end
 
-  defp conversion_provider_plan!(:native), do: CompilerKernelProvider.configured_plan!()
+  defp conversion_provider_plan!(:native), do: ExConversionKernelProvider.configured_plan!()
   defp conversion_provider_plan!(:cpp_bootstrap), do: ExConversion.plan()
 
   defp conversion_provider_plan!(other) do

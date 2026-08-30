@@ -1,8 +1,8 @@
-defmodule Batata.CompilerKernel.ManifestTest do
+defmodule Batata.ExConversionKernel.ManifestTest do
   use ExUnit.Case, async: true
 
-  alias Batata.CompilerKernel
-  alias Batata.CompilerKernel.Manifest
+  alias Batata.ExConversionKernel
+  alias Batata.ExConversionKernel.Manifest
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
 
   @digest "sha256:" <> String.duplicate("a", 64)
@@ -14,7 +14,7 @@ defmodule Batata.CompilerKernel.ManifestTest do
 
     manifest = Manifest.build!(artifact, manifest_options())
 
-    assert manifest.provider == CompilerKernel.provider()
+    assert manifest.provider == ExConversionKernel.provider()
     assert manifest.runtime_abi_digest == Batata.TermRuntime.abi_digest()
 
     roots = Enum.map(manifest.patterns, & &1["root"])
@@ -78,7 +78,7 @@ defmodule Batata.CompilerKernel.ManifestTest do
   end
 
   test "ships a frozen, non-production Stage 0 seed policy" do
-    seed = CompilerKernel.seed_manifest!()
+    seed = ExConversionKernel.seed_manifest!()
     assert seed["provider"] == "cpp-bootstrap"
     assert seed["entrypoint"] == "beaverPopulateExScalarConversionPatterns"
 

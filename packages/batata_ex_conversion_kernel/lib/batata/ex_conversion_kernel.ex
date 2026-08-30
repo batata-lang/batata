@@ -1,6 +1,6 @@
-defmodule Batata.CompilerKernel do
+defmodule Batata.ExConversionKernel do
   @moduledoc """
-  Batata-owned production compiler-kernel artifacts for Ex conversion.
+  Batata-owned production Ex conversion kernel artifacts.
 
   Beaver owns the provider-neutral ABI, loader, trampoline, and frozen Stage 0
   seed. This package owns the evolving Batata conversion source, shared
@@ -10,8 +10,8 @@ defmodule Batata.CompilerKernel do
 
   alias Beaver.MLIR.Conversion.Ex.Stage0
 
-  @provider "batata.ex-conversion"
-  @sidecar "compiler-kernel.json"
+  @provider "batata.ex-conversion-kernel"
+  @sidecar "ex-conversion-kernel.json"
 
   @doc "Stable provider identity used in Beaver compiler-kernel manifests."
   @spec provider() :: String.t()
@@ -24,7 +24,7 @@ defmodule Batata.CompilerKernel do
   @doc "Path to the versioned clean-bootstrap seed policy shipped by this package."
   @spec seed_manifest_path() :: Path.t()
   def seed_manifest_path do
-    :batata_compiler_kernel
+    :batata_ex_conversion_kernel
     |> :code.priv_dir()
     |> List.to_string()
     |> Path.join("bootstrap/seed-manifest.json")
@@ -51,10 +51,10 @@ defmodule Batata.CompilerKernel do
   @doc false
   @spec native_adapter_path() :: Path.t()
   def native_adapter_path,
-    do: application_path("native/compiler_kernel_adapter.c")
+    do: application_path("native/ex_conversion_kernel_adapter.c")
 
   defp application_path(relative) do
-    :batata_compiler_kernel
+    :batata_ex_conversion_kernel
     |> :code.priv_dir()
     |> List.to_string()
     |> Path.join(relative)

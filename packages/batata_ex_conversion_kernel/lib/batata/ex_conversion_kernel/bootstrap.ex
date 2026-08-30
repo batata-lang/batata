@@ -1,4 +1,4 @@
-defmodule Batata.CompilerKernel.Build do
+defmodule Batata.ExConversionKernel.Bootstrap do
   @moduledoc """
   Builds the Batata-authored Ex conversion source into a native kernel.
 
@@ -9,9 +9,9 @@ defmodule Batata.CompilerKernel.Build do
   """
 
   alias Batata.{AOT, Export, Library, Memory}
-  alias Batata.CompilerKernel
-  alias Batata.CompilerKernel.Manifest
-  alias Batata.CompilerKernel.Provider
+  alias Batata.ExConversionKernel
+  alias Batata.ExConversionKernel.Manifest
+  alias Batata.ExConversionKernel.Provider
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Kernel.Manifest, as: KernelManifest
 
@@ -120,7 +120,7 @@ defmodule Batata.CompilerKernel.Build do
           build_manifest: Path.t()
         }
 
-  @doc "Builds the Stage 1 compiler-kernel artifact and receipts."
+  @doc "Builds the Stage 1 Ex conversion kernel artifact and receipts."
   @spec build!(Path.t(), Beaver.MLIR.Context.t(), keyword()) :: output()
   def build!(output_dir, ctx, opts)
       when is_binary(output_dir) and is_list(opts) do
@@ -137,7 +137,7 @@ defmodule Batata.CompilerKernel.Build do
     do_build!(output_dir, ctx, opts, nil, bootstrap)
   end
 
-  @doc "Rebuilds the compiler kernel with a verified Stage 1 kernel."
+  @doc "Rebuilds the Ex conversion kernel with a verified Stage 1 kernel."
   @spec rebuild!(Path.t(), Beaver.MLIR.Context.t(), output(), keyword()) :: output()
   def rebuild!(output_dir, ctx, stage1, opts)
       when is_binary(output_dir) and is_map(stage1) and is_list(opts) do
@@ -166,7 +166,7 @@ defmodule Batata.CompilerKernel.Build do
 
   defp do_build!(output_dir, ctx, opts, conversion_plan, bootstrap) do
     File.mkdir_p!(output_dir)
-    source = File.read!(CompilerKernel.conversion_source_path())
+    source = File.read!(ExConversionKernel.conversion_source_path())
     object_path = Path.join(output_dir, "batata-ex-conversion.o")
     library_path = Path.join(output_dir, AOT.library_name("batata_ex_conversion"))
 
@@ -188,7 +188,7 @@ defmodule Batata.CompilerKernel.Build do
     entrypoints = draft.entrypoints |> Map.values() |> Enum.sort()
 
     AOT.link_shared_library!(object_path, library_path, semantic_exports,
-      extra_sources: [CompilerKernel.native_adapter_path()],
+      extra_sources: [ExConversionKernel.native_adapter_path()],
       compiler_args: native_compiler_args(identity, opts),
       public_symbols: entrypoints
     )
@@ -196,7 +196,7 @@ defmodule Batata.CompilerKernel.Build do
     kernel_manifest = Manifest.build!(library_path, manifest_options(opts, bootstrap))
 
     unless KernelManifest.identity_digest(kernel_manifest) == identity do
-      raise "compiler-kernel identity changed after artifact hashing"
+      raise "Ex conversion kernel identity changed after artifact hashing"
     end
 
     kernel_manifest_path = Manifest.write_sidecar!(kernel_manifest, output_dir)
@@ -259,7 +259,7 @@ defmodule Batata.CompilerKernel.Build do
   end
 
   defp verify_bootstrap_provenance!(opts) do
-    seed = CompilerKernel.seed_manifest!()
+    seed = ExConversionKernel.seed_manifest!()
     expected = "beaver-stage0:" <> Map.fetch!(seed, "identity_digest")
     actual = Keyword.fetch!(opts, :bootstrap_provenance)
 
@@ -326,12 +326,16 @@ defmodule Batata.CompilerKernel.Build do
 
   defp reject_unknown_options!(opts) do
     unless Keyword.keyword?(opts) do
-      raise ArgumentError, "compiler-kernel build options must be a keyword list"
+      raise ArgumentError, "Ex conversion kernel bootstrap options must be a keyword list"
     end
 
     case Keyword.keys(opts) -- @allowed_options do
-      [] -> :ok
-      unknown -> raise ArgumentError, "unknown compiler-kernel build options: #{inspect(unknown)}"
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "unknown Ex conversion kernel bootstrap options: #{inspect(unknown)}"
     end
   end
 end

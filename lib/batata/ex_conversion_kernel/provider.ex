@@ -1,4 +1,4 @@
-defmodule Batata.CompilerKernel.Provider do
+defmodule Batata.ExConversionKernel.Provider do
   @moduledoc """
   Selects Batata's fail-closed native Ex conversion provider.
 
@@ -25,7 +25,7 @@ defmodule Batata.CompilerKernel.Provider do
     defexception [:code, :message]
   end
 
-  @doc "Builds a conversion plan for one verified compiler-kernel artifact."
+  @doc "Builds a conversion plan for one verified Ex conversion kernel artifact."
   @spec plan!(KernelManifest.t(), Path.t(), keyword()) :: Plan.t()
   def plan!(%KernelManifest{} = manifest, artifact, opts)
       when is_binary(artifact) and is_list(opts) do
@@ -63,16 +63,16 @@ defmodule Batata.CompilerKernel.Provider do
   @spec configured_plan!() :: Plan.t()
   def configured_plan! do
     config =
-      Application.get_env(:batata, :compiler_kernel) ||
+      Application.get_env(:batata, :ex_conversion_kernel) ||
         configuration_error!(
           :production_kernel_missing,
-          "native production compiler kernel is not configured"
+          "native production Ex conversion kernel is not configured"
         )
 
     unless Keyword.keyword?(config) do
       configuration_error!(
         :invalid_production_kernel_config,
-        ":batata, :compiler_kernel must be a keyword list"
+        ":batata, :ex_conversion_kernel must be a keyword list"
       )
     end
 
@@ -88,7 +88,7 @@ defmodule Batata.CompilerKernel.Provider do
         {:error, reason} ->
           configuration_error!(
             :production_manifest_unreadable,
-            "cannot read production compiler-kernel manifest: #{inspect(reason)}"
+            "cannot read production Ex conversion kernel manifest: #{inspect(reason)}"
           )
       end
 
@@ -113,7 +113,7 @@ defmodule Batata.CompilerKernel.Provider do
     callback_count = get_in(conversion, ["beam", "callback_count"])
 
     unless callback_count == 0 and conversion["callbacks"] == [] do
-      raise "production compiler kernel crossed the BEAM callback boundary"
+      raise "production Ex conversion kernel crossed the BEAM callback boundary"
     end
 
     receipt = %{
@@ -148,14 +148,14 @@ defmodule Batata.CompilerKernel.Provider do
       :error ->
         configuration_error!(
           :invalid_production_kernel_config,
-          "production compiler-kernel config is missing #{inspect(key)}"
+          "production Ex conversion kernel config is missing #{inspect(key)}"
         )
     end
   end
 
   defp reject_options!(opts) do
     unless Keyword.keyword?(opts) do
-      raise ArgumentError, "compiler-kernel provider options must be a keyword list"
+      raise ArgumentError, "Ex conversion kernel provider options must be a keyword list"
     end
 
     keys = Keyword.keys(opts)
@@ -165,11 +165,11 @@ defmodule Batata.CompilerKernel.Provider do
     cond do
       missing != [] ->
         raise ArgumentError,
-              "missing compiler-kernel provider options: #{inspect(missing)}"
+              "missing Ex conversion kernel provider options: #{inspect(missing)}"
 
       unknown != [] ->
         raise ArgumentError,
-              "unknown compiler-kernel provider options: #{inspect(unknown)}"
+              "unknown Ex conversion kernel provider options: #{inspect(unknown)}"
 
       true ->
         :ok

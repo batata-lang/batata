@@ -1,4 +1,4 @@
-defmodule Batata.CompilerKernel.Native.ExConversion do
+defmodule Batata.ExConversionKernel.Native.ExConversion do
   # Target identifiers are private to the Batata artifact. The C adapter only
   # transports these AOT-produced encodings through Beaver's typed host table.
   def pattern_accept(actual_operands, actual_results, expected_operands, expected_results) do
