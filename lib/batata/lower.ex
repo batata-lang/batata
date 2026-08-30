@@ -2,11 +2,12 @@ defmodule Batata.Lower do
   @moduledoc """
   Lowers `ex` dialect IR to `func`/`arith`/`scf`/`cf` and then to LLVM.
 
-  The conversion patterns live in Beaver
-  (`Beaver.MLIR.Conversion.Ex`); this module wires them together with the
-  standard `arith-to-llvm` and `func-to-llvm` passes for the lowering phase.
+  Production conversion uses the configured callback-free Batata compiler
+  kernel. Beaver's frozen C++ Stage 0 plan is available only through the
+  explicit `conversion_provider: :cpp_bootstrap` option.
   """
 
+  alias Batata.CompilerKernel.Provider, as: CompilerKernelProvider
   alias Batata.Lower.Trace
   alias Batata.Memory.RuntimeQuota
   alias Beaver.Changeset
@@ -62,15 +63,7 @@ defmodule Batata.Lower do
   defp do_to_func(module, opts, session) do
     quota_bytes = opts |> Keyword.get(:memory_quota_bytes) |> RuntimeQuota.validate!()
 
-    conversion_plan =
-      case Keyword.get_lazy(opts, :conversion_plan, &ExConversion.plan/0) do
-        %Plan{} = plan ->
-          plan
-
-        other ->
-          raise ArgumentError,
-                ":conversion_plan must be a conversion plan, got: #{inspect(other)}"
-      end
+    conversion_plan = conversion_plan!(opts)
 
     {module, stages} =
       maybe_stage(module, [], session, :runtime_quota, is_integer(quota_bytes), fn ->
@@ -88,6 +81,37 @@ defmodule Batata.Lower do
       Keyword.get(opts, :memory_telemetry, false),
       fn -> inject_result_memory_accessors!(module) end
     )
+  end
+
+  defp conversion_plan!(opts) do
+    if Keyword.has_key?(opts, :conversion_plan) and
+         Keyword.has_key?(opts, :conversion_provider) do
+      raise ArgumentError, ":conversion_plan and :conversion_provider are mutually exclusive"
+    end
+
+    case Keyword.fetch(opts, :conversion_plan) do
+      {:ok, %Plan{} = plan} ->
+        plan
+
+      {:ok, other} ->
+        raise ArgumentError,
+              ":conversion_plan must be a conversion plan, got: #{inspect(other)}"
+
+      :error ->
+        opts
+        |> Keyword.get_lazy(:conversion_provider, fn ->
+          Application.fetch_env!(:batata, :conversion_provider)
+        end)
+        |> conversion_provider_plan!()
+    end
+  end
+
+  defp conversion_provider_plan!(:native), do: CompilerKernelProvider.configured_plan!()
+  defp conversion_provider_plan!(:cpp_bootstrap), do: ExConversion.plan()
+
+  defp conversion_provider_plan!(other) do
+    raise ArgumentError,
+          ":conversion_provider must be :native or :cpp_bootstrap, got: #{inspect(other)}"
   end
 
   @doc """
