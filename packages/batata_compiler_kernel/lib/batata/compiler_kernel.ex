@@ -31,4 +31,21 @@ defmodule Batata.CompilerKernel do
   @doc "Reads the checked-in Stage 0 seed policy."
   @spec seed_manifest!() :: map()
   def seed_manifest!, do: seed_manifest_path() |> File.read!() |> JSON.decode!()
+
+  @doc false
+  @spec conversion_source_path() :: Path.t()
+  def conversion_source_path,
+    do: application_path("source/ex_conversion.ex")
+
+  @doc false
+  @spec native_adapter_path() :: Path.t()
+  def native_adapter_path,
+    do: application_path("native/compiler_kernel_adapter.c")
+
+  defp application_path(relative) do
+    :batata_compiler_kernel
+    |> :code.priv_dir()
+    |> List.to_string()
+    |> Path.join(relative)
+  end
 end
