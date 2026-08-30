@@ -89,6 +89,20 @@ jobs:
             mix test --warnings-as-errors
           '
 
+      - name: Test Batata Compiler Kernel package
+        working-directory: scripts/native_deps
+        run: |
+          mix batata.native exec -- bash -c '
+            cd packages/batata_compiler_kernel
+            export BATATA_PATH=../..
+            export MIX_ENV=test
+            mix deps.get
+            mix format --check-formatted
+            mix compile --warnings-as-errors
+            mix credo --strict
+            mix test --warnings-as-errors
+          '
+
       - name: Install pinned Godot 4.6.2
         run: |
           mkdir -p "$RUNNER_TEMP/godot"
