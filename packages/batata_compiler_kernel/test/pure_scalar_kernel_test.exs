@@ -2,6 +2,7 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   use ExUnit.Case, async: false
 
   alias Batata.CompilerKernel.Build
+  alias Batata.CompilerKernel.Provider
   alias Beaver.MLIR
   alias Beaver.MLIR.Conversion.Ex, as: ExConversion
   alias Beaver.MLIR.Conversion.Kernel.Error, as: KernelError
@@ -256,6 +257,40 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
   end
 
   @tag :tmp_dir
+  @tag timeout: 240_000
+  test "production provider emits a zero-callback Stage 2 receipt", %{
+    ctx: ctx,
+    tmp_dir: tmp_dir
+  } do
+    stage1 = Build.build!(Path.join(tmp_dir, "stage1"), ctx, build_options())
+    stage2 = Build.rebuild!(Path.join(tmp_dir, "stage2"), ctx, stage1, build_options())
+    receipt_path = Path.join(tmp_dir, "production-conversion-receipt.json")
+    module = control_function_module(ctx)
+
+    {^module, receipt} =
+      Provider.profile!(
+        stage2.kernel_manifest,
+        stage2.library,
+        module,
+        receipt_path,
+        provider_options()
+      )
+
+    assert receipt["callback_free"] == true
+    assert receipt["kernel_identity"] == KernelManifest.identity_digest(stage2.kernel_manifest)
+    assert receipt["bootstrap"] == stage2.kernel_manifest.bootstrap
+    assert receipt["conversion"]["status"] == "ok"
+    assert receipt["conversion"]["beam"]["callback_count"] == 0
+    assert receipt["conversion"]["beam"]["max_in_flight"] == 0
+    assert receipt["conversion"]["callbacks"] == []
+
+    bytes = File.read!(receipt_path)
+    assert bytes == Batata.Memory.canonical_json(receipt) <> "\n"
+    refute MLIR.to_string(module, generic: true) =~ ~r/"ex\./
+    MLIR.Module.destroy(module)
+  end
+
+  @tag :tmp_dir
   test "Batata compiler-kernel build rejects implicit fallback policy", %{
     ctx: ctx,
     tmp_dir: tmp_dir
@@ -294,6 +329,15 @@ defmodule Batata.CompilerKernel.PureScalarKernelTest do
         ]
       ]
     )
+  end
+
+  defp provider_options do
+    [
+      beaver_revision: @beaver_revision,
+      dialect_schema_digest: @digest,
+      runtime_abi_digest: Batata.TermRuntime.abi_digest(),
+      target: target()
+    ]
   end
 
   defp stage0_yield_plan do
