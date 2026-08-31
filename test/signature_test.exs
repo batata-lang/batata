@@ -253,6 +253,51 @@ defmodule Batata.SignatureTest do
            ]) == MapSet.new([{:recursive, 1}, {:mutual_left, 1}, {:mutual_right, 1}])
   end
 
+  test "infers private boolean arguments from every local call site" do
+    flag = {:flag, [], nil}
+
+    strict =
+      definition(:strict, flag, {:and, [], [flag, {:===, [], [1, 1]}]})
+
+    forwarded = definition(:forwarded, flag, {:strict, [], [flag]})
+    main = definition(:main, [], {:forwarded, [], [{:===, [], [1, 1]}]})
+
+    assert Batata.Signature.infer_boolean_arguments([strict, forwarded, main]) == %{
+             {:forwarded, 1} => [true],
+             {:main, 0} => [],
+             {:strict, 1} => [true]
+           }
+  end
+
+  test "keeps mixed, unknown, public, and uncalled boolean arguments unproven" do
+    flag = {:flag, [], nil}
+    strict = definition(:strict, flag, {:and, [], [flag, {:===, [], [1, 1]}]})
+    unknown = definition(:unknown, flag, {:strict, [], [flag]})
+    literal = definition(:literal, [], {:strict, [], [true]})
+    uncalled = definition(:uncalled, flag, {:and, [], [flag, true]})
+
+    public =
+      %Definition{
+        kind: :def,
+        name: :public_strict,
+        arity: 1,
+        clauses: [%Clause{patterns: [flag], body_ast: {:and, [], [flag, true]}}]
+      }
+
+    assert Batata.Signature.infer_boolean_arguments([
+             strict,
+             unknown,
+             literal,
+             uncalled,
+             public
+           ]) == %{
+             {:literal, 0} => [],
+             {:strict, 1} => [false],
+             {:uncalled, 1} => [false],
+             {:unknown, 1} => [false]
+           }
+  end
+
   test "proves integer decoding only at explicit function boundaries" do
     value = {:value, [], nil}
     list = {:list, [], nil}

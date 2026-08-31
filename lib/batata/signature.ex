@@ -166,6 +166,183 @@ defmodule Batata.Signature do
     infer_productive_boolean_results(groups, safe, MapSet.new())
   end
 
+  @doc false
+  def infer_boolean_arguments(definitions, boolean_result_functions \\ MapSet.new()) do
+    groups = Enum.group_by(definitions, &{&1.name, &1.arity})
+
+    private_signatures =
+      groups
+      |> Enum.filter(fn {_signature, grouped} ->
+        Enum.all?(grouped, &(&1.kind == :defp))
+      end)
+      |> Map.new(fn {signature = {_name, arity}, _grouped} ->
+        {signature, List.duplicate(false, arity)}
+      end)
+
+    calls = collect_local_calls(definitions, Map.keys(groups) |> MapSet.new())
+
+    infer_boolean_arguments_fixed_point(
+      private_signatures,
+      calls,
+      boolean_result_functions,
+      %{}
+    )
+  end
+
+  defp infer_boolean_arguments_fixed_point(candidates, calls, boolean_results, proven) do
+    next =
+      Map.new(candidates, fn candidate ->
+        infer_boolean_argument_modes(candidate, calls, proven, boolean_results)
+      end)
+
+    if next == proven,
+      do: proven,
+      else: infer_boolean_arguments_fixed_point(candidates, calls, boolean_results, next)
+  end
+
+  defp infer_boolean_argument_modes(
+         {signature = {_name, arity}, empty_modes},
+         calls,
+         proven,
+         boolean_results
+       ) do
+    callsites = Map.get(calls, signature, [])
+
+    modes =
+      if callsites == [] or arity == 0,
+        do: empty_modes,
+        else: boolean_callsite_modes(arity, callsites, proven, boolean_results)
+
+    {signature, modes}
+  end
+
+  defp boolean_callsite_modes(arity, callsites, proven, boolean_results) do
+    Enum.map(0..(arity - 1), fn index ->
+      Enum.all?(callsites, fn {caller, clause, arguments} ->
+        arguments
+        |> Enum.at(index)
+        |> boolean_argument_ast?(caller, clause, proven, boolean_results)
+      end)
+    end)
+  end
+
+  defp collect_local_calls(definitions, local_signatures) do
+    Enum.reduce(definitions, %{}, fn definition, calls ->
+      collect_definition_local_calls(definition, calls, local_signatures)
+    end)
+  end
+
+  defp collect_definition_local_calls(definition, calls, local_signatures) do
+    caller = {definition.name, definition.arity}
+
+    Enum.reduce(definition.clauses, calls, fn clause, acc ->
+      collect_clause_local_calls(clause, caller, acc, local_signatures)
+    end)
+  end
+
+  defp collect_clause_local_calls(clause, caller, calls, local_signatures) do
+    [clause.guard_ast, clause.body_ast]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.reduce(calls, fn ast, acc ->
+      collect_ast_local_calls(ast, caller, clause, acc, local_signatures)
+    end)
+  end
+
+  defp collect_ast_local_calls(ast, caller, clause, calls, local_signatures) do
+    {_ast, calls} =
+      Macro.prewalk(ast, calls, fn node, acc ->
+        collect_local_call(node, caller, clause, acc, local_signatures)
+      end)
+
+    calls
+  end
+
+  defp collect_local_call(
+         {callee, _, arguments} = node,
+         caller,
+         clause,
+         calls,
+         local_signatures
+       )
+       when is_atom(callee) and is_list(arguments) do
+    signature = {callee, length(arguments)}
+
+    calls =
+      if MapSet.member?(local_signatures, signature),
+        do:
+          Map.update(
+            calls,
+            signature,
+            [{caller, clause, arguments}],
+            &[{caller, clause, arguments} | &1]
+          ),
+        else: calls
+
+    {node, calls}
+  end
+
+  defp collect_local_call(node, _caller, _clause, calls, _local_signatures), do: {node, calls}
+
+  defp boolean_argument_ast?(value, _caller, _clause, _proven, _boolean_results)
+       when value in [true, false],
+       do: true
+
+  defp boolean_argument_ast?(
+         {operator, _, [_left, _right]},
+         _caller,
+         _clause,
+         _proven,
+         _boolean_results
+       )
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       do: true
+
+  defp boolean_argument_ast?(
+         {name, _, [_argument]},
+         _caller,
+         _clause,
+         _proven,
+         _boolean_results
+       )
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
+       do: true
+
+  defp boolean_argument_ast?(
+         {operator, _, [left, right]},
+         caller,
+         clause,
+         proven,
+         boolean_results
+       )
+       when operator in [:and, :or] do
+    boolean_argument_ast?(left, caller, clause, proven, boolean_results) and
+      boolean_argument_ast?(right, caller, clause, proven, boolean_results)
+  end
+
+  defp boolean_argument_ast?(
+         {name, _, arguments},
+         _caller,
+         _clause,
+         _proven,
+         boolean_results
+       )
+       when is_atom(name) and is_list(arguments),
+       do: MapSet.member?(boolean_results, {name, length(arguments)})
+
+  defp boolean_argument_ast?(
+         {name, _, context},
+         caller,
+         clause,
+         proven,
+         _boolean_results
+       )
+       when is_variable_ast(name, context) do
+    index = Enum.find_index(clause.patterns, &(plain_variable(&1) == name))
+    index != nil and proven |> Map.get(caller, []) |> Enum.at(index, false)
+  end
+
+  defp boolean_argument_ast?(_ast, _caller, _clause, _proven, _boolean_results), do: false
+
   defp infer_boolean_results_fixed_point(groups, no_return_functions, candidates) do
     next =
       Enum.reduce(groups, candidates, fn {signature, definitions}, acc ->
