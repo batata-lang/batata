@@ -33,6 +33,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({List, :first, 1}) == :native_term
       assert Stdlib.class({List, :duplicate, 2}) == :native_term
       assert Stdlib.class({List, :flatten, 1}) == :native_term
+      assert Stdlib.class({List, :wrap, 1}) == :native_term
       assert Stdlib.class({:lists, :any, 2}) == :native_term
       assert Stdlib.class({Atom, :to_string, 1}) == :native_term
       assert Stdlib.class({String.Chars, :to_string, 1}) == :native_term
