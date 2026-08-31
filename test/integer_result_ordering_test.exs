@@ -132,6 +132,58 @@ defmodule Batata.IntegerResultOrderingTest do
     assert module |> MLIR.to_string(generic: true) |> count_op("ex.integer_compare") == 3
   end
 
+  test "orders integer-default fields through a struct alias", %{ctx: ctx} do
+    source = """
+      defmodule StructAliasOrderingFixture do
+        defstruct left: 1, right: 2
+
+      defp lt(%__MODULE__{} = pair), do: if(pair.left < pair.right, do: :yes, else: :no)
+      defp lte(%__MODULE__{} = pair), do: if(pair.left <= pair.right, do: :yes, else: :no)
+      defp gt(%__MODULE__{} = pair), do: if(pair.right > pair.left, do: :yes, else: :no)
+      defp gte(%__MODULE__{} = pair), do: if(pair.right >= pair.left, do: :yes, else: :no)
+
+      def main() do
+        pair = %__MODULE__{left: -2, right: 3}
+        {lt(pair), lte(pair), gt(pair), gte(pair)}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {:yes, :yes, :yes, :yes}
+
+    module = Batata.compile(source, ctx)
+    assert MLIR.verify?(module)
+    assert module |> MLIR.to_string(generic: true) |> count_op("ex.integer_compare") == 4
+  end
+
+  test "carries successful arithmetic validation into later ordering", %{ctx: ctx} do
+    source = fn inputs ->
+      """
+      defmodule ValidatedOrderingFixture do
+        defp order(left, right) do
+          _distance = right - left
+          {
+            if(left < right, do: :yes, else: :no),
+            if(right >= left, do: :yes, else: :no)
+          }
+        end
+
+        def main(), do: order(#{inputs})
+      end
+      """
+    end
+
+    assert Batata.execute(source.("1, 2"), ctx) == {:yes, :yes}
+
+    assert_raise ArgumentError, "integer arithmetic requires integer operands", fn ->
+      Batata.execute(source.(":left, :right"), ctx)
+    end
+
+    module = Batata.compile(source.(":left, :right"), ctx)
+    assert MLIR.verify?(module)
+    assert module |> MLIR.to_string(generic: true) |> count_op("ex.integer_compare") == 2
+  end
+
   test "keeps non-integer struct fields and generic map bindings fail closed", %{ctx: ctx} do
     sources = [
       """
