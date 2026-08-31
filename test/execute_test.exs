@@ -1565,6 +1565,28 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == {1, 0}
   end
 
+  test "evaluates each qualified Kernel.max/2 operand exactly once", %{ctx: ctx} do
+    source = """
+    defmodule ScalarMaxEvaluation do
+      def tap(label, value) do
+        send(self(), label)
+        value + 0
+      end
+
+      def main() do
+        result = Kernel.max(tap(3, 3), tap(5, 5))
+
+        first = receive do value -> value end
+        second = receive do value -> value end
+        extra = receive do _value -> 1 after 0 -> 0 end
+        {result, first, second, extra}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {5, 3, 5, 0}
+  end
+
   test "executes the Decimal.Error message short-circuit kernel", %{ctx: ctx} do
     source = """
     defmodule DecimalErrorMessage do

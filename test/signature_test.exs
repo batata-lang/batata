@@ -85,6 +85,19 @@ defmodule Batata.SignatureTest do
            }
   end
 
+  test "infers qualified Kernel.max operands as scalar integers" do
+    value = Macro.var(:value, nil)
+
+    definition =
+      definition(
+        :clamp,
+        value,
+        quote(do: Kernel.max(0, -unquote(value)))
+      )
+
+    assert Batata.Signature.infer([definition]) == %{{:clamp, 1} => [:scalar]}
+  end
+
   test "marks dynamic closure arguments as terms" do
     closure = {:closure, [], nil}
     value = {:value, [], nil}

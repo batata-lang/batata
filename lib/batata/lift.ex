@@ -6164,6 +6164,30 @@ defmodule Batata.Lift do
     lift_expr({:div, [], [left, right]}, ctx, block, env)
   end
 
+  defp lift_stdlib_call(Kernel, :max, [left_ast, right_ast], ctx, block, env) do
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    {right, env} = lift_expr(right_ast, ctx, block, env)
+
+    [left, right] =
+      refine_integer_operands!([left_ast, right_ast], [left, right], env, ctx, block)
+
+    ensure_refined_integer_operands!([left, right])
+    condition = cmp(left, right, "sge", ctx, block)
+    condition_i1 = create_op("arith.trunci", [condition], [MLIR.Type.i1()], ctx, block)
+
+    [result] =
+      build_scf_if(
+        condition_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn _then_block -> [left] end,
+        fn _else_block -> [right] end
+      )
+
+    {result, env}
+  end
+
   defp lift_stdlib_call(String, :duplicate, [binary, count], ctx, block, env)
        when is_binary(binary) and is_integer(count) and count >= 0 do
     result_size = byte_size(binary) * count
