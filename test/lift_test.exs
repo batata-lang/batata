@@ -717,6 +717,28 @@ defmodule Batata.LiftTest do
     assert "ex.div" in names
   end
 
+  test "keeps recursive boolean calls on the scalar strict-and path", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule RecursiveBooleanResult do
+          def even_chain?(value) when value > 1,
+            do: rem(value, 2) == 0 and even_chain?(div(value, 2))
+
+          def even_chain?(value), do: value == 1
+          def main(), do: if(even_chain?(8), do: 1, else: 0)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.call" in names
+    assert "scf.if" in names
+    assert "ex.rem" in names
+    assert "ex.div" in names
+  end
+
   test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
     codepoint = Macro.var(:codepoint, nil)
 

@@ -36,6 +36,7 @@ defmodule Batata.Lift do
   @integer_guard_modes_key {__MODULE__, :integer_guard_modes}
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
+  @boolean_result_functions_key {__MODULE__, :boolean_result_functions}
   @compiler_abi_calls_key {__MODULE__, :compiler_abi_calls}
   @current_function_key {__MODULE__, :current_function}
   @current_function_signature_key {__MODULE__, :current_function_signature}
@@ -101,10 +102,14 @@ defmodule Batata.Lift do
 
     no_return_functions = infer_no_return_functions(definitions)
 
+    boolean_result_functions =
+      Batata.Signature.infer_boolean_results(definitions, no_return_functions)
+
     scalar_result_functions =
       definitions
       |> Batata.Signature.infer_results(no_return_functions)
       |> apply_scalar_result_overrides!(definitions, opts)
+      |> MapSet.union(boolean_result_functions)
 
     argument_modes =
       definitions
@@ -120,6 +125,7 @@ defmodule Batata.Lift do
       @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
       @no_return_functions_key => no_return_functions,
       @scalar_result_functions_key => scalar_result_functions,
+      @boolean_result_functions_key => boolean_result_functions,
       @compiler_abi_calls_key => compiler_abi_calls
     }
 
@@ -3991,7 +3997,8 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:and, _, [left_ast, right_ast]}, ctx, block, env) do
-    unless strict_boolean_scalar_ast?(left_ast) and strict_boolean_scalar_ast?(right_ast) do
+    unless strict_boolean_scalar_ast?(left_ast, env) and
+             strict_boolean_scalar_ast?(right_ast, env) do
       raise Error,
             "body-level and requires compile-proven boolean scalar operands: " <>
               inspect({left_ast, right_ast})
@@ -4034,7 +4041,7 @@ defmodule Batata.Lift do
 
     {condition, env} = lift_expr(condition_ast, ctx, block, env)
     condition = lift_value(condition, ctx, block, env)
-    {condition, falsy} = lower_if_truthiness(condition_ast, condition, ctx, block)
+    {condition, falsy} = lower_if_truthiness(condition_ast, condition, env, ctx, block)
 
     {lower_body_if(condition, then_ast, else_ast, falsy, env, ctx, block), env}
   end
@@ -9132,8 +9139,8 @@ defmodule Batata.Lift do
     create_op("arith.ori", [false?, nil?], [MLIR.Type.i64()], ctx, block)
   end
 
-  defp lower_if_truthiness(condition_ast, condition, ctx, block) do
-    if boolean_scalar_ast?(condition_ast) do
+  defp lower_if_truthiness(condition_ast, condition, env, ctx, block) do
+    if boolean_scalar_ast?(condition_ast, env) do
       {condition, cmp(condition, 0, "eq", ctx, block)}
     else
       condition =
@@ -9147,34 +9154,51 @@ defmodule Batata.Lift do
     end
   end
 
-  defp boolean_scalar_ast?({name, _, [_arg]})
+  defp boolean_scalar_ast?({name, _, [_arg]}, _env)
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
        do: true
 
-  defp boolean_scalar_ast?({op, _, [_left, _right]})
+  defp boolean_scalar_ast?({op, _, [_left, _right]}, _env)
        when op in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
        do: true
 
-  defp boolean_scalar_ast?({:and, _, [left, right]}),
-    do: strict_boolean_scalar_ast?(left) and strict_boolean_scalar_ast?(right)
+  defp boolean_scalar_ast?({:and, _, [left, right]}, env),
+    do: strict_boolean_scalar_ast?(left, env) and strict_boolean_scalar_ast?(right, env)
 
-  defp boolean_scalar_ast?(_ast), do: false
+  defp boolean_scalar_ast?({name, _, arguments}, env)
+       when is_atom(name) and is_list(arguments),
+       do:
+         MapSet.member?(
+           Map.fetch!(env, @boolean_result_functions_key),
+           {name, length(arguments)}
+         )
 
-  defp strict_boolean_scalar_ast?({name, _, [_arg]})
+  defp boolean_scalar_ast?(_ast, _env), do: false
+
+  defp strict_boolean_scalar_ast?({name, _, [_arg]}, _env)
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
        do: true
 
-  defp strict_boolean_scalar_ast?({op, _, [_left, _right]})
+  defp strict_boolean_scalar_ast?({op, _, [_left, _right]}, _env)
        when op in [:==, :!=, :===, :!==],
        do: true
 
-  defp strict_boolean_scalar_ast?({op, _, [left, right]}) when op in [:<, :<=, :>, :>=],
-    do: scalar_integer_candidate_ast?(left) and scalar_integer_candidate_ast?(right)
+  defp strict_boolean_scalar_ast?({op, _, [left, right]}, _env)
+       when op in [:<, :<=, :>, :>=],
+       do: scalar_integer_candidate_ast?(left) and scalar_integer_candidate_ast?(right)
 
-  defp strict_boolean_scalar_ast?({:and, _, [left, right]}),
-    do: strict_boolean_scalar_ast?(left) and strict_boolean_scalar_ast?(right)
+  defp strict_boolean_scalar_ast?({:and, _, [left, right]}, env),
+    do: strict_boolean_scalar_ast?(left, env) and strict_boolean_scalar_ast?(right, env)
 
-  defp strict_boolean_scalar_ast?(_ast), do: false
+  defp strict_boolean_scalar_ast?({name, _, arguments}, env)
+       when is_atom(name) and is_list(arguments),
+       do:
+         MapSet.member?(
+           Map.fetch!(env, @boolean_result_functions_key),
+           {name, length(arguments)}
+         )
+
+  defp strict_boolean_scalar_ast?(_ast, _env), do: false
 
   defp compile_known_integer_ast?(value) when is_integer(value), do: true
 
