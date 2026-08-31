@@ -553,6 +553,25 @@ defmodule Batata.LiftTest do
     assert "ex.binary_slice" in names
   end
 
+  test "normalizes literal binary-prefix term patterns into binary matching IR", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def decode("é:" <> rest), do: rest
+          def decode(_other), do: :error
+          def main(), do: decode("é:value")
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.is_binary" in names
+    assert Enum.count(names, &(&1 == "ex.binary_get")) >= 3
+    assert "ex.binary_slice" in names
+  end
+
   test "lifts utf8 binary patterns with dynamic offsets", %{ctx: ctx} do
     module =
       lift!(

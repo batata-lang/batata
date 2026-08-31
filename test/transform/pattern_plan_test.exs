@@ -80,6 +80,21 @@ defmodule Batata.Transform.PatternPlanTest do
     assert ops(steps) == [:binary, :binary_get, :bind, :binary_rest, :bind]
   end
 
+  test "normalizes literal binary-prefix patterns into binary steps" do
+    steps = PatternPlan.lower_pattern(Code.string_to_quoted!(~S("ok:" <> rest)))
+
+    assert ops(steps) ==
+             [:binary, :binary_get, :literal, :binary_get, :literal, :binary_get, :literal] ++
+               [:binary_rest, :bind]
+  end
+
+  test "marks dynamic and nested binary-prefix patterns unsupported" do
+    for source <- ["prefix <> rest", ~S|"a" <> _|, ~S|"a" <> ("b" <> rest)|] do
+      assert [%Step{op: :unsupported}] =
+               source |> Code.string_to_quoted!() |> PatternPlan.lower_pattern()
+    end
+  end
+
   test "builds clause plans with vars and guard refinements" do
     plan =
       plan!("""

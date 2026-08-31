@@ -179,6 +179,25 @@ defmodule Batata.Transform.PatternPlan do
     end
   end
 
+  defp do_lower_pattern({:<>, metadata, [prefix, {name, variable_metadata, context}]}, path)
+       when is_binary(prefix) and byte_size(prefix) > 0 and is_atom(name) and name != :_ and
+              is_atom(context) do
+    rest_pattern = {name, variable_metadata, context}
+
+    do_lower_pattern(
+      {:<<>>, metadata,
+       :binary.bin_to_list(prefix) ++
+         [
+           {:"::", variable_metadata, [rest_pattern, {:binary, variable_metadata, nil}]}
+         ]},
+      path
+    )
+  end
+
+  defp do_lower_pattern({:<>, _, [_prefix, _rest]} = pattern, path) do
+    [%Step{op: :unsupported, path: path, value: pattern}]
+  end
+
   defp do_lower_pattern({:<<>>, _, segments}, path) do
     segment_steps =
       segments

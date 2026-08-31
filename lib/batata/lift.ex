@@ -2084,6 +2084,9 @@ defmodule Batata.Lift do
   defp multi_arg_tail_pattern!({:%{}, _, _entries} = pattern),
     do: {:term_pattern, pattern}
 
+  defp multi_arg_tail_pattern!({:<>, _, [_prefix, _rest]} = pattern),
+    do: {:term_pattern, pattern}
+
   defp multi_arg_tail_pattern!({:-, _, [integer]}) when is_integer(integer),
     do: {:literal, -integer}
 
@@ -2301,6 +2304,13 @@ defmodule Batata.Lift do
       parse_binary_rest(rest, length(bytes))
     else
       :skip
+    end
+  end
+
+  defp binary_segments({:<>, _, [_prefix, _rest]} = pattern) do
+    case canonical_binary_prefix_pattern(pattern) do
+      {:ok, canonical} -> binary_segments(canonical)
+      :error -> :skip
     end
   end
 
@@ -9721,7 +9731,10 @@ defmodule Batata.Lift do
   # slice is only needed when the clause matches, so a rejected clause never
   # allocates it.
   defp build_match(pattern, value, ctx, block, defer_rest?, struct_schema, pattern_env \\ %{}) do
-    pattern = normalize_struct_patterns(pattern, struct_schema)
+    pattern =
+      pattern
+      |> normalize_binary_prefix_pattern!()
+      |> normalize_struct_patterns(struct_schema)
 
     case pattern do
       {:<<>>, _, segments} ->
@@ -9731,6 +9744,32 @@ defmodule Batata.Lift do
         do_build_match(pattern, value, ctx, block, pattern_env)
     end
   end
+
+  defp normalize_binary_prefix_pattern!({:<>, _, [_prefix, _rest]} = pattern) do
+    case canonical_binary_prefix_pattern(pattern) do
+      {:ok, canonical} ->
+        canonical
+
+      :error ->
+        raise Error,
+              "binary prefix patterns require a non-empty literal binary prefix and a variable suffix: #{inspect(pattern)}"
+    end
+  end
+
+  defp normalize_binary_prefix_pattern!(pattern), do: pattern
+
+  defp canonical_binary_prefix_pattern(
+         {:<>, metadata, [prefix, {name, variable_metadata, context} = rest_pattern]}
+       )
+       when is_binary(prefix) and byte_size(prefix) > 0 and
+              name != :_ and is_variable_ast(name, context) do
+    rest =
+      {:"::", variable_metadata, [rest_pattern, {:binary, variable_metadata, nil}]}
+
+    {:ok, {:<<>>, metadata, [prefix, rest]}}
+  end
+
+  defp canonical_binary_prefix_pattern(_pattern), do: :error
 
   defp normalize_struct_patterns(pattern, struct_schemas) do
     Macro.prewalk(pattern, fn
@@ -9888,6 +9927,11 @@ defmodule Batata.Lift do
   end
 
   defp do_build_match({:<<>>, _, segments}, value, ctx, block, pattern_env) do
+    build_binary_match(segments, value, ctx, block, pattern_env)
+  end
+
+  defp do_build_match({:<>, _, [_prefix, _rest]} = pattern, value, ctx, block, pattern_env) do
+    {:<<>>, _, segments} = normalize_binary_prefix_pattern!(pattern)
     build_binary_match(segments, value, ctx, block, pattern_env)
   end
 
@@ -10833,6 +10877,7 @@ defmodule Batata.Lift do
 
   defp term_pattern?(pattern) when is_atom(pattern), do: true
   defp term_pattern?(pattern) when is_binary(pattern), do: true
+  defp term_pattern?({:<>, _, [_prefix, _rest]}), do: true
 
   defp term_pattern?(pattern) do
     match?({:%{}, _, _}, pattern) or
