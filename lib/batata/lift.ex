@@ -2078,6 +2078,18 @@ defmodule Batata.Lift do
       |> Enum.map(&tail_match(&1, tail_args, ctx, block, module_env))
       |> Enum.unzip()
 
+    integer_clause_namess =
+      Enum.map(clauses, fn clause ->
+        clause.patterns
+        |> tl()
+        |> Enum.reduce(MapSet.new(), fn pattern, names ->
+          MapSet.union(
+            names,
+            struct_integer_pattern_names(pattern, Map.get(module_env, @struct_schema_key))
+          )
+        end)
+      end)
+
     term_parameter_names =
       clause_bindss
       |> List.flatten()
@@ -2125,6 +2137,7 @@ defmodule Batata.Lift do
             box_scrutinee: false,
             untag_int_binds: true,
             clause_bindss: clause_bindss,
+            integer_clause_namess: integer_clause_namess,
             extra_clause_conds: extra_clause_conds,
             force_fallback: not multi_arg_catch_all?(clauses, clause_tail_patterns),
             fallback_binds: fallback_binds,
@@ -4356,6 +4369,18 @@ defmodule Batata.Lift do
     env = Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)
     names = binds |> Enum.map(&elem(&1, 0)) |> MapSet.new()
     env = Map.update(env, @term_pattern_names_key, names, &MapSet.union(&1, names))
+
+    integer_names =
+      struct_integer_pattern_names(pattern, Map.get(env, @struct_schema_key))
+
+    env =
+      Map.update(
+        env,
+        @integer_value_names_key,
+        integer_names,
+        &MapSet.union(&1, integer_names)
+      )
+
     {value, env}
   end
 
@@ -9779,6 +9804,7 @@ defmodule Batata.Lift do
   defp lift_term_case(clauses, scrutinee, env, ctx, block, opts) do
     parsed = Enum.map(clauses, &parse_term_clause/1)
     clause_bindss = case_clause_bindss(opts, length(parsed))
+    extra_integer_namess = case_clause_integer_namess(opts, length(parsed))
     extra_clause_conds = case_clause_conditions(opts, length(parsed))
 
     unless match?(
@@ -9843,14 +9869,35 @@ defmodule Batata.Lift do
     # arithmetic rejects them before invalid IR can be created.
     bindss = untag_int_binds(parsed, bindss, ctx, block)
 
+    integer_namess =
+      parsed
+      |> Enum.zip(extra_integer_namess)
+      |> Enum.map(fn {clause, extra_names} ->
+        clause.pattern
+        |> struct_integer_pattern_names(Map.get(env, @struct_schema_key))
+        |> MapSet.union(extra_names)
+      end)
+
     region = MLIR.CAPI.mlirRegionCreate()
 
     {yield_types, _first_type} =
       parsed
       |> Enum.zip(guards)
       |> Enum.zip(bindss)
-      |> Enum.map_reduce(nil, fn {{clause, guard}, binds}, first_type ->
-        type = add_term_clause_block(clause, guard, binds, env, ctx, region, first_type)
+      |> Enum.zip(integer_namess)
+      |> Enum.map_reduce(nil, fn {{{clause, guard}, binds}, integer_names}, first_type ->
+        type =
+          add_term_clause_block(
+            clause,
+            guard,
+            binds,
+            integer_names,
+            env,
+            ctx,
+            region,
+            first_type
+          )
+
         {type, first_type || type}
       end)
 
@@ -9890,6 +9937,24 @@ defmodule Batata.Lift do
       {:ok, bindss} ->
         raise Error,
               "case clause binding count mismatch: #{length(bindss)} bindings for #{clause_count} clauses"
+    end
+  end
+
+  defp case_clause_integer_namess(opts, clause_count) do
+    case Keyword.fetch(opts, :integer_clause_namess) do
+      :error ->
+        List.duplicate(MapSet.new(), clause_count)
+
+      {:ok, namess} when length(namess) == clause_count ->
+        namess
+
+      {:ok, namess} when length(namess) + 1 == clause_count ->
+        namess ++ [MapSet.new()]
+
+      {:ok, namess} ->
+        raise Error,
+              "case clause integer binding count mismatch: #{length(namess)} bindings for " <>
+                "#{clause_count} clauses"
     end
   end
 
@@ -10106,6 +10171,64 @@ defmodule Batata.Lift do
         other
     end)
   end
+
+  defp struct_integer_pattern_names(pattern, struct_schemas) do
+    {_pattern, names} =
+      Macro.prewalk(pattern, MapSet.new(), fn
+        {:%, _, [{:__aliases__, _, module_parts}, {:%{}, _, fields}]} = node, names
+        when is_list(module_parts) and is_list(fields) ->
+          module = Elixir.Module.concat(module_parts)
+
+          names =
+            case resolve_struct_schema(module, struct_schemas) do
+              {:ok, schema} ->
+                collect_struct_integer_pattern_names(fields, schema, names)
+
+              :error ->
+                names
+            end
+
+          {node, names}
+
+        node, names ->
+          {node, names}
+      end)
+
+    names
+  end
+
+  defp collect_struct_integer_pattern_names(fields, schema, names) do
+    integer_fields =
+      schema.fields
+      |> Enum.filter(fn {_field, default} -> is_integer(default) end)
+      |> MapSet.new(&elem(&1, 0))
+
+    Enum.reduce(fields, names, &collect_struct_integer_pattern_name(&1, &2, integer_fields))
+  end
+
+  defp collect_struct_integer_pattern_name(
+         {field, field_pattern},
+         names,
+         integer_fields
+       ) do
+    if MapSet.member?(integer_fields, field) do
+      MapSet.union(names, scalar_pattern_binding_names(field_pattern))
+    else
+      names
+    end
+  end
+
+  defp collect_struct_integer_pattern_name(_field, names, _integer_fields), do: names
+
+  defp scalar_pattern_binding_names({name, _, context})
+       when is_variable_ast(name, context) and name != :_,
+       do: MapSet.new([name])
+
+  defp scalar_pattern_binding_names({:=, _, [left, right]}) do
+    MapSet.union(scalar_pattern_binding_names(left), scalar_pattern_binding_names(right))
+  end
+
+  defp scalar_pattern_binding_names(_pattern), do: MapSet.new()
 
   defp resolve_struct_schema(module, %Frontend.StructSchema{module: mod} = schema)
        when module == mod,
@@ -10644,7 +10767,16 @@ defmodule Batata.Lift do
     raise Error, "unsupported binary segment: #{inspect(segment)}"
   end
 
-  defp add_term_clause_block(clause, guard, binds, env, ctx, region, expected_type) do
+  defp add_term_clause_block(
+         clause,
+         guard,
+         binds,
+         integer_names,
+         env,
+         ctx,
+         region,
+         expected_type
+       ) do
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
 
@@ -10656,6 +10788,14 @@ defmodule Batata.Lift do
         {var, {:deferred, fun}}, acc -> Map.put(acc, var, fun.(block))
         {var, value}, acc -> Map.put(acc, var, value)
       end)
+
+    clause_env =
+      Map.update(
+        clause_env,
+        @integer_value_names_key,
+        integer_names,
+        &MapSet.union(&1, integer_names)
+      )
 
     {value, clause_env} =
       case clause.body do
