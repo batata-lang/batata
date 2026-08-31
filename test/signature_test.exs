@@ -58,6 +58,19 @@ defmodule Batata.SignatureTest do
     end
   end
 
+  test "keeps term equality and membership closure parameters boxed" do
+    item = Macro.var(:item, nil)
+    collection = Macro.var(:collection, nil)
+
+    atom_equality = definition(:atom_equality, item, {:==, [], [item, :match]})
+    membership = definition(:membership, [item, collection], {:in, [], [item, collection]})
+
+    assert Batata.Signature.infer([atom_equality, membership]) == %{
+             {:atom_equality, 1} => [:term],
+             {:membership, 2} => [:term, :term]
+           }
+  end
+
   test "infers a pinned map key and map scrutinee as terms" do
     map = {:map, [], nil}
     key = {:key, [], nil}

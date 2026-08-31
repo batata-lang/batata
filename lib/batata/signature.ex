@@ -29,6 +29,7 @@ defmodule Batata.Signature do
     {String, :to_existing_atom, 1} => [:term],
     {Integer, :to_string, 2} => [:term, :scalar],
     {Enum, :flat_map, 2} => [:term, :term],
+    {Enum, :find, 2} => [:term, :term],
     {Enum, :into, 2} => [:term, :term],
     {Enum, :intersperse, 2} => [:term, :term],
     {Enum, :map, 2} => [:term, :term],
@@ -294,7 +295,7 @@ defmodule Batata.Signature do
          _proven,
          _boolean_results
        )
-       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=, :in],
        do: true
 
   defp boolean_argument_ast?(
@@ -421,7 +422,7 @@ defmodule Batata.Signature do
   end
 
   defp productive_boolean_result?({operator, _, [_left, _right]}, _productive)
-       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=, :in],
        do: true
 
   defp productive_boolean_result?({operator, _, [left, right]}, productive)
@@ -489,7 +490,7 @@ defmodule Batata.Signature do
   end
 
   defp boolean_result_kind({operator, _, [_left, _right]}, _candidates, _no_return_functions)
-       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=, :in],
        do: :boolean
 
   defp boolean_result_kind({operator, _, [left, right]}, candidates, no_return_functions)
@@ -1287,6 +1288,24 @@ defmodule Batata.Signature do
        )
        when is_variable_ast(name, context),
        do: {node, mark_name(modes, names, name)}
+
+  defp infer_node({:in, _, [member, collection]} = node, modes, names, _signatures) do
+    {node, mark_term_values(modes, names, [member, collection])}
+  end
+
+  defp infer_node({operator, _, [left, right]} = node, modes, names, _signatures)
+       when operator in [:==, :!=, :===, :!==] do
+    modes =
+      modes
+      |> then(fn acc ->
+        if term_call_argument?(left), do: mark_term_values(acc, names, [right]), else: acc
+      end)
+      |> then(fn acc ->
+        if term_call_argument?(right), do: mark_term_values(acc, names, [left]), else: acc
+      end)
+
+    {node, modes}
+  end
 
   defp infer_node(
          {{:., _, [module_ast, function]}, _, args} = node,
