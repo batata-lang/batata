@@ -48,6 +48,8 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({String, :to_atom, 1}) == :native_term
       assert Stdlib.class({String, :duplicate, 2}) == :native_term
       assert Stdlib.class({Integer, :to_charlist, 1}) == :native_term
+      assert Stdlib.class({:erlang, :integer_to_list, 1}) == :native_term
+      assert Stdlib.class({:erlang, :integer_to_list, 2}) == nil
       assert Stdlib.class({Integer, :to_string, 2}) == :native_term
       assert Stdlib.class({Enum, :into, 2}) == :native_term
       assert Stdlib.class({Enum, :intersperse, 2}) == :native_term
@@ -76,6 +78,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({Date, :to_iso8601, 1})
       assert Stdlib.may_raise?({DateTime, :to_iso8601, 1})
       assert Stdlib.may_raise?({Integer, :to_charlist, 1})
+      assert Stdlib.may_raise?({:erlang, :integer_to_list, 1})
       assert Stdlib.may_raise?({Integer, :to_string, 2})
       assert Stdlib.may_raise?({Enum, :into, 2})
       assert Stdlib.may_raise?({Enum, :intersperse, 2})
@@ -171,6 +174,9 @@ defmodule Batata.StdlibTest do
                preemption: :none,
                reductions: :constant
              }
+
+      assert Stdlib.metadata({:erlang, :integer_to_list, 1}) ==
+               Stdlib.metadata({Integer, :to_charlist, 1})
 
       assert Stdlib.metadata({Integer, :to_string, 2}) == %{
                purity: :pure,
@@ -836,6 +842,32 @@ defmodule Batata.StdlibTest do
       end)
     end
 
+    test "aliases :erlang.integer_to_list/1 to the integer charlist lowering", %{ctx: ctx} do
+      values = [0, 1, -1, -123, 1_152_921_504_606_846_975, -1_152_921_504_606_846_976]
+
+      Enum.each(values, fn value ->
+        erlang = execute(":erlang.integer_to_list(#{value})", ctx)
+        elixir = execute("Integer.to_charlist(#{value})", ctx)
+
+        assert erlang == :erlang.integer_to_list(value)
+        assert erlang == elixir
+      end)
+    end
+
+    test "lowers each integer charlist alias through one shared conversion path", %{ctx: ctx} do
+      source = """
+      defmodule IntegerCharlistAliases do
+        def main(value), do: {Integer.to_charlist(value), :erlang.integer_to_list(value)}
+      end
+      """
+
+      ir = source |> Batata.compile(ctx) |> Beaver.MLIR.to_string(generic: true)
+
+      assert length(Regex.scan(~r/\"ex\.int_to_string\"/, ir)) == 2
+      assert length(Regex.scan(~r/\"ex\.enumerable_to_list\"/, ir)) == 2
+      refute ir =~ "__batata_fn_696e74656765725f746f5f6c697374_1"
+    end
+
     test "matches Integer.to_string/2 across bases and the tagged integer domain", %{ctx: ctx} do
       expressions = [
         "Integer.to_string(0, 2)",
@@ -951,11 +983,22 @@ defmodule Batata.StdlibTest do
 
       for expression <- [
             "Integer.to_charlist(1.5)",
+            ":erlang.integer_to_list(1.5)",
             ~S|Integer.to_charlist("12")|,
+            ~S|:erlang.integer_to_list("12")|,
             "Integer.to_charlist(:integer)"
           ] do
         assert_raise ArgumentError, message, fn -> execute(expression, ctx) end
       end
+    end
+
+    test "keeps :erlang.integer_to_list/2 outside the admitted surface", %{ctx: ctx} do
+      error =
+        assert_raise Batata.Lift.Error, fn ->
+          execute(":erlang.integer_to_list(12, 16)", ctx)
+        end
+
+      assert error.message =~ "unsupported stdlib call: :erlang.integer_to_list/2"
     end
 
     test "matches the bounded Kernel.inspect surface", %{ctx: ctx} do
