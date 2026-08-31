@@ -369,20 +369,72 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
-  test "rejects cond without a final true clause", %{ctx: ctx} do
+  test "executes matched non-exhaustive cond clauses", %{ctx: ctx} do
     source = """
     defmodule NonExhaustiveCond do
+      def choose(value) do
+        cond do
+          value == 0 -> {:matched, :zero}
+          value -> {:matched, value}
+        end
+      end
+
+      def main(), do: {choose(0), choose(:truthy)}
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {{:matched, :zero}, {:matched, :truthy}}
+  end
+
+  test "raises CondClauseError for an unmatched non-exhaustive cond", %{ctx: ctx} do
+    matched_source = """
+    defmodule MatchedScalarNonExhaustiveCond do
       def main() do
         cond do
-          1 == 2 -> :never
+          1 == 1 -> 42
         end
       end
     end
     """
 
-    assert_raise Batata.Lift.Error, ~r/body-level cond requires a final true clause/, fn ->
+    source = """
+    defmodule UnmatchedNonExhaustiveCond do
+      def main() do
+        cond do
+          1 == 2 -> 42
+        end
+      end
+    end
+    """
+
+    assert Batata.execute(matched_source, ctx) == 42
+
+    assert_raise CondClauseError, fn ->
       Batata.execute(source, ctx)
     end
+  end
+
+  test "verifies nested non-exhaustive cond result types", %{ctx: ctx} do
+    source = """
+    defmodule NestedNonExhaustiveCond do
+      def choose(value) do
+        if value == :outside do
+          :outside
+        else
+          cond do
+            value -> {:inside, value}
+          end
+        end
+      end
+
+      def main(), do: {choose(:outside), choose(:inside)}
+    end
+    """
+
+    module = Batata.compile(source, ctx)
+
+    assert Beaver.MLIR.verify?(module)
+    assert Batata.execute(source, ctx) == {:outside, {:inside, :inside}}
   end
 
   test "executes literal charlist sigils without runtime dispatch", %{ctx: ctx} do
