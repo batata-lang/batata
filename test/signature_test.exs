@@ -171,6 +171,42 @@ defmodule Batata.SignatureTest do
            ) == MapSet.new([{:branching, 1}, {:literal, 0}, {:transitive, 0}])
   end
 
+  test "infers recursive boolean results to a fixed point without admitting mixed returns" do
+    value = {:value, [], nil}
+
+    recursive =
+      definition(
+        :recursive,
+        value,
+        {:and, [],
+         [
+           {:==, [], [{:rem, [], [value, 2]}, 0]},
+           {:recursive, [], [{:div, [], [value, 2]}]}
+         ]}
+      )
+
+    recursive_base = definition(:recursive, 1, {:==, [], [value, 1]})
+    mutual_left = definition(:mutual_left, value, {:mutual_right, [], [value]})
+    mutual_right = definition(:mutual_right, value, {:mutual_left, [], [value]})
+    mutual_base = definition(:mutual_right, 0, {:==, [], [value, 0]})
+    mixed_boolean = definition(:mixed, 0, {:==, [], [value, 0]})
+    mixed_term = definition(:mixed, value, :not_a_boolean)
+    pure_cycle = definition(:pure_cycle, value, {:pure_cycle, [], [value]})
+    no_return = definition(:no_return, value, {:throw, [], [value]})
+
+    assert Batata.Signature.infer_boolean_results([
+             recursive,
+             recursive_base,
+             mutual_left,
+             mutual_right,
+             mutual_base,
+             mixed_boolean,
+             mixed_term,
+             pure_cycle,
+             no_return
+           ]) == MapSet.new([{:recursive, 1}, {:mutual_left, 1}, {:mutual_right, 1}])
+  end
+
   test "proves integer decoding only at explicit function boundaries" do
     value = {:value, [], nil}
     list = {:list, [], nil}

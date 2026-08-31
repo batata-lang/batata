@@ -144,6 +144,196 @@ defmodule Batata.Signature do
     infer_results_fixed_point(groups, no_return_functions, returned_closures, MapSet.new())
   end
 
+  @doc false
+  def infer_boolean_results(definitions, no_return_functions \\ MapSet.new()) do
+    # Start from every local signature and remove contradictions. This
+    # greatest fixed point admits recursive cycles only while every returning
+    # clause remains structurally boolean; a mixed term return removes the
+    # entire dependent cycle on subsequent iterations. A second, least fixed
+    # point then requires a concrete boolean-producing path, so pure recursion
+    # and no-return-only functions are not assigned a scalar result ABI.
+    groups = Enum.group_by(definitions, &{&1.name, &1.arity})
+    candidates = groups |> Map.keys() |> MapSet.new()
+
+    safe = infer_boolean_results_fixed_point(groups, no_return_functions, candidates)
+    infer_productive_boolean_results(groups, safe, MapSet.new())
+  end
+
+  defp infer_boolean_results_fixed_point(groups, no_return_functions, candidates) do
+    next =
+      Enum.reduce(groups, candidates, fn {signature, definitions}, acc ->
+        if safe_boolean_definitions?(definitions, candidates, no_return_functions) do
+          acc
+        else
+          MapSet.delete(acc, signature)
+        end
+      end)
+
+    if next == candidates,
+      do: candidates,
+      else: infer_boolean_results_fixed_point(groups, no_return_functions, next)
+  end
+
+  defp safe_boolean_definitions?(definitions, candidates, no_return_functions) do
+    clauses = Enum.flat_map(definitions, & &1.clauses)
+
+    clauses != [] and
+      Enum.all?(clauses, fn clause ->
+        boolean_result_kind(clause.body_ast, candidates, no_return_functions) in [
+          :boolean,
+          :no_return
+        ]
+      end)
+  end
+
+  defp infer_productive_boolean_results(groups, safe, productive) do
+    next =
+      Enum.reduce(groups, productive, fn {signature, definitions}, acc ->
+        if MapSet.member?(safe, signature) and
+             productive_boolean_definitions?(definitions, productive) do
+          MapSet.put(acc, signature)
+        else
+          acc
+        end
+      end)
+
+    if next == productive,
+      do: productive,
+      else: infer_productive_boolean_results(groups, safe, next)
+  end
+
+  defp productive_boolean_definitions?(definitions, productive) do
+    definitions
+    |> Enum.flat_map(& &1.clauses)
+    |> Enum.any?(&productive_boolean_result?(&1.body_ast, productive))
+  end
+
+  defp productive_boolean_result?({:__block__, _, expressions}, productive)
+       when expressions != [],
+       do: expressions |> List.last() |> productive_boolean_result?(productive)
+
+  defp productive_boolean_result?({:case, _, [_value, [do: clauses]]}, productive)
+       when is_list(clauses) do
+    Enum.any?(clauses, fn
+      {:->, _, [_patterns, body]} -> productive_boolean_result?(body, productive)
+      _clause -> false
+    end)
+  end
+
+  defp productive_boolean_result?({:if, _, [_condition, branches]}, productive)
+       when is_list(branches) do
+    branches
+    |> Keyword.take([:do, :else])
+    |> Keyword.values()
+    |> Enum.any?(&productive_boolean_result?(&1, productive))
+  end
+
+  defp productive_boolean_result?({operator, _, [_left, _right]}, _productive)
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       do: true
+
+  defp productive_boolean_result?({operator, _, [left, right]}, productive)
+       when operator in [:and, :or],
+       do:
+         productive_boolean_result?(left, productive) or
+           productive_boolean_result?(right, productive)
+
+  defp productive_boolean_result?({name, _, [_argument]}, _productive)
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
+       do: true
+
+  defp productive_boolean_result?({name, _, arguments}, productive)
+       when is_atom(name) and is_list(arguments),
+       do: MapSet.member?(productive, {name, length(arguments)})
+
+  defp productive_boolean_result?(_ast, _productive), do: false
+
+  defp boolean_result_kind({:__block__, _, expressions}, candidates, no_return_functions)
+       when expressions != [],
+       do: expressions |> List.last() |> boolean_result_kind(candidates, no_return_functions)
+
+  defp boolean_result_kind(
+         {:case, _, [_value, [do: clauses]]},
+         candidates,
+         no_return_functions
+       )
+       when is_list(clauses) do
+    clauses
+    |> Enum.map(fn
+      {:->, _, [_patterns, body]} ->
+        boolean_result_kind(body, candidates, no_return_functions)
+
+      _clause ->
+        :unknown
+    end)
+    |> combine_boolean_result_kinds()
+  end
+
+  defp boolean_result_kind({:if, _, [_condition, branches]}, candidates, no_return_functions)
+       when is_list(branches) do
+    with {:ok, then_branch} <- Keyword.fetch(branches, :do),
+         {:ok, else_branch} <- Keyword.fetch(branches, :else) do
+      [
+        boolean_result_kind(then_branch, candidates, no_return_functions),
+        boolean_result_kind(else_branch, candidates, no_return_functions)
+      ]
+      |> combine_boolean_result_kinds()
+    else
+      _missing_branch -> :unknown
+    end
+  end
+
+  defp boolean_result_kind({operator, _, [_left, _right]}, _candidates, _no_return_functions)
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       do: :boolean
+
+  defp boolean_result_kind({operator, _, [left, right]}, candidates, no_return_functions)
+       when operator in [:and, :or] do
+    [
+      boolean_result_kind(left, candidates, no_return_functions),
+      boolean_result_kind(right, candidates, no_return_functions)
+    ]
+    |> combine_boolean_result_kinds()
+  end
+
+  defp boolean_result_kind({name, _, [_argument]}, _candidates, _no_return_functions)
+       when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
+       do: :boolean
+
+  defp boolean_result_kind({:throw, _, [_value]}, _candidates, _no_return_functions),
+    do: :no_return
+
+  defp boolean_result_kind({:__batata_raise__, _, [_kind, _reason]}, _candidates, _no_return),
+    do: :no_return
+
+  defp boolean_result_kind({:__batata_raise__, _kind, _reason}, _candidates, _no_return),
+    do: :no_return
+
+  defp boolean_result_kind({:__batata_raise_scalar__, _kind, _reason}, _candidates, _no_return),
+    do: :no_return
+
+  defp boolean_result_kind({name, _, arguments}, candidates, no_return_functions)
+       when is_atom(name) and is_list(arguments) do
+    signature = {name, length(arguments)}
+
+    cond do
+      MapSet.member?(no_return_functions, signature) -> :no_return
+      MapSet.member?(candidates, signature) -> :boolean
+      true -> :unknown
+    end
+  end
+
+  defp boolean_result_kind(_ast, _candidates, _no_return_functions), do: :unknown
+
+  defp combine_boolean_result_kinds(kinds) do
+    cond do
+      kinds == [] -> :unknown
+      Enum.all?(kinds, &(&1 == :no_return)) -> :no_return
+      Enum.all?(kinds, &(&1 in [:boolean, :no_return])) -> :boolean
+      true -> :unknown
+    end
+  end
+
   defp infer_results_fixed_point(groups, no_return_functions, returned_closures, proven) do
     next =
       Enum.reduce(groups, proven, fn {signature, definitions}, acc ->

@@ -1547,6 +1547,24 @@ defmodule Batata.ExecuteTest do
                  end
   end
 
+  test "executes a recursive boolean result through strict and and if", %{ctx: ctx} do
+    source = """
+    defmodule RecursiveBooleanResult do
+      def even_chain?(value) when value > 1,
+        do: rem(value, 2) == 0 and even_chain?(div(value, 2))
+
+      def even_chain?(value), do: value == 1
+
+      def main() do
+        {if(even_chain?(8), do: 1, else: 0),
+         if(even_chain?(12), do: 1, else: 0)}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {1, 0}
+  end
+
   test "executes the Decimal.Error message short-circuit kernel", %{ctx: ctx} do
     source = """
     defmodule DecimalErrorMessage do
