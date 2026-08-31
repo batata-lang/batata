@@ -412,6 +412,14 @@ defmodule Batata.Signature do
     |> Enum.any?(&productive_boolean_result?(&1, productive))
   end
 
+  defp productive_boolean_result?({:cond, _, [[do: clauses]]}, productive)
+       when is_list(clauses) do
+    Enum.any?(clauses, fn
+      {:->, _, [_conditions, body]} -> productive_boolean_result?(body, productive)
+      _clause -> false
+    end)
+  end
+
   defp productive_boolean_result?({operator, _, [_left, _right]}, _productive)
        when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
        do: true
@@ -465,6 +473,19 @@ defmodule Batata.Signature do
     else
       _missing_branch -> :unknown
     end
+  end
+
+  defp boolean_result_kind({:cond, _, [[do: clauses]]}, candidates, no_return_functions)
+       when is_list(clauses) do
+    clauses
+    |> Enum.map(fn
+      {:->, _, [_conditions, body]} ->
+        boolean_result_kind(body, candidates, no_return_functions)
+
+      _clause ->
+        :unknown
+    end)
+    |> combine_boolean_result_kinds()
   end
 
   defp boolean_result_kind({operator, _, [_left, _right]}, _candidates, _no_return_functions)
@@ -625,6 +646,24 @@ defmodule Batata.Signature do
     end
   end
 
+  defp integer_result_kind(
+         {:cond, _, [[do: clauses]]},
+         proven,
+         no_return_functions,
+         integer_variables
+       )
+       when is_list(clauses) do
+    clauses
+    |> Enum.map(fn
+      {:->, _, [_conditions, body]} ->
+        integer_result_kind(body, proven, no_return_functions, integer_variables)
+
+      _clause ->
+        :unknown
+    end)
+    |> combine_integer_result_kinds()
+  end
+
   defp integer_result_kind({:throw, _, [_value]}, _proven, _no_return, _integer_variables),
     do: :no_return
 
@@ -755,6 +794,18 @@ defmodule Batata.Signature do
     else
       _not_proven -> :unknown
     end
+  end
+
+  defp result_kind(
+         {:cond, _, [[do: clauses]]},
+         proven,
+         no_return_functions,
+         scalar_variables
+       )
+       when is_list(clauses) do
+    clauses
+    |> Enum.map(&clause_result_kind(&1, proven, no_return_functions, scalar_variables))
+    |> combine_result_kinds()
   end
 
   defp result_kind({:throw, _, [_value]}, _proven, _no_return_functions, _scalar_variables),

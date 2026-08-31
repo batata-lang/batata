@@ -624,6 +624,9 @@ defmodule Batata.Lift do
         {:__batata_raise__, _, [_kind, _reason]} = node, false ->
           {node, true}
 
+        {:cond, _, [[do: clauses]]} = node, false when is_list(clauses) ->
+          {node, not cond_has_final_true_clause?(clauses)}
+
         {:__lists_any__, _, [_support, _predicate, _list]} = node, false ->
           {node, true}
 
@@ -5127,8 +5130,16 @@ defmodule Batata.Lift do
     {:if, metadata, [condition, [do: body, else: cond_to_if!(rest)]]}
   end
 
+  defp cond_to_if!([{:->, metadata, [[condition], body]}]) do
+    {:if, metadata, [condition, [do: body, else: {:__batata_raise__, metadata, [11, nil]}]]}
+  end
+
   defp cond_to_if!(_clauses) do
-    raise Error, "body-level cond requires a final true clause"
+    raise Error, "malformed body-level cond clauses"
+  end
+
+  defp cond_has_final_true_clause?(clauses) do
+    match?({:->, _, [[true], _body]}, List.last(clauses))
   end
 
   defp lift_bitwise(name, [operand_ast], ctx, block, env) when name in [:bnot, :"~~~"] do
@@ -9381,11 +9392,16 @@ defmodule Batata.Lift do
     {value, branch_env} = lift_expr(ast, ctx, block, env)
     value = lift_value(value, ctx, block, branch_env)
 
-    if term_operand?(value) do
-      raise Error, "scalar function branch produced a term value: #{inspect(ast)}"
-    end
+    cond do
+      not term_operand?(value) ->
+        value
 
-    value
+      no_return_ast?(ast, Map.fetch!(env, @no_return_functions_key)) ->
+        create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
+
+      true ->
+        raise Error, "scalar function branch produced a term value: #{inspect(ast)}"
+    end
   end
 
   defp scalar_function_result?(env) do

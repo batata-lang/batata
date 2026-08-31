@@ -184,6 +184,55 @@ defmodule Batata.SignatureTest do
            ) == MapSet.new([{:branching, 1}, {:literal, 0}, {:transitive, 0}])
   end
 
+  test "infers successful cond result contracts independently of the implicit raise" do
+    condition = {:condition, [], nil}
+
+    scalar_cond =
+      definition(
+        :scalar_cond,
+        condition,
+        {:cond, [],
+         [
+           [
+             do: [
+               {:->, [], [[condition], 1]},
+               {:->, [], [[true], 2]}
+             ]
+           ]
+         ]}
+      )
+
+    boolean_cond =
+      definition(
+        :boolean_cond,
+        condition,
+        {:cond, [],
+         [
+           [
+             do: [
+               {:->, [], [[condition], {:===, [], [1, 1]}]},
+               {:->, [], [[true], {:===, [], [1, 2]}]}
+             ]
+           ]
+         ]}
+      )
+
+    mixed_cond =
+      definition(
+        :mixed_cond,
+        condition,
+        {:cond, [], [[do: [{:->, [], [[condition], 1]}, {:->, [], [[true], :term]}]]]}
+      )
+
+    definitions = [scalar_cond, boolean_cond, mixed_cond]
+
+    assert Batata.Signature.infer_results(definitions) == MapSet.new([{:scalar_cond, 1}])
+    assert Batata.Signature.infer_integer_results(definitions) == MapSet.new([{:scalar_cond, 1}])
+
+    assert Batata.Signature.infer_boolean_results(definitions) ==
+             MapSet.new([{:boolean_cond, 1}])
+  end
+
   test "infers integer results independently from the scalar ABI" do
     value = {:value, [], nil}
     huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
