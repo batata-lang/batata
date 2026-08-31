@@ -184,6 +184,39 @@ defmodule Batata.SignatureTest do
            ) == MapSet.new([{:branching, 1}, {:literal, 0}, {:transitive, 0}])
   end
 
+  test "infers integer results independently from the scalar ABI" do
+    value = {:value, [], nil}
+    huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
+    boxed = definition(:boxed, [], huge)
+    arithmetic = definition(:arithmetic, value, {:*, [], [value, 10]})
+    forwarded = definition(:forwarded, value, {:boxed, [], []})
+
+    guarded_identity =
+      definition(:guarded_identity, value, value, {:is_integer, [], [value]})
+
+    mixed_integer = definition(:mixed, 0, 1)
+    mixed_term = definition(:mixed, value, :not_an_integer)
+    identity = definition(:identity, value, value)
+    pure_cycle = definition(:pure_cycle, value, {:pure_cycle, [], [value]})
+
+    assert Batata.Signature.infer_integer_results([
+             boxed,
+             arithmetic,
+             forwarded,
+             guarded_identity,
+             mixed_integer,
+             mixed_term,
+             identity,
+             pure_cycle
+           ]) ==
+             MapSet.new([
+               {:boxed, 0},
+               {:arithmetic, 1},
+               {:forwarded, 1},
+               {:guarded_identity, 1}
+             ])
+  end
+
   test "infers recursive boolean results to a fixed point without admitting mixed returns" do
     value = {:value, [], nil}
 

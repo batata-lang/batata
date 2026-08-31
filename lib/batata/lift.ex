@@ -36,12 +36,14 @@ defmodule Batata.Lift do
   @integer_guard_modes_key {__MODULE__, :integer_guard_modes}
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
+  @integer_result_functions_key {__MODULE__, :integer_result_functions}
   @boolean_result_functions_key {__MODULE__, :boolean_result_functions}
   @compiler_abi_calls_key {__MODULE__, :compiler_abi_calls}
   @current_function_key {__MODULE__, :current_function}
   @current_function_signature_key {__MODULE__, :current_function_signature}
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
   @term_pattern_names_key {__MODULE__, :term_pattern_names}
+  @integer_value_names_key {__MODULE__, :integer_value_names}
   @ex_type_cache_key {__MODULE__, :ex_type_cache}
   @ex_type_names ~w(term bound unbound)
   @min_scalar_integer -9_223_372_036_854_775_808
@@ -111,6 +113,9 @@ defmodule Batata.Lift do
       |> apply_scalar_result_overrides!(definitions, opts)
       |> MapSet.union(boolean_result_functions)
 
+    integer_result_functions =
+      Batata.Signature.infer_integer_results(definitions, no_return_functions)
+
     argument_modes =
       definitions
       |> Batata.Signature.infer()
@@ -125,6 +130,7 @@ defmodule Batata.Lift do
       @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
       @no_return_functions_key => no_return_functions,
       @scalar_result_functions_key => scalar_result_functions,
+      @integer_result_functions_key => integer_result_functions,
       @boolean_result_functions_key => boolean_result_functions,
       @compiler_abi_calls_key => compiler_abi_calls
     }
@@ -469,6 +475,8 @@ defmodule Batata.Lift do
   end
 
   defp definitions_may_raise?(definitions) do
+    argument_modes = Batata.Signature.infer(definitions)
+
     definitions
     |> Enum.group_by(&{&1.name, &1.arity})
     |> Enum.any?(fn {_key, group} ->
@@ -478,13 +486,22 @@ defmodule Batata.Lift do
         (length(clauses) == 1 and Enum.any?(clauses, &function_clause_requires_dispatch?/1))
     end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
       Enum.any?(definitions, &definition_uses_native_raise?/1) or
-      Enum.any?(definitions, &definition_uses_term_pattern_arithmetic?/1)
+      Enum.any?(definitions, &definition_uses_term_arithmetic?(&1, argument_modes))
   end
 
-  defp definition_uses_term_pattern_arithmetic?(%Frontend.Definition{clauses: clauses}) do
+  defp definition_uses_term_arithmetic?(
+         %Frontend.Definition{name: name, arity: arity, clauses: clauses},
+         argument_modes
+       ) do
+    term_parameter? =
+      argument_modes
+      |> Map.get({name, arity}, [])
+      |> Enum.any?(&(&1 == :term))
+
     Enum.any?(clauses, fn %Frontend.Clause{patterns: patterns, body_ast: body} ->
       ast_uses_integer_arithmetic?(body) and
-        (Enum.any?(patterns, &term_pattern?/1) or ast_has_term_pattern_case?(body))
+        (term_parameter? or Enum.any?(patterns, &term_pattern?/1) or
+           ast_has_term_pattern_case?(body))
     end)
   end
 
@@ -4282,6 +4299,7 @@ defmodule Batata.Lift do
       env
       |> Map.put(var, value)
       |> maybe_mark_term_pattern_alias(var, rhs)
+      |> maybe_mark_integer_alias(var, rhs)
 
     {value, env}
   end
@@ -4996,23 +5014,49 @@ defmodule Batata.Lift do
 
   defp lift_term_comparison(op, left, right, left_value, right_value, ctx, block, env)
        when op in [:<, :<=, :>, :>=] do
-    unless integer_ordering_operands?([left, right], [left_value, right_value], env) do
-      raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
+    case integer_ordering_mode([left, right], [left_value, right_value], env) do
+      :inferred ->
+        left_value = box_if_scalar(left_value, ctx, block)
+        right_value = box_if_scalar(right_value, ctx, block)
+
+        ordering =
+          create_op(
+            "ex.integer_compare",
+            [left_value, right_value],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          )
+
+        {
+          create_op(
+            "ex.cmp",
+            [ordering, lit(0, ctx, block), predicate: MLIR.Attribute.string(cmp_predicate(op))],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          ),
+          env
+        }
+
+      :legacy ->
+        [left_value, right_value] =
+          refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
+        {
+          create_op(
+            "ex.cmp",
+            [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
+            [MLIR.Type.i64()],
+            ctx,
+            block
+          ),
+          env
+        }
+
+      :error ->
+        raise Error, "ordering comparisons on terms are unsupported: #{inspect(op)}"
     end
-
-    [left_value, right_value] =
-      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
-
-    {
-      create_op(
-        "ex.cmp",
-        [left_value, right_value, predicate: MLIR.Attribute.string(cmp_predicate(op))],
-        [MLIR.Type.i64()],
-        ctx,
-        block
-      ),
-      env
-    }
   end
 
   defp lift_term_comparison(op, _left, _right, left_value, right_value, ctx, block, env) do
@@ -10936,9 +10980,24 @@ defmodule Batata.Lift do
 
   defp term_parameter?(_ast, _env), do: false
 
-  defp integer_ordering_operands?(asts, values, env) do
+  defp integer_ordering_mode(asts, values, env) do
     operands = Enum.zip(asts, values)
 
+    cond do
+      Enum.all?(operands, fn {ast, value} ->
+        not term_operand?(value) or integer_expression?(ast, env)
+      end) ->
+        :inferred
+
+      legacy_term_pattern_ordering?(operands, env) ->
+        :legacy
+
+      true ->
+        :error
+    end
+  end
+
+  defp legacy_term_pattern_ordering?(operands, env) do
     Enum.any?(operands, fn {ast, value} ->
       term_operand?(value) and term_pattern_binding?(ast, env)
     end) and
@@ -10967,6 +11026,40 @@ defmodule Batata.Lift do
       env
     end
   end
+
+  defp maybe_mark_integer_alias(env, name, rhs) do
+    names = Map.get(env, @integer_value_names_key, MapSet.new())
+
+    names =
+      if integer_expression?(rhs, env),
+        do: MapSet.put(names, name),
+        else: MapSet.delete(names, name)
+
+    Map.put(env, @integer_value_names_key, names)
+  end
+
+  defp integer_expression?(integer, _env) when is_integer(integer), do: true
+  defp integer_expression?({:-, _, [integer]}, _env) when is_integer(integer), do: true
+
+  defp integer_expression?({operator, _, arguments}, _env)
+       when operator in [:+, :-, :*, :div, :rem] and length(arguments) == 2,
+       do: true
+
+  defp integer_expression?({name, _, arguments}, env)
+       when is_atom(name) and is_list(arguments) do
+    MapSet.member?(
+      Map.fetch!(env, @integer_result_functions_key),
+      {name, length(arguments)}
+    )
+  end
+
+  defp integer_expression?({name, _, context}, env) when is_variable_ast(name, context) do
+    env
+    |> Map.get(@integer_value_names_key, MapSet.new())
+    |> MapSet.member?(name)
+  end
+
+  defp integer_expression?(_ast, _env), do: false
 
   defp deferred_scalar_call?({name, _, arguments})
        when is_atom(name) and is_list(arguments) and

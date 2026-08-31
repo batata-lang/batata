@@ -146,6 +146,12 @@ defmodule Batata.Signature do
   end
 
   @doc false
+  def infer_integer_results(definitions, no_return_functions \\ MapSet.new()) do
+    groups = Enum.group_by(definitions, &{&1.name, &1.arity})
+    infer_integer_results_fixed_point(groups, no_return_functions, MapSet.new())
+  end
+
+  @doc false
   def infer_boolean_results(definitions, no_return_functions \\ MapSet.new()) do
     # Start from every local signature and remove contradictions. This
     # greatest fixed point admits recursive cycles only while every returning
@@ -353,6 +359,143 @@ defmodule Batata.Signature do
     if next == proven,
       do: proven,
       else: infer_results_fixed_point(groups, no_return_functions, returned_closures, next)
+  end
+
+  defp infer_integer_results_fixed_point(groups, no_return_functions, proven) do
+    next =
+      Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
+        clauses = Enum.flat_map(definitions, & &1.clauses)
+
+        if integer_clauses?(clauses, acc, no_return_functions),
+          do: MapSet.put(acc, signature),
+          else: acc
+      end)
+
+    if next == proven,
+      do: proven,
+      else: infer_integer_results_fixed_point(groups, no_return_functions, next)
+  end
+
+  defp integer_clauses?(clauses, proven, no_return_functions) do
+    clauses != [] and
+      Enum.all?(clauses, fn clause ->
+        integer_result_kind(
+          clause.body_ast,
+          proven,
+          no_return_functions,
+          guarded_scalar_variables(clause.guard_ast)
+        ) in [:integer, :no_return]
+      end)
+  end
+
+  defp integer_result_kind(integer, _proven, _no_return_functions, _integer_variables)
+       when is_integer(integer),
+       do: :integer
+
+  defp integer_result_kind(
+         {:-, _, [integer]},
+         _proven,
+         _no_return_functions,
+         _integer_variables
+       )
+       when is_integer(integer),
+       do: :integer
+
+  defp integer_result_kind(
+         {:__block__, _, expressions},
+         proven,
+         no_return_functions,
+         integer_variables
+       )
+       when expressions != [],
+       do:
+         expressions
+         |> List.last()
+         |> integer_result_kind(proven, no_return_functions, integer_variables)
+
+  defp integer_result_kind(
+         {:case, _, [_value, [do: clauses]]},
+         proven,
+         no_return_functions,
+         integer_variables
+       )
+       when is_list(clauses) do
+    clauses
+    |> Enum.map(fn
+      {:->, _, [_patterns, body]} ->
+        integer_result_kind(body, proven, no_return_functions, integer_variables)
+
+      _clause ->
+        :unknown
+    end)
+    |> combine_integer_result_kinds()
+  end
+
+  defp integer_result_kind(
+         {:if, _, [_condition, branches]},
+         proven,
+         no_return_functions,
+         integer_variables
+       )
+       when is_list(branches) do
+    with {:ok, then_branch} <- Keyword.fetch(branches, :do),
+         {:ok, else_branch} <- Keyword.fetch(branches, :else) do
+      [then_branch, else_branch]
+      |> Enum.map(&integer_result_kind(&1, proven, no_return_functions, integer_variables))
+      |> combine_integer_result_kinds()
+    else
+      _missing_branch -> :unknown
+    end
+  end
+
+  defp integer_result_kind({:throw, _, [_value]}, _proven, _no_return, _integer_variables),
+    do: :no_return
+
+  defp integer_result_kind(
+         {:__batata_raise__, _, [_kind, _reason]},
+         _proven,
+         _no_return,
+         _integer_variables
+       ),
+       do: :no_return
+
+  defp integer_result_kind({name, _, context}, _proven, _no_return, integer_variables)
+       when is_variable_ast(name, context) do
+    if MapSet.member?(integer_variables, name), do: :integer, else: :unknown
+  end
+
+  defp integer_result_kind({operator, _, arguments}, proven, no_return, _integer_variables)
+       when operator in [:+, :-, :*, :div, :rem] and is_list(arguments) do
+    signature = {operator, length(arguments)}
+
+    cond do
+      MapSet.member?(no_return, signature) -> :no_return
+      MapSet.member?(proven, signature) -> :integer
+      length(arguments) == 2 -> :integer
+      true -> :unknown
+    end
+  end
+
+  defp integer_result_kind({name, _, arguments}, proven, no_return, _integer_variables)
+       when is_atom(name) and is_list(arguments) do
+    signature = {name, length(arguments)}
+
+    cond do
+      MapSet.member?(no_return, signature) -> :no_return
+      MapSet.member?(proven, signature) -> :integer
+      true -> :unknown
+    end
+  end
+
+  defp integer_result_kind(_ast, _proven, _no_return, _integer_variables), do: :unknown
+
+  defp combine_integer_result_kinds(kinds) do
+    cond do
+      kinds == [] -> :unknown
+      Enum.all?(kinds, &(&1 == :no_return)) -> :no_return
+      Enum.all?(kinds, &(&1 in [:integer, :no_return])) -> :integer
+      true -> :unknown
+    end
   end
 
   defp closure_identity_result?({name, _arity}, clauses) do
