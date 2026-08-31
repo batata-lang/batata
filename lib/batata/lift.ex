@@ -38,12 +38,14 @@ defmodule Batata.Lift do
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @integer_result_functions_key {__MODULE__, :integer_result_functions}
   @boolean_result_functions_key {__MODULE__, :boolean_result_functions}
+  @boolean_argument_modes_key {__MODULE__, :boolean_argument_modes}
   @compiler_abi_calls_key {__MODULE__, :compiler_abi_calls}
   @current_function_key {__MODULE__, :current_function}
   @current_function_signature_key {__MODULE__, :current_function_signature}
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
   @term_pattern_names_key {__MODULE__, :term_pattern_names}
   @integer_value_names_key {__MODULE__, :integer_value_names}
+  @boolean_parameter_names_key {__MODULE__, :boolean_parameter_names}
   @ex_type_cache_key {__MODULE__, :ex_type_cache}
   @ex_type_names ~w(term bound unbound)
   @min_scalar_integer -9_223_372_036_854_775_808
@@ -107,6 +109,9 @@ defmodule Batata.Lift do
     boolean_result_functions =
       Batata.Signature.infer_boolean_results(definitions, no_return_functions)
 
+    boolean_argument_modes =
+      Batata.Signature.infer_boolean_arguments(definitions, boolean_result_functions)
+
     scalar_result_functions =
       definitions
       |> Batata.Signature.infer_results(no_return_functions)
@@ -132,6 +137,7 @@ defmodule Batata.Lift do
       @scalar_result_functions_key => scalar_result_functions,
       @integer_result_functions_key => integer_result_functions,
       @boolean_result_functions_key => boolean_result_functions,
+      @boolean_argument_modes_key => boolean_argument_modes,
       @compiler_abi_calls_key => compiler_abi_calls
     }
 
@@ -476,15 +482,22 @@ defmodule Batata.Lift do
 
   defp definitions_may_raise?(definitions) do
     argument_modes = Batata.Signature.infer(definitions)
+    boolean_results = Batata.Signature.infer_boolean_results(definitions)
 
-    definitions
-    |> Enum.group_by(&{&1.name, &1.arity})
-    |> Enum.any?(fn {_key, group} ->
-      clauses = Enum.flat_map(group, & &1.clauses)
+    inferred_boolean_arguments? =
+      definitions
+      |> Batata.Signature.infer_boolean_arguments(boolean_results)
+      |> Enum.any?(fn {_signature, modes} -> Enum.any?(modes) end)
 
-      (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
-        (length(clauses) == 1 and Enum.any?(clauses, &function_clause_requires_dispatch?/1))
-    end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
+    inferred_boolean_arguments? or
+      definitions
+      |> Enum.group_by(&{&1.name, &1.arity})
+      |> Enum.any?(fn {_key, group} ->
+        clauses = Enum.flat_map(group, & &1.clauses)
+
+        (length(clauses) > 1 and not function_clause_catch_all?(List.last(clauses))) or
+          (length(clauses) == 1 and Enum.any?(clauses, &function_clause_requires_dispatch?/1))
+      end) or Enum.any?(definitions, &definition_has_non_exhaustive_case?/1) or
       Enum.any?(definitions, &definition_uses_native_raise?/1) or
       Enum.any?(definitions, &definition_uses_term_arithmetic?(&1, argument_modes))
   end
@@ -1809,6 +1822,10 @@ defmodule Batata.Lift do
       |> Map.put(@current_function_key, name)
       |> Map.put(@current_function_signature_key, {name, arity})
       |> Map.put(@term_parameter_names_key, term_parameter_names(patterns, modes))
+      |> Map.put(
+        @boolean_parameter_names_key,
+        boolean_parameter_names(patterns, name, arity, module_env)
+      )
       |> Map.put(:__budget__, budget)
       |> Map.put(:__batch_size__, batch_size)
 
@@ -1979,11 +1996,22 @@ defmodule Batata.Lift do
         {:->, [], [args, body_ast]}
       end)
 
+    function_env =
+      module_env
+      |> Map.put(@current_function_key, name)
+      |> Map.put(@current_function_signature_key, {name, 1})
+      |> Map.put(
+        @boolean_parameter_names_key,
+        clauses
+        |> Enum.flat_map(&boolean_parameter_names(&1.patterns, name, 1, module_env))
+        |> MapSet.new()
+      )
+
     return_value =
       lift_case(
         clause_asts,
         arg,
-        module_env,
+        function_env,
         ctx,
         block,
         Keyword.merge(
@@ -2059,6 +2087,12 @@ defmodule Batata.Lift do
       |> Map.put(@current_function_key, name)
       |> Map.put(@current_function_signature_key, {name, arity})
       |> Map.put(@term_parameter_names_key, term_parameter_names)
+      |> Map.put(
+        @boolean_parameter_names_key,
+        clauses
+        |> Enum.flat_map(&boolean_parameter_names(&1.patterns, name, arity, module_env))
+        |> MapSet.new()
+      )
 
     failure_tail_names =
       Enum.map(1..(arity - 1), &String.to_atom("__batata_tail_arg_#{&1}"))
@@ -4107,7 +4141,7 @@ defmodule Batata.Lift do
     end
 
     {left, env} = lift_expr(left_ast, ctx, block, env)
-    left = lift_value(left, ctx, block, env)
+    left = left |> lift_value(ctx, block, env) |> validated_boolean_value(ctx, block)
     left_i1 = create_op("arith.trunci", [left], [MLIR.Type.i1()], ctx, block)
 
     [result] =
@@ -4118,7 +4152,12 @@ defmodule Batata.Lift do
         [integer_type(ctx)],
         fn right_block ->
           {right, right_env} = lift_expr(right_ast, ctx, right_block, env)
-          [lift_value(right, ctx, right_block, right_env)]
+
+          [
+            right
+            |> lift_value(ctx, right_block, right_env)
+            |> validated_boolean_value(ctx, right_block)
+          ]
         end,
         fn false_block -> [lit(0, ctx, false_block)] end
       )
@@ -9454,6 +9493,8 @@ defmodule Batata.Lift do
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
        do: true
 
+  defp strict_boolean_scalar_ast?(value, _env) when value in [true, false], do: true
+
   defp strict_boolean_scalar_ast?({op, _, [_left, _right]}, _env)
        when op in [:==, :!=, :===, :!==],
        do: true
@@ -9472,6 +9513,13 @@ defmodule Batata.Lift do
            Map.fetch!(env, @boolean_result_functions_key),
            {name, length(arguments)}
          )
+
+  defp strict_boolean_scalar_ast?({name, _, context}, env)
+       when is_variable_ast(name, context) do
+    env
+    |> Map.get(@boolean_parameter_names_key, MapSet.new())
+    |> MapSet.member?(name)
+  end
 
   defp strict_boolean_scalar_ast?(_ast, _env), do: false
 
@@ -11092,6 +11140,33 @@ defmodule Batata.Lift do
     |> hd()
   end
 
+  defp validated_boolean_value(value, ctx, block) do
+    if term_operand?(value) do
+      i64 = integer_type(ctx)
+      true? = create_op("ex.term_eq", [value, atom_term(true, ctx, block)], [i64], ctx, block)
+      false? = create_op("ex.term_eq", [value, atom_term(false, ctx, block)], [i64], ctx, block)
+      valid = create_op("arith.ori", [true?, false?], [i64], ctx, block)
+      valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn _b -> [true?] end,
+        fn b ->
+          [
+            raise_argument_error("strict boolean operators require boolean operands", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+    else
+      value
+    end
+  end
+
   defp refine_closure_integer(applied, closure, ctx, block) do
     mode = create_op("ex.fun_result_mode", [closure], [integer_type(ctx)], ctx, block)
     term? = cmp(mode, lit(1, ctx, block), "eq", ctx, block)
@@ -11462,6 +11537,23 @@ defmodule Batata.Lift do
     end)
   end
 
+  defp boolean_parameter_names(patterns, name, arity, module_env) do
+    modes =
+      module_env
+      |> Map.fetch!(@boolean_argument_modes_key)
+      |> Map.get({name, arity}, List.duplicate(false, arity))
+
+    patterns
+    |> Enum.zip(modes)
+    |> Enum.reduce(MapSet.new(), fn
+      {{parameter, _, context}, true}, names when is_variable_ast(parameter, context) ->
+        MapSet.put(names, parameter)
+
+      _pattern_and_mode, names ->
+        names
+    end)
+  end
+
   defp function_arg_modes(name, arity, module_env) do
     module_env
     |> Map.fetch!(@arg_modes_key)
@@ -11514,15 +11606,25 @@ defmodule Batata.Lift do
         |> Map.get({name, length(values)}, List.duplicate(false, length(values)))
       end
 
-    Enum.zip([values, modes, integer_guards])
+    boolean_arguments =
+      env
+      |> Map.fetch!(@boolean_argument_modes_key)
+      |> Map.get({name, length(values)}, List.duplicate(false, length(values)))
+
+    Enum.zip([values, modes, integer_guards, boolean_arguments])
     |> Enum.map(fn
-      {value, _mode, _integer_guard?} when dispatch? ->
+      {value, _mode, _integer_guard?, _boolean_argument?} when dispatch? ->
         if term_operand?(value), do: unbox(value, ctx, block), else: value
 
-      {value, :term, _integer_guard?} ->
+      {value, :term, _integer_guard?, true} ->
+        if term_operand?(value),
+          do: unbox(value, ctx, block),
+          else: value |> boolean_term(ctx, block) |> unbox(ctx, block)
+
+      {value, :term, _integer_guard?, false} ->
         value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
 
-      {value, :scalar, integer_guard?} ->
+      {value, :scalar, integer_guard?, _boolean_argument?} ->
         if integer_guard? and term_operand?(value) do
           create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
         else
