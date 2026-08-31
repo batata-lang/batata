@@ -301,6 +301,23 @@ defmodule Batata.StdlibTest do
       assert -2 == execute("Kernel.rem(-17, 5)", ctx)
       assert 3 == execute("Kernel.div(17, 5)", ctx)
       assert -3 == execute("Kernel.div(-17, 5)", ctx)
+      assert 17 == execute("Kernel.max(17, 5)", ctx)
+      assert -5 == execute("Kernel.max(-17, -5)", ctx)
+      assert 5 == execute("Kernel.max(5, 5)", ctx)
+
+      assert 9_223_372_036_854_775_807 ==
+               execute("Kernel.max(-9_223_372_036_854_775_808, 9_223_372_036_854_775_807)", ctx)
+
+      assert_raise Batata.Lift.Error, fn ->
+        Batata.compile(
+          """
+          defmodule GenericMax do
+            def main(), do: Kernel.max(self(), self())
+          end
+          """,
+          ctx
+        )
+      end
     end
 
     test "copies binaries through direct and captured :binary.copy/1 calls", %{ctx: ctx} do

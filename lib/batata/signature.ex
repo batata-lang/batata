@@ -20,6 +20,7 @@ defmodule Batata.Signature do
                       ])
   @builtin_modes %{
     {Kernel, :length, 1} => [:term],
+    {Kernel, :max, 2} => [:scalar, :scalar],
     {Kernel, :binary_part, 3} => [:term, :scalar, :scalar],
     {:erlang, :length, 1} => [:term],
     {:erlang, :binary_part, 3} => [:term, :scalar, :scalar],

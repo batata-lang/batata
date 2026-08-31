@@ -739,6 +739,22 @@ defmodule Batata.LiftTest do
     assert "ex.div" in names
   end
 
+  test "lowers qualified Kernel.max/2 through scalar compare and selection", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def main(), do: Kernel.max(-17, 5)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.cmp" in names
+    assert "scf.if" in names
+  end
+
   test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
     codepoint = Macro.var(:codepoint, nil)
 
