@@ -17,8 +17,8 @@ defmodule Batata.Decimal.ProbeTest do
     assert link["unresolved_internal_dependencies"] == 7
 
     assert link["unit_attempt"] == %{
-             "fingerprint" => "c0e7c0d3ed693c0c6ec57778518d3fadc6c44cff09d91beafbfcca9798e37f5f",
-             "reason_class" => "lift_error",
+             "fingerprint" => "1e1478223d63b504fbd3dc9bcfbddeef2061ac2a70ceb2d2ae0e36b9081a2f62",
+             "reason_class" => "unsupported_stdlib_call",
              "status" => "frontend_normalization_failure"
            }
   end
