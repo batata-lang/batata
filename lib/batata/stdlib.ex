@@ -72,6 +72,7 @@ defmodule Batata.Stdlib.List do
     {List, :duplicate, 2} => :native_term,
     {List, :first, 1} => :native_term,
     {List, :flatten, 1} => :native_term,
+    {:lists, :any, 2} => :native_term,
     {:lists, :keyfind, 3} => :native_term,
     {:lists, :reverse, 1} => :native_term,
     {:lists, :reverse, 2} => :native_term
@@ -462,6 +463,7 @@ defmodule Batata.Stdlib do
                   {:binary, :copy, 1},
                   {:binary, :part, 3},
                   {:maps, :from_list, 1},
+                  {:lists, :any, 2},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
                   {:lists, :reverse, 2}
@@ -544,6 +546,7 @@ defmodule Batata.Stdlib do
                     {Enum, :reduce, 3},
                     {Keyword, :get, 2},
                     {Keyword, :get, 3},
+                    {:lists, :any, 2},
                     {:lists, :keyfind, 3},
                     {:lists, :reverse, 1},
                     {:lists, :reverse, 2}
@@ -574,6 +577,7 @@ defmodule Batata.Stdlib do
                       {Stream, :take, 2},
                       {Stream, :drop, 2},
                       {:erlang, :split_binary, 2},
+                      {:lists, :any, 2},
                       {:lists, :keyfind, 3},
                       {:lists, :reverse, 1},
                       {:lists, :reverse, 2}

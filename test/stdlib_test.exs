@@ -33,6 +33,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({List, :first, 1}) == :native_term
       assert Stdlib.class({List, :duplicate, 2}) == :native_term
       assert Stdlib.class({List, :flatten, 1}) == :native_term
+      assert Stdlib.class({:lists, :any, 2}) == :native_term
       assert Stdlib.class({Atom, :to_string, 1}) == :native_term
       assert Stdlib.class({String.Chars, :to_string, 1}) == :native_term
       assert Stdlib.class({Keyword, :get, 2}) == :native_term
@@ -88,6 +89,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.may_raise?({:binary, :part, 3})
       assert Stdlib.may_raise?({:binary, :copy, 1})
       assert Stdlib.may_raise?({:maps, :from_list, 1})
+      assert Stdlib.may_raise?({:lists, :any, 2})
       refute Stdlib.may_raise?({String, :length, 1})
       refute Stdlib.may_raise?({Foo, :bar, 1})
     end
@@ -122,6 +124,13 @@ defmodule Batata.StdlibTest do
              }
 
       assert Stdlib.metadata({Keyword, :get, 3}) == %{
+               purity: :pure,
+               allocation: :none,
+               preemption: :resumable,
+               reductions: :per_element
+             }
+
+      assert Stdlib.metadata({:lists, :any, 2}) == %{
                purity: :pure,
                allocation: :none,
                preemption: :resumable,
