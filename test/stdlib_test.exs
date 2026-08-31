@@ -1076,12 +1076,7 @@ defmodule Batata.StdlibTest do
 
       assert error.message =~ "requires BEAM callback interop"
 
-      error =
-        assert_raise Batata.Lift.Error, fn ->
-          execute("Enum.reduce(1..3, 0, fn x, a -> a * x + x end)", ctx)
-        end
-
-      assert error.message =~ "range enumerables support only scalar reducers"
+      assert 15 == execute("Enum.reduce(1..3, 0, fn x, a -> a * x + x end)", ctx)
 
       error =
         assert_raise Batata.Lift.Error, fn ->
