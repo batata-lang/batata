@@ -464,8 +464,9 @@ defmodule Batata.Lift do
   end
 
   defp cursor_loop_reduce?(pattern, enumerable_ast) do
-    is_list(enumerable_ast) and
-      pattern in [:sum, :product, :subtract_acc_first, :subtract_item_first]
+    match?({:combination, _}, pattern) or
+      (is_list(enumerable_ast) and
+         pattern in [:sum, :product, :subtract_acc_first, :subtract_item_first])
   end
 
   defp cursor_loop_map?(pattern) do
@@ -1298,6 +1299,19 @@ defmodule Batata.Lift do
          :error <- captured_reduce_pattern(body, item, acc_var),
          :error <- map_reduce_pattern(body, item, acc_var) do
       terminal_reduce_pattern(body, item, acc_var)
+    end
+  end
+
+  defp reduce_pattern({:&, _, [{:/, _, [{name, _, context}, 2]}]})
+       when is_atom(name) and (is_atom(context) or is_nil(context)) do
+    item = {:__batata_enum_item__, [], nil}
+    acc = {:__batata_enum_acc__, [], nil}
+    reduce_pattern({:fn, [], [{:->, [], [[item, acc], {name, [], [item, acc]}]}]})
+  end
+
+  defp reduce_pattern({:&, _, [body]}) do
+    with {:ok, [item, acc], expanded_body} <- expand_shorthand_capture(body) do
+      reduce_pattern({:fn, [], [{:->, [], [[item, acc], expanded_body]}]})
     end
   end
 
@@ -3452,9 +3466,195 @@ defmodule Batata.Lift do
     end
   end
 
-  # Combination reducer over a list literal: the cursor loop's after region
-  # compiles the reducer body with the item (untagged) and accumulator bound
-  # to the loop variables.
+  # General reducers are compiled as ordinary local functions. Materializing
+  # the enumerable to a list lets this loop preserve tagged items and term
+  # accumulators while still using the normal inferred local-call ABI.
+  defp lift_local_reduce(list_word, acc_value, reducer_name, ctx, block, env) do
+    i64 = integer_type(ctx)
+    budget = env[:__budget__]
+    batch_size = env[:__batch_size__]
+    scalar_result? = local_reduce_scalar_result?(reducer_name, env)
+    initial_acc = local_reduce_initial_acc(acc_value, scalar_result?, ctx, block)
+
+    state_count = if budget == nil, do: 3, else: 4
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), state_count)
+    state_batch_size = if budget == nil, do: batch_size, else: batch_size + 1
+
+    state =
+      resumable_loop_state(
+        block,
+        ctx,
+        budget,
+        fn b ->
+          {unbox(list_word, ctx, b), initial_acc, lit(0, ctx, b)}
+        end,
+        state_batch_size
+      )
+      |> Tuple.to_list()
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    [b_list, b_acc, b_cursor | b_countdown] =
+      before_block |> Walker.arguments() |> Enum.to_list()
+
+    b_word = create_op("ex.to_word", [b_list], [ex_type("term", ctx)], ctx, before_block)
+    length = create_op("ex.list_length", [b_word], [i64], ctx, before_block)
+    condition = cmp(b_cursor, length, "slt", ctx, before_block)
+    condition_i1 = create_op("arith.trunci", [condition], [MLIR.Type.i1()], ctx, before_block)
+
+    {condition_i1, condition_args} =
+      local_reduce_condition(
+        b_countdown,
+        condition_i1,
+        {b_list, b_acc, b_cursor},
+        budget,
+        batch_size,
+        ctx,
+        before_block
+      )
+
+    create_op("scf.condition", [condition_i1 | condition_args], [], ctx, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [a_list, a_acc, a_cursor | a_countdown] =
+      after_block |> Walker.arguments() |> Enum.to_list()
+
+    a_word = create_op("ex.to_word", [a_list], [ex_type("term", ctx)], ctx, after_block)
+    item = create_op("ex.list_get", [a_word, a_cursor], [ex_type("term", ctx)], ctx, after_block)
+
+    arguments =
+      local_reduce_arguments(
+        item,
+        a_acc,
+        scalar_result?,
+        reducer_name,
+        env,
+        ctx,
+        after_block
+      )
+
+    result_type = if scalar_result?, do: i64, else: ex_type("term", ctx)
+
+    next_acc =
+      create_op(
+        "ex.call",
+        arguments ++
+          [
+            callee: MLIR.Attribute.string(Symbol.function(reducer_name, 2)),
+            arity: MLIR.Attribute.integer(MLIR.Type.i64(), 2),
+            operandSegmentSizes: segment_sizes(arg_segment_sizes(2))
+          ],
+        [result_type],
+        ctx,
+        after_block
+      )
+
+    next_acc = if scalar_result?, do: next_acc, else: unbox(next_acc, ctx, after_block)
+
+    next_cursor =
+      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op("scf.yield", [a_list, next_acc, next_cursor | a_countdown], [], ctx, after_block)
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: state,
+        results: List.duplicate(i64, state_count),
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    final_acc = while_op |> MLIR.Operation.results() |> Enum.to_list() |> Enum.at(1)
+
+    value =
+      if scalar_result?,
+        do: final_acc,
+        else: create_op("ex.to_word", [final_acc], [ex_type("term", ctx)], ctx, block)
+
+    {value, env}
+  end
+
+  # Boolean-valued arithmetic can conservatively miss the broad scalar result
+  # inference while still proving an integer result. Local reducer calls need
+  # the concrete result ABI before scalar-call inlining runs.
+  defp local_reduce_scalar_result?(reducer_name, env) do
+    signature = {reducer_name, 2}
+
+    MapSet.member?(Map.fetch!(env, @scalar_result_functions_key), signature) or
+      MapSet.member?(Map.fetch!(env, @integer_result_functions_key), signature)
+  end
+
+  defp local_reduce_initial_acc(acc_value, true, ctx, block) do
+    if term_operand?(acc_value),
+      do: create_op("ex.to_int", [acc_value], [integer_type(ctx)], ctx, block),
+      else: acc_value
+  end
+
+  defp local_reduce_initial_acc(acc_value, false, ctx, block),
+    do: acc_value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
+
+  defp local_reduce_condition(
+         [],
+         condition,
+         {list, acc, cursor},
+         _budget,
+         _batch_size,
+         _ctx,
+         _block
+       ),
+       do: {condition, [list, acc, cursor]}
+
+  defp local_reduce_condition(
+         [countdown],
+         condition,
+         {list, acc, cursor},
+         budget,
+         batch_size,
+         ctx,
+         block
+       ) do
+    {condition, countdown} =
+      inject_reduction_tick(
+        block,
+        ctx,
+        condition,
+        budget,
+        {list, acc, cursor, countdown},
+        false,
+        batch_size
+      )
+
+    {condition, [list, acc, cursor, countdown]}
+  end
+
+  defp local_reduce_arguments(item, acc, scalar_result?, reducer_name, env, ctx, block) do
+    acc =
+      if scalar_result?,
+        do: acc,
+        else: create_op("ex.to_word", [acc], [ex_type("term", ctx)], ctx, block)
+
+    [item, acc]
+    |> Enum.zip(function_arg_modes(reducer_name, 2, env))
+    |> Enum.map(&local_reduce_argument(&1, ctx, block))
+    |> then(&adapt_call_arguments(reducer_name, &1, env, ctx, block))
+  end
+
+  defp local_reduce_argument({value, :scalar}, ctx, block) do
+    if term_operand?(value),
+      do: create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block),
+      else: value
+  end
+
+  defp local_reduce_argument({value, _mode}, _ctx, _block), do: value
 
   # Tag-dispatched enumerable reduce through the Zig runtime (continuation
   # 1 = sum), used when the enumerable is not a list literal.
@@ -4575,15 +4775,9 @@ defmodule Batata.Lift do
 
     case range_ast?(enumerable_ast) do
       {true, start_ast, stop_ast} ->
-        case range_continuation(pattern) do
-          nil ->
-            raise Error, "range enumerables support only scalar reducers"
-
-          cont ->
-            {start, env} = lift_expr(start_ast, ctx, block, env)
-            {stop, env} = lift_expr(stop_ast, ctx, block, env)
-            {lift_enum_range_reduce(start, stop, acc_value, cont, ctx, block), env}
-        end
+        {start, env} = lift_expr(start_ast, ctx, block, env)
+        {stop, env} = lift_expr(stop_ast, ctx, block, env)
+        lift_range_reduce_pattern(pattern, start, stop, acc_value, ctx, block, env)
 
       false ->
         {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
@@ -5077,6 +5271,37 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp lift_range_reduce_pattern(
+         {:combination, reducer_name},
+         start,
+         stop,
+         acc_value,
+         ctx,
+         block,
+         env
+       ) do
+    list =
+      create_op(
+        "ex.enumerable_to_list_range",
+        [start, stop],
+        [ex_type("term", ctx)],
+        ctx,
+        block
+      )
+
+    lift_local_reduce(list, acc_value, reducer_name, ctx, block, env)
+  end
+
+  defp lift_range_reduce_pattern(pattern, start, stop, acc_value, ctx, block, env) do
+    case range_continuation(pattern) do
+      nil ->
+        raise Error, "range enumerables support only scalar reducers"
+
+      continuation ->
+        {lift_enum_range_reduce(start, stop, acc_value, continuation, ctx, block), env}
+    end
   end
 
   defp lift_term_comparison(op, left, right, left_value, right_value, ctx, block, env)
@@ -6299,27 +6524,16 @@ defmodule Batata.Lift do
          block,
          env
        ) do
-    # Any enumerable: the reducer was extracted to `__enum_reducer_N`,
-    # whose address is handed to the runtime's arbitrary-closure reduce.
-    addr =
+    list =
       create_op(
-        "ex.func_addr",
-        [sym_name: MLIR.Attribute.string(Symbol.function(reducer_name, 2))],
-        [MLIR.Type.function([integer_type(ctx), integer_type(ctx)], [integer_type(ctx)])],
+        "ex.enumerable_to_list",
+        [enumerable_word],
+        [ex_type("term", ctx)],
         ctx,
         block
       )
 
-    {
-      create_op(
-        "ex.enumerable_reduce_fun",
-        [enumerable_word, acc_value, addr],
-        [integer_type(ctx)],
-        ctx,
-        block
-      ),
-      env
-    }
+    lift_local_reduce(list, acc_value, reducer_name, ctx, block, env)
   end
 
   defp lift_reduce_pattern(
