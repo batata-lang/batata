@@ -450,6 +450,9 @@ defmodule Batata.Lift do
       {:__lists_any__, _, [_support, _predicate, _list]} = node, acc ->
         {node, acc + 1}
 
+      {:__enum_find__, _, [_support, _predicate, _enumerable]} = node, acc ->
+        {node, acc + 1}
+
       {{:., _, [:lists, function]}, _, args} = node, acc
       when function in [:keyfind, :reverse] and is_list(args) ->
         {node, acc + 1}
@@ -629,6 +632,9 @@ defmodule Batata.Lift do
           {node, not cond_has_final_true_clause?(clauses)}
 
         {:__lists_any__, _, [_support, _predicate, _list]} = node, false ->
+          {node, true}
+
+        {:__enum_find__, _, [_support, _predicate, _enumerable]} = node, false ->
           {node, true}
 
         {{:., _, [{_name, _, nil}, field]}, _, []} = node, false when is_atom(field) ->
@@ -857,6 +863,30 @@ defmodule Batata.Lift do
   end
 
   defp recognize_enum_node(
+         {:|>, _,
+          [enumerable, {{:., _, [{:__aliases__, _, alias_parts}, :find]}, _, [predicate]}]} =
+           node,
+         state
+       ) do
+    if enum_alias?(alias_parts) do
+      recognize_find_node(predicate, enumerable, state)
+    else
+      {node, state}
+    end
+  end
+
+  defp recognize_enum_node(
+         {{:., _, [{:__aliases__, _, alias_parts}, :find]}, _, [enumerable, predicate]} = node,
+         state
+       ) do
+    if enum_alias?(alias_parts) do
+      recognize_find_node(predicate, enumerable, state)
+    else
+      {node, state}
+    end
+  end
+
+  defp recognize_enum_node(
          {{:., _, [{:__aliases__, _, alias_parts}, :flat_map]}, _, [enumerable, fn_ast]} = node,
          state
        ) do
@@ -920,7 +950,7 @@ defmodule Batata.Lift do
   defp lists_any_boolean_body?(value) when is_boolean(value), do: true
 
   defp lists_any_boolean_body?({operator, _, [_left, _right]})
-       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
+       when operator in [:==, :!=, :===, :!==, :<, :<=, :>, :>=, :in],
        do: true
 
   defp lists_any_boolean_body?({operator, _, [_argument]})
@@ -997,6 +1027,11 @@ defmodule Batata.Lift do
       :error ->
         {node, state}
     end
+  end
+
+  defp recognize_find_node(predicate, enumerable, state) do
+    support = lists_any_predicate_source(predicate)
+    {{:__enum_find__, [], [support, predicate, enumerable]}, state}
   end
 
   # `Enumerable.List.reduce/3` is the list implementation of the Enumerable
@@ -1717,7 +1752,10 @@ defmodule Batata.Lift do
   # in their own scope, and each literal is extracted independently.
   defp free_vars({:fn, _, _}, _bound), do: []
 
-  defp free_vars({var, _, nil}, bound) when is_atom(var) do
+  defp free_vars({{:., _, [base, _field]}, _, []}, bound), do: free_vars(base, bound)
+
+  defp free_vars({var, _, context}, bound)
+       when is_atom(var) and (is_atom(context) or is_nil(context)) do
     if var == :_ or var in bound, do: [], else: [var]
   end
 
@@ -4405,6 +4443,17 @@ defmodule Batata.Lift do
     {create_op("ex.#{name}", [box_term(value, ctx, block)], [MLIR.Type.i64()], ctx, block), env}
   end
 
+  # The current body-level membership slice is the proper-list, word-equality
+  # path used by Decimal signal atoms. Composite loose/strict equality remains
+  # outside this bounded lowering.
+  defp lift_expr({:in, _, [member_ast, list_ast]}, ctx, block, env) do
+    {member, env} = lift_expr(member_ast, ctx, block, env)
+    {list, env} = lift_expr(list_ast, ctx, block, env)
+    member = member |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    list = list |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {create_op("ex.mapset_member", [list, member], [integer_type(ctx)], ctx, block), env}
+  end
+
   defp lift_expr({op, _, [left, right]}, ctx, block, env)
        when op in [:==, :!=, :===, :!==, :<, :<=, :>, :>=] do
     {left_value, env} = lift_expr(left, ctx, block, env)
@@ -4626,7 +4675,40 @@ defmodule Batata.Lift do
     raise Error, ":lists.any/2 requires a supported unary local predicate or capture"
   end
 
-  # `Enum.map/2` / `Enum.reduce/3` calls recognized by `recognize_enum_calls`.
+  defp lift_expr(
+         {:__enum_find__, _,
+          [
+            support,
+            {:__fn_ref__, _, [_fn_idx, _predicate_name, 1, _captured]} = predicate_ast,
+            enumerable_ast
+          ]},
+         ctx,
+         block,
+         env
+       ) do
+    ensure_boolean_predicate_support!(support, env, "Enum.find/2")
+    {predicate, env} = lift_expr(predicate_ast, ctx, block, env)
+    predicate = predicate |> lift_value(ctx, block, env) |> box_term(ctx, block)
+    {list, env} = lift_find_enumerable(enumerable_ast, ctx, block, env)
+
+    value =
+      lift_enum_find(
+        predicate,
+        list,
+        ctx,
+        block,
+        env[:__budget__],
+        env[:__batch_size__]
+      )
+
+    mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
+  end
+
+  defp lift_expr({:__enum_find__, _, [_support, _predicate, _enumerable]}, _ctx, _block, _env) do
+    raise Error, "Enum.find/2 requires a supported unary local predicate or capture"
+  end
+
+  # Enum calls recognized by `recognize_enum_calls`.
   defp lift_expr({:__enum_call__, _, [:map, pattern, enumerable_ast]}, ctx, block, env) do
     {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
     enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
@@ -5271,6 +5353,40 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp lift_find_enumerable(enumerable_ast, ctx, block, env) do
+    case range_ast?(enumerable_ast) do
+      {true, start_ast, stop_ast} ->
+        {start, env} = lift_expr(start_ast, ctx, block, env)
+        {stop, env} = lift_expr(stop_ast, ctx, block, env)
+
+        list =
+          create_op(
+            "ex.enumerable_to_list_range",
+            [start, stop],
+            [ex_type("term", ctx)],
+            ctx,
+            block
+          )
+
+        {list, env}
+
+      false ->
+        {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+        enumerable = enumerable |> lift_value(ctx, block, env) |> box_term(ctx, block)
+
+        list =
+          create_op(
+            "ex.enumerable_to_list",
+            [enumerable],
+            [ex_type("term", ctx)],
+            ctx,
+            block
+          )
+
+        {list, env}
+    end
   end
 
   defp lift_range_reduce_pattern(
@@ -8011,21 +8127,30 @@ defmodule Batata.Lift do
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
-  defp ensure_lists_any_predicate_support!(:boolean_ast, _env), do: :ok
+  defp ensure_lists_any_predicate_support!(support, env),
+    do: ensure_boolean_predicate_support!(support, env, ":lists.any/2")
 
-  defp ensure_lists_any_predicate_support!({:local_capture, name}, env) do
+  defp ensure_boolean_predicate_support!(:boolean_ast, _env, _operation), do: :ok
+
+  defp ensure_boolean_predicate_support!({:local_capture, name}, env, operation) do
     unless MapSet.member?(Map.fetch!(env, @boolean_result_functions_key), {name, 1}) do
-      raise Error, ":lists.any/2 requires a supported boolean local predicate"
+      raise Error, "#{operation} requires a supported boolean local predicate"
     end
   end
 
-  defp ensure_lists_any_predicate_support!(_support, _env) do
-    raise Error, ":lists.any/2 requires a supported unary local predicate or capture"
+  defp ensure_boolean_predicate_support!(_support, _env, operation) do
+    raise Error, "#{operation} requires a supported unary local predicate or capture"
   end
 
   defp lift_lists_any(predicate, list, ctx, block, budget, batch_size) do
     false_word = atom_term(false, ctx, block)
     result = emit_lists_loop(:any, list, false_word, predicate, ctx, block, budget, batch_size)
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lift_enum_find(predicate, list, ctx, block, budget, batch_size) do
+    false_word = atom_term(false, ctx, block)
+    result = emit_lists_loop(:find, list, false_word, predicate, ctx, block, budget, batch_size)
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
@@ -8133,7 +8258,7 @@ defmodule Batata.Lift do
     do: has_cons
 
   defp lists_loop_condition(kind, has_cons, acc, false_word, i64, ctx, block)
-       when kind in [:any, :keyfind] do
+       when kind in [:any, :find, :keyfind] do
     acc_word = create_op("ex.to_word", [acc], [ex_type("term", ctx)], ctx, block)
     not_found = create_op("ex.term_eq", [acc_word, false_word], [i64], ctx, block)
     create_op("arith.andi", [has_cons, not_found], [i64], ctx, block)
@@ -8141,6 +8266,9 @@ defmodule Batata.Lift do
 
   defp lists_loop_accumulator(:any, head, _acc, predicate, ctx, block),
     do: any_accumulator(head, predicate, ctx, block)
+
+  defp lists_loop_accumulator(:find, head, acc, predicate, ctx, block),
+    do: find_accumulator(head, acc, predicate, ctx, block)
 
   defp lists_loop_accumulator(:keyfind, head, acc, {key, position}, ctx, block),
     do: keyfind_accumulator(head, acc, key, position, ctx, block)
@@ -8164,6 +8292,19 @@ defmodule Batata.Lift do
   end
 
   defp any_accumulator(head, predicate, ctx, block) do
+    truth = boolean_predicate_truth(head, predicate, ":lists.any/2", ctx, block)
+    boolean_term(truth, ctx, block) |> unbox(ctx, block)
+  end
+
+  defp find_accumulator(head, acc, predicate, ctx, block) do
+    truth = boolean_predicate_truth(head, predicate, "Enum.find/2", ctx, block)
+    truth_i1 = create_op("arith.trunci", [truth], [MLIR.Type.i1()], ctx, block)
+    found = create_term_op("ex.tuple", [atom_term(:ok, ctx, block), head], ctx, block)
+    found = unbox(found, ctx, block)
+    create_op("arith.select", [truth_i1, found, acc], [integer_type(ctx)], ctx, block)
+  end
+
+  defp boolean_predicate_truth(head, predicate, operation, ctx, block) do
     i64 = integer_type(ctx)
 
     applied =
@@ -8200,9 +8341,9 @@ defmodule Batata.Lift do
       ctx,
       block,
       [i64],
-      fn b -> [boolean_term(truth, ctx, b) |> unbox(ctx, b)] end,
+      fn _b -> [truth] end,
       fn b ->
-        [raise_argument_error("invalid :lists.any/2 predicate result", ctx, b) |> unbox(ctx, b)]
+        [raise_argument_error("invalid #{operation} predicate result", ctx, b) |> unbox(ctx, b)]
       end
     )
     |> hd()
@@ -8240,6 +8381,51 @@ defmodule Batata.Lift do
         build_scf_if(proper_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
           [raise_argument_error("invalid :lists.reverse/2 list", ctx, b) |> unbox(ctx, b)]
         end)
+        |> hd()
+
+      :find ->
+        acc_word = create_op("ex.to_word", [acc], [ex_type("term", ctx)], ctx, block)
+        false_word = atom_term(false, ctx, block)
+
+        not_found =
+          create_op("ex.term_eq", [acc_word, false_word], [integer_type(ctx)], ctx, block)
+
+        found = cmp(not_found, 0, "eq", ctx, block)
+        found_i1 = create_op("arith.trunci", [found], [MLIR.Type.i1()], ctx, block)
+
+        build_scf_if(
+          found_i1,
+          ctx,
+          block,
+          [integer_type(ctx)],
+          fn b ->
+            item =
+              create_op(
+                "ex.tuple_get",
+                [acc_word, lit(1, ctx, b)],
+                [ex_type("term", ctx)],
+                ctx,
+                b
+              )
+
+            [unbox(item, ctx, b)]
+          end,
+          fn b ->
+            build_scf_if(
+              proper_i1,
+              ctx,
+              b,
+              [integer_type(ctx)],
+              fn eb -> [atom_term(nil, ctx, eb) |> unbox(ctx, eb)] end,
+              fn eb ->
+                [
+                  raise_argument_error("invalid Enum.find/2 enumerable", ctx, eb)
+                  |> unbox(ctx, eb)
+                ]
+              end
+            )
+          end
+        )
         |> hd()
 
       :keyfind ->
