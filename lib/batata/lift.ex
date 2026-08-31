@@ -8489,6 +8489,26 @@ defmodule Batata.Lift do
   defp native_term_call(List, :flatten, [value], ctx, block),
     do: lower_list_flatten(value, ctx, block)
 
+  defp native_term_call(List, :wrap, [value], ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    nil? = create_op("ex.term_eq", [value, atom_term(nil, ctx, block)], [i64], ctx, block)
+    nil_i1 = create_op("arith.trunci", [nil?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        nil_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [create_term_op("ex.list", [], ctx, b) |> unbox(ctx, b)] end,
+        fn b -> [lower_list_wrap_non_nil(value, ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
   defp native_term_call(_module, :self, [], ctx, block),
     do: create_op("ex.self", [], [ex_type("term", ctx)], ctx, block)
 
@@ -8553,6 +8573,21 @@ defmodule Batata.Lift do
 
   defp native_term_call(module, fun, _args, _ctx, _block) do
     raise Error, "no native_term lowering for #{inspect(module)}.#{fun}"
+  end
+
+  defp lower_list_wrap_non_nil(value, ctx, block) do
+    list? = create_op("ex.is_list", [value], [integer_type(ctx)], ctx, block)
+    list_i1 = create_op("arith.trunci", [list?], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      list_i1,
+      ctx,
+      block,
+      [integer_type(ctx)],
+      fn b -> [unbox(value, ctx, b)] end,
+      fn b -> [create_term_op("ex.list", [value], ctx, b) |> unbox(ctx, b)] end
+    )
+    |> hd()
   end
 
   defp lower_integer_to_charlist(value, ctx, block) do
