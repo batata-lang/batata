@@ -85,6 +85,75 @@ defmodule Batata.IntegerResultOrderingTest do
     end)
   end
 
+  test "orders integer-default fields bound by Decimal-shaped struct clauses", %{ctx: ctx} do
+    source = """
+    defmodule StructFieldOrderingFixture do
+      defstruct sign: 1, exp: 0, label: nil
+
+      defp choose(%__MODULE__{label: :missing}, %__MODULE__{} = right), do: right
+
+      defp choose(
+             %__MODULE__{sign: sign1, exp: exp1} = left,
+             %__MODULE__{sign: sign2, exp: exp2} = right
+           ) do
+        case :equal do
+          :equal ->
+            cond do
+              sign1 != sign2 -> left
+              sign1 == 1 -> if exp1 < exp2, do: left, else: right
+              sign1 == -1 -> if exp1 > exp2, do: left, else: right
+            end
+        end
+      end
+
+      def main() do
+        positive =
+          choose(
+            %__MODULE__{sign: 1, exp: -2},
+            %__MODULE__{sign: 1, exp: -1}
+          )
+
+        negative =
+          choose(
+            %__MODULE__{sign: -1, exp: 3},
+            %__MODULE__{sign: -1, exp: 2}
+          )
+
+        %__MODULE__{exp: rebound} = positive
+        {positive.exp, negative.exp, if(rebound > -3, do: :greater, else: :less)}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {-2, 3, :greater}
+
+    module = Batata.compile(source, ctx)
+    assert MLIR.verify?(module)
+    assert module |> MLIR.to_string(generic: true) |> count_op("ex.integer_compare") == 3
+  end
+
+  test "keeps non-integer struct fields and generic map bindings fail closed", %{ctx: ctx} do
+    sources = [
+      """
+      defmodule TermStructFieldOrderingFixture do
+        defstruct label: nil
+        def main(%__MODULE__{label: label}), do: label < :z
+      end
+      """,
+      """
+      defmodule GenericMapFieldOrderingFixture do
+        def main(%{value: value}), do: value > 0
+      end
+      """
+    ]
+
+    Enum.each(sources, fn source ->
+      assert_raise Lift.Error, ~r/ordering comparisons on terms are unsupported/, fn ->
+        Batata.compile(source, ctx)
+      end
+    end)
+  end
+
   defp count_op(rendered, operation), do: length(Regex.scan(~r/"#{operation}"/, rendered))
 
   defp execution_source(expression) do
