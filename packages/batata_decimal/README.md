@@ -46,9 +46,12 @@ lowering and recursive `and`/`or` boolean proof then cross the nested atom
 comparisons in Decimal's threshold `compare/3` without accepting general term
 truthiness. Exact empty-list (`[]`) trailing arguments in multi-clause functions
 then reuse the existing structural `list_exact(0)` matcher, preserving clause
-order and fallback behavior without adding an ABI. The next fail-closed frontier
-is the cons tail pattern `[digit | _]` in Decimal's rounding logic
-(`28a769...dcd9f`). The isolated
+order and fallback behavior without adding an ABI. Structural cons tail
+patterns then reuse the existing nonempty/head/tail matcher; their clause-local
+bindings retain term validation before integer ordering, so Decimal's rounding
+digit comparisons advance without assuming arbitrary list elements are
+integers. The next fail-closed frontier is boolean-result proof for the rewritten
+local `any_nonzero(remain)` call under strict `and` (`e0044b...6ca2`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.

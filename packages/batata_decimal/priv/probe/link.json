@@ -12,7 +12,7 @@
   },
   "unit_attempt": {
     "status": "frontend_normalization_failure",
-    "reason_class": "multi_clause_trailing_literal_pattern",
-    "fingerprint": "28a7696fdaf7c28289eb9ecfdc058383133137f943ec1f911ee65c5a1a5dcd9f"
+    "reason_class": "lift_error",
+    "fingerprint": "e0044b0c025aea4027b34cc29c89280b716ae2239944b15e3483509c0d516ca2"
   }
 }
