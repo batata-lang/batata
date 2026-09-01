@@ -3558,6 +3558,48 @@ pub fn ex_term_list_flatten(list: i64) callconv(.c) i64 {
     return result;
 }
 
+/// Returns a new proper list with `value` inserted at a BEAM-compatible
+/// position. Positive positions beyond the end append; negative positions are
+/// relative to the insertion slots after each element (`-1` appends), with
+/// values below the range clamped to the front. Zero is an invalid-list or
+/// allocation-failure sentinel; a successful result is always a list cell.
+pub fn ex_term_list_insert_at(list: i64, index: i64, value: i64) callconv(.c) i64 {
+    var len: usize = 0;
+    var cursor = list;
+    while (is_list_cell_word(cursor)) {
+        len += 1;
+        cursor = list_cell(cursor)[1];
+    }
+    if (cursor != nil_word) return 0;
+
+    const position: usize = if (index >= 0)
+        @min(@as(usize, @intCast(index)), len)
+    else blk: {
+        const len_i64: i64 = @intCast(len);
+        if (index <= -len_i64 - 1) break :blk 0;
+        break :blk @intCast(len_i64 + index + 1);
+    };
+
+    var reversed_prefix = nil_word;
+    cursor = list;
+    for (0..position) |_| {
+        const cell = list_cell(cursor);
+        reversed_prefix = ex_term_list_cons(cell[0], reversed_prefix);
+        if (!is_list_cell_word(reversed_prefix)) return 0;
+        cursor = cell[1];
+    }
+
+    var result = ex_term_list_cons(value, cursor);
+    if (!is_list_cell_word(result)) return 0;
+    while (is_list_cell_word(reversed_prefix)) {
+        const cell = list_cell(reversed_prefix);
+        result = ex_term_list_cons(cell[0], result);
+        if (!is_list_cell_word(result)) return 0;
+        reversed_prefix = cell[1];
+    }
+    return result;
+}
+
 /// Converts a proper list word into a tuple word.
 pub fn ex_term_tuple_from_list(list: i64) callconv(.c) i64 {
     const len = list_len(list);
@@ -5577,6 +5619,39 @@ test "list flatten preserves leaves and rejects improper nested lists" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_list_flatten(improper));
     try std.testing.expectEqual(@as(i64, 0), ex_term_list_flatten(nested_improper));
     try std.testing.expectEqual(@as(i64, 0), ex_term_list_flatten(one));
+}
+
+test "list insertion clamps positive and negative indices with immutable terms" {
+    const one: i64 = 1 << tag_shift;
+    const two: i64 = 2 << tag_shift;
+    const three: i64 = 3 << tag_shift;
+    const value: i64 = 9 << tag_shift;
+    const list = ex_term_list_cons(one, ex_term_list_cons(two, ex_term_list_cons(three, nil_word)));
+
+    const prepended = ex_term_list_insert_at(list, 0, value);
+    const middle = ex_term_list_insert_at(list, 2, value);
+    const appended = ex_term_list_insert_at(list, 20, value);
+    const negative_middle = ex_term_list_insert_at(list, -2, value);
+    const negative_append = ex_term_list_insert_at(list, -1, value);
+    const negative_prepend = ex_term_list_insert_at(list, -20, value);
+    const empty = ex_term_list_insert_at(nil_word, -1, value);
+
+    try std.testing.expectEqual(value, ex_term_list_get(prepended, 0));
+    try std.testing.expectEqual(value, ex_term_list_get(middle, 2));
+    try std.testing.expectEqual(value, ex_term_list_get(appended, 3));
+    try std.testing.expectEqual(value, ex_term_list_get(negative_middle, 2));
+    try std.testing.expectEqual(value, ex_term_list_get(negative_append, 3));
+    try std.testing.expectEqual(value, ex_term_list_get(negative_prepend, 0));
+    try std.testing.expectEqual(value, ex_term_list_get(empty, 0));
+    try std.testing.expectEqual(@as(i64, 4), ex_term_list_length(middle));
+
+    // The original list and its shared suffix are never mutated.
+    try std.testing.expectEqual(two, ex_term_list_get(list, 1));
+    try std.testing.expectEqual(three, ex_term_list_get(list, 2));
+
+    const improper = ex_term_list_cons(one, two);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_insert_at(improper, 1, value));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_list_insert_at(one, 0, value));
 }
 
 test "term ABI reads" {
