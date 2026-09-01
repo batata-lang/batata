@@ -7323,9 +7323,19 @@ defmodule Batata.Lift do
     mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
   end
 
+  defp lift_stdlib_call(:lists, :split, [count_ast, list_ast], ctx, block, env) do
+    {[count, list], env} = lift_operands_boxed([count_ast, list_ast], ctx, block, env)
+    {lift_lists_split(count, list, ctx, block), env}
+  end
+
   defp lift_stdlib_call(List, :duplicate, [item_ast, count_ast], ctx, block, env) do
     {[item, count], env} = lift_operands_boxed([item_ast, count_ast], ctx, block, env)
-    {lift_list_duplicate(item, count, ctx, block), env}
+    {lift_list_duplicate(List, item, count, ctx, block), env}
+  end
+
+  defp lift_stdlib_call(:lists, :duplicate, [count_ast, item_ast], ctx, block, env) do
+    {[count, item], env} = lift_operands_boxed([count_ast, item_ast], ctx, block, env)
+    {lift_list_duplicate(:lists, item, count, ctx, block), env}
   end
 
   defp lift_stdlib_call(Map, :put, args, ctx, block, env) do
@@ -8014,12 +8024,12 @@ defmodule Batata.Lift do
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
-  defp lift_list_duplicate(item, count, ctx, block) do
+  defp lift_list_duplicate(module, item, count, ctx, block) do
     i64 = integer_type(ctx)
     integer? = create_op("ex.is_integer", [count], [i64], ctx, block)
     count_int = create_op("ex.to_int", [count], [i64], ctx, block)
-    positive? = cmp(count_int, lit(0, ctx, block), "sgt", ctx, block)
-    valid = create_op("arith.andi", [integer?, positive?], [i64], ctx, block)
+    non_negative? = cmp(count_int, lit(0, ctx, block), "sge", ctx, block)
+    valid = create_op("arith.andi", [integer?, non_negative?], [i64], ctx, block)
     valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
 
     result =
@@ -8029,7 +8039,7 @@ defmodule Batata.Lift do
         block,
         [i64],
         fn b -> [emit_list_duplicate_loop(item, count_int, ctx, b)] end,
-        fn b -> [raise_function_clause(List, :duplicate, 2, ctx, b) |> unbox(ctx, b)] end
+        fn b -> [raise_function_clause(module, :duplicate, 2, ctx, b) |> unbox(ctx, b)] end
       )
       |> hd()
 
@@ -8141,6 +8151,131 @@ defmodule Batata.Lift do
 
   defp lift_lists_reverse(list, tail, ctx, block, budget, batch_size) do
     result = emit_lists_loop(:reverse, list, tail, nil, ctx, block, budget, batch_size)
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  # `:lists.split/2` is count-bounded and intentionally eager, matching the
+  # existing list-duplication contract. It visits at most `count` cons cells,
+  # allocates one reversed and one forward prefix cell per visit, and never
+  # traverses the returned suffix (which may therefore be an improper tail).
+  defp lift_lists_split(count, list, ctx, block) do
+    i64 = integer_type(ctx)
+    integer? = create_op("ex.is_integer", [count], [i64], ctx, block)
+    count_int = create_op("ex.to_int", [count], [i64], ctx, block)
+    non_negative? = cmp(count_int, lit(0, ctx, block), "sge", ctx, block)
+    list? = create_op("ex.is_list", [list], [i64], ctx, block)
+    valid = combine([integer?, non_negative?, list?], ctx, block)
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [emit_lists_split_loop(count_int, list, ctx, b)] end,
+        fn b ->
+          [raise_argument_error("invalid :lists.split/2 arguments", ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp emit_lists_split_loop(count, list, ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    empty = create_term_op("ex.list", [], ctx, block)
+    state = {unbox(list, ctx, block), unbox(empty, ctx, block), count}
+    state_count = 3
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), state_count)
+
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+    before_args = before_block |> Walker.arguments() |> Enum.to_list()
+    [b_current, _b_reversed, b_remaining] = before_args
+    current_word = create_op("ex.to_word", [b_current], [dyn], ctx, before_block)
+    nil_word = atom_term(nil, ctx, before_block)
+    list? = create_op("ex.is_list", [current_word], [i64], ctx, before_block)
+    nil? = create_op("ex.term_eq", [current_word, nil_word], [i64], ctx, before_block)
+    cons? = create_op("arith.xori", [nil?, lit(1, ctx, before_block)], [i64], ctx, before_block)
+    cons? = create_op("arith.andi", [list?, cons?], [i64], ctx, before_block)
+    remaining? = cmp(b_remaining, lit(0, ctx, before_block), "sgt", ctx, before_block)
+    continue? = create_op("arith.andi", [remaining?, cons?], [i64], ctx, before_block)
+    continue_i1 = create_op("arith.trunci", [continue?], [MLIR.Type.i1()], ctx, before_block)
+    create_op("scf.condition", [continue_i1 | before_args], [], ctx, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create(List.duplicate(i64, state_count), locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+    after_args = after_block |> Walker.arguments() |> Enum.to_list()
+    [a_current, a_reversed, a_remaining] = after_args
+    current_word = create_op("ex.to_word", [a_current], [dyn], ctx, after_block)
+    reversed_word = create_op("ex.to_word", [a_reversed], [dyn], ctx, after_block)
+    head = create_op("ex.list_head", [current_word], [dyn], ctx, after_block)
+    tail = create_op("ex.list_tail", [current_word], [dyn], ctx, after_block)
+    reversed = create_op("ex.list_cons", [head, reversed_word], [dyn], ctx, after_block)
+
+    remaining =
+      create_op("ex.sub", [a_remaining, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op(
+      "scf.yield",
+      [unbox(tail, ctx, after_block), unbox(reversed, ctx, after_block), remaining],
+      [],
+      ctx,
+      after_block
+    )
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: Tuple.to_list(state),
+        results: List.duplicate(i64, state_count),
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    [suffix, reversed, remaining] = while_op |> MLIR.Operation.results() |> Enum.to_list()
+    complete? = cmp(remaining, lit(0, ctx, block), "eq", ctx, block)
+    complete_i1 = create_op("arith.trunci", [complete?], [MLIR.Type.i1()], ctx, block)
+
+    build_scf_if(
+      complete_i1,
+      ctx,
+      block,
+      [i64],
+      fn b ->
+        reversed = create_op("ex.to_word", [reversed], [dyn], ctx, b)
+        prefix = emit_lists_reverse_eager(reversed, ctx, b)
+        suffix = create_op("ex.to_word", [suffix], [dyn], ctx, b)
+        [create_term_op("ex.tuple", [prefix, suffix], ctx, b) |> unbox(ctx, b)]
+      end,
+      fn b ->
+        [raise_argument_error("invalid :lists.split/2 arguments", ctx, b) |> unbox(ctx, b)]
+      end
+    )
+    |> hd()
+  end
+
+  defp emit_lists_reverse_eager(list, ctx, block) do
+    result =
+      emit_lists_loop(
+        :reverse,
+        list,
+        create_term_op("ex.list", [], ctx, block),
+        nil,
+        ctx,
+        block,
+        nil,
+        nil
+      )
+
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 

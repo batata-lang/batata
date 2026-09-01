@@ -17,6 +17,16 @@ defmodule Batata.ListDuplicateTest do
     assert Batata.execute(@source, ctx, reduction_budget: 1) == expected
   end
 
+  test "accepts zero and the :lists argument order", %{ctx: ctx} do
+    source = """
+    defmodule ListsDuplicateFixture do
+      def main(), do: {List.duplicate(:value, 0), :lists.duplicate(0, :value), :lists.duplicate(2, :value)}
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {nil, nil, [:value, :value]}
+  end
+
   test "lowers construction as a bounded-allocation loop", %{ctx: ctx} do
     ir = @source |> Batata.compile(ctx) |> Beaver.MLIR.to_string(generic: true)
     assert ir =~ ~s{"scf.while"}
@@ -25,7 +35,6 @@ defmodule Batata.ListDuplicateTest do
   end
 
   for {label, count} <- [
-        {"zero", "0"},
         {"negative", "-1"},
         {"float", "1.0"},
         {"atom", ":bad"}

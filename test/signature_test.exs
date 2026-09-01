@@ -111,6 +111,30 @@ defmodule Batata.SignatureTest do
     assert Batata.Signature.infer([definition]) == %{{:clamp, 1} => [:scalar]}
   end
 
+  test "keeps the :lists.split list boxed and count scalar" do
+    count = Macro.var(:count, nil)
+    list = Macro.var(:list, nil)
+
+    definition =
+      definition(:split, [count, list], quote(do: :lists.split(unquote(count), unquote(list))))
+
+    assert Batata.Signature.infer([definition]) == %{{:split, 2} => [:scalar, :term]}
+  end
+
+  test "keeps the :lists.duplicate item boxed and count scalar" do
+    count = Macro.var(:count, nil)
+    item = Macro.var(:item, nil)
+
+    definition =
+      definition(
+        :duplicate,
+        [count, item],
+        quote(do: :lists.duplicate(unquote(count), unquote(item)))
+      )
+
+    assert Batata.Signature.infer([definition]) == %{{:duplicate, 2} => [:scalar, :term]}
+  end
+
   test "marks dynamic closure arguments as terms" do
     closure = {:closure, [], nil}
     value = {:value, [], nil}

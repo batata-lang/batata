@@ -75,9 +75,11 @@ defmodule Batata.Stdlib.List do
     {List, :flatten, 1} => :native_term,
     {List, :wrap, 1} => :native_term,
     {:lists, :any, 2} => :native_term,
+    {:lists, :duplicate, 2} => :native_term,
     {:lists, :keyfind, 3} => :native_term,
     {:lists, :reverse, 1} => :native_term,
-    {:lists, :reverse, 2} => :native_term
+    {:lists, :reverse, 2} => :native_term,
+    {:lists, :split, 2} => :native_term
   }
 
   @doc "Returns list-domain stdlib replacement declarations."
@@ -467,9 +469,11 @@ defmodule Batata.Stdlib do
                   {:binary, :part, 3},
                   {:maps, :from_list, 1},
                   {:lists, :any, 2},
+                  {:lists, :duplicate, 2},
                   {:lists, :keyfind, 3},
                   {:lists, :reverse, 1},
-                  {:lists, :reverse, 2}
+                  {:lists, :reverse, 2},
+                  {:lists, :split, 2}
                 ])
 
   @impure_mfas MapSet.new([
@@ -522,6 +526,7 @@ defmodule Batata.Stdlib do
                      {List, :duplicate, 2},
                      {List, :flatten, 1},
                      {List, :wrap, 1},
+                     {:lists, :duplicate, 2},
                      {:erlang, :binary_to_float, 1},
                      {:erlang, :float_to_binary, 2},
                      {:io_lib_format, :fwrite_g, 1},
@@ -543,7 +548,8 @@ defmodule Batata.Stdlib do
                      {Enum, :map, 2},
                      {Enum, :to_list, 1},
                      {:lists, :reverse, 1},
-                     {:lists, :reverse, 2}
+                     {:lists, :reverse, 2},
+                     {:lists, :split, 2}
                    ])
 
   @resumable_mfas MapSet.new([
@@ -577,6 +583,7 @@ defmodule Batata.Stdlib do
                       {MapSet, :new, 1},
                       {HashSet, :new, 1},
                       {List, :duplicate, 2},
+                      {:lists, :duplicate, 2},
                       {Keyword, :get, 2},
                       {Keyword, :get, 3},
                       {Stream, :take, 2},
@@ -585,7 +592,8 @@ defmodule Batata.Stdlib do
                       {:lists, :any, 2},
                       {:lists, :keyfind, 3},
                       {:lists, :reverse, 1},
-                      {:lists, :reverse, 2}
+                      {:lists, :reverse, 2},
+                      {:lists, :split, 2}
                     ])
 
   @doc """
