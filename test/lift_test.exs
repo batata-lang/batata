@@ -774,6 +774,23 @@ defmodule Batata.LiftTest do
     assert "scf.if" in names
   end
 
+  test "lowers qualified Kernel min and abs through scalar selection", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule ScalarRounding do
+          def main(), do: Kernel.min(Kernel.abs(-17), 5)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert Enum.count(names, &(&1 == "ex.cmp")) == 2
+    assert Enum.count(names, &(&1 == "scf.if")) == 2
+    assert "ex.sub" in names
+  end
+
   test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
     codepoint = Macro.var(:codepoint, nil)
 
