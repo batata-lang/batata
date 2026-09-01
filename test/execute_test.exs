@@ -4225,6 +4225,23 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "process dictionary get and put preserve defaults and previous values", %{ctx: ctx} do
+    source = """
+    defmodule ProcessDictionary do
+      def main() do
+        missing = Process.get(:answer, {:default, 7})
+        first = Process.put(:answer, {42, :stored})
+        stored = Process.get(:answer)
+        previous = :erlang.put(:answer, nil)
+        stored_nil = :erlang.get(:answer)
+        {missing, first, stored, previous, stored_nil}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {{:default, 7}, nil, {42, :stored}, {42, :stored}, nil}
+  end
+
   test "erlang.unique_integer([:negative]) hands out decreasing values", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

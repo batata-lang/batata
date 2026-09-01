@@ -9091,6 +9091,37 @@ defmodule Batata.Lift do
   defp native_term_call(_module, :spawn, [fun], ctx, block),
     do: create_op("ex.spawn", [fun], [ex_type("term", ctx)], ctx, block)
 
+  defp native_term_call(module, :get, [key], ctx, block) when module in [Process, :erlang] do
+    create_op(
+      "ex.process_dictionary_get",
+      [key, atom_term(nil, ctx, block)],
+      [ex_type("term", ctx)],
+      ctx,
+      block
+    )
+  end
+
+  defp native_term_call(Process, :get, [key, default], ctx, block) do
+    create_op(
+      "ex.process_dictionary_get",
+      [key, default],
+      [ex_type("term", ctx)],
+      ctx,
+      block
+    )
+  end
+
+  defp native_term_call(module, :put, [key, value], ctx, block)
+       when module in [Process, :erlang] do
+    create_op(
+      "ex.process_dictionary_put",
+      [key, value],
+      [ex_type("term", ctx)],
+      ctx,
+      block
+    )
+  end
+
   defp native_term_call(module, :link, [pid], ctx, block) when module in [Process, :erlang] do
     _ =
       create_op(
