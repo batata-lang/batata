@@ -24,8 +24,13 @@ The schema-v6 baseline inventories four modules, 245 source definitions, and
 The qualified whole-unit compile/link attempt now lowers Decimal's
 `Process.put/2` use and `Decimal.Context.get/0` through actor-local process
 dictionary intrinsics. It also lowers all positive and negative
-`List.insert_at/3` calls in Decimal's normal/scientific formatting paths. Its
-next fail-closed frontier is `try/after` (`a03d6a...f08ec`). The isolated
+`List.insert_at/3` calls in Decimal's normal/scientific formatting paths.
+Exact-once `try/after` cleanup now preserves normal and handled results,
+restores unmatched throw/raise kind and reason after cleanup, and lets cleanup
+failures replace a pending result or unwind. This crosses
+`Decimal.Context.with/2`; the next fail-closed frontier is the dynamic-sized
+binary segment `remainder::size(7)-binary` in `Decimal.parse_unsign/1`
+(`43736e...92c8`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
