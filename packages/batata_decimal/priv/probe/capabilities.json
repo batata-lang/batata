@@ -6,6 +6,7 @@
     {"id": "decimal.guard_bifs", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.numeric_guards", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "process.dictionary", "status": "executable", "gate": "execute_test", "scope": "actor-local get with defaults and put with previous values; generic terms, stored nil, actor isolation, and recycled-slot reset"},
+    {"id": "stdlib.list_insert_at", "status": "executable", "gate": "stdlib_test", "scope": "proper lists with BEAM-compatible positive and negative index clamping, generic values, and FunctionClauseError boundaries"},
     {"id": "decimal.atom_membership", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.normalization", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "pattern.map_subset", "status": "executable", "gate": "execute_test"},
