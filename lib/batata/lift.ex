@@ -11510,6 +11510,25 @@ defmodule Batata.Lift do
 
             {[cond | conds], pat_binds ++ binds, next}
 
+          {:fixed_binary, pat, size} ->
+            size_value = lit(size, ctx, block)
+
+            part =
+              create_op(
+                "ex.binary_part",
+                [value, box_term(offset, ctx, block), box_term(size_value, ctx, block)],
+                [ex_type("term", ctx)],
+                ctx,
+                block
+              )
+
+            {cond, pat_binds} = do_build_match(pat, part, ctx, block, pattern_env)
+
+            next =
+              create_op("ex.add", [offset, size_value], [MLIR.Type.i64()], ctx, block)
+
+            {[cond | conds], pat_binds ++ binds, next}
+
           {:utf8, pat} ->
             width =
               create_op("ex.binary_utf8_width", [value, offset], [MLIR.Type.i64()], ctx, block)
@@ -11628,12 +11647,45 @@ defmodule Batata.Lift do
   defp binary_segment!({:"::", _, [pat, 8]}), do: {:byte, pat}
   defp binary_segment!({:"::", _, [pat, 16]}), do: {:uint16, pat}
   defp binary_segment!({:"::", _, [pat, {:utf8, _, nil}]}), do: {:utf8, pat}
+
+  defp binary_segment!({:"::", _, [pat, spec]} = segment) do
+    case fixed_binary_segment_size(spec) do
+      {:ok, size} -> {:fixed_binary, pat, size}
+      :error -> raise Error, "unsupported binary segment: #{inspect(segment)}"
+    end
+  end
+
   defp binary_segment!(pat) when is_integer(pat), do: {:byte, pat}
   defp binary_segment!({name, _, nil} = pat) when is_atom(name), do: {:byte, pat}
 
   defp binary_segment!(segment) do
     raise Error, "unsupported binary segment: #{inspect(segment)}"
   end
+
+  defp fixed_binary_segment_size({:-, _, [left, right]}) do
+    with {:ok, size} <- fixed_binary_size_modifier(left),
+         true <- fixed_binary_kind_modifier?(right) do
+      {:ok, size}
+    else
+      _ ->
+        with true <- fixed_binary_kind_modifier?(left),
+             {:ok, size} <- fixed_binary_size_modifier(right) do
+          {:ok, size}
+        else
+          _ -> :error
+        end
+    end
+  end
+
+  defp fixed_binary_segment_size(_spec), do: :error
+
+  defp fixed_binary_size_modifier({:size, _, [size]}) when is_integer(size) and size > 0,
+    do: {:ok, size}
+
+  defp fixed_binary_size_modifier(_modifier), do: :error
+
+  defp fixed_binary_kind_modifier?({kind, _, nil}) when kind in [:binary, :bytes], do: true
+  defp fixed_binary_kind_modifier?(_modifier), do: false
 
   defp add_term_clause_block(
          clause,
