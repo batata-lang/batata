@@ -4448,6 +4448,43 @@ defmodule Batata.Lift do
     {result, env}
   end
 
+  defp lift_expr({:or, _, [left_ast, right_ast]}, ctx, block, env) do
+    unless strict_boolean_scalar_ast?(left_ast, env) and
+             strict_boolean_scalar_ast?(right_ast, env) do
+      raise Error,
+            "body-level or requires compile-proven boolean scalar operands: " <>
+              inspect({left_ast, right_ast})
+    end
+
+    if ast_has_assignment?(right_ast) do
+      raise Error, "assignments in the right-hand side of or are unsupported"
+    end
+
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    left = left |> lift_value(ctx, block, env) |> validated_boolean_value(ctx, block)
+    left_i1 = create_op("arith.trunci", [left], [MLIR.Type.i1()], ctx, block)
+
+    [result] =
+      build_scf_if(
+        left_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn true_block -> [lit(1, ctx, true_block)] end,
+        fn right_block ->
+          {right, right_env} = lift_expr(right_ast, ctx, right_block, env)
+
+          [
+            right
+            |> lift_value(ctx, right_block, right_env)
+            |> validated_boolean_value(ctx, right_block)
+          ]
+        end
+      )
+
+    {result, env}
+  end
+
   defp lift_expr({:cond, _, [[do: clauses]]}, ctx, block, env) when is_list(clauses) do
     clauses
     |> cond_to_if!()
@@ -10742,8 +10779,9 @@ defmodule Batata.Lift do
        when op in [:==, :!=, :===, :!==, :<, :<=, :>, :>=],
        do: true
 
-  defp boolean_scalar_ast?({:and, _, [left, right]}, env),
-    do: strict_boolean_scalar_ast?(left, env) and strict_boolean_scalar_ast?(right, env)
+  defp boolean_scalar_ast?({operator, _, [left, right]}, env)
+       when operator in [:and, :or],
+       do: strict_boolean_scalar_ast?(left, env) and strict_boolean_scalar_ast?(right, env)
 
   defp boolean_scalar_ast?({name, _, arguments}, env)
        when is_atom(name) and is_list(arguments),
@@ -10769,8 +10807,9 @@ defmodule Batata.Lift do
        when op in [:<, :<=, :>, :>=],
        do: scalar_integer_candidate_ast?(left) and scalar_integer_candidate_ast?(right)
 
-  defp strict_boolean_scalar_ast?({:and, _, [left, right]}, env),
-    do: strict_boolean_scalar_ast?(left, env) and strict_boolean_scalar_ast?(right, env)
+  defp strict_boolean_scalar_ast?({operator, _, [left, right]}, env)
+       when operator in [:and, :or],
+       do: strict_boolean_scalar_ast?(left, env) and strict_boolean_scalar_ast?(right, env)
 
   defp strict_boolean_scalar_ast?({name, _, arguments}, env)
        when is_atom(name) and is_list(arguments),

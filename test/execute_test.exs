@@ -1599,6 +1599,50 @@ defmodule Batata.ExecuteTest do
                  end
   end
 
+  test "executes nested compile-proven body-level strict boolean expressions lazily", %{ctx: ctx} do
+    source = """
+    defmodule NativeNestedStrictBooleans do
+      def classify(left, right) do
+        cond do
+          (left == :gt or left == :eq) and (right == :lt or right == :eq) -> :eq
+          left == :gt -> :gt
+          right == :lt -> :lt
+        end
+      end
+
+      def main() do
+        lazy_or = if true or is_integer(Kernel.to_string([1])), do: :or_true, else: :or_false
+        lazy_and = if false and is_integer(Kernel.to_string([1])), do: :and_true, else: :and_false
+
+        {classify(:gt, :lt), classify(:eq, :eq), classify(:gt, :gt),
+         classify(:lt, :lt), lazy_or, lazy_and}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nNativeNestedStrictBooleans.main()") |> Code.eval_string() |> elem(0)
+
+    assert expected == {:eq, :eq, :gt, :lt, :or_true, :and_false}
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "rejects general term-valued body-level strict boolean or", %{ctx: ctx} do
+    assert_raise Batata.Lift.Error,
+                 ~r/body-level or requires compile-proven boolean scalar operands/,
+                 fn ->
+                   Batata.compile(
+                     """
+                     defmodule NativeStrictBooleanOr do
+                       def either(left, right), do: left or right
+                       def main(), do: either(true, false)
+                     end
+                     """,
+                     ctx
+                   )
+                 end
+  end
+
   test "executes a recursive boolean result through strict and and if", %{ctx: ctx} do
     source = """
     defmodule RecursiveBooleanResult do
