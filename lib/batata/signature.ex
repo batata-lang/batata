@@ -24,6 +24,8 @@ defmodule Batata.Signature do
     {Kernel, :binary_part, 3} => [:term, :scalar, :scalar],
     {:erlang, :length, 1} => [:term],
     {:erlang, :binary_part, 3} => [:term, :scalar, :scalar],
+    {:lists, :split, 2} => [:scalar, :term],
+    {:lists, :duplicate, 2} => [:scalar, :term],
     {Atom, :to_string, 1} => [:term],
     {String, :to_atom, 1} => [:term],
     {String, :to_existing_atom, 1} => [:term],
