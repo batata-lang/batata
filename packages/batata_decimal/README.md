@@ -44,8 +44,11 @@ operations. Non-finite bit patterns fail to match as they do on BEAM, and no
 runtime ABI is added. This crosses `Decimal.to_float/1`. Lazy strict `or`
 lowering and recursive `and`/`or` boolean proof then cross the nested atom
 comparisons in Decimal's threshold `compare/3` without accepting general term
-truthiness. The next fail-closed frontier is an exact empty-list (`[]`) trailing
-argument pattern in a multi-clause function (`0f4d2f...d8c60`). The isolated
+truthiness. Exact empty-list (`[]`) trailing arguments in multi-clause functions
+then reuse the existing structural `list_exact(0)` matcher, preserving clause
+order and fallback behavior without adding an ABI. The next fail-closed frontier
+is the cons tail pattern `[digit | _]` in Decimal's rounding logic
+(`28a769...dcd9f`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
