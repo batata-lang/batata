@@ -6745,7 +6745,28 @@ defmodule Batata.Lift do
     lift_expr({:div, [], [left, right]}, ctx, block, env)
   end
 
-  defp lift_stdlib_call(Kernel, :max, [left_ast, right_ast], ctx, block, env) do
+  defp lift_stdlib_call(Kernel, :abs, [value_ast], ctx, block, env) do
+    {value, env} = lift_expr(value_ast, ctx, block, env)
+    [value] = refine_integer_operands!([value_ast], [value], env, ctx, block)
+    ensure_refined_integer_operands!([value])
+    non_negative? = cmp(value, lit(0, ctx, block), "sge", ctx, block)
+    non_negative_i1 = create_op("arith.trunci", [non_negative?], [MLIR.Type.i1()], ctx, block)
+
+    [result] =
+      build_scf_if(
+        non_negative_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn _then_block -> [value] end,
+        fn b -> [create_op("ex.sub", [lit(0, ctx, b), value], [integer_type(ctx)], ctx, b)] end
+      )
+
+    {result, env}
+  end
+
+  defp lift_stdlib_call(Kernel, function, [left_ast, right_ast], ctx, block, env)
+       when function in [:max, :min] do
     {left, env} = lift_expr(left_ast, ctx, block, env)
     {right, env} = lift_expr(right_ast, ctx, block, env)
 
@@ -6762,8 +6783,8 @@ defmodule Batata.Lift do
         ctx,
         block,
         [integer_type(ctx)],
-        fn _then_block -> [left] end,
-        fn _else_block -> [right] end
+        fn _then_block -> [if(function == :max, do: left, else: right)] end,
+        fn _else_block -> [if(function == :max, do: right, else: left)] end
       )
 
     {result, env}

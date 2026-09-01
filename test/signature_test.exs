@@ -111,6 +111,19 @@ defmodule Batata.SignatureTest do
     assert Batata.Signature.infer([definition]) == %{{:clamp, 1} => [:scalar]}
   end
 
+  test "infers qualified Kernel min and abs operands as scalar integers" do
+    value = Macro.var(:value, nil)
+
+    definition =
+      definition(
+        :clamp_magnitude,
+        value,
+        quote(do: Kernel.min(10, Kernel.abs(unquote(value))))
+      )
+
+    assert Batata.Signature.infer([definition]) == %{{:clamp_magnitude, 1} => [:scalar]}
+  end
+
   test "keeps the :lists.split list boxed and count scalar" do
     count = Macro.var(:count, nil)
     list = Macro.var(:list, nil)

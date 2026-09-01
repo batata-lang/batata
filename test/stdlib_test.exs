@@ -331,9 +331,21 @@ defmodule Batata.StdlibTest do
       assert 17 == execute("Kernel.max(17, 5)", ctx)
       assert -5 == execute("Kernel.max(-17, -5)", ctx)
       assert 5 == execute("Kernel.max(5, 5)", ctx)
+      assert 5 == execute("Kernel.min(17, 5)", ctx)
+      assert 3 == execute("Kernel.min(-17, -5) + 20", ctx)
+      assert 5 == execute("Kernel.min(5, 5)", ctx)
+      assert 17 == execute("Kernel.abs(-17)", ctx)
+      assert 17 == execute("Kernel.abs(17)", ctx)
+      assert 0 == execute("Kernel.abs(0)", ctx)
 
       assert 9_223_372_036_854_775_807 ==
                execute("Kernel.max(-9_223_372_036_854_775_808, 9_223_372_036_854_775_807)", ctx)
+
+      assert -9_223_372_036_854_775_808 ==
+               execute("Kernel.min(-9_223_372_036_854_775_808, 9_223_372_036_854_775_807)", ctx)
+
+      assert 9_223_372_036_854_775_807 ==
+               execute("Kernel.abs(-9_223_372_036_854_775_807)", ctx)
 
       assert_raise Batata.Lift.Error, fn ->
         Batata.compile(
@@ -344,6 +356,19 @@ defmodule Batata.StdlibTest do
           """,
           ctx
         )
+      end
+
+      for expression <- ["Kernel.min(self(), self())", "Kernel.abs(self())"] do
+        assert_raise Batata.Lift.Error, fn ->
+          Batata.compile(
+            """
+            defmodule GenericScalarRounding do
+              def main(), do: #{expression}
+            end
+            """,
+            ctx
+          )
+        end
       end
     end
 
