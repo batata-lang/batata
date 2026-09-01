@@ -9041,6 +9041,9 @@ defmodule Batata.Lift do
   defp native_term_call(String, :length, [value], ctx, block),
     do: create_op("ex.binary_utf8_length", [value], [MLIR.Type.i64()], ctx, block)
 
+  defp native_term_call(String, :downcase, [value], ctx, block),
+    do: lower_ascii_downcase(value, ctx, block)
+
   defp native_term_call(String, :printable?, [value], ctx, block) do
     binary? = create_op("ex.is_binary", [value], [MLIR.Type.i64()], ctx, block)
     condition = create_op("arith.trunci", [binary?], [MLIR.Type.i1()], ctx, block)
@@ -9470,6 +9473,155 @@ defmodule Batata.Lift do
         fn b ->
           [
             raise_argument_error("invalid binary_part/3 arguments", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lower_ascii_downcase(binary, ctx, block) do
+    i64 = integer_type(ctx)
+    binary? = create_op("ex.is_binary", [binary], [i64], ctx, block)
+    binary_i1 = create_op("arith.trunci", [binary?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        binary_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [lower_ascii_downcase_binary(binary, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          [
+            raise_argument_error("String.downcase/1 supports ASCII binaries only", ctx, b)
+            |> unbox(ctx, b)
+          ]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lower_ascii_downcase_binary(binary, ctx, block) do
+    i64 = integer_type(ctx)
+    binary_i64 = unbox(binary, ctx, block)
+    length = create_op("ex.binary_length", [binary], [i64], ctx, block)
+    cursor = create_op("ex.sub", [length, lit(1, ctx, block)], [i64], ctx, block)
+    empty = create_term_op("ex.list", [], ctx, block) |> unbox(ctx, block)
+
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 4)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_binary, b_acc, b_cursor, b_ascii] =
+      before_block |> Walker.arguments() |> Enum.to_list()
+
+    continue = cmp(b_cursor, 0, "sge", ctx, before_block)
+    continue_i1 = create_op("arith.trunci", [continue], [MLIR.Type.i1()], ctx, before_block)
+
+    create_op(
+      "scf.condition",
+      [continue_i1, b_binary, b_acc, b_cursor, b_ascii],
+      [],
+      ctx,
+      before_block
+    )
+
+    [a_binary, a_acc, a_cursor, a_ascii] =
+      after_block |> Walker.arguments() |> Enum.to_list()
+
+    binary_word = create_op("ex.to_word", [a_binary], [ex_type("term", ctx)], ctx, after_block)
+
+    byte =
+      create_op(
+        "ex.binary_get",
+        [binary_word, a_cursor],
+        [ex_type("term", ctx)],
+        ctx,
+        after_block
+      )
+      |> then(&create_op("ex.to_int", [&1], [i64], ctx, after_block))
+
+    ascii = cmp(byte, 128, "slt", ctx, after_block)
+    ascii_next = create_op("arith.andi", [a_ascii, ascii], [i64], ctx, after_block)
+
+    uppercase =
+      combine(
+        [cmp(byte, ?A, "sge", ctx, after_block), cmp(byte, ?Z, "sle", ctx, after_block)],
+        ctx,
+        after_block
+      )
+
+    uppercase_i1 = create_op("arith.trunci", [uppercase], [MLIR.Type.i1()], ctx, after_block)
+
+    [mapped] =
+      build_scf_if(
+        uppercase_i1,
+        ctx,
+        after_block,
+        [i64],
+        fn b -> [create_op("ex.add", [byte, lit(32, ctx, b)], [i64], ctx, b)] end,
+        fn _b -> [byte] end
+      )
+
+    acc_word = create_op("ex.to_word", [a_acc], [ex_type("term", ctx)], ctx, after_block)
+    mapped_word = box_term(mapped, ctx, after_block)
+
+    acc_next =
+      create_op("ex.list_cons", [mapped_word, acc_word], [ex_type("term", ctx)], ctx, after_block)
+      |> unbox(ctx, after_block)
+
+    cursor_next =
+      create_op("ex.sub", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op(
+      "scf.yield",
+      [a_binary, acc_next, cursor_next, ascii_next],
+      [],
+      ctx,
+      after_block
+    )
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [binary_i64, empty, cursor, lit(1, ctx, block)],
+        results: [i64, i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    [_binary, bytes, _cursor, ascii] =
+      while_op |> MLIR.Operation.results() |> Enum.to_list()
+
+    ascii_i1 = create_op("arith.trunci", [ascii], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        ascii_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          bytes = create_op("ex.to_word", [bytes], [ex_type("term", ctx)], ctx, b)
+          downcased = create_op("ex.binary_from_list", [bytes], [ex_type("term", ctx)], ctx, b)
+          [unbox(downcased, ctx, b)]
+        end,
+        fn b ->
+          [
+            raise_argument_error("String.downcase/1 supports ASCII binaries only", ctx, b)
             |> unbox(ctx, b)
           ]
         end
