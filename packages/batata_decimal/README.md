@@ -21,6 +21,12 @@ BATATA_PATH=../.. BATATA_PROBE_PATH=../batata_probe mix batata.decimal.probe \
 
 The schema-v6 baseline inventories four modules, 245 source definitions, and
 37 blockers.
+The qualified whole-unit compile/link attempt now lowers Decimal's
+`Process.put/2` use and `Decimal.Context.get/0` through actor-local process
+dictionary intrinsics. Its next fail-closed frontier is `List.insert_at/3`
+(`30c7834a...0788b0`). The isolated `Decimal` attempt still reports the
+cross-module `Decimal.Context.get/0` call because that diagnostic lane omits
+sibling modules; it does not contradict the whole-unit advance.
 Canonical frontend normalization admits the current-module `defexception`
 schema in `Decimal.Error`, so its original target-module body reaches lowering
 completion in the non-executing compile-attempt lane. The lane excludes sibling
