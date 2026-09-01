@@ -27,10 +27,12 @@ dictionary intrinsics. It also lowers all positive and negative
 `List.insert_at/3` calls in Decimal's normal/scientific formatting paths.
 Exact-once `try/after` cleanup now preserves normal and handled results,
 restores unmatched throw/raise kind and reason after cleanup, and lets cleanup
-failures replace a pending result or unwind. This crosses
-`Decimal.Context.with/2`; the next fail-closed frontier is the dynamic-sized
-binary segment `remainder::size(7)-binary` in `Decimal.parse_unsign/1`
-(`43736e...92c8`). The isolated
+failures replace a pending result or unwind. Fixed-size byte-aligned binary
+patterns now reuse the existing `ex.binary_part` ABI and advance their match
+offset without broadening support to dynamic or bit-level sizes. This crosses
+`remainder::size(7)-binary` in `Decimal.parse_unsign/1`; the next qualified
+whole-unit fail-closed frontier is `String.downcase/1`
+(`c35d4e...3201`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
