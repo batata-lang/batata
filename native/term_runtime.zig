@@ -459,6 +459,9 @@ const Process = struct {
     exit_reason: i64 = nil_word,
     exit_kind: i64 = 0,
     trap_exit: bool = false,
+    // Immutable map word holding this actor's process dictionary. A nil word
+    // represents the empty dictionary and is reset with the process slot.
+    dictionary: i64 = nil_word,
     links: [relation_cap]Link = undefined,
     link_count: usize = 0,
     monitors: [relation_cap]Monitor = undefined,
@@ -3135,6 +3138,47 @@ pub fn ex_term_process_trap_exit(enabled: i64) callconv(.c) i64 {
     defer proc.state_lock.unlock();
     const previous: i64 = if (proc.trap_exit) 1 else 0;
     proc.trap_exit = enabled != 0;
+    return previous;
+}
+
+/// Returns the current process's value for `key`, or `default` when absent.
+/// Looking through the map directly avoids allocating a `{found, value}`
+/// wrapper and keeps a stored nil distinct from a missing key.
+pub fn ex_term_process_dictionary_get(key: i64, default: i64) callconv(.c) i64 {
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+    if (word_tag(proc.dictionary) != tag_map) return default;
+    const entries = map_entries(proc.dictionary);
+    for (0..map_len(proc.dictionary)) |i| {
+        if (term_eq(entries[i * 2], key)) return entries[i * 2 + 1];
+    }
+    return default;
+}
+
+/// Associates `key` with `value` in the current process and returns the old
+/// value, or nil when the key was absent. Process maps are immutable terms;
+/// replacing the root word makes reads actor-local while terms remain shared.
+pub fn ex_term_process_dictionary_put(key: i64, value: i64) callconv(.c) i64 {
+    const proc = current_proc();
+    proc.state_lock.lock();
+    defer proc.state_lock.unlock();
+
+    var previous = nil_word;
+    if (word_tag(proc.dictionary) == tag_map) {
+        const entries = map_entries(proc.dictionary);
+        for (0..map_len(proc.dictionary)) |i| {
+            if (term_eq(entries[i * 2], key)) {
+                previous = entries[i * 2 + 1];
+                break;
+            }
+        }
+    } else {
+        proc.dictionary = ex_term_map_from_list(nil_word);
+    }
+
+    const updated = ex_term_map_put(proc.dictionary, key, value);
+    if (word_tag(updated) == tag_map) proc.dictionary = updated;
     return previous;
 }
 
@@ -7724,6 +7768,34 @@ test "links and monitors deliver ordered EXIT and DOWN signals" {
     try std.testing.expectEqual(process_tag, ex_term_tuple_get(down_signal.payload, 2));
     try std.testing.expectEqual(child, ex_term_tuple_get(down_signal.payload, 3));
     try std.testing.expectEqual(reason, ex_term_tuple_get(down_signal.payload, 4));
+}
+
+test "process dictionaries preserve values, isolate actors, and reset recycled slots" {
+    const key: i64 = (141 << @intCast(tag_shift)) | tag_atom;
+    const missing: i64 = 9 << @intCast(tag_shift);
+    const child_value: i64 = 11 << @intCast(tag_shift);
+    const parent_value = ex_term_tuple_from_list(ex_term_list_cons(key, nil_word));
+
+    _ = ex_term_process_table_reset(default_process_cap);
+    const parent = ex_term_self();
+    try std.testing.expectEqual(missing, ex_term_process_dictionary_get(key, missing));
+    try std.testing.expectEqual(nil_word, ex_term_process_dictionary_put(key, parent_value));
+    try std.testing.expectEqual(parent_value, ex_term_process_dictionary_get(key, missing));
+    try std.testing.expectEqual(parent_value, ex_term_process_dictionary_put(key, nil_word));
+    try std.testing.expectEqual(nil_word, ex_term_process_dictionary_get(key, missing));
+
+    const child = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(child, ex_term_schedule_next());
+    try std.testing.expectEqual(missing, ex_term_process_dictionary_get(key, missing));
+    try std.testing.expectEqual(nil_word, ex_term_process_dictionary_put(key, child_value));
+    _ = ex_term_process_done(child_value);
+
+    try std.testing.expectEqual(parent, ex_term_schedule_next());
+    try std.testing.expectEqual(nil_word, ex_term_process_dictionary_get(key, missing));
+    const replacement = ex_term_spawn(nil_word);
+    try std.testing.expectEqual(pid_index(child), pid_index(replacement));
+    try std.testing.expectEqual(replacement, ex_term_schedule_next());
+    try std.testing.expectEqual(missing, ex_term_process_dictionary_get(key, missing));
 }
 
 test "unlink and demonitor suppress supervision signals" {
