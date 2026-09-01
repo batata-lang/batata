@@ -5182,89 +5182,11 @@ defmodule Batata.Lift do
     {create_op("ex.throw", [value], [ex_type("term", ctx)], ctx, block), env}
   end
 
-  # `try do body rescue/catch pattern -> handler end`: the body region runs
-  # normally; a typed unwind longjmps back and the handler region matches its
-  # `{kind, reason}` pair. Rescue clauses are normalized to positive error
-  # kinds and precede ordinary catch clauses, matching BEAM dispatch order.
   defp lift_expr({:try, _, [options]}, ctx, block, env) do
-    if Keyword.has_key?(options, :after) do
-      raise Error, "try/after is not supported in the current slice"
+    case Keyword.fetch(options, :after) do
+      {:ok, after_ast} -> lift_try_after(options, after_ast, ctx, block, env)
+      :error -> lift_try(options, ctx, block, env)
     end
-
-    body = Keyword.fetch!(options, :do)
-    else_clauses = Keyword.get(options, :else)
-
-    catch_clauses =
-      (normalize_rescue_clauses(Keyword.get(options, :rescue, [])) ++
-         normalize_catch_clauses(Keyword.get(options, :catch, [])))
-      |> ensure_catch_fallback()
-
-    body_region = MLIR.CAPI.mlirRegionCreate()
-    body_block = MLIR.Block.create([], [])
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(body_region, body_block)
-
-    {body_value, body_env} = lift_block(List.wrap(body), ctx, body_block, env)
-    body_value = lift_value(body_value, ctx, body_block, body_env)
-
-    body_value =
-      if else_clauses do
-        lift_case(
-          box_try_else_results(else_clauses),
-          body_value,
-          body_env,
-          ctx,
-          body_block,
-          term_case?: true,
-          untag_int_binds: true,
-          failure_kind: 7
-        )
-      else
-        body_value
-      end
-
-    body_value =
-      if else_clauses, do: box_if_scalar(body_value, ctx, body_block), else: body_value
-
-    create_op(
-      "ex.yield",
-      [body_value, operandSegmentSizes: segment_sizes([1])],
-      [],
-      ctx,
-      body_block
-    )
-
-    catch_region = MLIR.CAPI.mlirRegionCreate()
-    catch_block = MLIR.Block.create([], [])
-    MLIR.CAPI.mlirRegionAppendOwnedBlock(catch_region, catch_block)
-
-    thrown = create_op("ex.catch_value", [], [ex_type("term", ctx)], ctx, catch_block)
-
-    catch_value =
-      lift_term_case(catch_clauses, thrown, env, ctx, catch_block, untag_int_binds: true)
-
-    catch_value =
-      if else_clauses, do: box_if_scalar(catch_value, ctx, catch_block), else: catch_value
-
-    create_op(
-      "ex.yield",
-      [catch_value, operandSegmentSizes: segment_sizes([1])],
-      [],
-      ctx,
-      catch_block
-    )
-
-    try_op =
-      %Beaver.SSA{
-        op: "ex.try",
-        ip: block,
-        ctx: ctx,
-        results: [ex_type("term", ctx)],
-        loc: MLIR.Location.unknown(),
-        filler: fn -> [body_region, catch_region] end
-      }
-      |> MLIR.Operation.create()
-
-    {try_op |> MLIR.Operation.results() |> Enum.to_list() |> hd(), env}
   end
 
   defp lift_expr({:__batata_box_try_else__, _, [body]}, ctx, block, env) do
@@ -5370,6 +5292,183 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  # `after` must also run for an unwind that no rescue/catch clause handles,
+  # but an unwind raised by `after` must not cause the cleanup to run twice.
+  # Protect only the original try, capture its normal result or pending unwind
+  # in a tagged envelope, then execute cleanup after the outer catch frame has
+  # been popped. Finally unwrap the result or restore the original unwind.
+  defp lift_try_after(options, after_ast, ctx, block, env) do
+    protected_region = MLIR.CAPI.mlirRegionCreate()
+    protected_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(protected_region, protected_block)
+
+    {protected_value, _protected_env} =
+      options
+      |> Keyword.delete(:after)
+      |> lift_try(ctx, protected_block, env, true)
+
+    {ok_tag, _env} = lift_expr(:ok, ctx, protected_block, env)
+
+    envelope =
+      create_term_op(
+        "ex.tuple",
+        [ok_tag, box_if_scalar(protected_value, ctx, protected_block)],
+        ctx,
+        protected_block
+      )
+
+    create_op(
+      "ex.yield",
+      [envelope, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      protected_block
+    )
+
+    unwind_region = MLIR.CAPI.mlirRegionCreate()
+    unwind_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(unwind_region, unwind_block)
+
+    caught = create_op("ex.catch_value", [], [ex_type("term", ctx)], ctx, unwind_block)
+    {unwind_tag, _env} = lift_expr(:unwind, ctx, unwind_block, env)
+    envelope = create_term_op("ex.tuple", [unwind_tag, caught], ctx, unwind_block)
+
+    create_op(
+      "ex.yield",
+      [envelope, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      unwind_block
+    )
+
+    protected =
+      %Beaver.SSA{
+        op: "ex.try",
+        ip: block,
+        ctx: ctx,
+        results: [ex_type("term", ctx)],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [protected_region, unwind_region] end
+      }
+      |> MLIR.Operation.create()
+      |> MLIR.Operation.results()
+      |> Enum.to_list()
+      |> hd()
+
+    # Cleanup bindings are intentionally discarded, and its value is ignored.
+    {_after_value, _after_env} = lift_expr(after_ast, ctx, block, env)
+
+    value = Macro.var(:__batata_after_value, __MODULE__)
+    kind = Macro.var(:__batata_after_kind, __MODULE__)
+    reason = Macro.var(:__batata_after_reason, __MODULE__)
+    malformed = Macro.var(:__batata_after_malformed, __MODULE__)
+
+    clauses = [
+      {:->, [], [[{:{}, [], [:ok, value]}], value]},
+      {:->, [],
+       [[{:{}, [], [:unwind, {:{}, [], [0, reason]}]}], {:__batata_rethrow__, [], [reason]}]},
+      {:->, [],
+       [
+         [
+           {:when, [],
+            [
+              {:{}, [], [:unwind, {:{}, [], [kind, reason]}]},
+              {:>, [], [kind, 0]}
+            ]}
+         ],
+         {:__batata_reraise__, [], [kind, reason]}
+       ]},
+      {:->, [], [[malformed], {:__batata_rethrow__, [], [malformed]}]}
+    ]
+
+    {lift_term_case(clauses, protected, env, ctx, block, []), env}
+  end
+
+  # `try do body rescue/catch pattern -> handler end`: the body region runs
+  # normally; a typed unwind longjmps back and the handler region matches its
+  # `{kind, reason}` pair. Rescue clauses are normalized to positive error
+  # kinds and precede ordinary catch clauses, matching BEAM dispatch order.
+  defp lift_try(options, ctx, block, env, box_result? \\ false) do
+    body = Keyword.fetch!(options, :do)
+    else_clauses = Keyword.get(options, :else)
+
+    catch_clauses =
+      (normalize_rescue_clauses(Keyword.get(options, :rescue, [])) ++
+         normalize_catch_clauses(Keyword.get(options, :catch, [])))
+      |> ensure_catch_fallback()
+
+    body_region = MLIR.CAPI.mlirRegionCreate()
+    body_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(body_region, body_block)
+
+    {body_value, body_env} = lift_block(List.wrap(body), ctx, body_block, env)
+    body_value = lift_value(body_value, ctx, body_block, body_env)
+
+    body_value =
+      if else_clauses do
+        lift_case(
+          box_try_else_results(else_clauses),
+          body_value,
+          body_env,
+          ctx,
+          body_block,
+          term_case?: true,
+          untag_int_binds: true,
+          failure_kind: 7
+        )
+      else
+        body_value
+      end
+
+    body_value =
+      if not is_nil(else_clauses) or box_result?,
+        do: box_if_scalar(body_value, ctx, body_block),
+        else: body_value
+
+    create_op(
+      "ex.yield",
+      [body_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      body_block
+    )
+
+    catch_region = MLIR.CAPI.mlirRegionCreate()
+    catch_block = MLIR.Block.create([], [])
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(catch_region, catch_block)
+
+    thrown = create_op("ex.catch_value", [], [ex_type("term", ctx)], ctx, catch_block)
+
+    catch_value =
+      lift_term_case(catch_clauses, thrown, env, ctx, catch_block, untag_int_binds: true)
+
+    catch_value =
+      if not is_nil(else_clauses) or box_result?,
+        do: box_if_scalar(catch_value, ctx, catch_block),
+        else: catch_value
+
+    create_op(
+      "ex.yield",
+      [catch_value, operandSegmentSizes: segment_sizes([1])],
+      [],
+      ctx,
+      catch_block
+    )
+
+    try_op =
+      %Beaver.SSA{
+        op: "ex.try",
+        ip: block,
+        ctx: ctx,
+        results: [ex_type("term", ctx)],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [body_region, catch_region] end
+      }
+      |> MLIR.Operation.create()
+
+    {try_op |> MLIR.Operation.results() |> Enum.to_list() |> hd(), env}
   end
 
   defp lift_find_enumerable(enumerable_ast, ctx, block, env) do
