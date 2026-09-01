@@ -48,6 +48,7 @@ defmodule Batata.Memory.Inventory do
     ex.list
     ex.list_cons
     ex.list_flatten
+    ex.list_insert_at
     ex.make_fun
     ex.make_fun_with_arity
     ex.make_fun_with_signature

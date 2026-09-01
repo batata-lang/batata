@@ -61,6 +61,7 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Process, :link, 1}) == :native_term
       assert Stdlib.class({Process, :monitor, 1}) == :native_term
       assert Stdlib.class({Process, :flag, 2}) == :native_term
+      assert Stdlib.class({List, :insert_at, 3}) == :native_term
       assert Stdlib.class({Process, :get, 2}) == :native_term
       assert Stdlib.class({Process, :put, 2}) == :native_term
       assert Stdlib.class({:erlang, :get, 1}) == :native_term
@@ -442,6 +443,36 @@ defmodule Batata.StdlibTest do
         {expected, _binding} = Code.eval_string(expression)
         assert expected == execute(expression, ctx), expression
       end)
+    end
+
+    test "matches List.insert_at/3 across BEAM index boundaries", %{ctx: ctx} do
+      expressions = [
+        "List.insert_at([], 0, :x)",
+        "List.insert_at([1, 2, 3], 0, :x)",
+        "List.insert_at([1, 2, 3], 2, {:x, 9})",
+        "List.insert_at([1, 2, 3], 20, :x)",
+        "List.insert_at([1, 2, 3], -1, :x)",
+        "List.insert_at([1, 2, 3], -2, :x)",
+        "List.insert_at([1, 2, 3], -20, :x)"
+      ]
+
+      Enum.each(expressions, fn expression ->
+        {expected, _binding} = Code.eval_string(expression)
+        assert expected == execute(expression, ctx), expression
+      end)
+    end
+
+    test "matches List.insert_at/3 FunctionClauseError boundaries", %{ctx: ctx} do
+      for expression <- [
+            "List.insert_at(:not_a_list, 0, :x)",
+            "List.insert_at([1, 2], :not_an_integer, :x)",
+            "List.insert_at([1 | :improper], 1, :x)"
+          ] do
+        actual = assert_raise FunctionClauseError, fn -> execute(expression, ctx) end
+        assert actual.module == List
+        assert actual.function == :insert_at
+        assert actual.arity == 3
+      end
     end
 
     test "reads term sizes and elements", %{ctx: ctx} do
