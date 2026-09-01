@@ -211,8 +211,43 @@ defmodule Batata.TrailingLiteralDispatchTest do
     assert error.args == [1, 2, 3, :"Elixir.Foreign"]
   end
 
+  test "dispatches exact empty-list patterns in trailing positions", %{ctx: ctx} do
+    source = """
+    defmodule TrailingEmptyListOracle do
+      defp route(value, []), do: {:empty, value}
+      defp route(value, tail), do: {:other, value, tail}
+
+      def main() do
+        {route(1, []), route(2, [3]), route(4, :not_a_list)}
+      end
+    end
+    """
+
+    expected =
+      source |> Kernel.<>("\nTrailingEmptyListOracle.main()") |> Code.eval_string() |> elem(0)
+
+    assert expected == {{:empty, 1}, {:other, 2, [3]}, {:other, 4, :not_a_list}}
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "preserves arguments when an exact empty-list tail does not match", %{ctx: ctx} do
+    source = """
+    defmodule TrailingEmptyListFailure do
+      defp only(value, []), do: {:empty, value}
+      def main(), do: only(:value, [:nonempty])
+    end
+    """
+
+    error = assert_raise FunctionClauseError, fn -> Batata.execute(source, ctx) end
+
+    assert error.module == TrailingEmptyListFailure
+    assert error.function == :only
+    assert error.arity == 2
+    assert error.args == [:value, [:nonempty]]
+  end
+
   test "rejects unreviewed trailing literals", %{ctx: ctx} do
-    for literal <- [~S("binary"), "[]"] do
+    for literal <- [~S("binary"), "[1]"] do
       assert_raise Batata.Lift.Error,
                    ~r/trailing arguments must be variables, wildcards, or compile-known atom or integer literals/,
                    fn ->
