@@ -2251,6 +2251,8 @@ defmodule Batata.Lift do
   defp multi_arg_tail_pattern!({name, _, context}) when is_variable_ast(name, context),
     do: {:variable, name}
 
+  defp multi_arg_tail_pattern!([]), do: {:term_pattern, []}
+
   defp multi_arg_tail_pattern!({:%, _, _} = pattern), do: {:term_pattern, pattern}
 
   defp multi_arg_tail_pattern!({:{}, _, elements} = pattern) when is_list(elements),
