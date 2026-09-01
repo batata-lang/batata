@@ -4454,6 +4454,94 @@ defmodule Batata.ExecuteTest do
              )
   end
 
+  test "try/after runs cleanup exactly once and preserves normal or handled results", %{ctx: ctx} do
+    source = """
+    defmodule TryAfterResults do
+      defexception [:message]
+
+      def cleanup() do
+        Process.put(:cleanup_count, Process.get(:cleanup_count, 0) + 1)
+        :ignored
+      end
+
+      def normal() do
+        try do
+          7
+        after
+          cleanup()
+        end
+      end
+
+      def handled() do
+        try do
+          throw(8)
+        catch
+          value when is_integer(value) -> value + 1
+        after
+          cleanup()
+        end
+      end
+
+      def rescued() do
+        try do
+          raise %__MODULE__{message: "boom"}
+        rescue
+          _error in __MODULE__ -> 10
+        after
+          cleanup()
+        end
+      end
+
+      def main() do
+        Process.put(:cleanup_count, 0)
+        result = {normal(), handled(), rescued()}
+        {result, Process.get(:cleanup_count)}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nTryAfterResults.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "try/after restores unmatched unwinds and cleanup exceptions replace them", %{ctx: ctx} do
+    source = """
+    defmodule TryAfterUnwind do
+      def original() do
+        try do
+          try do
+            throw(:original)
+          after
+            Process.put(:cleaned, true)
+          end
+        catch
+          value -> {value, Process.get(:cleaned)}
+        end
+      end
+
+      def replaced() do
+        try do
+          try do
+            throw(:original)
+          after
+            throw(:cleanup)
+          end
+        catch
+          value -> value
+        end
+      end
+
+      def main() do
+        Process.put(:cleaned, false)
+        {original(), replaced()}
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nTryAfterUnwind.main()") |> Code.eval_string() |> elem(0)
+    assert Batata.execute(source, ctx) == expected
+  end
+
   test "try applies else only to normal completion", %{ctx: ctx} do
     source = """
     defmodule TryElse do
