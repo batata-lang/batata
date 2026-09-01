@@ -34,8 +34,12 @@ offset without broadening support to dynamic or bit-level sizes. This crosses
 whole-unit path now uses a bounded ASCII `String.downcase/1` replacement. It
 maps ASCII uppercase bytes and explicitly rejects non-ASCII input rather than
 approximating Unicode casing. This crosses all three Infinity/NaN comparisons;
-the next fail-closed frontier is `List.to_integer/1`
-(`15a093...fc8ab3`). The isolated
+strict charlist integer conversion now accepts optional signs, normalizes
+leading zeros, and constructs immediate or boxed arbitrary-precision integers
+without expanding the runtime ABI. This crosses Decimal's
+`List.to_integer/1` and `:erlang.list_to_integer/1` calls. The next fail-closed
+frontier is the float segment `tmp::float` in `Decimal.to_float/1`
+(`ad8c3e...f9160`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
