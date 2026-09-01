@@ -2160,11 +2160,18 @@ defmodule Batata.Lift do
         if term_operand?(value), do: MapSet.put(names, parameter), else: names
       end)
 
+    cons_pattern_names = multi_arg_cons_pattern_names(clause_tail_patterns)
+
     function_env =
       module_env
       |> Map.put(@current_function_key, name)
       |> Map.put(@current_function_signature_key, {name, arity})
       |> Map.put(@term_parameter_names_key, term_parameter_names)
+      |> Map.update(
+        @term_pattern_names_key,
+        cons_pattern_names,
+        &MapSet.union(&1, cons_pattern_names)
+      )
       |> Map.put(
         @boolean_parameter_names_key,
         clauses
@@ -2253,6 +2260,14 @@ defmodule Batata.Lift do
 
   defp multi_arg_tail_pattern!([]), do: {:term_pattern, []}
 
+  defp multi_arg_tail_pattern!(pattern) when is_list(pattern) do
+    if list_pattern_has_cons_tail?(pattern) do
+      {:term_pattern, pattern}
+    else
+      unsupported_multi_arg_tail_pattern!(pattern)
+    end
+  end
+
   defp multi_arg_tail_pattern!({:%, _, _} = pattern), do: {:term_pattern, pattern}
 
   defp multi_arg_tail_pattern!({:{}, _, elements} = pattern) when is_list(elements),
@@ -2305,6 +2320,20 @@ defmodule Batata.Lift do
 
   defp tail_term_pattern?({kind, _}) when kind in [:literal, :term_pattern], do: true
   defp tail_term_pattern?(_pattern), do: false
+
+  defp multi_arg_cons_pattern_names(clause_tail_patterns) do
+    clause_tail_patterns
+    |> Enum.flat_map(&Enum.flat_map(&1, fn pattern -> cons_pattern_names(pattern) end))
+    |> MapSet.new()
+  end
+
+  defp cons_pattern_names({:term_pattern, pattern}) when is_list(pattern) do
+    if list_pattern_has_cons_tail?(pattern),
+      do: pattern |> PatternPlan.pattern_vars() |> elem(1),
+      else: []
+  end
+
+  defp cons_pattern_names(_pattern), do: []
 
   defp map_or_struct_tail_pattern?({:%, _, _}), do: true
   defp map_or_struct_tail_pattern?({:%{}, _, _}), do: true

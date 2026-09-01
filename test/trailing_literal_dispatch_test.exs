@@ -246,6 +246,63 @@ defmodule Batata.TrailingLiteralDispatchTest do
     assert error.args == [:value, [:nonempty]]
   end
 
+  test "dispatches and binds cons patterns in trailing positions", %{ctx: ctx} do
+    source = """
+    defmodule TrailingConsOracle do
+      defp route(:threshold, [digit | _]), do: if(digit >= 5, do: :round, else: :keep)
+      defp route(:split, [head | tail]), do: {:split, head, tail}
+      defp route(kind, _value), do: {:other, kind}
+
+      def main() do
+        {
+          route(:threshold, [5, 1]),
+          route(:threshold, [4]),
+          route(:split, [1, 2, 3]),
+          route(:split, []),
+          route(:threshold, :not_a_list)
+        }
+      end
+    end
+    """
+
+    expected = source |> Kernel.<>("\nTrailingConsOracle.main()") |> Code.eval_string() |> elem(0)
+
+    assert expected ==
+             {:round, :keep, {:split, 1, [2, 3]}, {:other, :split}, {:other, :threshold}}
+
+    assert Batata.execute(source, ctx) == expected
+  end
+
+  test "validates cons bindings used by integer ordering", %{ctx: ctx} do
+    source = """
+    defmodule TrailingConsIntegerValidation do
+      defp threshold(:half, [digit | _]), do: digit >= 5
+      defp threshold(_, _), do: false
+      def main(), do: threshold(:half, [:not_an_integer])
+    end
+    """
+
+    assert_raise ArgumentError, "integer arithmetic requires integer operands", fn ->
+      Batata.execute(source, ctx)
+    end
+  end
+
+  test "preserves arguments when a trailing cons pattern does not match", %{ctx: ctx} do
+    source = """
+    defmodule TrailingConsFailure do
+      defp only(value, [head | tail]), do: {value, head, tail}
+      def main(), do: only(:value, :not_a_cons)
+    end
+    """
+
+    error = assert_raise FunctionClauseError, fn -> Batata.execute(source, ctx) end
+
+    assert error.module == TrailingConsFailure
+    assert error.function == :only
+    assert error.arity == 2
+    assert error.args == [:value, :not_a_cons]
+  end
+
   test "rejects unreviewed trailing literals", %{ctx: ctx} do
     for literal <- [~S("binary"), "[1]"] do
       assert_raise Batata.Lift.Error,
