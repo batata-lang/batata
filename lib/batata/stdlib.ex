@@ -447,9 +447,12 @@ defmodule Batata.Stdlib do
            )
 
   @raising_mfas MapSet.new([
+                  {Kernel, :abs, 1},
                   {Kernel, :binary_part, 3},
                   {Kernel, :inspect, 1},
                   {Kernel, :inspect, 2},
+                  {Kernel, :max, 2},
+                  {Kernel, :min, 2},
                   {Kernel, :to_string, 1},
                   {Atom, :to_string, 1},
                   {String.Chars, :to_string, 1},

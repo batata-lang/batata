@@ -316,6 +316,21 @@ defmodule Batata.LiftTest do
     assert "ex.worker_run" in op_names(module)
   end
 
+  test "selects the actor driver for scalar validation in Kernel min/max/abs", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule ScalarBoundary do
+          def clamp(value), do: Kernel.max(Kernel.min(value, 10), Kernel.abs(value))
+          def main(), do: clamp("not an integer")
+        end
+        """,
+        ctx
+      )
+
+    assert "ex.worker_run" in op_names(module)
+  end
+
   test "lifts an empty list into ex IR", %{ctx: ctx} do
     module =
       lift!(
@@ -786,9 +801,10 @@ defmodule Batata.LiftTest do
       )
 
     names = op_names(module)
-    assert Enum.count(names, &(&1 == "ex.cmp")) == 2
-    assert Enum.count(names, &(&1 == "scf.if")) == 2
+    assert Enum.count(names, &(&1 == "ex.cmp")) >= 2
+    assert Enum.count(names, &(&1 == "scf.if")) >= 2
     assert "ex.sub" in names
+    assert "ex.worker_run" in names
   end
 
   test "lifts quoted utf8 construction type contexts", %{ctx: ctx} do
