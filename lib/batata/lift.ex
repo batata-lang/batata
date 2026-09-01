@@ -629,6 +629,9 @@ defmodule Batata.Lift do
         {:__batata_raise__, _, [_kind, _reason]} = node, false ->
           {node, true}
 
+        {:<<>>, _, segments} = node, false when is_list(segments) ->
+          {node, Enum.any?(segments, &integer_size_segment?/1)}
+
         {:cond, _, [[do: clauses]]} = node, false when is_list(clauses) ->
           {node, not cond_has_final_true_clause?(clauses)}
 
@@ -4341,20 +4344,31 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:<<>>, _, segments}, ctx, block, env) do
-    cond do
-      Enum.any?(segments, &utf8_construction_segment?/1) ->
-        {values, env} = lift_binary_construction_segments(segments, ctx, block, env)
-        iodata = create_term_op("ex.list", values, ctx, block)
-        {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+    case integer_bitfield_construction(segments) do
+      {:ok, fields} ->
+        lower_integer_bitfield_construction(fields, ctx, block, env)
 
-      Enum.any?(segments, &interpolation_segment?/1) ->
-        {values, env} = lift_interpolation_segments(segments, ctx, block, env)
-        iodata = create_term_op("ex.list", values, ctx, block)
-        {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+      {:error, reason} ->
+        raise Error, reason
 
-      true ->
-        {values, env} = lift_operands_boxed(segments, ctx, block, env)
-        {create_term_op("ex.binary", values, ctx, block), env}
+      :not_bitfield ->
+        cond do
+          Enum.any?(segments, &utf8_construction_segment?/1) ->
+            {values, env} = lift_binary_construction_segments(segments, ctx, block, env)
+            iodata = create_term_op("ex.list", values, ctx, block)
+
+            {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+
+          Enum.any?(segments, &interpolation_segment?/1) ->
+            {values, env} = lift_interpolation_segments(segments, ctx, block, env)
+            iodata = create_term_op("ex.list", values, ctx, block)
+
+            {create_op("ex.iodata_to_binary", [iodata], [ex_type("term", ctx)], ctx, block), env}
+
+          true ->
+            {values, env} = lift_operands_boxed(segments, ctx, block, env)
+            {create_term_op("ex.binary", values, ctx, block), env}
+        end
     end
   end
 
@@ -5726,6 +5740,74 @@ defmodule Batata.Lift do
        do: true
 
   defp utf8_construction_segment?(_segment), do: false
+
+  defp integer_bitfield_construction(segments) do
+    if Enum.any?(segments, &integer_size_segment?/1) do
+      fields =
+        Enum.map(segments, fn
+          {:"::", _, [expression, {:size, _, [width]}]}
+          when is_integer(width) and width > 0 and width <= 64 ->
+            {:ok, expression, width}
+
+          segment ->
+            {:error, segment}
+        end)
+
+      cond do
+        Enum.any?(fields, &match?({:error, _}, &1)) ->
+          {:error, "unsupported integer bitfield construction: #{inspect(segments)}"}
+
+        Enum.sum(for {:ok, _expression, width} <- fields, do: width) != 64 ->
+          {:error, "integer bitfield construction requires an exact 64-bit total"}
+
+        true ->
+          {:ok, for({:ok, expression, width} <- fields, do: {expression, width})}
+      end
+    else
+      :not_bitfield
+    end
+  end
+
+  defp integer_size_segment?({:"::", _, [_expression, {:size, _, [_width]}]}), do: true
+  defp integer_size_segment?(_segment), do: false
+
+  defp lower_integer_bitfield_construction(fields, ctx, block, env) do
+    i64 = integer_type(ctx)
+
+    {packed, env} =
+      Enum.reduce(fields, {lit(0, ctx, block), env}, fn {expression, width}, {acc, env} ->
+        {value, env} = lift_expr(expression, ctx, block, env)
+        [value] = refine_integer_operands!([expression], [value], env, ctx, block)
+        ensure_refined_integer_operands!([value])
+
+        field =
+          if width == 64 do
+            value
+          else
+            mask = lit(Bitwise.bsl(1, width) - 1, ctx, block)
+            create_op("arith.andi", [value, mask], [i64], ctx, block)
+          end
+
+        packed =
+          if width == 64 do
+            field
+          else
+            shifted = create_op("arith.shli", [acc, lit(width, ctx, block)], [i64], ctx, block)
+            create_op("arith.ori", [shifted, field], [i64], ctx, block)
+          end
+
+        {packed, env}
+      end)
+
+    bytes =
+      for shift <- 56..0//-8 do
+        shifted = create_op("arith.shrui", [packed, lit(shift, ctx, block)], [i64], ctx, block)
+        byte = create_op("arith.andi", [shifted, lit(0xFF, ctx, block)], [i64], ctx, block)
+        box_term(byte, ctx, block)
+      end
+
+    {create_term_op("ex.binary", bytes, ctx, block), env}
+  end
 
   # `ex.binary` consumes integer bytes, so a construction-side `value::utf8`
   # segment must first expand its Unicode scalar value into a binary. Feed the
@@ -11876,6 +11958,12 @@ defmodule Batata.Lift do
 
             {[cond | conds], pat_binds ++ binds, next}
 
+          {:float64, pat} ->
+            {cond, pat_binds, next} =
+              build_float64_segment_match(pat, value, offset, ctx, block, pattern_env)
+
+            {[cond | conds], pat_binds ++ binds, next}
+
           {:fixed_binary, pat, size} ->
             size_value = lit(size, ctx, block)
 
@@ -11960,6 +12048,36 @@ defmodule Batata.Lift do
     {cond, pat_binds, next}
   end
 
+  defp build_float64_segment_match(pat, binary, offset, ctx, block, pattern_env) do
+    i64 = integer_type(ctx)
+
+    bits =
+      Enum.reduce(0..7, lit(0, ctx, block), fn index, acc ->
+        byte_offset = create_op("ex.add", [offset, lit(index, ctx, block)], [i64], ctx, block)
+
+        byte =
+          create_op("ex.binary_get", [binary, byte_offset], [ex_type("term", ctx)], ctx, block)
+          |> then(&create_op("ex.to_int", [&1], [i64], ctx, block))
+
+        shifted = create_op("arith.shli", [acc, lit(8, ctx, block)], [i64], ctx, block)
+        create_op("arith.ori", [shifted, byte], [i64], ctx, block)
+      end)
+
+    float = create_op("ex.float_lit", [bits], [ex_type("term", ctx)], ctx, block)
+
+    exponent =
+      bits
+      |> then(&create_op("arith.shrui", [&1, lit(52, ctx, block)], [i64], ctx, block))
+      |> then(&create_op("arith.andi", [&1, lit(0x7FF, ctx, block)], [i64], ctx, block))
+
+    finite = cmp(exponent, 0x7FF, "ne", ctx, block)
+    {pat_cond, pat_binds} = do_build_match(pat, float, ctx, block, pattern_env)
+    cond = combine([finite, pat_cond], ctx, block)
+    next = create_op("ex.add", [offset, lit(8, ctx, block)], [i64], ctx, block)
+
+    {cond, pat_binds, next}
+  end
+
   defp bind_pattern_scalar(bindings, scalar) do
     Enum.map(bindings, fn {name, _boxed} -> {name, scalar} end)
   end
@@ -12013,6 +12131,7 @@ defmodule Batata.Lift do
   defp binary_segment!({:"::", _, [pat, 8]}), do: {:byte, pat}
   defp binary_segment!({:"::", _, [pat, 16]}), do: {:uint16, pat}
   defp binary_segment!({:"::", _, [pat, {:utf8, _, nil}]}), do: {:utf8, pat}
+  defp binary_segment!({:"::", _, [pat, {:float, _, nil}]}), do: {:float64, pat}
 
   defp binary_segment!({:"::", _, [pat, spec]} = segment) do
     case fixed_binary_segment_size(spec) do
