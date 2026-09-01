@@ -8745,6 +8745,45 @@ defmodule Batata.Lift do
   defp native_term_call(Map, :put, [map, key, value], ctx, block),
     do: create_op("ex.map_put", [map, key, value], [ex_type("term", ctx)], ctx, block)
 
+  defp native_term_call(List, :insert_at, [list, index, value], ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    integer? = create_op("ex.is_integer", [index], [i64], ctx, block)
+    integer_i1 = create_op("arith.trunci", [integer?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        integer_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          index_int = create_op("ex.to_int", [index], [i64], ctx, b)
+          inserted = create_op("ex.list_insert_at", [list, index_int, value], [dyn], ctx, b)
+          valid = create_op("ex.is_list", [inserted], [i64], ctx, b)
+          valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, b)
+
+          build_scf_if(
+            valid_i1,
+            ctx,
+            b,
+            [i64],
+            fn valid_block -> [unbox(inserted, ctx, valid_block)] end,
+            fn invalid_block ->
+              [
+                raise_function_clause(List, :insert_at, 3, ctx, invalid_block)
+                |> unbox(ctx, invalid_block)
+              ]
+            end
+          )
+        end,
+        fn b -> [raise_function_clause(List, :insert_at, 3, ctx, b) |> unbox(ctx, b)] end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
   defp native_term_call(Map, :to_list, [value], ctx, block),
     do: create_op("ex.enumerable_to_list", [value], [ex_type("term", ctx)], ctx, block)
 
