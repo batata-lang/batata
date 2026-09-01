@@ -54,6 +54,8 @@ defmodule Batata.Stdlib.Kernel do
     {:erlang, :monitor, 2} => :native_term,
     {:erlang, :demonitor, 1} => :native_term,
     {:erlang, :process_flag, 2} => :native_term,
+    {:erlang, :get, 1} => :native_term,
+    {:erlang, :put, 2} => :native_term,
     {:erlang, :monotonic_time, 0} => :native_term,
     {:erlang, :monotonic_time, 1} => :native_term,
     {:erlang, :unique_integer, 0} => :native_term,
@@ -190,7 +192,10 @@ defmodule Batata.Stdlib.Process do
     {Process, :unlink, 1} => :native_term,
     {Process, :monitor, 1} => :native_term,
     {Process, :demonitor, 1} => :native_term,
-    {Process, :flag, 2} => :native_term
+    {Process, :flag, 2} => :native_term,
+    {Process, :get, 1} => :native_term,
+    {Process, :get, 2} => :native_term,
+    {Process, :put, 2} => :native_term
   }
 
   @doc "Returns process-domain stdlib replacement declarations."
@@ -488,6 +493,8 @@ defmodule Batata.Stdlib do
                  {:erlang, :monitor, 2},
                  {:erlang, :demonitor, 1},
                  {:erlang, :process_flag, 2},
+                 {:erlang, :get, 1},
+                 {:erlang, :put, 2},
                  {:erlang, :monotonic_time, 0},
                  {:erlang, :monotonic_time, 1},
                  {:erlang, :unique_integer, 0},
@@ -498,12 +505,17 @@ defmodule Batata.Stdlib do
                  {Process, :monitor, 1},
                  {Process, :demonitor, 1},
                  {Process, :flag, 2},
+                 {Process, :get, 1},
+                 {Process, :get, 2},
+                 {Process, :put, 2},
                  {File, :read!, 1},
                  {File, :stream!, 1}
                ])
 
   @allocating_mfas MapSet.new([
                      {Kernel, :spawn, 1},
+                     {:erlang, :put, 2},
+                     {Process, :put, 2},
                      {:binary, :copy, 1},
                      {:binary, :part, 3},
                      {Kernel, :binary_part, 3},

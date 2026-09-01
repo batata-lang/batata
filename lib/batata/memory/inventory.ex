@@ -121,6 +121,7 @@ defmodule Batata.Memory.Inventory do
     ex.native_time
     ex.nil_word
     ex.process_done
+    ex.process_dictionary_put
     ex.process_exit
     ex.process_exit_reason
     ex.process_result

@@ -61,6 +61,10 @@ defmodule Batata.StdlibTest do
       assert Stdlib.class({Process, :link, 1}) == :native_term
       assert Stdlib.class({Process, :monitor, 1}) == :native_term
       assert Stdlib.class({Process, :flag, 2}) == :native_term
+      assert Stdlib.class({Process, :get, 2}) == :native_term
+      assert Stdlib.class({Process, :put, 2}) == :native_term
+      assert Stdlib.class({:erlang, :get, 1}) == :native_term
+      assert Stdlib.class({:erlang, :put, 2}) == :native_term
       assert Stdlib.class({:erlang, :exit, 2}) == :native_term
     end
 
