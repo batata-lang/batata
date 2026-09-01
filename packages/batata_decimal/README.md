@@ -31,8 +31,11 @@ failures replace a pending result or unwind. Fixed-size byte-aligned binary
 patterns now reuse the existing `ex.binary_part` ABI and advance their match
 offset without broadening support to dynamic or bit-level sizes. This crosses
 `remainder::size(7)-binary` in `Decimal.parse_unsign/1`; the next qualified
-whole-unit fail-closed frontier is `String.downcase/1`
-(`c35d4e...3201`). The isolated
+whole-unit path now uses a bounded ASCII `String.downcase/1` replacement. It
+maps ASCII uppercase bytes and explicitly rejects non-ASCII input rather than
+approximating Unicode casing. This crosses all three Infinity/NaN comparisons;
+the next fail-closed frontier is `List.to_integer/1`
+(`15a093...fc8ab3`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
