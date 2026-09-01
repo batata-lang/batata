@@ -8883,6 +8883,12 @@ defmodule Batata.Lift do
     create_op("ex.to_word", [result], [dyn], ctx, block)
   end
 
+  defp native_term_call(module, :to_integer, [list], ctx, block) when module == List,
+    do: lower_list_to_integer(module, list, ctx, block)
+
+  defp native_term_call(:erlang, :list_to_integer, [list], ctx, block),
+    do: lower_list_to_integer(:erlang, list, ctx, block)
+
   defp native_term_call(Map, :to_list, [value], ctx, block),
     do: create_op("ex.enumerable_to_list", [value], [ex_type("term", ctx)], ctx, block)
 
@@ -9505,6 +9511,214 @@ defmodule Batata.Lift do
 
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
+
+  defp lower_list_to_integer(module, list, ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    list? = create_op("ex.is_list", [list], [i64], ctx, block)
+    binary = create_op("ex.iodata_to_binary", [list], [dyn], ctx, block)
+    binary? = create_op("ex.is_binary", [binary], [i64], ctx, block)
+    length = create_op("ex.binary_length", [binary], [i64], ctx, block)
+    first_word = create_op("ex.list_get", [list, lit(0, ctx, block)], [dyn], ctx, block)
+    first_integer? = create_op("ex.is_integer", [first_word], [i64], ctx, block)
+    first = create_op("ex.to_int", [first_word], [i64], ctx, block)
+    negative = cmp(first, ?-, "eq", ctx, block)
+    positive = cmp(first, ?+, "eq", ctx, block)
+    signed = create_op("arith.ori", [negative, positive], [i64], ctx, block)
+    start = signed
+    has_digit = cmp(length, start, "sgt", ctx, block)
+
+    initial_valid =
+      combine([list?, binary?, first_integer?, has_digit], ctx, block)
+
+    {valid, first_nonzero} =
+      validate_decimal_charlist(list, start, length, initial_valid, ctx, block)
+
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          integer =
+            normalize_decimal_binary(binary, negative, first_nonzero, length, ctx, b)
+
+          integer? = create_op("ex.is_integer", [integer], [i64], ctx, b)
+          integer_i1 = create_op("arith.trunci", [integer?], [MLIR.Type.i1()], ctx, b)
+
+          build_scf_if(
+            integer_i1,
+            ctx,
+            b,
+            [i64],
+            fn integer_block -> [unbox(integer, ctx, integer_block)] end,
+            fn error_block ->
+              [
+                raise_argument_error(list_to_integer_error(module), ctx, error_block)
+                |> unbox(ctx, error_block)
+              ]
+            end
+          )
+        end,
+        fn b ->
+          [raise_argument_error(list_to_integer_error(module), ctx, b) |> unbox(ctx, b)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
+  end
+
+  defp validate_decimal_charlist(list, start, length, initial_valid, ctx, block) do
+    i64 = integer_type(ctx)
+    list_i64 = unbox(list, ctx, block)
+    locs = List.duplicate(MLIR.Location.unknown(ctx: ctx), 4)
+    before = MLIR.CAPI.mlirRegionCreate()
+    before_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(before, before_block)
+
+    after_region = MLIR.CAPI.mlirRegionCreate()
+    after_block = MLIR.Block.create([i64, i64, i64, i64], locs)
+    MLIR.CAPI.mlirRegionAppendOwnedBlock(after_region, after_block)
+
+    [b_list, b_cursor, b_valid, b_first_nonzero] =
+      before_block |> Walker.arguments() |> Enum.to_list()
+
+    continue = cmp(b_cursor, length, "slt", ctx, before_block)
+    continue_i1 = create_op("arith.trunci", [continue], [MLIR.Type.i1()], ctx, before_block)
+
+    create_op(
+      "scf.condition",
+      [continue_i1, b_list, b_cursor, b_valid, b_first_nonzero],
+      [],
+      ctx,
+      before_block
+    )
+
+    [a_list, a_cursor, a_valid, a_first_nonzero] =
+      after_block |> Walker.arguments() |> Enum.to_list()
+
+    list_word = create_op("ex.to_word", [a_list], [ex_type("term", ctx)], ctx, after_block)
+
+    item =
+      create_op("ex.list_get", [list_word, a_cursor], [ex_type("term", ctx)], ctx, after_block)
+
+    integer? = create_op("ex.is_integer", [item], [i64], ctx, after_block)
+    byte = create_op("ex.to_int", [item], [i64], ctx, after_block)
+
+    digit? =
+      combine(
+        [
+          integer?,
+          cmp(byte, ?0, "sge", ctx, after_block),
+          cmp(byte, ?9, "sle", ctx, after_block)
+        ],
+        ctx,
+        after_block
+      )
+
+    valid_next = create_op("arith.andi", [a_valid, digit?], [i64], ctx, after_block)
+    no_nonzero = cmp(a_first_nonzero, length, "eq", ctx, after_block)
+    nonzero = cmp(byte, ?0, "ne", ctx, after_block)
+    choose_cursor = create_op("arith.andi", [no_nonzero, nonzero], [i64], ctx, after_block)
+
+    choose_cursor_i1 =
+      create_op("arith.trunci", [choose_cursor], [MLIR.Type.i1()], ctx, after_block)
+
+    [first_nonzero_next] =
+      build_scf_if(
+        choose_cursor_i1,
+        ctx,
+        after_block,
+        [i64],
+        fn _b -> [a_cursor] end,
+        fn _b -> [a_first_nonzero] end
+      )
+
+    cursor_next =
+      create_op("ex.add", [a_cursor, lit(1, ctx, after_block)], [i64], ctx, after_block)
+
+    create_op(
+      "scf.yield",
+      [a_list, cursor_next, valid_next, first_nonzero_next],
+      [],
+      ctx,
+      after_block
+    )
+
+    while_op =
+      %Beaver.SSA{
+        op: "scf.while",
+        ip: block,
+        ctx: ctx,
+        arguments: [list_i64, start, initial_valid, length],
+        results: [i64, i64, i64, i64],
+        loc: MLIR.Location.unknown(),
+        filler: fn -> [before, after_region] end
+      }
+      |> MLIR.Operation.create()
+
+    [_list, _cursor, valid, first_nonzero] =
+      while_op |> MLIR.Operation.results() |> Enum.to_list()
+
+    {valid, first_nonzero}
+  end
+
+  defp normalize_decimal_binary(binary, negative, first_nonzero, length, ctx, block) do
+    i64 = integer_type(ctx)
+    all_zero = cmp(first_nonzero, length, "eq", ctx, block)
+    all_zero_i1 = create_op("arith.trunci", [all_zero], [MLIR.Type.i1()], ctx, block)
+
+    [digits_i64] =
+      build_scf_if(
+        all_zero_i1,
+        ctx,
+        block,
+        [i64],
+        fn b -> [single_byte_binary(?0, ctx, b) |> unbox(ctx, b)] end,
+        fn b ->
+          digits =
+            create_op("ex.binary_slice", [binary, first_nonzero], [ex_type("term", ctx)], ctx, b)
+
+          [unbox(digits, ctx, b)]
+        end
+      )
+
+    digits = create_op("ex.to_word", [digits_i64], [ex_type("term", ctx)], ctx, block)
+    nonzero = cmp(all_zero, 0, "eq", ctx, block)
+    negative_nonzero = create_op("arith.andi", [negative, nonzero], [i64], ctx, block)
+
+    negative_nonzero_i1 =
+      create_op("arith.trunci", [negative_nonzero], [MLIR.Type.i1()], ctx, block)
+
+    [canonical_i64] =
+      build_scf_if(
+        negative_nonzero_i1,
+        ctx,
+        block,
+        [i64],
+        fn b ->
+          minus = single_byte_binary(?-, ctx, b)
+          canonical = lower_binary_concat(minus, digits, lit(1, ctx, b), ctx, b)
+          [unbox(canonical, ctx, b)]
+        end,
+        fn b -> [unbox(digits, ctx, b)] end
+      )
+
+    canonical = create_op("ex.to_word", [canonical_i64], [ex_type("term", ctx)], ctx, block)
+    create_op("ex.bigint_lit", [canonical], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp single_byte_binary(byte, ctx, block) do
+    byte = box_term(lit(byte, ctx, block), ctx, block)
+    create_term_op("ex.binary", [byte], ctx, block)
+  end
+
+  defp list_to_integer_error(List), do: "invalid List.to_integer/1 argument"
+  defp list_to_integer_error(:erlang), do: "invalid :erlang.list_to_integer/1 argument"
 
   defp lower_ascii_downcase_binary(binary, ctx, block) do
     i64 = integer_type(ctx)
