@@ -45,6 +45,7 @@ defmodule Batata.Lift do
   @term_parameter_names_key {__MODULE__, :term_parameter_names}
   @term_pattern_names_key {__MODULE__, :term_pattern_names}
   @integer_value_names_key {__MODULE__, :integer_value_names}
+  @struct_integer_fields_key {__MODULE__, :struct_integer_fields}
   @boolean_parameter_names_key {__MODULE__, :boolean_parameter_names}
   @ex_type_cache_key {__MODULE__, :ex_type_cache}
   @ex_type_names ~w(term bound unbound)
@@ -2142,6 +2143,13 @@ defmodule Batata.Lift do
         end)
       end)
 
+    struct_integer_field_mapss =
+      Enum.map(clauses, fn clause ->
+        clause.patterns
+        |> tl()
+        |> struct_integer_field_bindings(Map.get(module_env, @struct_schema_key))
+      end)
+
     term_parameter_names =
       clause_bindss
       |> List.flatten()
@@ -2190,6 +2198,7 @@ defmodule Batata.Lift do
             untag_int_binds: true,
             clause_bindss: clause_bindss,
             integer_clause_namess: integer_clause_namess,
+            struct_integer_field_clause_maps: struct_integer_field_mapss,
             extra_clause_conds: extra_clause_conds,
             force_fallback: not multi_arg_catch_all?(clauses, clause_tail_patterns),
             fallback_binds: fallback_binds,
@@ -4196,6 +4205,8 @@ defmodule Batata.Lift do
     [left_value, right_value] =
       refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
 
+    env = mark_validated_integer_operands(env, [left, right])
+
     {
       create_op("ex.add", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
       env
@@ -4209,6 +4220,8 @@ defmodule Batata.Lift do
     [left_value, right_value] =
       refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
 
+    env = mark_validated_integer_operands(env, [left, right])
+
     {
       create_op("ex.sub", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
       env
@@ -4221,6 +4234,8 @@ defmodule Batata.Lift do
 
     [left_value, right_value] =
       refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
+    env = mark_validated_integer_operands(env, [left, right])
 
     {
       create_op("ex.mul", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
@@ -4481,6 +4496,8 @@ defmodule Batata.Lift do
 
     [left_value, right_value] =
       refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
+
+    env = mark_validated_integer_operands(env, [left, right])
 
     op = if name == :div, do: "ex.div", else: "ex.rem"
     {create_op(op, [left_value, right_value], [integer_type(ctx)], ctx, block), env}
@@ -10240,6 +10257,7 @@ defmodule Batata.Lift do
     parsed = Enum.map(clauses, &parse_term_clause/1)
     clause_bindss = case_clause_bindss(opts, length(parsed))
     extra_integer_namess = case_clause_integer_namess(opts, length(parsed))
+    extra_struct_field_mapss = case_clause_struct_integer_field_mapss(opts, length(parsed))
     extra_clause_conds = case_clause_conditions(opts, length(parsed))
 
     unless match?(
@@ -10313,6 +10331,16 @@ defmodule Batata.Lift do
         |> MapSet.union(extra_names)
       end)
 
+    struct_integer_field_mapss =
+      parsed
+      |> Enum.zip(extra_struct_field_mapss)
+      |> Enum.map(fn {clause, extra_fields} ->
+        clause.pattern
+        |> List.wrap()
+        |> struct_integer_field_bindings(Map.get(env, @struct_schema_key))
+        |> merge_struct_integer_fields(extra_fields)
+      end)
+
     region = MLIR.CAPI.mlirRegionCreate()
 
     {yield_types, _first_type} =
@@ -10320,13 +10348,15 @@ defmodule Batata.Lift do
       |> Enum.zip(guards)
       |> Enum.zip(bindss)
       |> Enum.zip(integer_namess)
-      |> Enum.map_reduce(nil, fn {{{clause, guard}, binds}, integer_names}, first_type ->
+      |> Enum.zip(struct_integer_field_mapss)
+      |> Enum.map_reduce(nil, fn {{{{clause, guard}, binds}, integer_names}, struct_fields},
+                                 first_type ->
         type =
           add_term_clause_block(
             clause,
             guard,
             binds,
-            integer_names,
+            {integer_names, struct_fields},
             env,
             ctx,
             region,
@@ -10389,6 +10419,24 @@ defmodule Batata.Lift do
       {:ok, namess} ->
         raise Error,
               "case clause integer binding count mismatch: #{length(namess)} bindings for " <>
+                "#{clause_count} clauses"
+    end
+  end
+
+  defp case_clause_struct_integer_field_mapss(opts, clause_count) do
+    case Keyword.fetch(opts, :struct_integer_field_clause_maps) do
+      :error ->
+        List.duplicate(%{}, clause_count)
+
+      {:ok, mapss} when length(mapss) == clause_count ->
+        mapss
+
+      {:ok, mapss} when length(mapss) + 1 == clause_count ->
+        mapss ++ [%{}]
+
+      {:ok, mapss} ->
+        raise Error,
+              "case clause struct-field proof count mismatch: #{length(mapss)} proofs for " <>
                 "#{clause_count} clauses"
     end
   end
@@ -10630,6 +10678,66 @@ defmodule Batata.Lift do
       end)
 
     names
+  end
+
+  defp struct_integer_field_bindings(patterns, struct_schemas) do
+    Enum.reduce(patterns, %{}, fn pattern, fields_by_name ->
+      {_pattern, fields_by_name} =
+        Macro.prewalk(pattern, fields_by_name, fn
+          {:=, _, [left, right]} = node, acc ->
+            {node, collect_struct_alias_integer_fields(left, right, struct_schemas, acc)}
+
+          node, acc ->
+            {node, acc}
+        end)
+
+      fields_by_name
+    end)
+  end
+
+  defp collect_struct_alias_integer_fields(left, right, struct_schemas, fields_by_name) do
+    case {struct_pattern_integer_fields(left, struct_schemas), pattern_variable_name(right)} do
+      {{:ok, fields}, name} when is_atom(name) and name != :_ ->
+        Map.update(fields_by_name, name, fields, &MapSet.union(&1, fields))
+
+      _ ->
+        case {pattern_variable_name(left), struct_pattern_integer_fields(right, struct_schemas)} do
+          {name, {:ok, fields}} when is_atom(name) and name != :_ ->
+            Map.update(fields_by_name, name, fields, &MapSet.union(&1, fields))
+
+          _ ->
+            fields_by_name
+        end
+    end
+  end
+
+  defp struct_pattern_integer_fields(
+         {:%, _, [{:__aliases__, _, module_parts}, {:%{}, _, _fields}]},
+         struct_schemas
+       )
+       when is_list(module_parts) do
+    module = Elixir.Module.concat(module_parts)
+
+    case resolve_struct_schema(module, struct_schemas) do
+      {:ok, schema} ->
+        fields =
+          schema.fields
+          |> Enum.filter(fn {_field, default} -> is_integer(default) end)
+          |> MapSet.new(&elem(&1, 0))
+
+        {:ok, fields}
+
+      :error ->
+        :error
+    end
+  end
+
+  defp struct_pattern_integer_fields(_pattern, _struct_schemas), do: :error
+
+  defp merge_struct_integer_fields(left, right) do
+    Map.merge(left, right, fn _name, left_fields, right_fields ->
+      MapSet.union(left_fields, right_fields)
+    end)
   end
 
   defp collect_struct_integer_pattern_names(fields, schema, names) do
@@ -11206,7 +11314,7 @@ defmodule Batata.Lift do
          clause,
          guard,
          binds,
-         integer_names,
+         {integer_names, struct_integer_fields},
          env,
          ctx,
          region,
@@ -11230,6 +11338,14 @@ defmodule Batata.Lift do
         @integer_value_names_key,
         integer_names,
         &MapSet.union(&1, integer_names)
+      )
+
+    clause_env =
+      Map.update(
+        clause_env,
+        @struct_integer_fields_key,
+        struct_integer_fields,
+        &merge_struct_integer_fields(&1, struct_integer_fields)
       )
 
     {value, clause_env} =
@@ -11677,6 +11793,18 @@ defmodule Batata.Lift do
     Map.put(env, @integer_value_names_key, names)
   end
 
+  defp mark_validated_integer_operands(env, asts) do
+    names = Map.get(env, @integer_value_names_key, MapSet.new())
+
+    names =
+      Enum.reduce(asts, names, fn
+        {name, _, context}, acc when is_variable_ast(name, context) -> MapSet.put(acc, name)
+        _ast, acc -> acc
+      end)
+
+    Map.put(env, @integer_value_names_key, names)
+  end
+
   defp integer_expression?(integer, _env) when is_integer(integer), do: true
   defp integer_expression?({:-, _, [integer]}, _env) when is_integer(integer), do: true
 
@@ -11696,6 +11824,14 @@ defmodule Batata.Lift do
     env
     |> Map.get(@integer_value_names_key, MapSet.new())
     |> MapSet.member?(name)
+  end
+
+  defp integer_expression?({{:., _, [{name, _, context}, field]}, _, []}, env)
+       when is_variable_ast(name, context) and is_atom(field) do
+    env
+    |> Map.get(@struct_integer_fields_key, %{})
+    |> Map.get(name, MapSet.new())
+    |> MapSet.member?(field)
   end
 
   defp integer_expression?(_ast, _env), do: false
