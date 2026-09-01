@@ -316,6 +316,7 @@ defmodule Batata.Stdlib.String do
   """
 
   @class_map %{
+    {String, :downcase, 1} => :native_term,
     {String, :duplicate, 2} => :native_term,
     {String, :length, 1} => :native_term,
     {String, :printable?, 1} => :native_term,
@@ -463,6 +464,7 @@ defmodule Batata.Stdlib do
                   {:erlang, :binary_part, 3},
                   {:erlang, :float_to_binary, 2},
                   {:io_lib_format, :fwrite_g, 1},
+                  {String, :downcase, 1},
                   {String, :printable?, 1},
                   {String, :to_atom, 1},
                   {String, :to_existing_atom, 1},
@@ -531,6 +533,7 @@ defmodule Batata.Stdlib do
                      {Kernel, :inspect, 1},
                      {Kernel, :inspect, 2},
                      {Atom, :to_string, 1},
+                     {String, :downcase, 1},
                      {String, :to_atom, 1},
                      {Date, :to_iso8601, 1},
                      {DateTime, :to_iso8601, 1},
@@ -593,6 +596,7 @@ defmodule Batata.Stdlib do
                       {Enum, :map, 2},
                       {Enum, :reduce, 3},
                       {Enum, :to_list, 1},
+                      {String, :downcase, 1},
                       {Map, :to_list, 1},
                       {:maps, :from_list, 1},
                       {MapSet, :new, 1},
