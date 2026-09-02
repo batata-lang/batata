@@ -5,6 +5,7 @@ defmodule Batata.Stdlib.Kernel do
   """
 
   @class_map %{
+    {Kernel, :++, 2} => :native_term,
     {Kernel, :length, 1} => :native_term,
     {Kernel, :hd, 1} => :native_term,
     {Kernel, :tl, 1} => :native_term,
@@ -448,6 +449,7 @@ defmodule Batata.Stdlib do
            )
 
   @raising_mfas MapSet.new([
+                  {Kernel, :++, 2},
                   {Kernel, :abs, 1},
                   {Kernel, :binary_part, 3},
                   {Kernel, :inspect, 1},
@@ -526,6 +528,7 @@ defmodule Batata.Stdlib do
                ])
 
   @allocating_mfas MapSet.new([
+                     {Kernel, :++, 2},
                      {Kernel, :spawn, 1},
                      {:erlang, :put, 2},
                      {Process, :put, 2},
@@ -582,6 +585,7 @@ defmodule Batata.Stdlib do
                    ])
 
   @resumable_mfas MapSet.new([
+                    {Kernel, :++, 2},
                     {Enum, :map, 2},
                     {Enum, :reduce, 3},
                     {Keyword, :get, 2},
@@ -599,6 +603,7 @@ defmodule Batata.Stdlib do
                  ])
 
   @per_element_mfas MapSet.new([
+                      {Kernel, :++, 2},
                       {Kernel, :binary_part, 3},
                       {:erlang, :binary_part, 3},
                       {:binary, :part, 3},
