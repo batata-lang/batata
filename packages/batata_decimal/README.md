@@ -59,10 +59,16 @@ and FunctionClauseError boundary across reduction yields. Scalar-call cleanup
 folds stale term adapters, exact integer comparisons retain their term result,
 and Beaver expands integer case patterns over term scrutinees with strict term
 equality. Together these changes move the whole-unit attempt through IR
-verification into standard lowering. The next fail-closed frontier is the
-remaining static application-exception `raise/2` call (`89225d...092c`). The isolated
-`Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
-because that diagnostic lane omits sibling modules; it does not contradict the
+verification into standard lowering. Schema-aware static exception
+normalization now resolves aliased and fully-qualified application `raise/2`
+calls only after compilation-unit `defexception` schemas are shared. Runtime
+keyword attributes are validated against the schema and materialized as the
+existing term-valued exception representation; unknown schemas and local
+`raise/2` definitions remain fail-closed. This crosses Decimal's
+`raise Error, error` path. The next fail-closed frontier is an unresolved unary
+`-/1` call in standard lowering (`f6789f...b3e`). The isolated `Decimal`
+attempt still reports the cross-module `Decimal.Context.get/0` call because
+that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
 Canonical frontend normalization admits the current-module `defexception`
 schema in `Decimal.Error`, so its original target-module body reaches lowering
