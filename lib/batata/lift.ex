@@ -1982,7 +1982,7 @@ defmodule Batata.Lift do
         :ok
 
       %Frontend.Clause{guard_ast: guard_ast} ->
-        unless GuardSupport.compiler_supported?(guard_ast) do
+        unless term_guard_supported?(guard_ast) do
           raise Error, "unsupported guard on term pattern: #{inspect(guard_ast)}"
         end
     end)
@@ -12621,8 +12621,7 @@ defmodule Batata.Lift do
   # calls and explicitly supported integer expressions on bound or outer
   # variables. Other term operations are rejected explicitly.
   defp lift_term_guard(guard_ast, binds, env, ctx, block) do
-    unless GuardSupport.compiler_supported?(guard_ast) or
-             boxed_integer_ordering_guard?(guard_ast) do
+    unless term_guard_supported?(guard_ast) do
       raise Error,
             "unsupported guard on term pattern (only is_* predicates on bound or outer variables): " <>
               inspect(guard_ast)
@@ -12832,18 +12831,40 @@ defmodule Batata.Lift do
     {left, left_valid, left_mode} = lower_integer_guard_expression(left, env, ctx, block)
     {right, right_valid, right_mode} = lower_integer_guard_expression(right, env, ctx, block)
 
-    left =
-      if left_mode == :term,
-        do: create_op("ex.to_int", [left], [integer_type(ctx)], ctx, block),
-        else: left
+    {left, left_scalar_valid} = lower_guard_scalar_integer(left, left_mode, ctx, block)
+    {right, right_scalar_valid} = lower_guard_scalar_integer(right, right_mode, ctx, block)
+    nonzero = cmp(right, 0, "ne", ctx, block)
 
-    right =
-      if right_mode == :term,
-        do: create_op("ex.to_int", [right], [integer_type(ctx)], ctx, block),
-        else: right
+    valid =
+      combine(
+        [left_valid, right_valid, left_scalar_valid, right_scalar_valid, nonzero],
+        ctx,
+        block
+      )
 
-    value = create_op("ex.rem", [left, right], [integer_type(ctx)], ctx, block)
-    {value, combine([left_valid, right_valid], ctx, block), :scalar}
+    valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+    value =
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn b -> [create_op("ex.rem", [left, right], [integer_type(ctx)], ctx, b)] end,
+        fn b -> [lit(0, ctx, b)] end
+      )
+      |> hd()
+
+    {value, valid, :scalar}
+  end
+
+  defp lower_guard_scalar_integer(value, :scalar, _ctx, _block), do: {value, nil}
+
+  defp lower_guard_scalar_integer(value, :term, ctx, block) do
+    scalar = create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
+    roundtrip = box_term(scalar, ctx, block)
+    lossless = create_op("ex.term_eq", [value, roundtrip], [integer_type(ctx)], ctx, block)
+    {scalar, lossless}
   end
 
   defp integer_guard_call?({:rem, _, [_left, _right]}), do: true
@@ -13238,6 +13259,10 @@ defmodule Batata.Lift do
        do: boxed_integer_ordering_guard?(guard_ast)
 
   defp integer_guard_comparison?(_guard_ast), do: false
+
+  defp term_guard_supported?(guard_ast) do
+    GuardSupport.compiler_supported?(guard_ast) or integer_guard_comparison?(guard_ast)
+  end
 
   defp boxed_integer_ordering_guard?({op, _, [left, right]})
        when op in [:<, :<=, :>, :>=],
