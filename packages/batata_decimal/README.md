@@ -69,7 +69,13 @@ existing term-valued exception representation; unknown schemas and local
 reuse the scalar arithmetic proof boundary, with explicit rejection of the
 minimum i64 negation instead of silent wrapping. This crosses Decimal's
 dynamic `-sign` path. The next fail-closed frontier is an unresolved list
-concatenation `++/2` call in standard lowering (`de7771...3b12`). The isolated
+concatenation `++/2` call in standard lowering (`de7771...3b12`). Resumable
+list concatenation now copies and validates the proper left spine before
+reversing it onto an arbitrary right tail. It preserves empty-left and
+improper-result semantics while deferring the second allocation pass until a
+budgeted traversal completes. This crosses Decimal's charlist formatting
+concatenations; the next standard-lowering frontier is the unresolved internal
+`canonical_xsd/1` call (`d8d65c...47beb`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
