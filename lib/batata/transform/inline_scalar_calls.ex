@@ -288,6 +288,9 @@ defmodule Batata.Transform.InlineScalarCalls do
         name when name in ["ex.term_eq", "ex.term_eq_loose"] ->
           replace_term_equality(rewriter, adapter, old_result, new_result, anchor)
 
+        "ex.integer_compare" ->
+          replace_integer_compare(rewriter, adapter, old_result, new_result, anchor)
+
         _other ->
           :ok
       end
@@ -367,6 +370,35 @@ defmodule Batata.Transform.InlineScalarCalls do
     [new_equality_result] = replacement |> Walker.results() |> Enum.to_list()
     RewriterBase.replace(rewriter, old_equality_result, new_equality_result)
     RewriterBase.erase_op(rewriter, equality)
+  end
+
+  defp replace_integer_compare(rewriter, comparison, old_result, new_result, anchor) do
+    term_type = MLIR.Value.type(old_result)
+
+    {term_operands, boxes} =
+      comparison
+      |> Walker.operands()
+      |> Enum.map(fn operand ->
+        if MLIR.equal?(operand, old_result), do: new_result, else: operand
+      end)
+      |> Enum.map_reduce([], &box_scalar_operand(&1, &2, term_type, anchor))
+
+    replacement =
+      create_operation("ex.integer_compare", term_operands, MLIR.Type.i64(), anchor)
+
+    _insertion_point =
+      Enum.reduce(boxes ++ [replacement], {:before, comparison}, fn operation, insertion_point ->
+        RewriterBase.with_insertion_point(rewriter, insertion_point, fn ->
+          RewriterBase.insert(rewriter, operation)
+        end)
+
+        {:after, operation}
+      end)
+
+    [old_comparison_result] = comparison |> Walker.results() |> Enum.to_list()
+    [new_comparison_result] = replacement |> Walker.results() |> Enum.to_list()
+    RewriterBase.replace(rewriter, old_comparison_result, new_comparison_result)
+    RewriterBase.erase_op(rewriter, comparison)
   end
 
   defp box_scalar_operand(operand, boxes, term_type, anchor) do

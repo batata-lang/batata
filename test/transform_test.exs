@@ -198,6 +198,23 @@ defmodule Batata.TransformTest do
     refute rendered =~ ~r/"ex\.term_eq"\([^\n]*\) : \(i64, i64\)/
   end
 
+  test "reboxes integer ordering operands made scalar by call retyping", %{ctx: ctx} do
+    source = """
+    defmodule RetypedIntegerOrdering do
+      defp pow10(0), do: 1
+      defp pow10(n), do: 10 * pow10(n - 1)
+
+      def main(), do: pow10(2) < pow10(3)
+    end
+    """
+
+    module = Batata.compile(source, ctx)
+    rendered = MLIR.to_string(module, generic: true)
+
+    refute rendered =~ ~r/"ex\.integer_compare"\([^\n]*\) : \([^)]*i64/
+    assert Batata.execute(source, ctx) == 1
+  end
+
   test "decodes term integers before passing them to scalar callees", %{ctx: ctx} do
     source = """
     defmodule TupleScalarBoundary do
