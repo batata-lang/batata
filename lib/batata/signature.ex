@@ -48,6 +48,7 @@ defmodule Batata.Signature do
     {:io_lib_format, :fwrite_g, 1} => [:term],
     {:erlang, :split_binary, 2} => [:term, :scalar],
     {:lists, :keyfind, 3} => [:term, :term, :term],
+    {:lists, :last, 1} => [:term],
     {:lists, :reverse, 1} => [:term],
     {:lists, :reverse, 2} => [:term, :term],
     {Date, :to_iso8601, 1} => [:term],
