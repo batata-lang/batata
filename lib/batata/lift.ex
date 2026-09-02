@@ -4624,6 +4624,34 @@ defmodule Batata.Lift do
     {lift_case(clauses, scrutinee, env, ctx, block, opts), env}
   end
 
+  defp lift_expr(
+         {:__batata_exception_from_attributes__, _, [module, attributes_ast]},
+         ctx,
+         block,
+         env
+       )
+       when is_atom(module) do
+    schemas = Map.get(env, @struct_schema_key)
+
+    schema =
+      case resolve_struct_schema(module, schemas) do
+        {:ok, %Frontend.StructSchema{kind: :exception} = schema} ->
+          schema
+
+        _other ->
+          raise Error,
+                "exception construction requires a registered defexception schema, got: #{inspect(module)}"
+      end
+
+    {attributes, env} = lift_expr(attributes_ast, ctx, block, env)
+    attributes = attributes |> lift_value(ctx, block, env) |> box_term(ctx, block)
+
+    {default_values, env} = lift_map_entries(schema.fields, ctx, block, env)
+    defaults = create_term_op("ex.map", default_values, ctx, block)
+
+    {build_exception_from_attributes(module, schema, attributes, defaults, ctx, block), env}
+  end
+
   defp lift_expr({:__batata_raise__, _, [kind, reason_ast]}, ctx, block, env)
        when is_integer(kind) do
     lift_expr({:__batata_raise__, kind, reason_ast}, ctx, block, env)
@@ -8953,6 +8981,78 @@ defmodule Batata.Lift do
 
     reason = create_term_op("ex.binary", bytes, ctx, block)
     create_op("ex.raise", [reason, lit(6, ctx, block)], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp build_exception_from_attributes(module, schema, attributes, defaults, ctx, block) do
+    i64 = integer_type(ctx)
+    dyn = ex_type("term", ctx)
+    input_list = create_op("ex.is_list", [attributes], [i64], ctx, block)
+    merged = create_op("ex.enumerable_into_map", [attributes, defaults], [dyn], ctx, block)
+    result_map = create_op("ex.is_map", [merged], [i64], ctx, block)
+    representable = create_op("arith.andi", [input_list, result_map], [i64], ctx, block)
+    representable_i1 = create_op("arith.trunci", [representable], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        representable_i1,
+        ctx,
+        block,
+        [i64],
+        fn valid_block ->
+          field_count = create_op("ex.map_length", [merged], [i64], ctx, valid_block)
+          known_fields = cmp(field_count, length(schema.fields), "eq", ctx, valid_block)
+
+          known_fields_i1 =
+            create_op("arith.trunci", [known_fields], [MLIR.Type.i1()], ctx, valid_block)
+
+          build_scf_if(
+            known_fields_i1,
+            ctx,
+            valid_block,
+            [i64],
+            fn success_block ->
+              exception =
+                create_op(
+                  "ex.map_put",
+                  [
+                    merged,
+                    atom_term(:__struct__, ctx, success_block),
+                    atom_term(module, ctx, success_block)
+                  ],
+                  [dyn],
+                  ctx,
+                  success_block
+                )
+
+              exception =
+                create_op(
+                  "ex.map_put",
+                  [
+                    exception,
+                    atom_term(:__exception__, ctx, success_block),
+                    atom_term(true, ctx, success_block)
+                  ],
+                  [dyn],
+                  ctx,
+                  success_block
+                )
+
+              [unbox(exception, ctx, success_block)]
+            end,
+            fn error_block ->
+              message = "unknown exception attributes for #{inspect(module)}"
+              [raise_argument_error(message, ctx, error_block) |> unbox(ctx, error_block)]
+            end
+          )
+        end,
+        fn error_block ->
+          message = "invalid exception attributes for #{inspect(module)}"
+          [raise_argument_error(message, ctx, error_block) |> unbox(ctx, error_block)]
+        end
+      )
+      |> hd()
+
+    create_op("ex.to_word", [result], [dyn], ctx, block)
   end
 
   defp raise_system_limit_error(message, ctx, block) do

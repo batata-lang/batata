@@ -3,6 +3,13 @@ defmodule Batata.CompilationUnitProtocolTest do
 
   alias Batata.{CompilationUnit, Frontend}
 
+  defmodule StaticRaisedError do
+    defexception signal: :default, reason: nil
+
+    @impl true
+    def message(error), do: "#{error.signal}: #{error.reason}"
+  end
+
   test "dispatches generated protocols across builtins, structs, maps, and Any", %{ctx: ctx} do
     source = """
     defprotocol RenderValue do
@@ -172,6 +179,62 @@ defmodule Batata.CompilationUnitProtocolTest do
       |> CompilationUnit.build(entry: {Unit.MessageOracle, :main, 0})
 
     assert Batata.execute(unit, ctx) == "message: boom"
+  end
+
+  test "raises a static application exception from runtime keyword attributes", %{ctx: ctx} do
+    source = """
+    defmodule Batata.CompilationUnitProtocolTest.StaticRaisedError do
+      defexception signal: :default, reason: nil
+      def message(error), do: Atom.to_string(error.signal) <> ": " <> error.reason
+    end
+
+    defmodule Unit.StaticRaiseOracle do
+      alias Batata.CompilationUnitProtocolTest.StaticRaisedError, as: Error
+
+      def main() do
+        attributes = [signal: :invalid_operation, reason: "runtime attributes"]
+        raise Error, attributes
+      end
+    end
+    """
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> CompilationUnit.build(entry: {Unit.StaticRaiseOracle, :main, 0})
+
+    error =
+      assert_raise StaticRaisedError, "invalid_operation: runtime attributes", fn ->
+        Batata.execute(unit, ctx)
+      end
+
+    assert error.signal == :invalid_operation
+    assert error.reason == "runtime attributes"
+  end
+
+  test "rejects attributes outside a static exception schema", %{ctx: ctx} do
+    source = """
+    defmodule Batata.CompilationUnitProtocolTest.StaticRaisedError do
+      defexception signal: :default, reason: nil
+    end
+
+    defmodule Unit.InvalidStaticRaiseOracle do
+      def main() do
+        attributes = [signal: :invalid_operation, unknown: "not declared"]
+        raise Batata.CompilationUnitProtocolTest.StaticRaisedError, attributes
+      end
+    end
+    """
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> CompilationUnit.build(entry: {Unit.InvalidStaticRaiseOracle, :main, 0})
+
+    assert_raise ArgumentError,
+                 "unknown exception attributes for " <>
+                   "Batata.CompilationUnitProtocolTest.StaticRaisedError",
+                 fn -> Batata.execute(unit, ctx) end
   end
 
   test "formats a rescued Protocol.UndefinedError inside a qualified unit", %{ctx: ctx} do

@@ -119,9 +119,7 @@ defmodule Batata.Frontend do
       |> Enum.reject(&is_nil(&1.struct_schema))
       |> Map.new(&{&1.name, &1.struct_schema})
 
-    Enum.map(modules, fn mod ->
-      %{mod | struct_schemas: Map.merge(schemas, mod.struct_schemas || %{})}
-    end)
+    attach_schemas_and_expand_static_exceptions(modules, schemas)
   end
 
   @doc """
@@ -144,9 +142,7 @@ defmodule Batata.Frontend do
         |> Enum.reject(&is_nil(&1.struct_schema))
         |> Map.new(&{&1.name, &1.struct_schema})
 
-      Enum.map(modules, fn mod ->
-        %{mod | struct_schemas: Map.merge(schemas, mod.struct_schemas || %{})}
-      end)
+      attach_schemas_and_expand_static_exceptions(modules, schemas)
     else
       block
       |> MetaprogrammingExpand.expand(table_generators(opts))
@@ -163,6 +159,7 @@ defmodule Batata.Frontend do
       |> KernelRaiseExpand.expand()
       |> DefaultArgExpand.expand()
       |> from_expanded_ast()
+      |> KernelRaiseExpand.expand_static_exceptions()
     end
   end
 
@@ -182,6 +179,15 @@ defmodule Batata.Frontend do
     |> KernelRaiseExpand.expand()
     |> DefaultArgExpand.expand()
     |> from_expanded_ast()
+    |> KernelRaiseExpand.expand_static_exceptions()
+  end
+
+  defp attach_schemas_and_expand_static_exceptions(modules, schemas) do
+    Enum.map(modules, fn mod ->
+      mod
+      |> Map.put(:struct_schemas, Map.merge(schemas, mod.struct_schemas || %{}))
+      |> KernelRaiseExpand.expand_static_exceptions()
+    end)
   end
 
   defp metadata_macros(opts), do: Keyword.get(opts, :metadata_macros, %{})

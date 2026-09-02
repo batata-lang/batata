@@ -23,6 +23,32 @@ defmodule Batata.Frontend.KernelRaiseExpand do
 
   def expand(ast), do: ast
 
+  @doc false
+  @spec expand_static_exceptions(Batata.Frontend.Module.t() | [Batata.Frontend.Module.t()]) ::
+          Batata.Frontend.Module.t() | [Batata.Frontend.Module.t()]
+  def expand_static_exceptions(modules) when is_list(modules) do
+    Enum.map(modules, &expand_static_exceptions/1)
+  end
+
+  def expand_static_exceptions(%Batata.Frontend.Module{} = module) do
+    local_raise_arities = definition_raise_arities(module.definitions)
+
+    definitions =
+      Enum.map(module.definitions, fn definition ->
+        clauses =
+          Enum.map(definition.clauses, fn clause ->
+            body =
+              rewrite_static_calls(clause.body_ast, local_raise_arities, module.struct_schemas)
+
+            %{clause | body_ast: body}
+          end)
+
+        %{definition | clauses: clauses}
+      end)
+
+    %{module | definitions: definitions}
+  end
+
   defp rewrite_body(body) do
     forms = body_forms(body)
     local_raise_arities = local_raise_arities(forms)
@@ -76,6 +102,33 @@ defmodule Batata.Frontend.KernelRaiseExpand do
     end
   end
 
+  defp rewrite_static_calls(ast, local_raise_arities, schemas) do
+    Macro.prewalk(ast, fn
+      {:raise, _metadata, [exception, attributes]} = call ->
+        if MapSet.member?(local_raise_arities, 2),
+          do: call,
+          else: normalize_static_exception(call, exception, attributes, schemas)
+
+      {{:., _, [module_ast, :raise]}, _, [exception, attributes]} = call ->
+        if kernel_module?(module_ast),
+          do: normalize_static_exception(call, exception, attributes, schemas),
+          else: call
+
+      node ->
+        node
+    end)
+  end
+
+  defp normalize_static_exception(call, exception, attributes, schemas) do
+    with module when is_atom(module) <- exception_module(exception),
+         %Batata.Frontend.StructSchema{kind: :exception} <- Map.get(schemas, module) do
+      exception = {:__batata_exception_from_attributes__, [], [module, attributes]}
+      {:__batata_raise__, [], [@exception_kind, exception]}
+    else
+      _other -> call
+    end
+  end
+
   defp argument_error_message(attributes) when is_list(attributes) do
     if Keyword.keyword?(attributes), do: Keyword.fetch(attributes, :message), else: :error
   end
@@ -115,6 +168,15 @@ defmodule Batata.Frontend.KernelRaiseExpand do
 
       _form ->
         []
+    end)
+    |> MapSet.new()
+  end
+
+  defp definition_raise_arities(definitions) do
+    definitions
+    |> Enum.flat_map(fn
+      %Batata.Frontend.Definition{name: :raise, arity: arity} -> [arity]
+      _definition -> []
     end)
     |> MapSet.new()
   end
