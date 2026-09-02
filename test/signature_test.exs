@@ -111,6 +111,21 @@ defmodule Batata.SignatureTest do
     assert Batata.Signature.infer([definition]) == %{{:clamp, 1} => [:scalar]}
   end
 
+  test "infers dynamic unary integer operators without classifying signed floats as integers" do
+    value = Macro.var(:value, nil)
+    negate = definition(:negate, value, {:-, [], [value]})
+    positive = definition(:positive, value, {:+, [], [value]})
+    signed_float = definition(:signed_float, [], {:-, [], [1.5]})
+
+    assert Batata.Signature.infer([negate, positive]) == %{
+             {:negate, 1} => [:scalar],
+             {:positive, 1} => [:scalar]
+           }
+
+    assert Batata.Signature.infer_integer_results([negate, positive, signed_float]) ==
+             MapSet.new([{:negate, 1}, {:positive, 1}])
+  end
+
   test "infers qualified Kernel min and abs operands as scalar integers" do
     value = Macro.var(:value, nil)
 
