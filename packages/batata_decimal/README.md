@@ -75,7 +75,12 @@ reversing it onto an arbitrary right tail. It preserves empty-left and
 improper-result semantics while deferring the second allocation pass until a
 budgeted traversal completes. This crosses Decimal's charlist formatting
 concatenations; the next standard-lowering frontier is the unresolved internal
-`canonical_xsd/1` call (`d8d65c...47beb`). The isolated
+`canonical_xsd/1` call (`d8d65c...47beb`). Private reachability now expands
+nested pipelines before collecting references, so the effective arity used by
+qualification is also used by pruning. This retains Decimal's private
+`canonical_xsd/1` recursion without retaining its unrelated private functions.
+The next frontier is the term-pattern guard
+`Kernel.rem(coef, 10) != 0` (`9f3d37...c7e3`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
