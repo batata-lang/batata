@@ -126,6 +126,27 @@ defmodule Batata.SignatureTest do
              MapSet.new([{:negate, 1}, {:positive, 1}])
   end
 
+  test "infers integer fields returned by direct tuple helpers" do
+    left = Macro.var(:left, nil)
+    right = Macro.var(:right, nil)
+
+    definitions = [
+      definition(:align, [left, right], {left, right}),
+      definition(:align, [right, left], {left, right})
+    ]
+
+    assert Batata.Signature.infer_integer_tuple_results(definitions) == %{
+             {:align, 2} => [0, 1]
+           }
+  end
+
+  test "keeps values embedded in tagged result tuples boxed" do
+    value = Macro.var(:value, nil)
+    definition = definition(:wrap, value, {:ok, value})
+
+    assert Batata.Signature.infer([definition]) == %{{:wrap, 1} => [:term]}
+  end
+
   test "infers qualified Kernel min and abs operands as scalar integers" do
     value = Macro.var(:value, nil)
 

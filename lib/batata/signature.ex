@@ -159,6 +159,110 @@ defmodule Batata.Signature do
   end
 
   @doc false
+  def infer_integer_tuple_results(
+        definitions,
+        argument_modes \\ nil,
+        no_return_functions \\ MapSet.new()
+      ) do
+    argument_modes = argument_modes || infer(definitions)
+    integer_results = infer_integer_results(definitions, no_return_functions)
+
+    definitions
+    |> Enum.group_by(&{&1.name, &1.arity})
+    |> Enum.reduce(%{}, fn {signature, grouped}, contracts ->
+      indices =
+        infer_integer_tuple_contract(
+          signature,
+          grouped,
+          argument_modes,
+          integer_results,
+          no_return_functions
+        )
+
+      if indices == [], do: contracts, else: Map.put(contracts, signature, indices)
+    end)
+  end
+
+  defp infer_integer_tuple_contract(
+         signature,
+         grouped,
+         argument_modes,
+         integer_results,
+         no_return_functions
+       ) do
+    clauses = Enum.flat_map(grouped, & &1.clauses)
+
+    case uniform_terminal_tuple_elements(clauses) do
+      {:ok, elements, arity} ->
+        modes = Map.fetch!(argument_modes, signature)
+
+        Enum.filter(0..(arity - 1), fn index ->
+          Enum.zip(clauses, elements)
+          |> Enum.all?(
+            &integer_tuple_element?(&1, index, modes, integer_results, no_return_functions)
+          )
+        end)
+
+      :error ->
+        []
+    end
+  end
+
+  defp uniform_terminal_tuple_elements(clauses) do
+    tuples = Enum.map(clauses, &terminal_tuple_elements(&1.body_ast))
+
+    with false <- tuples == [],
+         true <- Enum.all?(tuples, &match?({:ok, _}, &1)),
+         elements = Enum.map(tuples, fn {:ok, values} -> values end),
+         [arity] when arity > 0 <- Enum.map(elements, &length/1) |> Enum.uniq() do
+      {:ok, elements, arity}
+    else
+      _invalid -> :error
+    end
+  end
+
+  defp integer_tuple_element?(
+         {clause, values},
+         index,
+         modes,
+         integer_results,
+         no_return_functions
+       ) do
+    variables = integer_tuple_variables(clause, modes)
+
+    integer_result_kind(
+      Enum.at(values, index),
+      integer_results,
+      no_return_functions,
+      variables
+    ) == :integer
+  end
+
+  defp terminal_tuple_elements({:__block__, _, expressions}) when expressions != [],
+    do: expressions |> List.last() |> terminal_tuple_elements()
+
+  defp terminal_tuple_elements({:{}, _, values}) when is_list(values), do: {:ok, values}
+
+  defp terminal_tuple_elements(tuple) when is_tuple(tuple) and tuple_size(tuple) != 3,
+    do: {:ok, Tuple.to_list(tuple)}
+
+  defp terminal_tuple_elements(_ast), do: :error
+
+  defp integer_tuple_variables(clause, modes) do
+    clause.patterns
+    |> Enum.zip(modes)
+    |> Enum.reduce(MapSet.new(), fn
+      {{name, _, context}, :scalar}, variables when is_variable_ast(name, context) ->
+        MapSet.put(variables, name)
+
+      _pattern, variables ->
+        variables
+    end)
+    |> MapSet.union(guarded_scalar_variables(clause.guard_ast))
+    |> MapSet.union(scalar_operation_variables(clause.body_ast))
+  end
+
+  @doc false
   def infer_boolean_results(definitions, no_return_functions \\ MapSet.new()) do
     # Start from every local signature and remove contradictions. This
     # greatest fixed point admits recursive cycles only while every returning
@@ -370,12 +474,31 @@ defmodule Batata.Signature do
 
     clauses != [] and
       Enum.all?(clauses, fn clause ->
-        boolean_result_kind(clause.body_ast, candidates, no_return_functions) in [
+        boolean_definition_result_kind(
+          clause.body_ast,
+          candidates,
+          no_return_functions
+        ) in [
           :boolean,
           :no_return
         ]
       end)
   end
+
+  defp boolean_definition_result_kind(
+         value,
+         _candidates,
+         _no_return_functions
+       )
+       when value in [true, false],
+       do: :boolean
+
+  defp boolean_definition_result_kind(
+         ast,
+         candidates,
+         no_return_functions
+       ),
+       do: boolean_result_kind(ast, candidates, no_return_functions)
 
   defp infer_productive_boolean_results(groups, safe, productive) do
     next =
@@ -1133,6 +1256,7 @@ defmodule Batata.Signature do
 
   defp term_call_argument?({:{}, _, values}) when is_list(values), do: true
   defp term_call_argument?({:%{}, _, entries}) when is_list(entries), do: true
+  defp term_call_argument?({:%, _, [_module, {:%{}, _, _entries}]}), do: true
   defp term_call_argument?({:fn, _, clauses}) when is_list(clauses), do: true
   defp term_call_argument?({:__fn_ref__, _, _arguments}), do: true
   defp term_call_argument?(_argument), do: false
@@ -1270,6 +1394,10 @@ defmodule Batata.Signature do
   defp infer_node({:|, _, values} = node, modes, names, _signatures)
        when is_list(values),
        do: {node, mark_term_values(modes, names, values)}
+
+  defp infer_node({tag, {name, _, context}} = node, modes, names, _signatures)
+       when tag in [:ok, :error] and is_variable_ast(name, context),
+       do: {node, mark_name(modes, names, name)}
 
   defp infer_node(
          {:case, _, [{name, _, context}, [do: clauses]]} = node,
