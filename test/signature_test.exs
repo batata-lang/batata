@@ -352,6 +352,33 @@ defmodule Batata.SignatureTest do
            ]) == MapSet.new([{:recursive, 1}, {:mutual_left, 1}, {:mutual_right, 1}])
   end
 
+  test "infers boolean results through the validated internal lists.any node" do
+    digits = {:digits, [], nil}
+    value = {:value, [], nil}
+
+    lists_any =
+      {:__lists_any__, [],
+       [
+         :boolean_ast,
+         {:fn, [], [{:->, [], [[value], {:!=, [], [value, 48]}]}]},
+         digits
+       ]}
+
+    any_nonzero = definition(:any_nonzero, digits, lists_any)
+    forwarded = definition(:forwarded, digits, {:any_nonzero, [], [digits]})
+    mixed_boolean = definition(:mixed, [], lists_any)
+    mixed_term = definition(:mixed, [], :not_a_boolean)
+    unknown = definition(:unknown, digits, {:external_boolean, [], [digits]})
+
+    assert Batata.Signature.infer_boolean_results([
+             any_nonzero,
+             forwarded,
+             mixed_boolean,
+             mixed_term,
+             unknown
+           ]) == MapSet.new([{:any_nonzero, 1}, {:forwarded, 1}])
+  end
+
   test "infers private boolean arguments from every local call site" do
     flag = {:flag, [], nil}
 
