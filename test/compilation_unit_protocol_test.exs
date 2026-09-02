@@ -181,6 +181,36 @@ defmodule Batata.CompilationUnitProtocolTest do
     assert Batata.execute(unit, ctx) == "message: boom"
   end
 
+  test "renders a nil exception field inside a qualified unit", %{ctx: ctx} do
+    source = ~S'''
+    defmodule Unit.OptionalSignalError do
+      defexception [:signal, :reason]
+
+      def message(%{signal: signal, reason: reason}) do
+        reason = reason && ": " <> reason
+        "#{signal}#{reason}"
+      end
+    end
+
+    defmodule Unit.OptionalSignalOracle do
+      def main() do
+        try do
+          raise Unit.OptionalSignalError, reason: "invalid input"
+        rescue
+          error in Unit.OptionalSignalError -> Exception.message(error)
+        end
+      end
+    end
+    '''
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> CompilationUnit.build(entry: {Unit.OptionalSignalOracle, :main, 0})
+
+    assert Batata.execute(unit, ctx) == ": invalid input"
+  end
+
   test "raises a static application exception from runtime keyword attributes", %{ctx: ctx} do
     source = """
     defmodule Batata.CompilationUnitProtocolTest.StaticRaisedError do
