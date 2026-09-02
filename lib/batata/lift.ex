@@ -37,6 +37,7 @@ defmodule Batata.Lift do
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @integer_result_functions_key {__MODULE__, :integer_result_functions}
+  @integer_tuple_result_functions_key {__MODULE__, :integer_tuple_result_functions}
   @boolean_result_functions_key {__MODULE__, :boolean_result_functions}
   @boolean_argument_modes_key {__MODULE__, :boolean_argument_modes}
   @compiler_abi_calls_key {__MODULE__, :compiler_abi_calls}
@@ -127,6 +128,13 @@ defmodule Batata.Lift do
       |> Batata.Signature.infer()
       |> apply_signature_overrides!(definitions, opts)
 
+    integer_tuple_result_functions =
+      Batata.Signature.infer_integer_tuple_results(
+        definitions,
+        argument_modes,
+        no_return_functions
+      )
+
     compiler_abi_calls = normalize_compiler_abi_calls!(opts)
 
     module_env = %{
@@ -137,6 +145,7 @@ defmodule Batata.Lift do
       @no_return_functions_key => no_return_functions,
       @scalar_result_functions_key => scalar_result_functions,
       @integer_result_functions_key => integer_result_functions,
+      @integer_tuple_result_functions_key => integer_tuple_result_functions,
       @boolean_result_functions_key => boolean_result_functions,
       @boolean_argument_modes_key => boolean_argument_modes,
       @compiler_abi_calls_key => compiler_abi_calls
@@ -4805,6 +4814,15 @@ defmodule Batata.Lift do
     {_match_cond, binds} =
       build_match(pattern, value, ctx, block, false, Map.get(env, @struct_schema_key), env)
 
+    binds =
+      refine_case_result_bindings(
+        pattern,
+        binds,
+        expression_result_contract(rhs, env),
+        ctx,
+        block
+      )
+
     env = Enum.reduce(binds, env, fn {name, bound}, acc -> Map.put(acc, name, bound) end)
     names = binds |> Enum.map(&elem(&1, 0)) |> MapSet.new()
     env = Map.update(env, @term_pattern_names_key, names, &MapSet.union(&1, names))
@@ -5418,7 +5436,7 @@ defmodule Batata.Lift do
           {lift_value(value, ctx, block, env), env}
         end)
 
-      arg_values = adapt_call_arguments(name, arg_values, env, ctx, block)
+      arg_values = adapt_call_arguments(name, arg_values, env, ctx, block, args)
 
       result_type =
         if MapSet.member?(Map.fetch!(env, @scalar_result_functions_key), {name, length(args)}),
@@ -5851,11 +5869,7 @@ defmodule Batata.Lift do
       else: opts
   end
 
-  defp list_cons_operand(ast, value, ctx, block, env) when is_integer(ast) do
-    value |> lift_value(ctx, block, env) |> box_term(ctx, block)
-  end
-
-  defp list_cons_operand(_ast, value, ctx, block, env) do
+  defp list_cons_operand(_ast, {:closure_result, _, _} = value, ctx, block, env) do
     create_op(
       "ex.to_word",
       [lift_value(value, ctx, block, env)],
@@ -5863,6 +5877,21 @@ defmodule Batata.Lift do
       ctx,
       block
     )
+  end
+
+  defp list_cons_operand(ast, value, ctx, block, env) do
+    value = lift_value(value, ctx, block, env)
+
+    cond do
+      term_operand?(value) ->
+        create_op("ex.to_word", [value], [ex_type("term", ctx)], ctx, block)
+
+      boolean_scalar_ast?(ast, env) ->
+        boolean_term(value, ctx, block)
+
+      true ->
+        box_term(value, ctx, block)
+    end
   end
 
   defp split_list_cons([{:|, _, [head, tail]}]), do: {:ok, [head], tail}
@@ -11258,6 +11287,18 @@ defmodule Batata.Lift do
 
   defp case_result_contract(_scrutinee), do: []
 
+  defp expression_result_contract({name, _, arguments}, env)
+       when is_atom(name) and is_list(arguments) do
+    indices =
+      env
+      |> Map.fetch!(@integer_tuple_result_functions_key)
+      |> Map.get({name, length(arguments)}, [])
+
+    [scalar_tuple_indices: indices]
+  end
+
+  defp expression_result_contract(_expression, _env), do: []
+
   defp lift_case(clauses, scrutinee, env, ctx, block, opts) do
     term_case? =
       Keyword.get_lazy(opts, :term_case?, fn ->
@@ -12575,6 +12616,7 @@ defmodule Batata.Lift do
           end
       end
 
+    value = normalize_boolean_function_value(value, clause_env, ctx, block)
     value = normalize_term_clause_value(value, expected_type, clause_env, ctx, block)
 
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
@@ -12606,6 +12648,37 @@ defmodule Batata.Lift do
 
   defp normalize_term_clause_value(value, _expected_type, env, ctx, block),
     do: lift_value(value, ctx, block, env)
+
+  defp normalize_boolean_function_value(value, env, ctx, block) do
+    boolean? =
+      case Map.fetch(env, @current_function_signature_key) do
+        {:ok, signature} ->
+          env
+          |> Map.get(@boolean_result_functions_key, MapSet.new())
+          |> MapSet.member?(signature)
+
+        :error ->
+          false
+      end
+
+    if boolean? do
+      value = lift_value(value, ctx, block, env)
+
+      if term_operand?(value) do
+        create_op(
+          "ex.term_eq",
+          [value, atom_term(true, ctx, block)],
+          [integer_type(ctx)],
+          ctx,
+          block
+        )
+      else
+        value
+      end
+    else
+      value
+    end
+  end
 
   defp coerce_exception_result(value, nil, _ctx, _block), do: value
 
@@ -13576,7 +13649,7 @@ defmodule Batata.Lift do
     create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
   end
 
-  defp adapt_call_arguments(name, values, env, ctx, block) do
+  defp adapt_call_arguments(name, values, env, ctx, block, asts \\ nil) do
     modes =
       env
       |> Map.fetch!(@arg_modes_key)
@@ -13598,27 +13671,40 @@ defmodule Batata.Lift do
       |> Map.fetch!(@boolean_argument_modes_key)
       |> Map.get({name, length(values)}, List.duplicate(false, length(values)))
 
-    Enum.zip([values, modes, integer_guards, boolean_arguments])
+    asts = asts || List.duplicate(nil, length(values))
+
+    Enum.zip([values, modes, integer_guards, boolean_arguments, asts])
     |> Enum.map(fn
-      {value, _mode, _integer_guard?, _boolean_argument?} when dispatch? ->
+      {value, _mode, _integer_guard?, _boolean_argument?, _ast} when dispatch? ->
         if term_operand?(value), do: unbox(value, ctx, block), else: value
 
-      {value, :term, _integer_guard?, true} ->
+      {value, :term, _integer_guard?, true, _ast} ->
         if term_operand?(value),
           do: unbox(value, ctx, block),
           else: value |> boolean_term(ctx, block) |> unbox(ctx, block)
 
-      {value, :term, _integer_guard?, false} ->
+      {value, :term, _integer_guard?, false, _ast} ->
         value |> box_if_scalar(ctx, block) |> unbox(ctx, block)
 
-      {value, :scalar, integer_guard?, _boolean_argument?} ->
-        if integer_guard? and term_operand?(value) do
+      {value, :scalar, integer_guard?, _boolean_argument?, ast} ->
+        if term_operand?(value) and
+             (integer_guard? or proven_integer_call_argument?(ast, env)) do
           create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
         else
           value
         end
     end)
   end
+
+  defp proven_integer_call_argument?({name, _, context} = ast, env)
+       when is_variable_ast(name, context),
+       do: integer_expression?(ast, env)
+
+  defp proven_integer_call_argument?({{:., _, [{name, _, context}, field]}, _, []} = ast, env)
+       when is_variable_ast(name, context) and is_atom(field),
+       do: integer_expression?(ast, env)
+
+  defp proven_integer_call_argument?(_ast, _env), do: false
 
   defp fn_abi_name?(name),
     do: name != :__fn_dispatch and String.starts_with?(Atom.to_string(name), "__fn_")
