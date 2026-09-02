@@ -251,7 +251,9 @@ defmodule Batata.CompilationUnit do
 
   defp ast_references(ast, grouped, module) do
     {_ast, references} =
-      Macro.prewalk(ast, [], fn
+      ast
+      |> expand_pipes()
+      |> Macro.prewalk([], fn
         {:&, _, [{:/, _, [{name, _, _context}, arity]}]} = node, references
         when is_atom(name) and is_integer(arity) ->
           {node, maybe_reference(references, {name, arity}, grouped)}
