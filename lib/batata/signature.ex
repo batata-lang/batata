@@ -619,6 +619,15 @@ defmodule Batata.Signature do
        do: :integer
 
   defp integer_result_kind(
+         {operator, _, [float]},
+         _proven,
+         _no_return_functions,
+         _integer_variables
+       )
+       when operator in [:+, :-] and is_float(float),
+       do: :unknown
+
+  defp integer_result_kind(
          {:__block__, _, expressions},
          proven,
          no_return_functions,
@@ -707,6 +716,7 @@ defmodule Batata.Signature do
       MapSet.member?(no_return, signature) -> :no_return
       MapSet.member?(proven, signature) -> :integer
       length(arguments) == 2 -> :integer
+      operator in [:+, :-] and length(arguments) == 1 -> :integer
       true -> :unknown
     end
   end

@@ -629,6 +629,10 @@ defmodule Batata.Lift do
         {:__batata_raise__, _, [_kind, _reason]} = node, false ->
           {node, true}
 
+        {operator, _, [operand]} = node, false
+        when operator in [:+, :-] and not is_number(operand) ->
+          {node, true}
+
         {:<<>>, _, segments} = node, false when is_list(segments) ->
           {node, Enum.any?(segments, &integer_size_segment?/1)}
 
@@ -4185,6 +4189,46 @@ defmodule Batata.Lift do
 
   defp lift_expr({:+, _, [integer]}, ctx, block, env) when is_integer(integer),
     do: lift_expr(integer, ctx, block, env)
+
+  defp lift_expr({:-, _, [operand_ast]}, ctx, block, env) do
+    {operand, env} = lift_expr(operand_ast, ctx, block, env)
+    operand = operand |> lift_value(ctx, block, env) |> validated_unary_integer(ctx, block)
+    env = mark_validated_integer_operands(env, [operand_ast])
+    minimum? = cmp(operand, @min_scalar_integer, "eq", ctx, block)
+    minimum_i1 = create_op("arith.trunci", [minimum?], [MLIR.Type.i1()], ctx, block)
+
+    result =
+      build_scf_if(
+        minimum_i1,
+        ctx,
+        block,
+        [integer_type(ctx)],
+        fn error_block ->
+          message = "unary negation exceeds the supported i64 scalar range"
+          [raise_system_limit_error(message, ctx, error_block) |> unbox(ctx, error_block)]
+        end,
+        fn success_block ->
+          [
+            create_op(
+              "ex.sub",
+              [lit(0, ctx, success_block), operand],
+              [integer_type(ctx)],
+              ctx,
+              success_block
+            )
+          ]
+        end
+      )
+      |> hd()
+
+    {result, env}
+  end
+
+  defp lift_expr({:+, _, [operand_ast]}, ctx, block, env) do
+    {operand, env} = lift_expr(operand_ast, ctx, block, env)
+    operand = operand |> lift_value(ctx, block, env) |> validated_unary_integer(ctx, block)
+    {operand, mark_validated_integer_operands(env, [operand_ast])}
+  end
 
   defp lift_expr({:sigil_c, _, [{:<<>>, _, [contents]}, []]} = ast, ctx, block, env)
        when is_binary(contents) do
@@ -12888,6 +12932,9 @@ defmodule Batata.Lift do
   defp integer_expression?(integer, _env) when is_integer(integer), do: true
   defp integer_expression?({:-, _, [integer]}, _env) when is_integer(integer), do: true
 
+  defp integer_expression?({operator, _, [operand]}, env) when operator in [:+, :-],
+    do: integer_expression?(operand, env)
+
   defp integer_expression?({operator, _, arguments}, _env)
        when operator in [:+, :-, :*, :div, :rem] and length(arguments) == 2,
        do: true
@@ -12945,6 +12992,39 @@ defmodule Batata.Lift do
       end
     )
     |> hd()
+  end
+
+  defp validated_unary_integer(value, ctx, block) do
+    if term_operand?(value) do
+      i64 = integer_type(ctx)
+      integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
+      scalar = create_op("ex.to_int", [value], [i64], ctx, block)
+      roundtrip = box_term(scalar, ctx, block)
+      lossless? = create_op("ex.term_eq", [value, roundtrip], [i64], ctx, block)
+      valid = create_op("arith.andi", [integer?, lossless?], [i64], ctx, block)
+      valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+
+      build_scf_if(
+        valid_i1,
+        ctx,
+        block,
+        [i64],
+        fn _valid_block -> [scalar] end,
+        fn error_block ->
+          [
+            raise_argument_error(
+              "unary integer operators require scalar integer operands",
+              ctx,
+              error_block
+            )
+            |> unbox(ctx, error_block)
+          ]
+        end
+      )
+      |> hd()
+    else
+      value
+    end
   end
 
   defp validated_boolean_value(value, ctx, block) do
