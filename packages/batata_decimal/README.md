@@ -65,10 +65,13 @@ calls only after compilation-unit `defexception` schemas are shared. Runtime
 keyword attributes are validated against the schema and materialized as the
 existing term-valued exception representation; unknown schemas and local
 `raise/2` definitions remain fail-closed. This crosses Decimal's
-`raise Error, error` path. The next fail-closed frontier is an unresolved unary
-`-/1` call in standard lowering (`f6789f...b3e`). The isolated `Decimal`
-attempt still reports the cross-module `Decimal.Context.get/0` call because
-that diagnostic lane omits sibling modules; it does not contradict the
+`raise Error, error` path. Dynamic unary integer negation and identity now
+reuse the scalar arithmetic proof boundary, with explicit rejection of the
+minimum i64 negation instead of silent wrapping. This crosses Decimal's
+dynamic `-sign` path. The next fail-closed frontier is an unresolved list
+concatenation `++/2` call in standard lowering (`de7771...3b12`). The isolated
+`Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
+because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
 Canonical frontend normalization admits the current-module `defexception`
 schema in `Decimal.Error`, so its original target-module body reaches lowering
