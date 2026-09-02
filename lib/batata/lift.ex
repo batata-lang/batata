@@ -91,7 +91,14 @@ defmodule Batata.Lift do
     batching = Keyword.get(opts, :reduction_batching) != false
     batch_size = reduction_batch_size(budget, batching)
     {workers, process_cap} = validate_runtime_options!(opts)
-    known_atoms = opts |> Keyword.get(:atom_table, %{}) |> Enum.sort_by(&elem(&1, 0))
+
+    known_atoms =
+      opts
+      |> Keyword.get(:atom_table, %{})
+      |> Enum.reject(fn {_word, atom} -> is_nil(atom) end)
+      |> then(&[{atom_word(nil), nil} | &1])
+      |> Enum.sort_by(&elem(&1, 0))
+
     {definitions, entry_name} = rename_entry(mod.definitions)
 
     definitions =
