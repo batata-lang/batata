@@ -82,6 +82,7 @@ defmodule Batata.Stdlib.List do
     {:lists, :any, 2} => :native_term,
     {:lists, :duplicate, 2} => :native_term,
     {:lists, :keyfind, 3} => :native_term,
+    {:lists, :last, 1} => :native_term,
     {:lists, :reverse, 1} => :native_term,
     {:lists, :reverse, 2} => :native_term,
     {:lists, :split, 2} => :native_term
@@ -487,6 +488,7 @@ defmodule Batata.Stdlib do
                   {:lists, :any, 2},
                   {:lists, :duplicate, 2},
                   {:lists, :keyfind, 3},
+                  {:lists, :last, 1},
                   {:lists, :reverse, 1},
                   {:lists, :reverse, 2},
                   {:lists, :split, 2}
@@ -586,6 +588,7 @@ defmodule Batata.Stdlib do
                     {Keyword, :get, 3},
                     {:lists, :any, 2},
                     {:lists, :keyfind, 3},
+                    {:lists, :last, 1},
                     {:lists, :reverse, 1},
                     {:lists, :reverse, 2}
                   ])
@@ -622,6 +625,7 @@ defmodule Batata.Stdlib do
                       {:erlang, :split_binary, 2},
                       {:lists, :any, 2},
                       {:lists, :keyfind, 3},
+                      {:lists, :last, 1},
                       {:lists, :reverse, 1},
                       {:lists, :reverse, 2},
                       {:lists, :split, 2}

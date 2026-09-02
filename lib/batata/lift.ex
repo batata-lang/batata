@@ -455,7 +455,7 @@ defmodule Batata.Lift do
         {node, acc + 1}
 
       {{:., _, [:lists, function]}, _, args} = node, acc
-      when function in [:keyfind, :reverse] and is_list(args) ->
+      when function in [:keyfind, :last, :reverse] and is_list(args) ->
         {node, acc + 1}
 
       {{:., _, [module_ast, :get]}, _, args} = node, acc when length(args) in [2, 3] ->
@@ -7576,6 +7576,22 @@ defmodule Batata.Lift do
     lift_stdlib_call(:lists, :reverse, [list, []], ctx, block, env)
   end
 
+  defp lift_stdlib_call(:lists, :last, [list_ast], ctx, block, env) do
+    {list, env} = lift_expr(list_ast, ctx, block, env)
+    list = list |> lift_value(ctx, block, env) |> box_term(ctx, block)
+
+    value =
+      lift_lists_last(
+        list,
+        ctx,
+        block,
+        env[:__budget__],
+        env[:__batch_size__]
+      )
+
+    mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
+  end
+
   defp lift_stdlib_call(:lists, :reverse, [_, _] = args, ctx, block, env) do
     {values, env} = lift_operands_boxed(args, ctx, block, env)
     [list, tail] = values
@@ -8424,6 +8440,12 @@ defmodule Batata.Lift do
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
   end
 
+  defp lift_lists_last(list, ctx, block, budget, batch_size) do
+    initial = atom_term(nil, ctx, block)
+    result = emit_lists_loop(:last, list, initial, nil, ctx, block, budget, batch_size)
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
   # `:lists.split/2` is count-bounded and intentionally eager, matching the
   # existing list-duplication contract. It visits at most `count` cons cells,
   # allocates one reversed and one forward prefix cell per visit, and never
@@ -8672,11 +8694,16 @@ defmodule Batata.Lift do
       }
       |> MLIR.Operation.create()
 
-    [final_current, final_acc | _] = while_op |> MLIR.Operation.results() |> Enum.to_list()
-    finalize_lists_loop(kind, final_current, final_acc, ctx, block, budget)
+    [final_current, final_acc, final_cursor | _] =
+      while_op |> MLIR.Operation.results() |> Enum.to_list()
+
+    finalize_lists_loop(kind, final_current, final_acc, final_cursor, ctx, block, budget)
   end
 
   defp lists_loop_condition(:reverse, has_cons, _acc, _false_word, _i64, _ctx, _block),
+    do: has_cons
+
+  defp lists_loop_condition(:last, has_cons, _acc, _false_word, _i64, _ctx, _block),
     do: has_cons
 
   defp lists_loop_condition(kind, has_cons, acc, false_word, i64, ctx, block)
@@ -8697,6 +8724,9 @@ defmodule Batata.Lift do
 
   defp lists_loop_accumulator(:reverse, head, acc, _match, ctx, block),
     do: reverse_accumulator(head, acc, ctx, block)
+
+  defp lists_loop_accumulator(:last, head, _acc, _match, ctx, block),
+    do: unbox(head, ctx, block)
 
   defp keyfind_accumulator(tuple, acc, key, position, ctx, block) do
     i64 = integer_type(ctx)
@@ -8778,27 +8808,45 @@ defmodule Batata.Lift do
     |> unbox(ctx, block)
   end
 
-  defp finalize_lists_loop(kind, current, acc, ctx, block, budget) do
+  defp finalize_lists_loop(kind, current, acc, cursor, ctx, block, budget) do
     if budget == nil do
-      finalize_completed_lists_loop(kind, current, acc, ctx, block)
+      finalize_completed_lists_loop(kind, current, acc, cursor, ctx, block)
     else
       pending = create_op("ex.cont_pending", [], [integer_type(ctx)], ctx, block)
       pending_i1 = create_op("arith.trunci", [pending], [MLIR.Type.i1()], ctx, block)
 
       build_scf_if(pending_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
-        [finalize_completed_lists_loop(kind, current, acc, ctx, b)]
+        [finalize_completed_lists_loop(kind, current, acc, cursor, ctx, b)]
       end)
       |> hd()
     end
   end
 
-  defp finalize_completed_lists_loop(kind, current, acc, ctx, block) do
+  defp finalize_completed_lists_loop(kind, current, acc, cursor, ctx, block) do
     current_word = create_op("ex.to_word", [current], [ex_type("term", ctx)], ctx, block)
     nil_word = atom_term(nil, ctx, block)
     proper = create_op("ex.term_eq", [current_word, nil_word], [integer_type(ctx)], ctx, block)
     proper_i1 = create_op("arith.trunci", [proper], [MLIR.Type.i1()], ctx, block)
 
     case kind do
+      :last ->
+        nonempty = cmp(cursor, lit(0, ctx, block), "sgt", ctx, block)
+        valid = create_op("arith.andi", [proper, nonempty], [integer_type(ctx)], ctx, block)
+        valid_i1 = create_op("arith.trunci", [valid], [MLIR.Type.i1()], ctx, block)
+        nonempty_i1 = create_op("arith.trunci", [nonempty], [MLIR.Type.i1()], ctx, block)
+
+        build_scf_if(valid_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
+          build_scf_if(
+            nonempty_i1,
+            ctx,
+            b,
+            [integer_type(ctx)],
+            fn eb -> [raise_function_clause(:lists, :last, 2, ctx, eb) |> unbox(ctx, eb)] end,
+            fn eb -> [raise_function_clause(:lists, :last, 1, ctx, eb) |> unbox(ctx, eb)] end
+          )
+        end)
+        |> hd()
+
       :reverse ->
         build_scf_if(proper_i1, ctx, block, [integer_type(ctx)], fn _ -> [acc] end, fn b ->
           [raise_argument_error("invalid :lists.reverse/2 list", ctx, b) |> unbox(ctx, b)]
