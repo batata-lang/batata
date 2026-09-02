@@ -4900,8 +4900,7 @@ defmodule Batata.Lift do
 
   # Enum calls recognized by `recognize_enum_calls`.
   defp lift_expr({:__enum_call__, _, [:map, pattern, enumerable_ast]}, ctx, block, env) do
-    {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
-    enumerable_word = box_term(lift_value(enumerable, ctx, block, env), ctx, block)
+    {enumerable_word, env} = lift_enum_map_enumerable(enumerable_ast, ctx, block, env)
 
     {value, env} =
       case pattern do
@@ -5465,6 +5464,29 @@ defmodule Batata.Lift do
 
   defp lift_expr(ast, _ctx, _block, _env) do
     raise Error, "unsupported AST in the current slice: #{inspect(ast)}"
+  end
+
+  defp lift_enum_map_enumerable(enumerable_ast, ctx, block, env) do
+    case range_ast?(enumerable_ast) do
+      {true, start_ast, stop_ast} ->
+        {start, env} = lift_expr(start_ast, ctx, block, env)
+        {stop, env} = lift_expr(stop_ast, ctx, block, env)
+
+        range =
+          create_op(
+            "ex.enumerable_to_list_range",
+            [start, stop],
+            [ex_type("term", ctx)],
+            ctx,
+            block
+          )
+
+        {range, env}
+
+      false ->
+        {enumerable, env} = lift_expr(enumerable_ast, ctx, block, env)
+        {box_term(lift_value(enumerable, ctx, block, env), ctx, block), env}
+    end
   end
 
   # `after` must also run for an unwind that no rescue/catch clause handles,
