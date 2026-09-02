@@ -135,6 +135,78 @@ defmodule Batata.FrontendTest do
              definition.clauses |> hd() |> Map.fetch!(:body_ast)
   end
 
+  test "normalizes static application exceptions after compilation-unit schemas are shared" do
+    exception = """
+    defmodule RaiseFixtures.StaticError do
+      defexception signal: :default, reason: nil
+    end
+    """
+
+    caller = """
+    defmodule RaiseFixtures.Caller do
+      alias RaiseFixtures.StaticError, as: Error
+
+      def aliased(signal, reason), do: raise(Error, signal: signal, reason: reason)
+
+      def qualified(attributes) do
+        Kernel.raise(RaiseFixtures.StaticError, attributes)
+      end
+
+      def unknown(attributes), do: raise(RaiseFixtures.UnknownError, attributes)
+    end
+    """
+
+    caller =
+      [exception, caller]
+      |> Frontend.from_sources()
+      |> Enum.find(&(&1.name == RaiseFixtures.Caller))
+
+    [aliased, qualified, unknown] = caller.definitions
+
+    for definition <- [aliased, qualified] do
+      assert {:__batata_raise__, _,
+              [
+                9,
+                {:__batata_exception_from_attributes__, _,
+                 [RaiseFixtures.StaticError, _attributes]}
+              ]} = definition.clauses |> hd() |> Map.fetch!(:body_ast)
+    end
+
+    assert {:raise, _, [{:__aliases__, _, [:RaiseFixtures, :UnknownError]}, _attributes]} =
+             unknown.clauses |> hd() |> Map.fetch!(:body_ast)
+  end
+
+  test "preserves local raise/2 while expanding explicit Kernel static exceptions" do
+    modules =
+      Frontend.from_sources([
+        """
+        defmodule RaiseFixtures.ShadowedError do
+          defexception [:reason]
+        end
+        """,
+        """
+        defmodule RaiseFixtures.ShadowedCaller do
+          def raise(module, attributes), do: {:local, module, attributes}
+          def local(attributes), do: raise(RaiseFixtures.ShadowedError, attributes)
+
+          def kernel(attributes) do
+            Kernel.raise(RaiseFixtures.ShadowedError, attributes)
+          end
+        end
+        """
+      ])
+
+    caller = Enum.find(modules, &(&1.name == RaiseFixtures.ShadowedCaller))
+    [_raise, local, kernel] = caller.definitions
+
+    assert {:raise, _, [{:__aliases__, _, [:RaiseFixtures, :ShadowedError]}, _attributes]} =
+             local.clauses |> hd() |> Map.fetch!(:body_ast)
+
+    assert {:__batata_raise__, _,
+            [9, {:__batata_exception_from_attributes__, _, [RaiseFixtures.ShadowedError, _]}]} =
+             kernel.clauses |> hd() |> Map.fetch!(:body_ast)
+  end
+
   test "preserves a genuine local raise/1 definition and its calls" do
     snapshot =
       Frontend.from_source("""
