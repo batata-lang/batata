@@ -84,6 +84,12 @@ The next frontier is the term-pattern guard
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
+Term-pattern integer remainder comparisons now validate both operands as
+lossless scalar integers and evaluate the remainder only behind a nonzero-
+divisor guard. Invalid terms, boxed integers outside the scalar range, and zero
+divisors fail the guard instead of leaking lossy arithmetic. This crosses
+`canonical_xsd/1`; the next standard-lowering frontier is the unresolved
+internal anonymous function `__batata_fn_2e2e_2` (`1689c1...c40a`).
 Canonical frontend normalization admits the current-module `defexception`
 schema in `Decimal.Error`, so its original target-module body reaches lowering
 completion in the non-executing compile-attempt lane. The lane excludes sibling
