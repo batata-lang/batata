@@ -12,7 +12,7 @@ defmodule Batata.Decimal.UnmodifiedExecution do
   alias Batata.Probe.CorpusRuntimeSlice
   alias Beaver.MLIR
 
-  @case_count 15
+  @case_count 16
   @wrapper_module Batata.Decimal.UnmodifiedOracle
   @wrapper_source ~S'''
   defmodule Batata.Decimal.UnmodifiedOracle do
@@ -32,8 +32,17 @@ defmodule Batata.Decimal.UnmodifiedExecution do
         Decimal.to_string(Decimal.new("12.300"), :normal),
         Decimal.to_string(Decimal.new("0.00123"), :scientific),
         Decimal.to_string(Decimal.new("-12.30"), :raw),
-        Decimal.parse("12.30")
+        Decimal.parse("12.30"),
+        parse_error_message()
       }
+    end
+
+    defp parse_error_message() do
+      try do
+        Decimal.new("not-a-decimal")
+      rescue
+        error in Decimal.Error -> Exception.message(error)
+      end
     end
   end
   '''
