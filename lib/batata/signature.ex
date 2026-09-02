@@ -19,6 +19,7 @@ defmodule Batata.Signature do
                         {Bitwise, :>>>, 2}
                       ])
   @builtin_modes %{
+    {Kernel, :++, 2} => [:term, :term],
     {Kernel, :length, 1} => [:term],
     {Kernel, :abs, 1} => [:scalar],
     {Kernel, :max, 2} => [:scalar, :scalar],

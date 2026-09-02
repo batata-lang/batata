@@ -623,6 +623,9 @@ defmodule Batata.Lift do
         {:<>, _, [_, _]} = node, false ->
           {node, true}
 
+        {:++, _, [_, _]} = node, false ->
+          {node, true}
+
         {:%{}, _, [{:|, _, [_base, _updates]}]} = node, false ->
           {node, true}
 
@@ -4291,6 +4294,22 @@ defmodule Batata.Lift do
     }
   end
 
+  defp lift_expr({:++, _, [left_ast, right_ast]}, ctx, block, env) do
+    {[left, right], env} = lift_operands_boxed([left_ast, right_ast], ctx, block, env)
+
+    value =
+      lift_list_concat(
+        left,
+        right,
+        ctx,
+        block,
+        env[:__budget__],
+        env[:__batch_size__]
+      )
+
+    mark_yield_gate(env[:__budget__], true, value, ctx, block, env)
+  end
+
   defp lift_expr({:-, _, [left, right]}, ctx, block, env) do
     {left_value, env} = lift_expr(left, ctx, block, env)
     {right_value, env} = lift_expr(right, ctx, block, env)
@@ -7062,6 +7081,10 @@ defmodule Batata.Lift do
     lift_expr({:rem, [], [left, right]}, ctx, block, env)
   end
 
+  defp lift_stdlib_call(Kernel, :++, [left_ast, right_ast], ctx, block, env) do
+    lift_expr({:++, [], [left_ast, right_ast]}, ctx, block, env)
+  end
+
   defp lift_stdlib_call(Kernel, :div, [left, right], ctx, block, env) do
     lift_expr({:div, [], [left, right]}, ctx, block, env)
   end
@@ -8510,6 +8533,36 @@ defmodule Batata.Lift do
   defp lift_lists_reverse(list, tail, ctx, block, budget, batch_size) do
     result = emit_lists_loop(:reverse, list, tail, nil, ctx, block, budget, batch_size)
     create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp lift_list_concat(left, right, ctx, block, budget, batch_size) do
+    empty = create_term_op("ex.list", [], ctx, block)
+    reversed = emit_lists_loop(:reverse, left, empty, nil, ctx, block, budget, batch_size)
+
+    result =
+      if budget == nil do
+        emit_reversed_list_onto_tail(reversed, right, ctx, block)
+      else
+        pending = create_op("ex.cont_pending", [], [integer_type(ctx)], ctx, block)
+        pending_i1 = create_op("arith.trunci", [pending], [MLIR.Type.i1()], ctx, block)
+
+        build_scf_if(
+          pending_i1,
+          ctx,
+          block,
+          [integer_type(ctx)],
+          fn _ -> [reversed] end,
+          fn b -> [emit_reversed_list_onto_tail(reversed, right, ctx, b)] end
+        )
+        |> hd()
+      end
+
+    create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block)
+  end
+
+  defp emit_reversed_list_onto_tail(reversed, tail, ctx, block) do
+    reversed = create_op("ex.to_word", [reversed], [ex_type("term", ctx)], ctx, block)
+    emit_lists_loop(:reverse, reversed, tail, nil, ctx, block, nil, nil)
   end
 
   defp lift_lists_last(list, ctx, block, budget, batch_size) do

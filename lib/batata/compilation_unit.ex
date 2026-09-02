@@ -371,6 +371,9 @@ defmodule Batata.CompilationUnit do
           _ -> capture
         end
 
+      {:++, _, [_left, _right]} = call ->
+        call
+
       {name, metadata, arguments} = call when is_atom(name) and is_list(arguments) ->
         case Map.fetch(symbols, {module, name, length(arguments)}) do
           {:ok, qualified} -> {qualified, metadata, arguments}
