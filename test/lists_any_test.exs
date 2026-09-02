@@ -1,6 +1,7 @@
 defmodule Batata.ListsAnyTest do
   use Batata.Case, async: true, group: :execution_engine
 
+  alias Batata.{CompilationUnit, Frontend}
   alias Beaver.MLIR
 
   test "executes :lists.any/2 with local predicates and BEAM short-circuiting", %{ctx: ctx} do
@@ -73,6 +74,27 @@ defmodule Batata.ListsAnyTest do
     """
 
     assert Batata.execute(source, ctx) == true
+  end
+
+  test "preserves a private lists.any boolean result through compilation-unit qualification", %{
+    ctx: ctx
+  } do
+    source = """
+    defmodule QualifiedListsAny do
+      def main(), do: increment?(:ceiling, 1, [48, 48, 48, 49])
+
+      defp increment?(:ceiling, sign, remain), do: sign == 1 and any_nonzero(remain)
+      defp any_nonzero(digits), do: :lists.any(fn digit -> digit != ?0 end, digits)
+    end
+    """
+
+    unit =
+      source
+      |> Frontend.from_source()
+      |> List.wrap()
+      |> CompilationUnit.build(entry: {QualifiedListsAny, :main, 0})
+
+    assert Batata.execute(unit, ctx) == true
   end
 
   test "rejects invalid lists and unsupported predicates", %{ctx: ctx} do

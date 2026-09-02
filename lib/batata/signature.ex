@@ -439,6 +439,12 @@ defmodule Batata.Signature do
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
        do: true
 
+  defp productive_boolean_result?(
+         {:__lists_any__, _, [_support, _predicate, _list]},
+         _productive
+       ),
+       do: true
+
   defp productive_boolean_result?({name, _, arguments}, productive)
        when is_atom(name) and is_list(arguments),
        do: MapSet.member?(productive, {name, length(arguments)})
@@ -508,6 +514,13 @@ defmodule Batata.Signature do
 
   defp boolean_result_kind({name, _, [_argument]}, _candidates, _no_return_functions)
        when name in [:is_atom, :is_binary, :is_list, :is_tuple, :is_map, :is_integer, :is_float],
+       do: :boolean
+
+  defp boolean_result_kind(
+         {:__lists_any__, _, [_support, _predicate, _list]},
+         _candidates,
+         _no_return_functions
+       ),
        do: :boolean
 
   defp boolean_result_kind({:throw, _, [_value]}, _candidates, _no_return_functions),
