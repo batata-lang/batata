@@ -5,6 +5,7 @@
     {"id": "decimal.comparison_guards", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.guard_bifs", "status": "executable", "gate": "decimal_subset_test"},
     {"id": "decimal.numeric_guards", "status": "executable", "gate": "decimal_subset_test"},
+    {"id": "decimal.unmodified_finite", "status": "executable", "gate": "unmodified_execution", "scope": "15 BEAM-oracle cases over pinned unmodified Decimal sources: construction, finite arithmetic, comparison, equality, normalization, formatting, and parsing"},
     {"id": "process.dictionary", "status": "executable", "gate": "execute_test", "scope": "actor-local get with defaults and put with previous values; generic terms, stored nil, actor isolation, and recycled-slot reset"},
     {"id": "stdlib.list_insert_at", "status": "executable", "gate": "stdlib_test", "scope": "proper lists with BEAM-compatible positive and negative index clamping, generic values, and FunctionClauseError boundaries"},
     {"id": "decimal.atom_membership", "status": "executable", "gate": "decimal_subset_test"},
@@ -23,6 +24,6 @@
     {"id": "exception.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defexception schemas accepted by canonical frontend normalization"},
     {"id": "struct.schema_compile", "status": "executable", "gate": "compile_probe", "scope": "current-module defstruct schemas accepted by canonical frontend normalization"},
     {"id": "exception.execution", "status": "blocked", "owner": "runtime", "reason": "raise/rescue and Exception.message dispatch are not covered by schema-only compile attempts"},
-    {"id": "decimal.struct_surface", "status": "blocked", "owner": "frontend", "reason": "cross-module schemas and broader module compile-time forms remain unavailable"}
+    {"id": "decimal.struct_surface", "status": "executable", "gate": "unmodified_execution", "scope": "finite Decimal struct construction and results exercised through the pinned qualified multi-module unit"}
   ]
 }

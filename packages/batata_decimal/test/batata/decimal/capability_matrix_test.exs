@@ -44,8 +44,8 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["struct.schema_compile"]["status"] == "executable"
     assert capabilities["struct.schema_compile"]["gate"] == "compile_probe"
     assert capabilities["struct.schema_compile"]["scope"] =~ "current-module defstruct"
-    assert capabilities["decimal.struct_surface"]["status"] == "blocked"
-    assert capabilities["decimal.struct_surface"]["reason"] =~ "cross-module schemas"
+    assert capabilities["decimal.struct_surface"]["status"] == "executable"
+    assert capabilities["decimal.struct_surface"]["gate"] == "unmodified_execution"
 
     assert capabilities["decimal.comparison_guards"]["status"] == "executable"
     assert capabilities["decimal.comparison_guards"]["gate"] == "decimal_subset_test"
@@ -55,5 +55,8 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["decimal.numeric_guards"]["gate"] == "decimal_subset_test"
     assert capabilities["decimal.normalization"]["status"] == "executable"
     assert capabilities["decimal.normalization"]["gate"] == "decimal_subset_test"
+    assert capabilities["decimal.unmodified_finite"]["status"] == "executable"
+    assert capabilities["decimal.unmodified_finite"]["gate"] == "unmodified_execution"
+    assert capabilities["decimal.unmodified_finite"]["scope"] =~ "15 BEAM-oracle cases"
   end
 end

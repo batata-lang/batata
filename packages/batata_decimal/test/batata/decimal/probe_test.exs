@@ -32,12 +32,17 @@ defmodule Batata.Decimal.ProbeTest do
     report = Path.join(tmp_dir, "artifacts/raw.json")
     coverage = Path.join(tmp_dir, "artifacts/coverage.json")
 
-    assert %{raw: raw, coverage: dashboard} =
-             Probe.run!(source, report: report, coverage: coverage)
+    assert %{raw: raw, coverage: dashboard, execution: nil} =
+             Probe.run!(source,
+               report: report,
+               coverage: coverage,
+               execute_unmodified: false
+             )
 
     assert raw["corpus"]["name"] == "decimal"
     assert Map.has_key?(dashboard["corpora"], "decimal")
     assert File.regular?(report)
     assert File.regular?(coverage)
+    assert is_nil(dashboard["corpora"]["decimal"]["semantic_execution"]["current"]["evidence"])
   end
 end
