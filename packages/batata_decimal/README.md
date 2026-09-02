@@ -1,9 +1,9 @@
 # Batata Decimal
 
-`batata_decimal` owns Decimal as an independent external compile-coverage
-corpus for Batata. It is not a production dependency of the compiler, and the
-inventory does not claim that an accepted definition executes with Decimal
-semantics.
+`batata_decimal` owns Decimal as an independent external compatibility corpus
+for Batata. It is not a production dependency of the compiler. Inventory and
+compile/link acceptance remain separate from a bounded semantic gate that
+compares the JIT against an isolated BEAM oracle.
 
 [`source.json`](priv/probe/source.json) pins Decimal `v2.3.0` to commit
 `592d59ac4474933f91cdc3e8e037f137f7e008b0`. To reproduce the report:
@@ -21,6 +21,13 @@ BATATA_PATH=../.. BATATA_PROBE_PATH=../batata_probe mix batata.decimal.probe \
 
 The schema-v6 baseline inventories four modules, 245 source definitions, and
 37 blockers.
+The default probe also compiles the four pinned, unmodified source files as one
+qualified multi-module unit and executes 15 finite-number cases against an
+isolated BEAM oracle. The cases cover construction, arithmetic, comparison,
+equality, normalization, formatting, parsing, and Decimal struct results. This
+is an executable finite semantic slice, not complete Decimal API coverage;
+exceptions, arbitrary-precision boundaries, special values, context mutation,
+and exhaustive formatting remain outside its claim.
 The qualified whole-unit compile/link attempt now lowers Decimal's
 `Process.put/2` use and `Decimal.Context.get/0` through actor-local process
 dictionary intrinsics. It also lowers all positive and negative
