@@ -54,8 +54,13 @@ integers. Signature inference now retains the boolean-result contract of the
 validated internal `:lists.any/2` node, including through compilation-unit
 qualification and private local forwarding. This crosses the rewritten
 `any_nonzero(remain)` call under strict `and` without trusting unknown or mixed
-local calls. The next fail-closed frontier is `:lists.last/1`
-(`9979f1...06c5`). The isolated
+local calls. Resumable `:lists.last/1` traversal then preserves its final term
+and FunctionClauseError boundary across reduction yields. Scalar-call cleanup
+folds stale term adapters, exact integer comparisons retain their term result,
+and Beaver expands integer case patterns over term scrutinees with strict term
+equality. Together these changes move the whole-unit attempt through IR
+verification into standard lowering. The next fail-closed frontier is the
+remaining static application-exception `raise/2` call (`89225d...092c`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
