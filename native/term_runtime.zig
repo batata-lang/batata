@@ -5015,7 +5015,52 @@ pub fn ex_term_binary_decode16(binary: i64) callconv(.c) i64 {
 /// Renders a tagged integer term in base 2..36 using uppercase digits; nil
 /// for non-integers or an invalid base.
 pub fn ex_term_int_to_string_base(word: i64, base: i64) callconv(.c) i64 {
-    if (!is_int(word) or base < 2 or base > 36) return nil_word;
+    if (base < 2 or base > 36) return nil_word;
+
+    if (is_bigint(word)) {
+        const decimal = bigint_bytes(word)[0..bigint_len(word)];
+        const negative = decimal[0] == '-';
+        const magnitude = decimal[@as(usize, if (negative) 1 else 0)..];
+        const scratch_words = alloc_binary(magnitude.len) orelse return nil_word;
+        const scratch_word = word_from_ptr(scratch_words, tag_binary);
+        const scratch = binary_bytes(scratch_word)[0..magnitude.len];
+        for (magnitude, 0..) |digit, index| scratch[index] = digit - '0';
+
+        const reverse_cap = std.math.mul(usize, magnitude.len, 4) catch return nil_word;
+        const reverse_words = alloc_binary(reverse_cap) orelse return nil_word;
+        const reverse_word = word_from_ptr(reverse_words, tag_binary);
+        const reversed = binary_bytes(reverse_word)[0..reverse_cap];
+        const radix: u16 = @intCast(base);
+        const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        var first: usize = 0;
+        var count: usize = 0;
+
+        while (first < scratch.len) {
+            var remainder: u16 = 0;
+            for (first..scratch.len) |index| {
+                const current = remainder * 10 + scratch[index];
+                scratch[index] = @intCast(current / radix);
+                remainder = current % radix;
+            }
+            reversed[count] = alphabet[remainder];
+            count += 1;
+            while (first < scratch.len and scratch[first] == 0) first += 1;
+        }
+
+        const output_len = count + @as(usize, if (negative) 1 else 0);
+        const output_words = alloc_binary(output_len) orelse return nil_word;
+        const output_word = word_from_ptr(output_words, tag_binary);
+        const output = binary_bytes(output_word)[0..output_len];
+        var cursor: usize = 0;
+        if (negative) {
+            output[0] = '-';
+            cursor = 1;
+        }
+        for (0..count) |index| output[cursor + index] = reversed[count - 1 - index];
+        return output_word;
+    }
+
+    if (!is_int(word)) return nil_word;
     const value = word_payload(word);
     const radix: u64 = @intCast(base);
     const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
@@ -5567,6 +5612,13 @@ test "term ABI construction and predicates" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_string_base(forty_two, 1)));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_string_base(forty_two, 37)));
     try std.testing.expectEqual(@as(i64, 1), ex_term_is_nil_word(ex_term_int_to_string_base(test_binary_from_string("42"), 10)));
+
+    const positive_bigint = ex_term_bigint_lit(test_binary_from_string("1152921504606846976"));
+    const negative_bigint = ex_term_bigint_lit(test_binary_from_string("-1152921504606846977"));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(positive_bigint, 10), test_binary_from_string("1152921504606846976")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(positive_bigint, 16), test_binary_from_string("1000000000000000")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(positive_bigint, 2), test_binary_from_string("1000000000000000000000000000000000000000000000000000000000000")));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(ex_term_int_to_string_base(negative_bigint, 16), test_binary_from_string("-1000000000000001")));
 }
 
 test "closure ABI carries arity without breaking legacy env reads" {

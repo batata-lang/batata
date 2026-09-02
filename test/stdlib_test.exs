@@ -905,7 +905,9 @@ defmodule Batata.StdlibTest do
         "Integer.to_charlist(0 - 1)",
         "Integer.to_charlist(0 - 123)",
         "Integer.to_charlist(1_152_921_504_606_846_975)",
-        "Integer.to_charlist(0 - 1_152_921_504_606_846_975 - 1)"
+        "Integer.to_charlist(0 - 1_152_921_504_606_846_975 - 1)",
+        "Integer.to_charlist(1_152_921_504_606_846_976)",
+        "Integer.to_charlist(-1_152_921_504_606_846_977)"
       ]
 
       Enum.each(expressions, fn expression ->
@@ -950,7 +952,10 @@ defmodule Batata.StdlibTest do
         "Integer.to_string(35, 36)",
         "Integer.to_string(0 - 255, 16)",
         "Integer.to_string(1_152_921_504_606_846_975, 36)",
-        "Integer.to_string(0 - 1_152_921_504_606_846_975 - 1, 2)"
+        "Integer.to_string(0 - 1_152_921_504_606_846_975 - 1, 2)",
+        "Integer.to_string(1_152_921_504_606_846_976, 2)",
+        "Integer.to_string(1_152_921_504_606_846_976, 16)",
+        "Integer.to_string(-1_152_921_504_606_846_977, 36)"
       ]
 
       Enum.each(expressions, fn expression ->
