@@ -58,6 +58,13 @@ defmodule Batata.Probe.Decimal.CapabilityMatrixTest do
     assert capabilities["decimal.normalization"]["gate"] == "decimal_subset_test"
     assert capabilities["decimal.unmodified_finite"]["status"] == "executable"
     assert capabilities["decimal.unmodified_finite"]["gate"] == "unmodified_execution"
-    assert capabilities["decimal.unmodified_finite"]["scope"] =~ "16 BEAM-oracle cases"
+    assert capabilities["decimal.unmodified_finite"]["scope"] =~ "19 BEAM-oracle cases"
+    assert capabilities["decimal.bigint_representation_formatting"]["status"] == "executable"
+
+    assert capabilities["decimal.bigint_representation_formatting"]["gate"] ==
+             "unmodified_execution"
+
+    assert capabilities["decimal.bigint_arithmetic_comparison"]["status"] == "blocked"
+    assert capabilities["decimal.bigint_arithmetic_comparison"]["reason"] =~ "adjacent"
   end
 end
