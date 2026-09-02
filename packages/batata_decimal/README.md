@@ -50,8 +50,12 @@ order and fallback behavior without adding an ABI. Structural cons tail
 patterns then reuse the existing nonempty/head/tail matcher; their clause-local
 bindings retain term validation before integer ordering, so Decimal's rounding
 digit comparisons advance without assuming arbitrary list elements are
-integers. The next fail-closed frontier is boolean-result proof for the rewritten
-local `any_nonzero(remain)` call under strict `and` (`e0044b...6ca2`). The isolated
+integers. Signature inference now retains the boolean-result contract of the
+validated internal `:lists.any/2` node, including through compilation-unit
+qualification and private local forwarding. This crosses the rewritten
+`any_nonzero(remain)` call under strict `and` without trusting unknown or mixed
+local calls. The next fail-closed frontier is `:lists.last/1`
+(`9979f1...06c5`). The isolated
 `Decimal` attempt still reports the cross-module `Decimal.Context.get/0` call
 because that diagnostic lane omits sibling modules; it does not contradict the
 whole-unit advance.
