@@ -171,6 +171,33 @@ defmodule Batata.TransformTest do
     assert rendered =~ ~s{"ex.call"}
   end
 
+  test "folds term adapters made stale by scalar call retyping", %{ctx: ctx} do
+    source = """
+    defmodule RetypedScalarAdapters do
+      defstruct coef: 0
+
+      defp pow10(0), do: 1
+      defp pow10(n), do: 10 * pow10(n - 1)
+
+      defp pad_num(%__MODULE__{coef: coef}, n) do
+        coef * pow10(Kernel.max(n, 0) + 1)
+      end
+
+      def main() do
+        number = %__MODULE__{coef: 10}
+        padded = pad_num(number, 1)
+        if padded == 1_000, do: Kernel.div(padded, 10), else: 0
+      end
+    end
+    """
+
+    module = Batata.compile(source, ctx)
+    rendered = MLIR.to_string(module, generic: true)
+
+    refute rendered =~ ~r/"ex\.(?:is_integer|to_int)"\([^\n]*\) : \(i64\)/
+    refute rendered =~ ~r/"ex\.term_eq"\([^\n]*\) : \(i64, i64\)/
+  end
+
   test "decodes term integers before passing them to scalar callees", %{ctx: ctx} do
     source = """
     defmodule TupleScalarBoundary do

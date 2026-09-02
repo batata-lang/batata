@@ -110,12 +110,6 @@ defmodule Batata.Transform.InlineScalarCalls do
     args = apply |> Walker.operands() |> Enum.to_list()
     [old_result] = apply |> Walker.results() |> Enum.to_list()
 
-    redundant_unboxes =
-      old_result
-      |> Walker.uses()
-      |> Enum.map(&MLIR.OpOperand.owner/1)
-      |> Enum.filter(&(MLIR.Operation.name(&1) == "ex.unbox"))
-
     {:ok, arg_count} = apply |> MLIR.Operation.fetch(:arg_count)
     {:ok, segment_sizes_attr} = apply |> MLIR.Operation.fetch(:operandSegmentSizes)
 
@@ -135,22 +129,12 @@ defmodule Batata.Transform.InlineScalarCalls do
         RewriterBase.insert(rewriter, new_apply)
         [new_result] = new_apply |> Walker.results() |> Enum.to_list()
 
-        replace_redundant_unboxes(rewriter, redundant_unboxes, new_result)
-
-        RewriterBase.replace(rewriter, old_result, new_result)
+        replace_scalar_result(rewriter, old_result, new_result, apply)
         RewriterBase.erase_op(rewriter, apply)
       end)
     end)
 
     :ok
-  end
-
-  defp replace_redundant_unboxes(rewriter, unboxes, new_result) do
-    Enum.each(unboxes, fn unbox ->
-      [unboxed_result] = unbox |> Walker.results() |> Enum.to_list()
-      RewriterBase.replace(rewriter, unboxed_result, new_result)
-      RewriterBase.erase_op(rewriter, unbox)
-    end)
   end
 
   defp action(call, callees) do
@@ -226,7 +210,7 @@ defmodule Batata.Transform.InlineScalarCalls do
         RewriterBase.insert(rewriter, new_call)
         [old_result] = call |> Walker.results() |> Enum.to_list()
         [new_result] = new_call |> Walker.results() |> Enum.to_list()
-        RewriterBase.replace(rewriter, old_result, new_result)
+        replace_scalar_result(rewriter, old_result, new_result, call)
         RewriterBase.erase_op(rewriter, call)
       end)
     end)
@@ -281,9 +265,129 @@ defmodule Batata.Transform.InlineScalarCalls do
 
       value = IRMapping.lookup_or_default(mapping, returned)
       [call_result] = call |> Walker.results() |> Enum.to_list()
-      RewriterBase.replace(rewriter, call_result, value)
+      replace_scalar_result(rewriter, call_result, value, call)
       RewriterBase.erase_op(rewriter, call)
     end)
+  end
+
+  defp replace_scalar_result(rewriter, old_result, new_result, anchor) do
+    adapters =
+      old_result
+      |> Walker.uses()
+      |> Enum.map(&MLIR.OpOperand.owner/1)
+      |> Enum.uniq()
+
+    Enum.each(adapters, fn adapter ->
+      case MLIR.Operation.name(adapter) do
+        name when name in ["ex.unbox", "ex.to_int"] ->
+          replace_passthrough_adapter(rewriter, adapter, new_result)
+
+        "ex.is_integer" ->
+          replace_integer_check(rewriter, adapter, anchor)
+
+        name when name in ["ex.term_eq", "ex.term_eq_loose"] ->
+          replace_term_equality(rewriter, adapter, old_result, new_result, anchor)
+
+        _other ->
+          :ok
+      end
+    end)
+
+    RewriterBase.replace(rewriter, old_result, new_result)
+  end
+
+  defp replace_passthrough_adapter(rewriter, adapter, new_result) do
+    [result] = adapter |> Walker.results() |> Enum.to_list()
+    RewriterBase.replace(rewriter, result, new_result)
+    RewriterBase.erase_op(rewriter, adapter)
+  end
+
+  defp replace_integer_check(rewriter, adapter, anchor) do
+    literal =
+      create_operation(
+        "ex.lit",
+        [value: MLIR.Attribute.integer(MLIR.Type.i64(), 1)],
+        MLIR.Type.i64(),
+        anchor
+      )
+
+    RewriterBase.insert(rewriter, literal)
+    [literal_result] = literal |> Walker.results() |> Enum.to_list()
+    [check_result] = adapter |> Walker.results() |> Enum.to_list()
+    RewriterBase.replace(rewriter, check_result, literal_result)
+    RewriterBase.erase_op(rewriter, adapter)
+  end
+
+  defp replace_term_equality(rewriter, equality, old_result, new_result, anchor) do
+    operands =
+      equality
+      |> Walker.operands()
+      |> Enum.map(fn operand ->
+        if MLIR.equal?(operand, old_result), do: new_result, else: operand
+      end)
+
+    {replacement, boxes} =
+      if Enum.all?(operands, &i64_value?/1) do
+        {
+          create_operation(
+            "ex.cmp",
+            operands ++ [predicate: MLIR.Attribute.string("eq")],
+            MLIR.Type.i64(),
+            anchor
+          ),
+          []
+        }
+      else
+        term_type = MLIR.Value.type(old_result)
+
+        {term_operands, boxes} =
+          Enum.map_reduce(operands, [], &box_scalar_operand(&1, &2, term_type, anchor))
+
+        {
+          create_operation(
+            MLIR.Operation.name(equality),
+            term_operands,
+            MLIR.Type.i64(),
+            anchor
+          ),
+          boxes
+        }
+      end
+
+    _insertion_point =
+      Enum.reduce(boxes ++ [replacement], {:before, equality}, fn operation, insertion_point ->
+        RewriterBase.with_insertion_point(rewriter, insertion_point, fn ->
+          RewriterBase.insert(rewriter, operation)
+        end)
+
+        {:after, operation}
+      end)
+
+    [old_equality_result] = equality |> Walker.results() |> Enum.to_list()
+    [new_equality_result] = replacement |> Walker.results() |> Enum.to_list()
+    RewriterBase.replace(rewriter, old_equality_result, new_equality_result)
+    RewriterBase.erase_op(rewriter, equality)
+  end
+
+  defp box_scalar_operand(operand, boxes, term_type, anchor) do
+    if i64_value?(operand) do
+      box = create_operation("ex.box", [operand], term_type, anchor)
+      box_result = box |> Walker.results() |> Enum.to_list() |> hd()
+      {box_result, [box | boxes]}
+    else
+      {operand, boxes}
+    end
+  end
+
+  defp create_operation(name, arguments, result_type, anchor) do
+    %Changeset{
+      name: name,
+      context: MLIR.context(anchor),
+      location: MLIR.Operation.location(anchor)
+    }
+    |> Changeset.add_argument(arguments)
+    |> Changeset.add_result(result_type)
+    |> MLIR.Operation.create()
   end
 
   defp map_argument(mapping, {from, to}), do: IRMapping.map(mapping, from, to)
