@@ -90,6 +90,13 @@ divisor guard. Invalid terms, boxed integers outside the scalar range, and zero
 divisors fail the guard instead of leaking lossy arithmetic. This crosses
 `canonical_xsd/1`; the next standard-lowering frontier is the unresolved
 internal anonymous function `__batata_fn_2e2e_2` (`1689c1...c40a`).
+Recognized `Enum.map/2` now materializes unstepped integer range operands with
+the existing range-to-list runtime operation before applying its established
+mapper paths. This crosses Decimal's dynamic zero-padding range without
+introducing a synthetic local `../2` symbol. The qualified whole-unit
+compile/link attempt now passes with zero unresolved internal dependencies and
+no removed definitions. This is compile/link coverage, not a claim that the
+unmodified Decimal API has complete runtime execution semantics.
 Canonical frontend normalization admits the current-module `defexception`
 schema in `Decimal.Error`, so its original target-module body reaches lowering
 completion in the non-executing compile-attempt lane. The lane excludes sibling

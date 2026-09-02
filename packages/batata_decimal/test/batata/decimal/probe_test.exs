@@ -14,13 +14,9 @@ defmodule Batata.Decimal.ProbeTest do
     assert baseline["summary"]["categories"]["alias"] == nil
     assert link["corpus"]["commit"] == metadata["commit"]
     assert link["runtime_slice"] == %{"removed_definition_count" => 0}
-    assert link["unresolved_internal_dependencies"] == 7
-
-    assert link["unit_attempt"] == %{
-             "fingerprint" => "1689c192b5cf6de2a5b5d479b71aabba0950f7709073356f626fef7bf25dc40a",
-             "reason_class" => "lowering_pass_failure",
-             "status" => "lowering_failure"
-           }
+    assert link["status"] == "pass"
+    assert link["unresolved_internal_dependencies"] == 0
+    assert link["unit_attempt"] == %{"status" => "pass"}
   end
 
   @tag :tmp_dir
