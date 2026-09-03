@@ -22,13 +22,14 @@ BATATA_PATH=../.. BATATA_PROBE_PATH=../batata_probe mix batata.decimal.probe \
 The schema-v6 baseline inventories four modules, 245 source definitions, and
 37 blockers.
 The default probe also compiles the four pinned, unmodified source files as one
-qualified multi-module unit and executes 19 finite-number and exception cases against an
-isolated BEAM oracle. The cases cover construction, arithmetic, comparison,
+qualified multi-module unit and executes 23 finite-number and exception cases
+against an isolated BEAM oracle. The cases cover construction, arithmetic, comparison,
 equality, normalization, immediate and boxed-coefficient formatting, parsing,
-and Decimal struct results. This
+and Decimal struct results. Boxed-coefficient coverage includes adjacent
+comparison plus representative addition, subtraction, and multiplication. This
 is an executable finite semantic slice, not complete Decimal API coverage;
-arbitrary-precision arithmetic/comparison, special values, context mutation,
-and exhaustive formatting remain outside its claim.
+exhaustive arbitrary-precision behavior, special values, context mutation, and
+exhaustive formatting remain outside its claim.
 The qualified whole-unit compile/link attempt now lowers Decimal's
 `Process.put/2` use and `Decimal.Context.get/0` through actor-local process
 dictionary intrinsics. It also lowers all positive and negative

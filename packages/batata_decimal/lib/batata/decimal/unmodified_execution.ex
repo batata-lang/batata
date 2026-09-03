@@ -12,7 +12,7 @@ defmodule Batata.Decimal.UnmodifiedExecution do
   alias Batata.Probe.CorpusRuntimeSlice
   alias Beaver.MLIR
 
-  @case_count 19
+  @case_count 23
   @wrapper_module Batata.Decimal.UnmodifiedOracle
   @wrapper_source ~S'''
   defmodule Batata.Decimal.UnmodifiedOracle do
@@ -36,7 +36,14 @@ defmodule Batata.Decimal.UnmodifiedExecution do
         parse_error_message(),
         Decimal.new("123456789012345678901234567890"),
         Decimal.to_string(Decimal.new("123456789012345678901234567890"), :normal),
-        Decimal.to_string(Decimal.new("-123456789012345678901234567890"), :raw)
+        Decimal.to_string(Decimal.new("-123456789012345678901234567890"), :raw),
+        Decimal.compare(
+          "123456789012345678901234567890",
+          "123456789012345678901234567891"
+        ),
+        Decimal.add("12345678901234567890", "10"),
+        Decimal.sub("12345678901234567890", "90"),
+        Decimal.mult("12345678901234567890", "-3")
       }
     end
 
@@ -72,7 +79,8 @@ defmodule Batata.Decimal.UnmodifiedExecution do
       "source_files" => length(files),
       "oracle_fingerprint" => fingerprint(expected),
       "actual_fingerprint" => fingerprint(actual),
-      "scope" => "finite Decimal values with boxed-coefficient construction and formatting"
+      "scope" =>
+        "finite Decimal values with boxed-coefficient construction, formatting, arithmetic, and comparison"
     }
   end
 

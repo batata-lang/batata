@@ -84,6 +84,434 @@ defmodule Batata.Signature do
     end)
   end
 
+  @doc false
+  def infer_integer_arguments(definitions) do
+    contracts =
+      Map.new(definitions, fn %Frontend.Definition{name: name, arity: arity} ->
+        {{name, arity}, List.duplicate(false, arity)}
+      end)
+
+    integer_results = infer_integer_results(definitions)
+
+    private_signatures =
+      definitions
+      |> Enum.group_by(&{&1.name, &1.arity})
+      |> Enum.filter(fn {_signature, grouped} -> Enum.all?(grouped, &(&1.kind == :defp)) end)
+      |> MapSet.new(&elem(&1, 0))
+
+    infer_integer_arguments_fixed_point(
+      definitions,
+      contracts,
+      integer_results,
+      private_signatures
+    )
+  end
+
+  defp infer_integer_arguments_fixed_point(
+         definitions,
+         contracts,
+         integer_results,
+         private_signatures
+       ) do
+    next =
+      Enum.reduce(definitions, contracts, fn definition, current ->
+        infer_integer_definition_arguments(definition, current, integer_results)
+      end)
+      |> infer_integer_callsite_contracts(definitions, integer_results, private_signatures)
+
+    if next == contracts,
+      do: contracts,
+      else:
+        infer_integer_arguments_fixed_point(
+          definitions,
+          next,
+          integer_results,
+          private_signatures
+        )
+  end
+
+  defp infer_integer_callsite_contracts(
+         contracts,
+         definitions,
+         integer_results,
+         private_signatures
+       ) do
+    calls = collect_integer_local_calls(definitions, contracts, integer_results)
+
+    Map.new(contracts, fn {signature, current} ->
+      callsites = Map.get(calls, signature, [])
+
+      inferred =
+        if MapSet.member?(private_signatures, signature) and callsites != [],
+          do: universal_integer_callsite_modes(callsites),
+          else: List.duplicate(false, length(current))
+
+      {signature, Enum.zip_with(current, inferred, &(&1 or &2))}
+    end)
+  end
+
+  defp universal_integer_callsite_modes([first | _] = callsites) do
+    first
+    |> Enum.with_index()
+    |> Enum.map(fn {_mode, index} -> Enum.all?(callsites, &Enum.at(&1, index)) end)
+  end
+
+  defp collect_integer_local_calls(definitions, contracts, integer_results) do
+    local_signatures = contracts |> Map.keys() |> MapSet.new()
+
+    Enum.reduce(definitions, %{}, fn definition, calls ->
+      caller = {definition.name, definition.arity}
+
+      Enum.reduce(definition.clauses, calls, fn clause, acc ->
+        collect_integer_clause_calls(
+          clause,
+          caller,
+          acc,
+          contracts,
+          integer_results,
+          local_signatures
+        )
+      end)
+    end)
+  end
+
+  defp collect_integer_clause_calls(
+         clause,
+         caller,
+         calls,
+         contracts,
+         integer_results,
+         local_signatures
+       ) do
+    known = known_integer_parameters(clause.patterns, Map.fetch!(contracts, caller))
+
+    {_ast, {calls, _known}} =
+      Macro.prewalk(clause.body_ast, {calls, known}, fn node, state ->
+        collect_integer_call_node(node, state, integer_results, local_signatures)
+      end)
+
+    calls
+  end
+
+  defp collect_integer_call_node(
+         {:=, _, [pattern, rhs]} = node,
+         {calls, known},
+         integer_results,
+         _local_signatures
+       ) do
+    known =
+      if integer_value_ast?(rhs, known, integer_results),
+        do: MapSet.union(known, pattern_variables(pattern)),
+        else: known
+
+    {node, {calls, known}}
+  end
+
+  defp collect_integer_call_node(
+         {callee, _, arguments} = node,
+         {calls, known},
+         integer_results,
+         local_signatures
+       )
+       when is_atom(callee) and is_list(arguments) do
+    signature = {callee, length(arguments)}
+
+    calls =
+      if MapSet.member?(local_signatures, signature) do
+        modes = Enum.map(arguments, &integer_value_ast?(&1, known, integer_results))
+        Map.update(calls, signature, [modes], &[modes | &1])
+      else
+        calls
+      end
+
+    {node, {calls, known}}
+  end
+
+  defp collect_integer_call_node(node, state, _integer_results, _local_signatures),
+    do: {node, state}
+
+  defp infer_integer_definition_arguments(definition, contracts, integer_results) do
+    caller = {definition.name, definition.arity}
+
+    Enum.reduce(definition.clauses, contracts, fn clause, current ->
+      infer_integer_clause_arguments(clause, current, caller, integer_results)
+    end)
+  end
+
+  defp infer_integer_clause_arguments(clause, contracts, caller, integer_results) do
+    parameters = integer_clause_parameters(clause.patterns)
+    known = known_integer_parameters(clause.patterns, Map.fetch!(contracts, caller))
+
+    {_body_ast, {contracts, _known}} =
+      Macro.prewalk(clause.body_ast, {contracts, known}, fn node, state ->
+        infer_integer_argument_node(node, state, caller, parameters, integer_results)
+      end)
+
+    contracts
+  end
+
+  defp integer_clause_parameters(patterns) do
+    patterns
+    |> Enum.with_index()
+    |> Map.new(fn {pattern, index} -> {plain_variable(pattern), index} end)
+    |> Map.delete(nil)
+  end
+
+  defp known_integer_parameters(patterns, modes) do
+    patterns
+    |> Enum.zip(modes)
+    |> Enum.reduce(MapSet.new(), fn
+      {{name, _, context}, true}, names when is_variable_ast(name, context) ->
+        MapSet.put(names, name)
+
+      _pattern_and_mode, names ->
+        names
+    end)
+  end
+
+  defp infer_integer_argument_node(
+         {:=, _, [pattern, rhs]} = node,
+         {contracts, names},
+         _caller,
+         _parameters,
+         integer_results
+       ) do
+    names =
+      if integer_value_ast?(rhs, names, integer_results),
+        do: MapSet.union(names, pattern_variables(pattern)),
+        else: names
+
+    {node, {contracts, names}}
+  end
+
+  defp infer_integer_argument_node(
+         {operator, _, arguments} = node,
+         state,
+         caller,
+         parameters,
+         _integer_results
+       )
+       when operator in [:+, :-, :*, :div, :rem, :<<<, :>>>, :&&&, :|||, :"^^^"] and
+              is_list(arguments),
+       do: {node, mark_integer_operands(state, caller, parameters, arguments)}
+
+  defp infer_integer_argument_node(
+         {{:., _, [module_ast, function]}, _, arguments} = node,
+         state,
+         caller,
+         parameters,
+         _integer_results
+       )
+       when function in [:max, :min, :div, :rem] and is_list(arguments) do
+    state =
+      if module_ref(module_ast) == {:ok, Kernel},
+        do: mark_integer_operands(state, caller, parameters, arguments),
+        else: state
+
+    {node, state}
+  end
+
+  defp infer_integer_argument_node(
+         {{:., _, [Bitwise, operator]}, _, arguments} = node,
+         state,
+         caller,
+         parameters,
+         _integer_results
+       )
+       when operator in [
+              :bnot,
+              :band,
+              :bor,
+              :bxor,
+              :bsl,
+              :bsr,
+              :"~~~",
+              :&&&,
+              :|||,
+              :"^^^",
+              :<<<,
+              :>>>
+            ] and is_list(arguments),
+       do: {node, mark_integer_operands(state, caller, parameters, arguments)}
+
+  defp infer_integer_argument_node(
+         {operator, _, [left, right]} = node,
+         state,
+         caller,
+         parameters,
+         integer_results
+       )
+       when operator in [:<, :<=, :>, :>=] do
+    state =
+      infer_integer_ordering_operands(
+        left,
+        right,
+        state,
+        caller,
+        parameters,
+        integer_results
+      )
+
+    {node, state}
+  end
+
+  defp infer_integer_argument_node(
+         {callee, _, arguments} = node,
+         state,
+         caller,
+         parameters,
+         _integer_results
+       )
+       when is_atom(callee) and is_list(arguments) do
+    signature = {callee, length(arguments)}
+
+    state =
+      infer_local_integer_call(
+        signature,
+        arguments,
+        state,
+        caller,
+        parameters
+      )
+
+    {node, state}
+  end
+
+  defp infer_integer_argument_node(node, state, _caller, _parameters, _integer_results),
+    do: {node, state}
+
+  defp infer_integer_ordering_operands(
+         left,
+         right,
+         {contracts, names} = state,
+         caller,
+         parameters,
+         integer_results
+       ) do
+    left_integer? = integer_value_ast?(left, names, integer_results)
+    right_integer? = integer_value_ast?(right, names, integer_results)
+
+    cond do
+      left_integer? and not right_integer? and not is_integer(left) ->
+        mark_integer_operands(state, caller, parameters, [right])
+
+      right_integer? and not left_integer? and not is_integer(right) ->
+        mark_integer_operands(state, caller, parameters, [left])
+
+      true ->
+        {contracts, names}
+    end
+  end
+
+  defp infer_local_integer_call(
+         signature,
+         arguments,
+         {contracts, names} = state,
+         caller,
+         parameters
+       ) do
+    if Map.has_key?(contracts, signature) do
+      required = Map.fetch!(contracts, signature)
+
+      propagate_required_integer_arguments(
+        arguments,
+        required,
+        {contracts, names},
+        caller,
+        parameters
+      )
+    else
+      state
+    end
+  end
+
+  defp propagate_required_integer_arguments(
+         arguments,
+         required,
+         state,
+         caller,
+         parameters
+       ) do
+    arguments
+    |> Enum.zip(required)
+    |> Enum.reduce(state, fn
+      {{name, _, context}, true}, {contracts, names} when is_variable_ast(name, context) ->
+        contracts = maybe_mark_integer_parameter(contracts, caller, parameters, name)
+        {contracts, MapSet.put(names, name)}
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp maybe_mark_integer_parameter(contracts, caller, parameters, name) do
+    case Map.fetch(parameters, name) do
+      {:ok, index} -> mark_integer_contract(contracts, caller, index)
+      :error -> contracts
+    end
+  end
+
+  defp mark_integer_operands({contracts, names}, caller, parameters, arguments) do
+    Enum.reduce(arguments, {contracts, names}, fn
+      {name, _, context}, {acc, known} when is_variable_ast(name, context) ->
+        acc =
+          case Map.fetch(parameters, name) do
+            {:ok, index} -> mark_integer_contract(acc, caller, index)
+            :error -> acc
+          end
+
+        {acc, MapSet.put(known, name)}
+
+      _argument, acc ->
+        acc
+    end)
+  end
+
+  defp mark_integer_contract(contracts, signature, index) do
+    Map.update!(contracts, signature, &List.replace_at(&1, index, true))
+  end
+
+  defp integer_value_ast?(integer, _known, _integer_results) when is_integer(integer), do: true
+
+  defp integer_value_ast?({:-, _, [integer]}, _known, _integer_results)
+       when is_integer(integer),
+       do: true
+
+  defp integer_value_ast?({operator, _, arguments}, _known, _integer_results)
+       when operator in [:+, :-, :*, :div, :rem, :<<<, :>>>] and is_list(arguments),
+       do: true
+
+  defp integer_value_ast?({{:., _, [module_ast, function]}, _, arguments}, _known, _results)
+       when function in [:abs, :max, :min, :div, :rem] and is_list(arguments),
+       do: module_ref(module_ast) == {:ok, Kernel}
+
+  defp integer_value_ast?({{:., _, [Bitwise, operator]}, _, arguments}, _known, _results)
+       when operator in [
+              :bnot,
+              :band,
+              :bor,
+              :bxor,
+              :bsl,
+              :bsr,
+              :"~~~",
+              :&&&,
+              :|||,
+              :"^^^",
+              :<<<,
+              :>>>
+            ] and is_list(arguments),
+       do: true
+
+  defp integer_value_ast?({name, _, arguments}, _known, integer_results)
+       when is_atom(name) and is_list(arguments),
+       do: MapSet.member?(integer_results, {name, length(arguments)})
+
+  defp integer_value_ast?({name, _, context}, known, _integer_results)
+       when is_variable_ast(name, context),
+       do: MapSet.member?(known, name)
+
+  defp integer_value_ast?(_ast, _known, _integer_results), do: false
+
   defp integer_guard_modes(0, _clauses), do: []
 
   defp integer_guard_modes(arity, clauses) do
@@ -700,10 +1128,22 @@ defmodule Batata.Signature do
       Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
         clauses = Enum.flat_map(definitions, & &1.clauses)
         modes = Map.fetch!(argument_modes, signature)
+        assumed = MapSet.put(acc, signature)
 
         identity? = closure_identity_result?(signature, clauses)
 
+        scalar_base? =
+          Enum.any?(clauses, fn clause ->
+            scalar_result?(
+              clause.body_ast,
+              acc,
+              no_return_functions,
+              scalar_clause_variables(clause, modes)
+            )
+          end)
+
         if scalar_clauses?(clauses, modes, acc, no_return_functions) or
+             (scalar_base? and scalar_clauses?(clauses, modes, assumed, no_return_functions)) or
              (identity? and not MapSet.member?(returned_closures, elem(signature, 0))) do
           MapSet.put(acc, signature)
         else
@@ -1110,16 +1550,28 @@ defmodule Batata.Signature do
   end
 
   defp scalar_clause_variables(clause, modes) do
-    clause.patterns
-    |> Enum.zip(modes)
-    |> Enum.reduce(MapSet.new(), fn
-      {{name, _, context}, :scalar}, variables when is_variable_ast(name, context) ->
-        MapSet.put(variables, name)
+    {scalar_parameters, term_parameters} =
+      clause.patterns
+      |> Enum.zip(modes)
+      |> Enum.reduce({MapSet.new(), MapSet.new()}, fn
+        {{name, _, context}, :scalar}, {scalar, term}
+        when is_variable_ast(name, context) ->
+          {MapSet.put(scalar, name), term}
 
-      _pattern, variables ->
-        variables
-    end)
-    |> MapSet.union(guarded_scalar_variables(clause.guard_ast))
+        {{name, _, context}, :term}, {scalar, term}
+        when is_variable_ast(name, context) ->
+          {scalar, MapSet.put(term, name)}
+
+        _pattern, variables ->
+          variables
+      end)
+
+    guarded =
+      clause.guard_ast
+      |> guarded_scalar_variables()
+      |> MapSet.difference(term_parameters)
+
+    MapSet.union(scalar_parameters, guarded)
   end
 
   defp scalar_condition?(
@@ -1199,7 +1651,7 @@ defmodule Batata.Signature do
 
   defp propagate_definition_calls(definition, caller_modes, modes) do
     Enum.reduce(definition.clauses, modes, fn clause, clause_modes ->
-      names = Enum.map(clause.patterns, &plain_variable/1)
+      names = clause_variable_origins(clause)
 
       [clause.guard_ast, clause.body_ast]
       |> Enum.reject(&is_nil/1)
@@ -1256,11 +1708,37 @@ defmodule Batata.Signature do
 
   defp caller_term_argument?({name, _, context}, names, caller_modes)
        when is_variable_ast(name, context) do
-    case Enum.find_index(names, &(&1 == name)) do
+    case Enum.find_index(names, &MapSet.member?(&1, name)) do
       nil -> false
       index -> Enum.at(caller_modes, index) == :term
     end
   end
+
+  defp caller_term_argument?({operator, _, arguments}, names, caller_modes)
+       when operator in [:+, :-, :*, :div, :rem, :<<<, :>>>, :&&&, :|||, :"^^^"] and
+              is_list(arguments),
+       do: Enum.any?(arguments, &caller_term_argument?(&1, names, caller_modes))
+
+  defp caller_term_argument?(
+         {{:., _, [Bitwise, operator]}, _, arguments},
+         names,
+         caller_modes
+       )
+       when operator in [
+              :bnot,
+              :band,
+              :bor,
+              :bxor,
+              :bsl,
+              :bsr,
+              :"~~~",
+              :&&&,
+              :|||,
+              :"^^^",
+              :<<<,
+              :>>>
+            ] and is_list(arguments),
+       do: Enum.any?(arguments, &caller_term_argument?(&1, names, caller_modes))
 
   defp caller_term_argument?(_argument, _names, _caller_modes), do: false
 
@@ -1270,7 +1748,7 @@ defmodule Batata.Signature do
          returned_closures
        ) do
     Enum.reduce(clauses, List.duplicate(:scalar, arity), fn clause, acc ->
-      names = Enum.map(clause.patterns, &plain_variable/1)
+      names = clause_variable_origins(clause)
 
       uses =
         [clause.guard_ast, clause.body_ast]
@@ -1550,8 +2028,10 @@ defmodule Batata.Signature do
     names
     |> Enum.with_index()
     |> Enum.reduce(modes, fn
-      {^name, index}, acc -> List.replace_at(acc, index, :term)
-      _, acc -> acc
+      {bound_names, index}, acc ->
+        if MapSet.member?(bound_names, name),
+          do: List.replace_at(acc, index, :term),
+          else: acc
     end)
   end
 
@@ -1581,6 +2061,57 @@ defmodule Batata.Signature do
 
   defp plain_variable({name, _, context}) when is_variable_ast(name, context), do: name
   defp plain_variable(_pattern), do: nil
+
+  defp pattern_variables(pattern) do
+    {_pattern, names} =
+      Macro.prewalk(pattern, MapSet.new(), fn
+        {name, _, context} = node, names when is_variable_ast(name, context) ->
+          {node, MapSet.put(names, name)}
+
+        node, names ->
+          {node, names}
+      end)
+
+    names
+  end
+
+  defp clause_variable_origins(%Frontend.Clause{} = clause) do
+    origins = Enum.map(clause.patterns, &pattern_variables/1)
+
+    {_body_ast, origins} =
+      Macro.prewalk(clause.body_ast, origins, &propagate_assignment_origins/2)
+
+    origins
+  end
+
+  defp propagate_assignment_origins({:=, _, [pattern, rhs]} = node, origins) do
+    bound = pattern_variables(pattern)
+    dependencies = assignment_origin_dependencies(rhs)
+
+    origins =
+      Enum.map(origins, &merge_origin_bindings(&1, dependencies, bound))
+
+    {node, origins}
+  end
+
+  defp propagate_assignment_origins(node, origins), do: {node, origins}
+
+  defp assignment_origin_dependencies({name, _, context})
+       when is_variable_ast(name, context),
+       do: MapSet.new([name])
+
+  defp assignment_origin_dependencies({operator, _, arguments})
+       when operator in [:+, :-, :*, :div, :rem, :<<<, :>>>, :&&&, :|||, :"^^^"] and
+              is_list(arguments),
+       do: Enum.reduce(arguments, MapSet.new(), &MapSet.union(&2, pattern_variables(&1)))
+
+  defp assignment_origin_dependencies(_rhs), do: MapSet.new()
+
+  defp merge_origin_bindings(names, dependencies, bound) do
+    if MapSet.disjoint?(names, dependencies),
+      do: names,
+      else: MapSet.union(names, bound)
+  end
 
   defp term_case_clause?({:->, _, [args, _body]}) do
     case args do

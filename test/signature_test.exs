@@ -46,6 +46,123 @@ defmodule Batata.SignatureTest do
            }
   end
 
+  test "propagates term ABI from variables bound inside parameter patterns" do
+    coefficient = Macro.var(:coefficient, nil)
+    exponent = Macro.var(:exponent, nil)
+    value = Macro.var(:value, nil)
+
+    length = definition(:coefficient_length, value, {:div, [], [value, 10]})
+
+    adjust =
+      definition(
+        :adjust,
+        {:%, [], [Decimal, {:%{}, [], [coef: coefficient, exp: exponent]}]},
+        {:coefficient_length, [], [coefficient]}
+      )
+
+    assert Batata.Signature.infer([length, adjust]) == %{
+             {:adjust, 1} => [:term],
+             {:coefficient_length, 1} => [:term]
+           }
+  end
+
+  test "propagates term ABI through body destructuring and integer expressions" do
+    container = Macro.var(:container, nil)
+    coefficient = Macro.var(:coefficient, nil)
+    adjusted = Macro.var(:adjusted, nil)
+    value = Macro.var(:value, nil)
+
+    scale = definition(:scale, value, {:div, [], [value, 10]})
+
+    forward =
+      definition(
+        :forward,
+        container,
+        {:__block__, [],
+         [
+           {:=, [], [{:%{}, [], [coefficient: coefficient]}, container]},
+           {:=, [], [adjusted, {:-, [], [coefficient, 1]}]},
+           {:scale, [], [adjusted]}
+         ]}
+      )
+
+    assert Batata.Signature.infer([scale, forward]) == %{
+             {:forward, 1} => [:term],
+             {:scale, 1} => [:term]
+           }
+  end
+
+  test "does not propagate a local call result representation back to its arguments" do
+    state = Macro.var(:state, nil)
+    expected_generation = Macro.var(:expected_generation, nil)
+    generation = Macro.var(:generation, nil)
+    result = Macro.var(:result, nil)
+    code = Macro.var(:code, nil)
+
+    move =
+      definition(
+        :move,
+        [state, expected_generation],
+        {:__block__, [],
+         [
+           {:=, [], [generation, {{:., [], [state, :generation]}, [], []}]},
+           {:=, [], [result, {:move_selected, [], [state, expected_generation]}]},
+           {:=, [], [code, {:elem, [], [result, 1]}]},
+           {:{}, [], [generation, code]}
+         ]}
+      )
+
+    move_selected =
+      definition(
+        :move_selected,
+        [state, expected_generation],
+        {:{}, [], [state, expected_generation]}
+      )
+
+    assert Batata.Signature.infer([move, move_selected]) == %{
+             {:move, 2} => [:term, :scalar],
+             {:move_selected, 2} => [:term, :scalar]
+           }
+  end
+
+  test "propagates integer argument contracts across local calls" do
+    value = Macro.var(:value, nil)
+    forwarded = Macro.var(:forwarded, nil)
+
+    consume = definition(:consume, value, {{:., [], [Kernel, :div]}, [], [value, 10]})
+
+    forward =
+      definition(
+        :forward,
+        forwarded,
+        {:consume, [], [forwarded]}
+      )
+
+    assert Batata.Signature.infer_integer_arguments([consume, forward]) == %{
+             {:consume, 1} => [true],
+             {:forward, 1} => [true]
+           }
+  end
+
+  test "requires every private call site to prove an integer contract" do
+    left = Macro.var(:left, nil)
+    right = Macro.var(:right, nil)
+
+    compare = definition(:compare, [left, right], {:==, [], [left, right]})
+
+    main =
+      definition(
+        :main,
+        [],
+        {:{}, [], [{:compare, [], [10, :nan]}, {:compare, [], [:nan, 10]}]}
+      )
+
+    assert Batata.Signature.infer_integer_arguments([compare, main]) == %{
+             {:compare, 2} => [false, false],
+             {:main, 0} => []
+           }
+  end
+
   test "keeps arithmetic results boxed when call sites widen an argument to a term" do
     value = Macro.var(:value, nil)
     scale = definition(:scale, value, {:*, [], [value, 10]})
@@ -59,6 +176,18 @@ defmodule Batata.SignatureTest do
              {:scale, 1} => [:term]
            }
 
+    refute MapSet.member?(Batata.Signature.infer_results(definitions), {:scale, 1})
+  end
+
+  test "does not treat guarded term ABI integers as scalar results" do
+    value = Macro.var(:value, nil)
+    guard = {:is_integer, [], [value]}
+    scale = definition(:scale, value, {:*, [], [value, 10]}, guard)
+    main = definition(:main, [], {:scale, [], [10_000_000_000_000_000_000]})
+
+    definitions = [scale, main]
+
+    assert Batata.Signature.infer(definitions)[{:scale, 1}] == [:term]
     refute MapSet.member?(Batata.Signature.infer_results(definitions), {:scale, 1})
   end
 
@@ -295,6 +424,22 @@ defmodule Batata.SignatureTest do
              [transitive, recursive, mixed, branching, literal],
              MapSet.new([{:fail, 1}])
            ) == MapSet.new([{:branching, 1}, {:literal, 0}, {:transitive, 0}])
+  end
+
+  test "infers scalar results for self-recursion with a scalar base clause" do
+    value = Macro.var(:value, nil)
+    length = Macro.var(:length, nil)
+
+    base = definition(:digits, [0, length], length)
+
+    recursive =
+      definition(
+        :digits,
+        [value, length],
+        {:digits, [], [{:div, [], [value, 10]}, {:+, [], [length, 1]}]}
+      )
+
+    assert Batata.Signature.infer_results([base, recursive]) == MapSet.new([{:digits, 2}])
   end
 
   test "infers successful cond result contracts independently of the implicit raise" do
