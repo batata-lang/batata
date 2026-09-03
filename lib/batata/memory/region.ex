@@ -51,7 +51,7 @@ defmodule Batata.Memory.Region do
   def verify_reset_sequence(operations) when is_list(operations) do
     with {:ok, enter} <- index_of(operations, "ex.runtime_enter"),
          {:ok, reset} <- index_of(operations, "ex.process_table_reset"),
-         {:ok, result} <- index_of(operations, "ex.result_create"),
+         {:ok, result} <- index_of_any(operations, ["ex.result_create", "ex.result_create_term"]),
          {:ok, leave} <- index_of(operations, "ex.runtime_leave"),
          true <- enter < reset and reset < result and result < leave do
       :ok
@@ -116,7 +116,7 @@ defmodule Batata.Memory.Region do
                 "required_order" => [
                   "ex.runtime_enter",
                   "ex.process_table_reset",
-                  "ex.result_create",
+                  "ex.result_create or ex.result_create_term",
                   "ex.runtime_leave"
                 ]
               }
@@ -192,5 +192,13 @@ defmodule Batata.Memory.Region do
       nil -> :error
       index -> {:ok, index}
     end
+  end
+
+  defp index_of_any(values, targets) do
+    values
+    |> Enum.with_index()
+    |> Enum.find_value(:error, fn {value, index} ->
+      if value in targets, do: {:ok, index}
+    end)
   end
 end

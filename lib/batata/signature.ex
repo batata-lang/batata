@@ -149,7 +149,15 @@ defmodule Batata.Signature do
   def infer_results(definitions, no_return_functions \\ MapSet.new()) do
     groups = Enum.group_by(definitions, &{&1.name, &1.arity})
     returned_closures = returned_closure_names(definitions)
-    infer_results_fixed_point(groups, no_return_functions, returned_closures, MapSet.new())
+    argument_modes = infer(definitions)
+
+    infer_results_fixed_point(
+      groups,
+      argument_modes,
+      no_return_functions,
+      returned_closures,
+      MapSet.new()
+    )
   end
 
   @doc false
@@ -165,7 +173,7 @@ defmodule Batata.Signature do
         no_return_functions \\ MapSet.new()
       ) do
     argument_modes = argument_modes || infer(definitions)
-    integer_results = infer_integer_results(definitions, no_return_functions)
+    scalar_results = infer_results(definitions, no_return_functions)
 
     definitions
     |> Enum.group_by(&{&1.name, &1.arity})
@@ -175,7 +183,7 @@ defmodule Batata.Signature do
           signature,
           grouped,
           argument_modes,
-          integer_results,
+          scalar_results,
           no_return_functions
         )
 
@@ -187,7 +195,7 @@ defmodule Batata.Signature do
          signature,
          grouped,
          argument_modes,
-         integer_results,
+         scalar_results,
          no_return_functions
        ) do
     clauses = Enum.flat_map(grouped, & &1.clauses)
@@ -199,7 +207,7 @@ defmodule Batata.Signature do
         Enum.filter(0..(arity - 1), fn index ->
           Enum.zip(clauses, elements)
           |> Enum.all?(
-            &integer_tuple_element?(&1, index, modes, integer_results, no_return_functions)
+            &scalar_tuple_element?(&1, index, modes, scalar_results, no_return_functions)
           )
         end)
 
@@ -221,21 +229,21 @@ defmodule Batata.Signature do
     end
   end
 
-  defp integer_tuple_element?(
+  defp scalar_tuple_element?(
          {clause, values},
          index,
          modes,
-         integer_results,
+         scalar_results,
          no_return_functions
        ) do
-    variables = integer_tuple_variables(clause, modes)
+    variables = scalar_tuple_variables(clause, modes)
 
-    integer_result_kind(
+    result_kind(
       Enum.at(values, index),
-      integer_results,
+      scalar_results,
       no_return_functions,
       variables
-    ) == :integer
+    ) == :scalar
   end
 
   defp terminal_tuple_elements({:__block__, _, expressions}) when expressions != [],
@@ -248,7 +256,7 @@ defmodule Batata.Signature do
 
   defp terminal_tuple_elements(_ast), do: :error
 
-  defp integer_tuple_variables(clause, modes) do
+  defp scalar_tuple_variables(clause, modes) do
     clause.patterns
     |> Enum.zip(modes)
     |> Enum.reduce(MapSet.new(), fn
@@ -259,7 +267,6 @@ defmodule Batata.Signature do
         variables
     end)
     |> MapSet.union(guarded_scalar_variables(clause.guard_ast))
-    |> MapSet.union(scalar_operation_variables(clause.body_ast))
   end
 
   @doc false
@@ -682,14 +689,21 @@ defmodule Batata.Signature do
     end
   end
 
-  defp infer_results_fixed_point(groups, no_return_functions, returned_closures, proven) do
+  defp infer_results_fixed_point(
+         groups,
+         argument_modes,
+         no_return_functions,
+         returned_closures,
+         proven
+       ) do
     next =
       Enum.reduce(groups, proven, fn {signature, definitions}, acc ->
         clauses = Enum.flat_map(definitions, & &1.clauses)
+        modes = Map.fetch!(argument_modes, signature)
 
         identity? = closure_identity_result?(signature, clauses)
 
-        if scalar_clauses?(clauses, acc, no_return_functions) or
+        if scalar_clauses?(clauses, modes, acc, no_return_functions) or
              (identity? and not MapSet.member?(returned_closures, elem(signature, 0))) do
           MapSet.put(acc, signature)
         else
@@ -699,7 +713,14 @@ defmodule Batata.Signature do
 
     if next == proven,
       do: proven,
-      else: infer_results_fixed_point(groups, no_return_functions, returned_closures, next)
+      else:
+        infer_results_fixed_point(
+          groups,
+          argument_modes,
+          no_return_functions,
+          returned_closures,
+          next
+        )
   end
 
   defp infer_integer_results_fixed_point(groups, no_return_functions, proven) do
@@ -884,14 +905,14 @@ defmodule Batata.Signature do
 
   defp identity_pattern?(_pattern, _result), do: false
 
-  defp scalar_clauses?(clauses, proven, no_return_functions) do
+  defp scalar_clauses?(clauses, modes, proven, no_return_functions) do
     clauses != [] and
       Enum.all?(clauses, fn clause ->
         scalar_result?(
           clause.body_ast,
           proven,
           no_return_functions,
-          scalar_clause_variables(clause)
+          scalar_clause_variables(clause, modes)
         )
       end)
   end
@@ -1077,6 +1098,10 @@ defmodule Batata.Signature do
         when is_variable_ast(name, context) ->
           {node, MapSet.put(variables, name)}
 
+        {:in, _, [{name, _, context}, {:.., _, [first, last]}]} = node, variables
+        when is_variable_ast(name, context) and is_integer(first) and is_integer(last) ->
+          {node, MapSet.put(variables, name)}
+
         node, variables ->
           {node, variables}
       end)
@@ -1084,50 +1109,18 @@ defmodule Batata.Signature do
     variables
   end
 
-  defp scalar_clause_variables(clause) do
-    [clause.guard_ast, clause.body_ast]
-    |> Enum.reject(&is_nil/1)
-    |> Enum.reduce(MapSet.new(), fn ast, variables ->
-      MapSet.union(variables, scalar_operation_variables(ast))
+  defp scalar_clause_variables(clause, modes) do
+    clause.patterns
+    |> Enum.zip(modes)
+    |> Enum.reduce(MapSet.new(), fn
+      {{name, _, context}, :scalar}, variables when is_variable_ast(name, context) ->
+        MapSet.put(variables, name)
+
+      _pattern, variables ->
+        variables
     end)
     |> MapSet.union(guarded_scalar_variables(clause.guard_ast))
   end
-
-  defp scalar_operation_variables(ast) do
-    {_ast, variables} =
-      Macro.prewalk(ast, MapSet.new(), fn
-        {operator, _, arguments} = node, variables
-        when operator in [:+, :-, :*, :div, :rem, :<, :>, :<=, :>=] and is_list(arguments) ->
-          {node, Enum.reduce(arguments, variables, &put_scalar_variable/2)}
-
-        {{:., _, [module_ast, function]}, _, arguments} = node, variables
-        when is_atom(function) and is_list(arguments) ->
-          scalar? =
-            case module_ref(module_ast) do
-              {:ok, module} ->
-                builtin_modes(module, function, length(arguments)) ==
-                  List.duplicate(:scalar, length(arguments))
-
-              :error ->
-                false
-            end
-
-          if scalar?,
-            do: {node, Enum.reduce(arguments, variables, &put_scalar_variable/2)},
-            else: {node, variables}
-
-        node, variables ->
-          {node, variables}
-      end)
-
-    variables
-  end
-
-  defp put_scalar_variable({name, _, context}, variables)
-       when is_variable_ast(name, context),
-       do: MapSet.put(variables, name)
-
-  defp put_scalar_variable(_argument, variables), do: variables
 
   defp scalar_condition?(
          {operator, _, [left, right]},

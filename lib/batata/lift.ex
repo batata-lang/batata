@@ -37,6 +37,7 @@ defmodule Batata.Lift do
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @integer_result_functions_key {__MODULE__, :integer_result_functions}
+  @normalized_term_result_functions_key {__MODULE__, :normalized_term_result_functions}
   @integer_tuple_result_functions_key {__MODULE__, :integer_tuple_result_functions}
   @boolean_result_functions_key {__MODULE__, :boolean_result_functions}
   @boolean_argument_modes_key {__MODULE__, :boolean_argument_modes}
@@ -144,6 +145,19 @@ defmodule Batata.Lift do
 
     compiler_abi_calls = normalize_compiler_abi_calls!(opts)
 
+    normalized_term_result_functions =
+      normalized_term_result_functions(
+        definitions,
+        argument_modes,
+        scalar_result_functions
+      )
+
+    typed_term_result_functions =
+      MapSet.union(
+        normalized_term_result_functions,
+        mixed_integer_term_result_functions(definitions, scalar_result_functions)
+      )
+
     module_env = %{
       @known_atoms_key => known_atoms,
       @struct_schema_key => schemas,
@@ -152,6 +166,7 @@ defmodule Batata.Lift do
       @no_return_functions_key => no_return_functions,
       @scalar_result_functions_key => scalar_result_functions,
       @integer_result_functions_key => integer_result_functions,
+      @normalized_term_result_functions_key => normalized_term_result_functions,
       @integer_tuple_result_functions_key => integer_tuple_result_functions,
       @boolean_result_functions_key => boolean_result_functions,
       @boolean_argument_modes_key => boolean_argument_modes,
@@ -171,7 +186,19 @@ defmodule Batata.Lift do
       lift_definitions(definitions, ctx, body, budget, batch_size, module_env)
     end)
 
-    maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
+    entry_term_result? =
+      typed_term_entry_result?(definitions, typed_term_result_functions)
+
+    maybe_lift_driver(
+      entry_name,
+      definitions,
+      ctx,
+      body,
+      budget,
+      workers,
+      process_cap,
+      entry_term_result?
+    )
 
     module
   end
@@ -297,27 +324,63 @@ defmodule Batata.Lift do
     end)
   end
 
-  defp maybe_lift_driver(nil, _definitions, _ctx, _body, _budget, _workers, _process_cap),
-    do: :ok
+  defp maybe_lift_driver(
+         nil,
+         _definitions,
+         _ctx,
+         _body,
+         _budget,
+         _workers,
+         _process_cap,
+         _entry_term_result?
+       ),
+       do: :ok
 
-  defp maybe_lift_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
+  defp maybe_lift_driver(
+         entry_name,
+         definitions,
+         ctx,
+         body,
+         budget,
+         workers,
+         process_cap,
+         entry_term_result?
+       ) do
     if driver_needed?(definitions, budget, workers) do
-      lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap)
+      lift_selected_driver(
+        entry_name,
+        definitions,
+        ctx,
+        body,
+        budget,
+        workers,
+        process_cap,
+        entry_term_result?
+      )
     else
-      lift_execution_driver(entry_name, ctx, body, process_cap)
+      lift_execution_driver(entry_name, ctx, body, process_cap, entry_term_result?)
     end
 
     lift_result_accessors(ctx, body)
   end
 
-  defp lift_selected_driver(entry_name, definitions, ctx, body, budget, workers, process_cap) do
+  defp lift_selected_driver(
+         entry_name,
+         definitions,
+         ctx,
+         body,
+         budget,
+         workers,
+         process_cap,
+         entry_term_result?
+       ) do
     has_dispatch = dispatch_exists?(definitions)
 
     if workers > 1 or definitions_may_raise?(definitions) do
       lift_actor_step(ctx, body, has_dispatch)
-      lift_parallel_driver(entry_name, ctx, body, workers, process_cap)
+      lift_parallel_driver(entry_name, ctx, body, workers, process_cap, entry_term_result?)
     else
-      lift_driver(entry_name, ctx, body, budget, has_dispatch, process_cap)
+      lift_driver(entry_name, ctx, body, budget, has_dispatch, process_cap, entry_term_result?)
     end
   end
 
@@ -2014,7 +2077,7 @@ defmodule Batata.Lift do
        ) do
     if Enum.any?(clauses, &function_clause_requires_dispatch?/1) do
       validate_single_definition_guards!(clauses)
-      opts = term_case_opts(name, arity, module_env)
+      opts = term_case_opts(name, arity, module_env, ctx)
 
       case arity do
         0 -> raise Error, "guarded zero-arity definitions are unsupported: #{name}/0"
@@ -2038,7 +2101,7 @@ defmodule Batata.Lift do
     end
 
     clauses = Enum.flat_map(definitions, & &1.clauses)
-    opts = term_case_opts(name, arity, module_env)
+    opts = term_case_opts(name, arity, module_env, ctx)
 
     cond do
       arity == 1 ->
@@ -2744,7 +2807,7 @@ defmodule Batata.Lift do
   # Even scalar programs run behind a host entry that owns an explicit native
   # runtime. This keeps JIT and AOT executions isolated without relying on the
   # compatibility runtime associated with an OS thread.
-  defp lift_execution_driver(entry_name, ctx, ip, process_cap) do
+  defp lift_execution_driver(entry_name, ctx, ip, process_cap, entry_term_result?) do
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([], [])
     MLIR.CAPI.mlirRegionAppendOwnedBlock(region, block)
@@ -2760,7 +2823,7 @@ defmodule Batata.Lift do
     )
 
     result = call_entry(ctx, block) |> unbox(ctx, block)
-    handle = retain_result(runtime, result, ctx, block)
+    handle = retain_result(runtime, result, entry_term_result?, ctx, block)
     create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -2781,14 +2844,15 @@ defmodule Batata.Lift do
     runtime
   end
 
-  defp retain_result(runtime, result, ctx, block) do
+  defp retain_result(runtime, result, term_result?, ctx, block) do
     i64 = integer_type(ctx)
-    handle = create_op("ex.result_create", [runtime, result], [i64], ctx, block)
+    op = if term_result?, do: "ex.result_create_term", else: "ex.result_create"
+    handle = create_op(op, [runtime, result], [i64], ctx, block)
     create_op("ex.runtime_leave", [], [i64], ctx, block)
     handle
   end
 
-  defp lift_parallel_driver(entry_name, ctx, ip, workers, process_cap) do
+  defp lift_parallel_driver(entry_name, ctx, ip, workers, process_cap, entry_term_result?) do
     i64 = integer_type(ctx)
     region = MLIR.CAPI.mlirRegionCreate()
     block = MLIR.Block.create([], [])
@@ -2815,7 +2879,7 @@ defmodule Batata.Lift do
         block
       )
 
-    handle = retain_result(runtime, result, ctx, block)
+    handle = retain_result(runtime, result, entry_term_result?, ctx, block)
     create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -2835,7 +2899,15 @@ defmodule Batata.Lift do
   # continuation (budget exhausted) stays runnable and is resumed on a later
   # round from its saved loop state; a completed process is parked with its
   # result. The driver returns the entry's final result.
-  defp lift_driver(entry_name, ctx, ip, _budget, has_dispatch, process_cap) do
+  defp lift_driver(
+         entry_name,
+         ctx,
+         ip,
+         _budget,
+         has_dispatch,
+         process_cap,
+         entry_term_result?
+       ) do
     i64 = integer_type(ctx)
     dyn = ex_type("term", ctx)
     i1 = MLIR.Type.i1()
@@ -2976,7 +3048,7 @@ defmodule Batata.Lift do
       |> MLIR.Operation.create()
 
     final = while_op |> MLIR.Operation.results() |> Enum.to_list() |> hd()
-    handle = retain_result(runtime, final, ctx, block)
+    handle = retain_result(runtime, final, entry_term_result?, ctx, block)
     create_op("ex.return", [handle, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
 
     %Beaver.SSA{
@@ -3811,6 +3883,23 @@ defmodule Batata.Lift do
   defp range_ast?({:.., _, [start, stop]}), do: {true, start, stop}
   defp range_ast?(_ast), do: false
 
+  defp lift_scalar_range_bounds(start_ast, stop_ast, ctx, block, env) do
+    {start, env} = lift_expr(start_ast, ctx, block, env)
+    {stop, env} = lift_expr(stop_ast, ctx, block, env)
+
+    start =
+      start
+      |> lift_value(ctx, block, env)
+      |> validated_scalar_integer("range bounds require scalar integer operands", ctx, block)
+
+    stop =
+      stop
+      |> lift_value(ctx, block, env)
+      |> validated_scalar_integer("range bounds require scalar integer operands", ctx, block)
+
+    {start, stop, env}
+  end
+
   defp range_continuation(:sum), do: 1
   defp range_continuation(:product), do: 6
   defp range_continuation(:subtract_acc_first), do: 7
@@ -4296,18 +4385,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:+, _, [left, right]}, ctx, block, env) do
-    {left_value, env} = lift_expr(left, ctx, block, env)
-    {right_value, env} = lift_expr(right, ctx, block, env)
-
-    [left_value, right_value] =
-      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
-
-    env = mark_validated_integer_operands(env, [left, right])
-
-    {
-      create_op("ex.add", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
-      env
-    }
+    lift_integer_arithmetic(:add, left, right, ctx, block, env)
   end
 
   defp lift_expr({:++, _, [left_ast, right_ast]}, ctx, block, env) do
@@ -4327,33 +4405,11 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({:-, _, [left, right]}, ctx, block, env) do
-    {left_value, env} = lift_expr(left, ctx, block, env)
-    {right_value, env} = lift_expr(right, ctx, block, env)
-
-    [left_value, right_value] =
-      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
-
-    env = mark_validated_integer_operands(env, [left, right])
-
-    {
-      create_op("ex.sub", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
-      env
-    }
+    lift_integer_arithmetic(:sub, left, right, ctx, block, env)
   end
 
   defp lift_expr({:*, _, [left, right]}, ctx, block, env) do
-    {left_value, env} = lift_expr(left, ctx, block, env)
-    {right_value, env} = lift_expr(right, ctx, block, env)
-
-    [left_value, right_value] =
-      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
-
-    env = mark_validated_integer_operands(env, [left, right])
-
-    {
-      create_op("ex.mul", [left_value, right_value], [MLIR.Type.i64()], ctx, block),
-      env
-    }
+    lift_integer_arithmetic(:mul, left, right, ctx, block, env)
   end
 
   defp lift_expr(binary, ctx, block, env) when is_binary(binary) do
@@ -4652,16 +4708,7 @@ defmodule Batata.Lift do
   end
 
   defp lift_expr({name, _, [left, right]}, ctx, block, env) when name in [:div, :rem] do
-    {left_value, env} = lift_expr(left, ctx, block, env)
-    {right_value, env} = lift_expr(right, ctx, block, env)
-
-    [left_value, right_value] =
-      refine_integer_operands!([left, right], [left_value, right_value], env, ctx, block)
-
-    env = mark_validated_integer_operands(env, [left, right])
-
-    op = if name == :div, do: "ex.div", else: "ex.rem"
-    {create_op(op, [left_value, right_value], [integer_type(ctx)], ctx, block), env}
+    lift_integer_arithmetic(name, left, right, ctx, block, env)
   end
 
   defp lift_expr({{:., _, [module_ast, name]}, _, arguments}, ctx, block, env)
@@ -5071,8 +5118,7 @@ defmodule Batata.Lift do
 
     case range_ast?(enumerable_ast) do
       {true, start_ast, stop_ast} ->
-        {start, env} = lift_expr(start_ast, ctx, block, env)
-        {stop, env} = lift_expr(stop_ast, ctx, block, env)
+        {start, stop, env} = lift_scalar_range_bounds(start_ast, stop_ast, ctx, block, env)
         lift_range_reduce_pattern(pattern, start, stop, acc_value, ctx, block, env)
 
       false ->
@@ -5494,8 +5540,7 @@ defmodule Batata.Lift do
   defp lift_enum_map_enumerable(enumerable_ast, ctx, block, env) do
     case range_ast?(enumerable_ast) do
       {true, start_ast, stop_ast} ->
-        {start, env} = lift_expr(start_ast, ctx, block, env)
-        {stop, env} = lift_expr(stop_ast, ctx, block, env)
+        {start, stop, env} = lift_scalar_range_bounds(start_ast, stop_ast, ctx, block, env)
 
         range =
           create_op(
@@ -5694,8 +5739,7 @@ defmodule Batata.Lift do
   defp lift_find_enumerable(enumerable_ast, ctx, block, env) do
     case range_ast?(enumerable_ast) do
       {true, start_ast, stop_ast} ->
-        {start, env} = lift_expr(start_ast, ctx, block, env)
-        {stop, env} = lift_expr(stop_ast, ctx, block, env)
+        {start, stop, env} = lift_scalar_range_bounds(start_ast, stop_ast, ctx, block, env)
 
         list =
           create_op(
@@ -7649,14 +7693,12 @@ defmodule Batata.Lift do
   end
 
   defp lift_stdlib_call(Enum, :count, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
-    {start, env} = lift_expr(start_ast, ctx, block, env)
-    {stop, env} = lift_expr(stop_ast, ctx, block, env)
+    {start, stop, env} = lift_scalar_range_bounds(start_ast, stop_ast, ctx, block, env)
     {lift_enum_range_reduce(start, stop, lit(0, ctx, block), 15, ctx, block), env}
   end
 
   defp lift_stdlib_call(Enum, :to_list, [{:.., _, [start_ast, stop_ast]}], ctx, block, env) do
-    {start, env} = lift_expr(start_ast, ctx, block, env)
-    {stop, env} = lift_expr(stop_ast, ctx, block, env)
+    {start, stop, env} = lift_scalar_range_bounds(start_ast, stop_ast, ctx, block, env)
 
     {
       create_op(
@@ -11367,11 +11409,13 @@ defmodule Batata.Lift do
 
     region = MLIR.CAPI.mlirRegionCreate()
 
+    expected_type = normalized_function_result_type(opts)
+
     {yield_types, _first_type} =
       parsed
       |> Enum.zip(guards)
       |> Enum.zip(clause_bindss)
-      |> Enum.map_reduce(nil, fn {{clause, guard}, clause_binds}, first_type ->
+      |> Enum.map_reduce(expected_type, fn {{clause, guard}, clause_binds}, first_type ->
         type =
           add_clause_block(
             clause,
@@ -11387,7 +11431,8 @@ defmodule Batata.Lift do
         {type, first_type || type}
       end)
 
-    [first_type | rest_types] = yield_types
+    [inferred_first_type | rest_types] = yield_types
+    first_type = expected_type || inferred_first_type
 
     unless Keyword.get(opts, :relax_types, false) or
              Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
@@ -11501,14 +11546,17 @@ defmodule Batata.Lift do
 
     region = MLIR.CAPI.mlirRegionCreate()
 
+    expected_type = normalized_function_result_type(opts)
+
     {yield_types, _first_type} =
       parsed
       |> Enum.zip(guards)
       |> Enum.zip(bindss)
       |> Enum.zip(integer_namess)
       |> Enum.zip(struct_integer_field_mapss)
-      |> Enum.map_reduce(nil, fn {{{{clause, guard}, binds}, integer_names}, struct_fields},
-                                 first_type ->
+      |> Enum.map_reduce(expected_type, fn {{{{clause, guard}, binds}, integer_names},
+                                            struct_fields},
+                                           first_type ->
         type =
           add_term_clause_block(
             clause,
@@ -11524,7 +11572,8 @@ defmodule Batata.Lift do
         {type, first_type || type}
       end)
 
-    [first_type | rest_types] = yield_types
+    [inferred_first_type | rest_types] = yield_types
+    first_type = expected_type || inferred_first_type
 
     unless Keyword.get(opts, :relax_types, false) or
              Enum.all?(rest_types, &MLIR.equal?(first_type, &1)) do
@@ -12653,8 +12702,19 @@ defmodule Batata.Lift do
       else: applied
   end
 
-  defp normalize_term_clause_value(value, _expected_type, env, ctx, block),
-    do: lift_value(value, ctx, block, env)
+  defp normalize_term_clause_value(value, expected_type, env, ctx, block) do
+    value = lift_value(value, ctx, block, env)
+
+    if expected_type && MLIR.equal?(expected_type, ex_type("term", ctx)),
+      do: box_if_scalar(value, ctx, block),
+      else: value
+  end
+
+  defp normalized_function_result_type(opts) do
+    if Keyword.get(opts, :normalize_function_result?, false),
+      do: Keyword.get(opts, :function_result_type),
+      else: nil
+  end
 
   defp normalize_boolean_function_value(value, env, ctx, block) do
     boolean? =
@@ -13013,6 +13073,77 @@ defmodule Batata.Lift do
     end)
   end
 
+  defp lift_integer_arithmetic(operation, left_ast, right_ast, ctx, block, env)
+       when operation in [:add, :sub, :mul, :div, :rem] do
+    {left, env} = lift_expr(left_ast, ctx, block, env)
+    {right, env} = lift_expr(right_ast, ctx, block, env)
+    left = integer_arithmetic_closure_operand(left, ctx, block)
+    right = integer_arithmetic_closure_operand(right, ctx, block)
+    left = lift_value(left, ctx, block, env)
+    right = lift_value(right, ctx, block, env)
+
+    if term_operand?(left) or term_operand?(right) do
+      left = integer_arithmetic_operand(left_ast, left, env, ctx, block)
+      right = integer_arithmetic_operand(right_ast, right, env, ctx, block)
+      env = mark_validated_integer_operands(env, [left_ast, right_ast])
+
+      {
+        create_op(
+          "ex.integer_#{operation}",
+          [left, right],
+          [ex_type("term", ctx)],
+          ctx,
+          block
+        ),
+        env
+      }
+    else
+      {create_op("ex.#{operation}", [left, right], [integer_type(ctx)], ctx, block), env}
+    end
+  end
+
+  defp integer_arithmetic_closure_operand({:closure_result, applied, closure}, ctx, block),
+    do: refine_closure_integer(applied, closure, ctx, block)
+
+  defp integer_arithmetic_closure_operand(value, _ctx, _block), do: value
+
+  defp integer_arithmetic_operand(ast, value, env, ctx, block) do
+    value =
+      if term_operand?(value) and not inferred_integer_result_ast?(ast, env) do
+        validated_integer_term(value, ctx, block)
+      else
+        value
+      end
+
+    box_if_scalar(value, ctx, block)
+  end
+
+  defp inferred_integer_result_ast?({operator, _, arguments}, _env)
+       when operator in [:+, :-, :*, :div, :rem] and length(arguments) == 2,
+       do: true
+
+  defp inferred_integer_result_ast?({name, _, arguments}, env)
+       when is_atom(name) and is_list(arguments) do
+    env
+    |> Map.fetch!(@integer_result_functions_key)
+    |> MapSet.member?({name, length(arguments)})
+  end
+
+  defp inferred_integer_result_ast?({{:., _, [fun_ast]}, _, arguments}, env)
+       when is_list(arguments) do
+    case resolve_fun_ref(fun_ast, env) do
+      {:ok, _fn_idx, name, _arity, _captured} ->
+        env
+        |> Map.fetch!(@integer_result_functions_key)
+        |> MapSet.member?({name, 8})
+
+      _dynamic_or_missing ->
+        false
+    end
+  end
+
+  defp inferred_integer_result_ast?(_ast, _env), do: false
+
   defp refine_integer_operand(_ast, {:closure_result, applied, closure}, _env, ctx, block),
     do: refine_closure_integer(applied, closure, ctx, block)
 
@@ -13170,7 +13301,44 @@ defmodule Batata.Lift do
     |> hd()
   end
 
+  defp validated_integer_term(value, ctx, block) do
+    if term_operand?(value) do
+      i64 = integer_type(ctx)
+      integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
+      integer_i1 = create_op("arith.trunci", [integer?], [MLIR.Type.i1()], ctx, block)
+
+      raw_word =
+        build_scf_if(
+          integer_i1,
+          ctx,
+          block,
+          [i64],
+          fn b -> [unbox(value, ctx, b)] end,
+          fn b ->
+            [
+              raise_argument_error("integer arithmetic requires integer operands", ctx, b)
+              |> unbox(ctx, b)
+            ]
+          end
+        )
+        |> hd()
+
+      create_op("ex.to_word", [raw_word], [ex_type("term", ctx)], ctx, block)
+    else
+      value
+    end
+  end
+
   defp validated_unary_integer(value, ctx, block) do
+    validated_scalar_integer(
+      value,
+      "unary integer operators require scalar integer operands",
+      ctx,
+      block
+    )
+  end
+
+  defp validated_scalar_integer(value, message, ctx, block) do
     if term_operand?(value) do
       i64 = integer_type(ctx)
       integer? = create_op("ex.is_integer", [value], [i64], ctx, block)
@@ -13188,11 +13356,7 @@ defmodule Batata.Lift do
         fn _valid_block -> [scalar] end,
         fn error_block ->
           [
-            raise_argument_error(
-              "unary integer operators require scalar integer operands",
-              ctx,
-              error_block
-            )
+            raise_argument_error(message, ctx, error_block)
             |> unbox(ctx, error_block)
           ]
         end
@@ -13419,6 +13583,7 @@ defmodule Batata.Lift do
       end
 
     value = lift_value(value, ctx, block, clause_env)
+    value = normalize_term_clause_value(value, expected_type, clause_env, ctx, block)
     create_op("ex.yield", [value, operandSegmentSizes: segment_sizes([1])], [], ctx, block)
     MLIR.Value.type(value)
   end
@@ -13433,7 +13598,14 @@ defmodule Batata.Lift do
   defp lift_operands_boxed(args, ctx, block, env) do
     Enum.map_reduce(args, env, fn arg, env ->
       {value, env} = lift_expr(arg, ctx, block, env)
-      {box_term(lift_value(value, ctx, block, env), ctx, block), env}
+      value = lift_value(value, ctx, block, env)
+
+      boxed =
+        if term_operand?(value) and inferred_integer_result_ast?(arg, env),
+          do: value,
+          else: box_term(value, ctx, block)
+
+      {boxed, env}
     end)
   end
 
@@ -13627,11 +13799,156 @@ defmodule Batata.Lift do
     |> Map.get({name, arity}, List.duplicate(:scalar, arity))
   end
 
-  defp term_case_opts(name, arity, module_env) do
+  defp term_case_opts(name, arity, module_env, ctx) do
+    signature = {name, arity}
+
+    result_type =
+      if MapSet.member?(Map.fetch!(module_env, @scalar_result_functions_key), signature),
+        do: integer_type(ctx),
+        else: ex_type("term", ctx)
+
+    normalize_result? =
+      module_env
+      |> Map.fetch!(@normalized_term_result_functions_key)
+      |> MapSet.member?(signature)
+
+    opts =
+      [
+        function_result_type: result_type,
+        normalize_function_result?: normalize_result?
+      ]
+
     if name |> function_arg_modes(arity, module_env) |> List.first() == :term,
-      do: [term_case?: true],
-      else: []
+      do: Keyword.put(opts, :term_case?, true),
+      else: opts
   end
+
+  defp normalized_term_result_functions(
+         definitions,
+         argument_modes,
+         scalar_result_functions
+       ) do
+    definitions
+    |> Enum.filter(fn definition ->
+      signature = {definition.name, definition.arity}
+      modes = Map.fetch!(argument_modes, {definition.name, definition.arity})
+
+      not fn_abi_name?(definition.name) and
+        Enum.any?(definition.clauses, fn clause ->
+          wide_integer_terminal?(clause.body_ast) or
+            term_parameter_arithmetic?(clause, modes) or
+            (not MapSet.member?(scalar_result_functions, signature) and
+               closure_result_terminal?(clause.body_ast))
+        end)
+    end)
+    |> MapSet.new(&{&1.name, &1.arity})
+  end
+
+  defp closure_result_terminal?({:__block__, _, expressions}) when expressions != [],
+    do: expressions |> List.last() |> closure_result_terminal?()
+
+  defp closure_result_terminal?({{:., _, [_fun_ast]}, _, arguments})
+       when is_list(arguments),
+       do: true
+
+  defp closure_result_terminal?(_ast), do: false
+
+  defp typed_term_entry_result?(definitions, normalized_functions) do
+    entry_signature = {:__batata_entry, 0}
+
+    MapSet.member?(normalized_functions, entry_signature) or
+      Enum.any?(definitions, fn
+        %Frontend.Definition{name: :__batata_entry, arity: 0, clauses: clauses} ->
+          clauses != [] and
+            Enum.all?(clauses, fn clause ->
+              clause.body_ast
+              |> terminal_local_call_signature()
+              |> then(&MapSet.member?(normalized_functions, &1))
+            end)
+
+        _definition ->
+          false
+      end)
+  end
+
+  defp terminal_local_call_signature({:__block__, _, expressions}) when expressions != [],
+    do: expressions |> List.last() |> terminal_local_call_signature()
+
+  defp terminal_local_call_signature({name, _, arguments})
+       when is_atom(name) and is_list(arguments),
+       do: {name, length(arguments)}
+
+  defp terminal_local_call_signature(_ast), do: nil
+
+  defp mixed_integer_term_result_functions(definitions, scalar_result_functions) do
+    definitions
+    |> Enum.group_by(&{&1.name, &1.arity})
+    |> Enum.reject(fn {signature, _grouped} ->
+      MapSet.member?(scalar_result_functions, signature)
+    end)
+    |> Enum.filter(fn {_signature, grouped} ->
+      clauses = Enum.flat_map(grouped, & &1.clauses)
+      length(clauses) > 1 and Enum.any?(clauses, &integer_literal_terminal?(&1.body_ast))
+    end)
+    |> MapSet.new(&elem(&1, 0))
+  end
+
+  defp integer_literal_terminal?({:__block__, _, expressions}) when expressions != [],
+    do: expressions |> List.last() |> integer_literal_terminal?()
+
+  defp integer_literal_terminal?(integer) when is_integer(integer), do: true
+  defp integer_literal_terminal?({:-, _, [integer]}) when is_integer(integer), do: true
+  defp integer_literal_terminal?(_ast), do: false
+
+  defp term_parameter_arithmetic?(clause, modes) do
+    term_names =
+      clause.patterns
+      |> Enum.zip(modes)
+      |> Enum.reduce(MapSet.new(), fn
+        {{name, _, context}, :term}, names when is_variable_ast(name, context) ->
+          MapSet.put(names, name)
+
+        _pattern_mode, names ->
+          names
+      end)
+
+    {_ast, found?} =
+      Macro.prewalk(clause.body_ast, false, fn
+        {operator, _, arguments} = node, found?
+        when operator in [:+, :-, :*, :div, :rem] and is_list(arguments) ->
+          {node, found? or Enum.any?(arguments, &ast_uses_variable?(&1, term_names))}
+
+        node, found? ->
+          {node, found?}
+      end)
+
+    found?
+  end
+
+  defp ast_uses_variable?(ast, names) do
+    {_ast, found?} =
+      Macro.prewalk(ast, false, fn
+        {name, _, context} = node, found?
+        when is_variable_ast(name, context) ->
+          {node, found? or MapSet.member?(names, name)}
+
+        node, found? ->
+          {node, found?}
+      end)
+
+    found?
+  end
+
+  defp wide_integer_terminal?({:__block__, _, expressions}) when expressions != [],
+    do: expressions |> List.last() |> wide_integer_terminal?()
+
+  defp wide_integer_terminal?(integer) when is_integer(integer),
+    do: not scalar_integer_literal?(integer)
+
+  defp wide_integer_terminal?({:-, _, [integer]}) when is_integer(integer),
+    do: not scalar_integer_literal?(-integer)
+
+  defp wide_integer_terminal?(_ast), do: false
 
   defp inbound_argument(value, :term, ctx, block),
     do: create_op("ex.to_word", [value], [ex_type("term", ctx)], ctx, block)
@@ -13696,22 +14013,19 @@ defmodule Batata.Lift do
       {value, :scalar, integer_guard?, _boolean_argument?, ast} ->
         if term_operand?(value) and
              (integer_guard? or proven_integer_call_argument?(ast, env)) do
-          create_op("ex.to_int", [value], [integer_type(ctx)], ctx, block)
+          validated_scalar_integer(
+            value,
+            "scalar call arguments require i64-range integer operands",
+            ctx,
+            block
+          )
         else
           value
         end
     end)
   end
 
-  defp proven_integer_call_argument?({name, _, context} = ast, env)
-       when is_variable_ast(name, context),
-       do: integer_expression?(ast, env)
-
-  defp proven_integer_call_argument?({{:., _, [{name, _, context}, field]}, _, []} = ast, env)
-       when is_variable_ast(name, context) and is_atom(field),
-       do: integer_expression?(ast, env)
-
-  defp proven_integer_call_argument?(_ast, _env), do: false
+  defp proven_integer_call_argument?(ast, env), do: integer_expression?(ast, env)
 
   defp fn_abi_name?(name),
     do: name != :__fn_dispatch and String.starts_with?(Atom.to_string(name), "__fn_")
