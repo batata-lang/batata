@@ -46,6 +46,22 @@ defmodule Batata.SignatureTest do
            }
   end
 
+  test "keeps arithmetic results boxed when call sites widen an argument to a term" do
+    value = Macro.var(:value, nil)
+    scale = definition(:scale, value, {:*, [], [value, 10]})
+    huge = 10_000_000_000_000_000_000_000_000_000_000_000_000
+    main = definition(:main, [], {:scale, [], [huge]})
+
+    definitions = [scale, main]
+
+    assert Batata.Signature.infer(definitions) == %{
+             {:main, 0} => [],
+             {:scale, 1} => [:term]
+           }
+
+    refute MapSet.member?(Batata.Signature.infer_results(definitions), {:scale, 1})
+  end
+
   test "infers atom-context variables like source variables" do
     for context <- [nil, Batata.Frontend.DefaultArgExpand] do
       variable = {:value, [generated: context != nil], context}
@@ -138,6 +154,17 @@ defmodule Batata.SignatureTest do
     assert Batata.Signature.infer_integer_tuple_results(definitions) == %{
              {:align, 2} => [0, 1]
            }
+  end
+
+  test "does not classify arithmetic derived from term arguments as scalar tuple fields" do
+    left = Macro.var(:left, nil)
+    scale = Macro.var(:scale, nil)
+    definition = definition(:align, [left, scale], {quote(do: unquote(left) * unquote(scale)), 0})
+
+    assert Batata.Signature.infer_integer_tuple_results(
+             [definition],
+             %{{:align, 2} => [:term, :scalar]}
+           ) == %{{:align, 2} => [1]}
   end
 
   test "keeps values embedded in tagged result tuples boxed" do

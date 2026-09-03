@@ -73,7 +73,7 @@ defmodule Batata.Memory.Lifetime do
       {name, _} when name in ["ex.term_export", "ex.term_handle_export"] ->
         [:exported_host]
 
-      {"ex.result_create", _} ->
+      {name, _} when name in ["ex.result_create", "ex.result_create_term"] ->
         [:result]
 
       {name, _}

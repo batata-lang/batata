@@ -271,6 +271,8 @@ defmodule Batata.Transform.InlineScalarCalls do
   end
 
   defp replace_scalar_result(rewriter, old_result, new_result, anchor) do
+    collapse_integer_validation(rewriter, old_result, new_result, anchor)
+
     adapters =
       old_result
       |> Walker.uses()
@@ -291,12 +293,100 @@ defmodule Batata.Transform.InlineScalarCalls do
         "ex.integer_compare" ->
           replace_integer_compare(rewriter, adapter, old_result, new_result, anchor)
 
+        name
+        when name in [
+               "ex.integer_add",
+               "ex.integer_sub",
+               "ex.integer_mul",
+               "ex.integer_div",
+               "ex.integer_rem"
+             ] ->
+          replace_integer_arithmetic(rewriter, adapter, old_result, new_result, anchor)
+
         _other ->
           :ok
       end
     end)
 
+    replace_remaining_term_uses(rewriter, old_result, new_result, anchor)
+  end
+
+  # Arithmetic validation around a term-typed call first checks `is_integer`,
+  # then carries the word through `scf.if` and `to_word`. Once the call is
+  # proven scalar by this pass, remove that complete adapter chain and let the
+  # downstream arithmetic choose its scalar or term representation.
+  defp collapse_integer_validation(rewriter, old_result, new_result, anchor) do
+    old_result
+    |> Walker.uses()
+    |> Enum.map(&MLIR.OpOperand.owner/1)
+    |> Enum.filter(&(MLIR.Operation.name(&1) == "ex.unbox"))
+    |> Enum.each(fn unbox ->
+      with [unboxed] <- unbox |> Walker.results() |> Enum.to_list(),
+           [yield_use] <- unboxed |> Walker.uses() |> Enum.to_list(),
+           yield <- MLIR.OpOperand.owner(yield_use),
+           "scf.yield" <- MLIR.Operation.name(yield),
+           conditional <- MLIR.Operation.parent(yield),
+           "scf.if" <- MLIR.Operation.name(conditional),
+           true <- integer_validation_conditional?(conditional, old_result),
+           [conditional_result] <- conditional |> Walker.results() |> Enum.to_list(),
+           [word_use] <- conditional_result |> Walker.uses() |> Enum.to_list(),
+           word_adapter <- MLIR.OpOperand.owner(word_use),
+           "ex.to_word" <- MLIR.Operation.name(word_adapter),
+           [word] <- word_adapter |> Walker.results() |> Enum.to_list() do
+        replace_scalar_result(rewriter, word, new_result, anchor)
+        RewriterBase.erase_op(rewriter, word_adapter)
+        RewriterBase.erase_op(rewriter, conditional)
+      else
+        _other_shape -> :ok
+      end
+    end)
+  end
+
+  defp integer_validation_conditional?(conditional, old_result) do
+    with [condition] <- conditional |> Walker.operands() |> Enum.to_list(),
+         {:ok, truncation} <- MLIR.Value.owner(condition),
+         "arith.trunci" <- MLIR.Operation.name(truncation),
+         [check] <- truncation |> Walker.operands() |> Enum.to_list(),
+         {:ok, integer_check} <- MLIR.Value.owner(check),
+         "ex.is_integer" <- MLIR.Operation.name(integer_check),
+         [checked] <- integer_check |> Walker.operands() |> Enum.to_list() do
+      MLIR.equal?(checked, old_result)
+    else
+      _other_shape -> false
+    end
+  end
+
+  # Region/function terminators propagate a newly scalar result through the
+  # surrounding control flow. Other remaining users still belong to the term
+  # ABI (for example tuple construction), so rewrite only those uses to one
+  # shared box before replacing the scalar propagation uses.
+  defp replace_remaining_term_uses(rewriter, old_result, new_result, anchor) do
+    old_type = MLIR.Value.type(old_result)
+
+    term_uses? =
+      old_result
+      |> Walker.uses()
+      |> Enum.any?(fn use -> not scalar_propagation_use?(use) end)
+
+    if not i64_type?(old_type) and term_uses? do
+      box = create_operation("ex.box", [new_result], old_type, anchor)
+
+      RewriterBase.with_insertion_point(rewriter, {:before, anchor}, fn ->
+        RewriterBase.insert(rewriter, box)
+      end)
+
+      [boxed] = box |> Walker.results() |> Enum.to_list()
+      MLIR.Value.replace_uses_with_if(old_result, boxed, &(not scalar_propagation_use?(&1)))
+    end
+
     RewriterBase.replace(rewriter, old_result, new_result)
+  end
+
+  defp scalar_propagation_use?(use) do
+    use
+    |> MLIR.OpOperand.owner()
+    |> MLIR.Operation.name()
+    |> then(&(&1 in ["ex.yield", "scf.yield", "ex.return", "func.return"]))
   end
 
   defp replace_passthrough_adapter(rewriter, adapter, new_result) do
@@ -386,19 +476,95 @@ defmodule Batata.Transform.InlineScalarCalls do
     replacement =
       create_operation("ex.integer_compare", term_operands, MLIR.Type.i64(), anchor)
 
-    _insertion_point =
-      Enum.reduce(boxes ++ [replacement], {:before, comparison}, fn operation, insertion_point ->
-        RewriterBase.with_insertion_point(rewriter, insertion_point, fn ->
-          RewriterBase.insert(rewriter, operation)
-        end)
-
-        {:after, operation}
-      end)
+    insert_operation_sequence(rewriter, boxes ++ [replacement], {:before, comparison})
 
     [old_comparison_result] = comparison |> Walker.results() |> Enum.to_list()
     [new_comparison_result] = replacement |> Walker.results() |> Enum.to_list()
     RewriterBase.replace(rewriter, old_comparison_result, new_comparison_result)
     RewriterBase.erase_op(rewriter, comparison)
+  end
+
+  defp replace_integer_arithmetic(rewriter, arithmetic, old_result, new_result, anchor) do
+    operands =
+      arithmetic
+      |> Walker.operands()
+      |> Enum.map(fn operand ->
+        if MLIR.equal?(operand, old_result), do: new_result, else: operand
+      end)
+
+    scalar_operands = Enum.map(operands, &scalar_operand/1)
+
+    if Enum.all?(scalar_operands, &match?({:ok, _}, &1)) do
+      scalar_operands = Enum.map(scalar_operands, fn {:ok, operand} -> operand end)
+
+      replacement =
+        create_operation(
+          scalar_arithmetic_name(MLIR.Operation.name(arithmetic)),
+          scalar_operands,
+          MLIR.Type.i64(),
+          anchor
+        )
+
+      RewriterBase.with_insertion_point(rewriter, {:before, arithmetic}, fn ->
+        RewriterBase.insert(rewriter, replacement)
+      end)
+
+      [old_arithmetic_result] = arithmetic |> Walker.results() |> Enum.to_list()
+      [new_arithmetic_result] = replacement |> Walker.results() |> Enum.to_list()
+      replace_scalar_result(rewriter, old_arithmetic_result, new_arithmetic_result, arithmetic)
+      RewriterBase.erase_op(rewriter, arithmetic)
+    else
+      term_type = MLIR.Value.type(old_result)
+
+      {term_operands, boxes} =
+        Enum.map_reduce(operands, [], &box_scalar_operand(&1, &2, term_type, anchor))
+
+      replacement =
+        create_operation(
+          MLIR.Operation.name(arithmetic),
+          term_operands,
+          term_type,
+          anchor
+        )
+
+      insert_operation_sequence(rewriter, boxes ++ [replacement], {:before, arithmetic})
+
+      [old_arithmetic_result] = arithmetic |> Walker.results() |> Enum.to_list()
+      [new_arithmetic_result] = replacement |> Walker.results() |> Enum.to_list()
+      RewriterBase.replace(rewriter, old_arithmetic_result, new_arithmetic_result)
+      RewriterBase.erase_op(rewriter, arithmetic)
+    end
+  end
+
+  defp scalar_operand(operand) do
+    if i64_value?(operand) do
+      {:ok, operand}
+    else
+      with {:ok, owner} <- MLIR.Value.owner(operand),
+           "ex.box" <- MLIR.Operation.name(owner),
+           [boxed] <- owner |> Walker.operands() |> Enum.to_list(),
+           true <- i64_value?(boxed) do
+        {:ok, boxed}
+      else
+        _not_scalar -> :error
+      end
+    end
+  end
+
+  defp scalar_arithmetic_name("ex.integer_add"), do: "ex.add"
+  defp scalar_arithmetic_name("ex.integer_sub"), do: "ex.sub"
+  defp scalar_arithmetic_name("ex.integer_mul"), do: "ex.mul"
+  defp scalar_arithmetic_name("ex.integer_div"), do: "ex.div"
+  defp scalar_arithmetic_name("ex.integer_rem"), do: "ex.rem"
+
+  defp insert_operation_sequence(rewriter, operations, insertion_point) do
+    Enum.reduce(operations, insertion_point, fn operation, insertion_point ->
+      RewriterBase.with_insertion_point(rewriter, insertion_point, fn ->
+        RewriterBase.insert(rewriter, operation)
+      end)
+
+      {:after, operation}
+    end)
   end
 
   defp box_scalar_operand(operand, boxes, term_type, anchor) do
@@ -427,8 +593,10 @@ defmodule Batata.Transform.InlineScalarCalls do
   defp i64_value?(value) do
     value
     |> MLIR.Value.type()
-    |> MLIR.equal?(MLIR.Type.i64())
+    |> i64_type?()
   end
+
+  defp i64_type?(type), do: MLIR.equal?(type, MLIR.Type.i64())
 
   defp callees(funcs) do
     Map.new(funcs, fn func ->

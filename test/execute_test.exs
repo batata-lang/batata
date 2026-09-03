@@ -3562,6 +3562,27 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == {"{}", "Jason"}
   end
 
+  test "normalizes a dynamic closure result in the first function clause", %{ctx: ctx} do
+    source = """
+    defmodule DynamicFirstClauseResult do
+      def identity(), do: fn value -> value end
+
+      def choose(value, callback) when is_binary(value), do: callback.(value)
+
+      def choose(value, callback) when is_atom(value) do
+        callback.(Atom.to_string(value))
+      end
+
+      def main() do
+        identity = identity()
+        {choose("Jason", identity), choose(:elixir, identity)}
+      end
+    end
+    """
+
+    assert Batata.execute(source, ctx) == {"Jason", "elixir"}
+  end
+
   test "normalizes a dynamic closure result before term case matching", %{ctx: ctx} do
     source = """
     defmodule DynamicCaseScrutinee do

@@ -189,6 +189,13 @@ defmodule Batata.Memory.SchemaTest do
              "ex.runtime_leave"
            ]) == :ok
 
+    assert Region.verify_reset_sequence([
+             "ex.runtime_enter",
+             "ex.process_table_reset",
+             "ex.result_create_term",
+             "ex.runtime_leave"
+           ]) == :ok
+
     assert {:error, _reason} =
              Region.verify_reset_sequence([
                "ex.runtime_enter",

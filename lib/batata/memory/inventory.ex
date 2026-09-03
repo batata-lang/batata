@@ -63,6 +63,7 @@ defmodule Batata.Memory.Inventory do
     ex.mapset_put
     ex.process_table_reset
     ex.result_create
+    ex.result_create_term
     ex.runtime_create
     ex.spawn
     ex.stream_drop
