@@ -1409,6 +1409,17 @@ pub fn ex_term_runtime_oom(handle: i64) callconv(.c) i64 {
 /// Pins a completed execution result and transfers ownership of its runtime
 /// to the returned opaque handle. Zero means the bounded registry is full.
 pub fn ex_term_result_create(runtime_handle: i64, word: i64) callconv(.c) i64 {
+    return result_create(runtime_handle, word, false);
+}
+
+/// Pins a dynamic term result. Immediate integer roots are copied into an
+/// arena-owned bigint so root classification cannot confuse their raw tagged
+/// word with a legacy unboxed scalar result.
+pub fn ex_term_result_create_term(runtime_handle: i64, word: i64) callconv(.c) i64 {
+    return result_create(runtime_handle, word, true);
+}
+
+fn result_create(runtime_handle: i64, initial_word: i64, term_root: bool) i64 {
     if (active_runtime_handle != runtime_handle) return -1;
     const instance = active_runtime orelse return -1;
     instance.lifecycle_lock.lock();
@@ -1418,6 +1429,12 @@ pub fn ex_term_result_create(runtime_handle: i64, word: i64) callconv(.c) i64 {
         !instance.execution_initialized) return -1;
     if (instance.outstanding_results.load(.acquire) != 0) {
         return -3;
+    }
+    var word = initial_word;
+    if (term_root and is_int(word)) {
+        var buffer: [21]u8 = undefined;
+        const decimal = integer_decimal(word, &buffer) orelse return -2;
+        word = boxed_integer_from_decimal(decimal);
     }
     if (word == nil_word and instance.allocation_failed.load(.acquire)) {
         return -2;
@@ -4335,6 +4352,71 @@ pub fn ex_term_integer_compare(left: i64, right: i64) callconv(.c) i64 {
     return integer_compare(left, right) orelse 0;
 }
 
+const IntegerArithmetic = enum { add, sub, mul, div, rem };
+
+fn managed_integer(word: i64) ?std.math.big.int.Managed {
+    var buffer: [21]u8 = undefined;
+    const decimal = integer_decimal(word, &buffer) orelse return null;
+    var value = std.math.big.int.Managed.init(std.heap.page_allocator) catch return null;
+    value.setString(10, decimal) catch {
+        value.deinit();
+        return null;
+    };
+    return value;
+}
+
+fn managed_integer_term(value: std.math.big.int.Managed) i64 {
+    const decimal = value.toString(std.heap.page_allocator, 10, .lower) catch return nil_word;
+    defer std.heap.page_allocator.free(decimal);
+    return integer_term_from_decimal(decimal);
+}
+
+fn integer_arithmetic(left_word: i64, right_word: i64, operation: IntegerArithmetic) i64 {
+    var left = managed_integer(left_word) orelse return nil_word;
+    defer left.deinit();
+    var right = managed_integer(right_word) orelse return nil_word;
+    defer right.deinit();
+
+    if ((operation == .div or operation == .rem) and right.eqlZero()) return nil_word;
+
+    var result = std.math.big.int.Managed.init(std.heap.page_allocator) catch return nil_word;
+    defer result.deinit();
+
+    switch (operation) {
+        .add => result.add(&left, &right) catch return nil_word,
+        .sub => result.sub(&left, &right) catch return nil_word,
+        .mul => result.mul(&left, &right) catch return nil_word,
+        .div, .rem => {
+            var remainder = std.math.big.int.Managed.init(std.heap.page_allocator) catch return nil_word;
+            defer remainder.deinit();
+            result.divTrunc(&remainder, &left, &right) catch return nil_word;
+            if (operation == .rem) return managed_integer_term(remainder);
+        },
+    }
+
+    return managed_integer_term(result);
+}
+
+pub fn ex_term_integer_add(left: i64, right: i64) callconv(.c) i64 {
+    return integer_arithmetic(left, right, .add);
+}
+
+pub fn ex_term_integer_sub(left: i64, right: i64) callconv(.c) i64 {
+    return integer_arithmetic(left, right, .sub);
+}
+
+pub fn ex_term_integer_mul(left: i64, right: i64) callconv(.c) i64 {
+    return integer_arithmetic(left, right, .mul);
+}
+
+pub fn ex_term_integer_div(left: i64, right: i64) callconv(.c) i64 {
+    return integer_arithmetic(left, right, .div);
+}
+
+pub fn ex_term_integer_rem(left: i64, right: i64) callconv(.c) i64 {
+    return integer_arithmetic(left, right, .rem);
+}
+
 /// BEAM-style loose equality: integers and floats compare by numeric value,
 /// including when nested in tuples, lists, or maps. Other terms keep the
 /// runtime's structural equality semantics.
@@ -4492,12 +4574,7 @@ fn canonical_decimal_integer(bytes: []const u8) bool {
     return true;
 }
 
-/// Constructs an integer term from a canonical base-10 binary. Values in the
-/// immediate signed-61 domain keep the zero-allocation representation; larger
-/// values retain their canonical bytes in an arena-owned boxed integer.
-pub fn ex_term_bigint_lit(binary: i64) callconv(.c) i64 {
-    if (word_tag(binary) != tag_binary) return nil_word;
-    const bytes = binary_bytes(binary)[0..binary_len(binary)];
+fn integer_term_from_decimal(bytes: []const u8) i64 {
     if (!canonical_decimal_integer(bytes)) return nil_word;
 
     const immediate_min = -(@as(i64, 1) << 60);
@@ -4508,6 +4585,10 @@ pub fn ex_term_bigint_lit(binary: i64) callconv(.c) i64 {
         }
     } else |_| {}
 
+    return boxed_integer_from_decimal(bytes);
+}
+
+fn boxed_integer_from_decimal(bytes: []const u8) i64 {
     const payload_words = (bytes.len + @sizeOf(i64) - 1) / @sizeOf(i64);
     const payload = alloc_words(payload_words + 2) orelse return nil_word;
     payload[0] = boxed_bigint_kind;
@@ -4516,6 +4597,15 @@ pub fn ex_term_bigint_lit(binary: i64) callconv(.c) i64 {
     const destination: [*]u8 = @ptrFromInt(@intFromPtr(payload) + 2 * @sizeOf(i64));
     @memcpy(destination[0..bytes.len], bytes);
     return word_from_ptr(payload, tag_float);
+}
+
+/// Constructs an integer term from a canonical base-10 binary. Values in the
+/// immediate signed-61 domain keep the zero-allocation representation; larger
+/// values retain their canonical bytes in an arena-owned boxed integer.
+pub fn ex_term_bigint_lit(binary: i64) callconv(.c) i64 {
+    if (word_tag(binary) != tag_binary) return nil_word;
+    const bytes = binary_bytes(binary)[0..binary_len(binary)];
+    return integer_term_from_decimal(bytes);
 }
 
 pub fn ex_term_is_float(word: i64) callconv(.c) i64 {
@@ -5428,6 +5518,42 @@ test "integer comparison is exact across immediate and boxed representations" {
     try std.testing.expectEqual(@as(i64, 1), ex_term_integer_compare(negative_huge, negative_larger));
     try std.testing.expectEqual(@as(i64, -1), ex_term_integer_compare(negative_huge, zero));
     try std.testing.expectEqual(@as(i64, 0), ex_term_integer_compare(huge, huge));
+}
+
+test "boxed integer arithmetic preserves arbitrary precision and truncating division" {
+    const handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(handle));
+    defer {
+        _ = ex_term_runtime_leave();
+        _ = ex_term_runtime_destroy(handle);
+    }
+
+    const huge = ex_term_bigint_lit(test_binary_from_string("10000000000000000000000000000000000000001"));
+    const negative_huge = ex_term_bigint_lit(test_binary_from_string("-10000000000000000000000000000000000000001"));
+    const one = @as(i64, 1) << @intCast(tag_shift);
+    const ten = @as(i64, 10) << @intCast(tag_shift);
+
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(
+        ex_term_integer_add(huge, one),
+        ex_term_bigint_lit(test_binary_from_string("10000000000000000000000000000000000000002")),
+    ));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(
+        ex_term_integer_sub(huge, one),
+        ex_term_bigint_lit(test_binary_from_string("10000000000000000000000000000000000000000")),
+    ));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(
+        ex_term_integer_mul(huge, ten),
+        ex_term_bigint_lit(test_binary_from_string("100000000000000000000000000000000000000010")),
+    ));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_eq(
+        ex_term_integer_div(negative_huge, ten),
+        ex_term_bigint_lit(test_binary_from_string("-1000000000000000000000000000000000000000")),
+    ));
+    try std.testing.expectEqual(
+        @as(i64, 1),
+        ex_term_eq(ex_term_integer_rem(negative_huge, ten), @as(i64, -1) << @intCast(tag_shift)),
+    );
+    try std.testing.expectEqual(nil_word, ex_term_integer_div(huge, 0));
 }
 
 test "string to float preserves finite binary64 values and rejects invalid syntax" {
@@ -7254,6 +7380,21 @@ test "host result roots preserve untagged scalar compatibility" {
     try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_root_kind(handle));
     try std.testing.expectEqual(@as(i64, 3), ex_term_result_root_word(handle));
+    try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
+}
+
+test "typed host result roots distinguish immediate integers from scalars" {
+    const runtime_handle = ex_term_runtime_create();
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_enter(runtime_handle));
+    try std.testing.expectEqual(@as(i64, 1), ex_term_process_table_reset(default_process_cap));
+    const handle = ex_term_result_create_term(runtime_handle, 20 << tag_shift);
+    try std.testing.expect(handle != 0);
+    try std.testing.expectEqual(@as(i64, 0), ex_term_runtime_leave());
+    const root = ex_term_result_root_word(handle);
+    try std.testing.expectEqual(@as(i64, result_kind_bigint), ex_term_result_root_kind(handle));
+    try std.testing.expectEqual(@as(i64, 2), ex_term_result_term_length(handle, root));
+    try std.testing.expectEqual(@as(i64, '2'), ex_term_result_term_get(handle, root, 0));
+    try std.testing.expectEqual(@as(i64, '0'), ex_term_result_term_get(handle, root, 1));
     try std.testing.expectEqual(@as(i64, 0), ex_term_result_destroy(handle));
 }
 

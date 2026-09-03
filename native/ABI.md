@@ -136,6 +136,7 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.runtime_arena_limit` | `(handle: i64) -> i64` | effective per-execution arena quota in bytes |
 | `ex.term.runtime_oom` | `(handle: i64) -> i64` | 1 after any arena allocation failure in the current execution |
 | `ex.term.result_create` | `(runtime: i64, word: i64) -> i64` | owner-only retention of the sole initialized, quiescent execution result; 0 registry full, -1 unbound/not ready/foreign, -2 OOM, -3 duplicate ownership; failures preserve the runtime |
+| `ex.term.result_create_term` | `(runtime: i64, word: i64) -> i64` | typed-term retention with the same lifecycle contract; immediate integer roots are copied to arena-owned bigint storage so hosts can distinguish them from legacy scalar roots |
 | `ex.term.result_destroy` | `(handle: i64) -> i64` | atomically release a live result pin and its runtime; -1 stale, -2 during execution/export or while another term pin remains; busy is side-effect free |
 | `ex.term.result_arena_capacity_bytes` | `(handle: i64) -> i64` | retained runtime arena capacity in bytes, or -1 for a stale result |
 | `ex.term.result_arena_chunks` | `(handle: i64) -> i64` | retained runtime arena segment count, or -1 for a stale result |
@@ -251,6 +252,11 @@ All functions use the C ABI and return/accept `i64` tagged words unless noted.
 | `ex.term.list_length` | `(list: i64) -> i64` | list length; 0 for nil |
 | `ex.term.eq` | `(left: i64, right: i64) -> i64` | deep equality: exact for immediate and boxed integers, structural for containers |
 | `ex.term.integer_compare` | `(left: i64, right: i64) -> i64` | exact integer ordering across immediate and boxed arbitrary-precision representations; returns `-1`, `0`, or `1` |
+| `ex.term.integer_add` | `(left: i64, right: i64) -> i64` | exact integer addition; returns an immediate or boxed integer term, or nil for invalid operands/allocation failure |
+| `ex.term.integer_sub` | `(left: i64, right: i64) -> i64` | exact integer subtraction; returns an immediate or boxed integer term, or nil for invalid operands/allocation failure |
+| `ex.term.integer_mul` | `(left: i64, right: i64) -> i64` | exact integer multiplication; returns an immediate or boxed integer term, or nil for invalid operands/allocation failure |
+| `ex.term.integer_div` | `(left: i64, right: i64) -> i64` | exact truncating integer division; returns nil for invalid operands, zero divisor, or allocation failure |
+| `ex.term.integer_rem` | `(left: i64, right: i64) -> i64` | exact remainder paired with truncating division; returns nil for invalid operands, zero divisor, or allocation failure |
 | `ex.term.eq_loose` | `(left: i64, right: i64) -> i64` | BEAM-style loose equality: numeric immediate-int/float coercion plus boxed-integer equality, recursively structural for containers |
 | `ex.term.binary_length` | `(binary: i64) -> i64` | byte length; 0 for non-binaries |
 | `ex.term.binary_from_bytes` | `(bytes: ptr, length: i64) -> i64` | copies host bytes into a runtime-owned binary; nil on failure |

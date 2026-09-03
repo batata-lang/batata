@@ -44,6 +44,11 @@ defmodule Batata.Memory.Inventory do
     ex.int_to_hex
     ex.int_to_string
     ex.int_to_string_base
+    ex.integer_add
+    ex.integer_div
+    ex.integer_mul
+    ex.integer_rem
+    ex.integer_sub
     ex.iodata_to_binary
     ex.list
     ex.list_cons
