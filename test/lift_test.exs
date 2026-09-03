@@ -721,6 +721,26 @@ defmodule Batata.LiftTest do
     refute "ex.unbound" in names
   end
 
+  test "unboxes proven term arithmetic for utf8 construction", %{ctx: ctx} do
+    module =
+      lift!(
+        """
+        defmodule Math do
+          def encode(codepoint), do: <<(codepoint + 0)::utf8>>
+          def widen(), do: encode(:unused)
+          def main(), do: encode(0x1F642)
+        end
+        """,
+        ctx
+      )
+
+    names = op_names(module)
+    assert "ex.integer_add" in names
+    assert "ex.is_integer" in names
+    assert "ex.to_int" in names
+    assert "ex.binary" in names
+  end
+
   test "normalizes qualified Kernel.rem/2 to the scalar remainder path", %{ctx: ctx} do
     module =
       lift!(

@@ -2562,6 +2562,18 @@ defmodule Batata.ExecuteTest do
     assert Batata.execute(source, ctx) == expected
   end
 
+  test "constructs utf8 from proven arithmetic with a term ABI", %{ctx: ctx} do
+    source = """
+    defmodule NativeTermUtf8Construction do
+      def encode(codepoint), do: <<(codepoint + 0)::utf8>>
+      def widen(), do: encode(:unused)
+      def main(), do: encode(0x1F642)
+    end
+    """
+
+    assert Batata.execute(source, ctx) == "🙂"
+  end
+
   test "executes predicates over scalar integers and empty lists", %{ctx: ctx} do
     assert 1 ==
              Batata.execute(

@@ -34,6 +34,7 @@ defmodule Batata.Lift do
   @struct_schema_key {__MODULE__, :struct_schema}
   @arg_modes_key {__MODULE__, :arg_modes}
   @integer_guard_modes_key {__MODULE__, :integer_guard_modes}
+  @integer_argument_modes_key {__MODULE__, :integer_argument_modes}
   @no_return_functions_key {__MODULE__, :no_return_functions}
   @scalar_result_functions_key {__MODULE__, :scalar_result_functions}
   @integer_result_functions_key {__MODULE__, :integer_result_functions}
@@ -163,6 +164,7 @@ defmodule Batata.Lift do
       @struct_schema_key => schemas,
       @arg_modes_key => argument_modes,
       @integer_guard_modes_key => Batata.Signature.infer_integer_guards(definitions),
+      @integer_argument_modes_key => Batata.Signature.infer_integer_arguments(definitions),
       @no_return_functions_key => no_return_functions,
       @scalar_result_functions_key => scalar_result_functions,
       @integer_result_functions_key => integer_result_functions,
@@ -1968,6 +1970,10 @@ defmodule Batata.Lift do
       |> Map.put(@current_function_signature_key, {name, arity})
       |> Map.put(@term_parameter_names_key, term_parameter_names(patterns, modes))
       |> Map.put(
+        @integer_value_names_key,
+        integer_argument_names(patterns, name, arity, module_env)
+      )
+      |> Map.put(
         @boolean_parameter_names_key,
         boolean_parameter_names(patterns, name, arity, module_env)
       )
@@ -2222,14 +2228,20 @@ defmodule Batata.Lift do
 
     integer_clause_namess =
       Enum.map(clauses, fn clause ->
-        clause.patterns
-        |> tl()
-        |> Enum.reduce(MapSet.new(), fn pattern, names ->
-          MapSet.union(
-            names,
-            struct_integer_pattern_names(pattern, Map.get(module_env, @struct_schema_key))
-          )
-        end)
+        struct_names =
+          clause.patterns
+          |> tl()
+          |> Enum.reduce(MapSet.new(), fn pattern, names ->
+            MapSet.union(
+              names,
+              struct_integer_pattern_names(pattern, Map.get(module_env, @struct_schema_key))
+            )
+          end)
+
+        MapSet.union(
+          struct_names,
+          integer_argument_names(clause.patterns, name, arity, module_env)
+        )
       end)
 
     struct_integer_field_mapss =
@@ -6078,6 +6090,20 @@ defmodule Batata.Lift do
     Enum.map_reduce(segments, env, fn
       {:"::", _, [expression, {:utf8, _, context}]}, env when is_atom(context) ->
         {value, env} = lift_expr(expression, ctx, block, env)
+        value = lift_value(value, ctx, block, env)
+
+        value =
+          if term_operand?(value) and integer_expression?(expression, env) do
+            validated_scalar_integer(
+              value,
+              "UTF-8 construction requires an i64-range integer operand",
+              ctx,
+              block
+            )
+          else
+            value
+          end
+
         ensure_refined_integer_operands!([value])
         {lower_utf8_construction(value, ctx, block), env}
 
@@ -7193,22 +7219,49 @@ defmodule Batata.Lift do
 
   defp lift_stdlib_call(Kernel, :abs, [value_ast], ctx, block, env) do
     {value, env} = lift_expr(value_ast, ctx, block, env)
-    [value] = refine_integer_operands!([value_ast], [value], env, ctx, block)
-    ensure_refined_integer_operands!([value])
-    non_negative? = cmp(value, lit(0, ctx, block), "sge", ctx, block)
-    non_negative_i1 = create_op("arith.trunci", [non_negative?], [MLIR.Type.i1()], ctx, block)
+    value = lift_value(value, ctx, block, env)
 
-    [result] =
-      build_scf_if(
-        non_negative_i1,
-        ctx,
-        block,
-        [integer_type(ctx)],
-        fn _then_block -> [value] end,
-        fn b -> [create_op("ex.sub", [lit(0, ctx, b), value], [integer_type(ctx)], ctx, b)] end
-      )
+    if term_operand?(value) and integer_expression?(value_ast, env) do
+      value = validated_integer_term(value, ctx, block)
+      zero = box_if_scalar(lit(0, ctx, block), ctx, block)
+      ordering = create_op("ex.integer_compare", [value, zero], [MLIR.Type.i64()], ctx, block)
+      non_negative? = cmp(ordering, 0, "sge", ctx, block)
+      non_negative_i1 = create_op("arith.trunci", [non_negative?], [MLIR.Type.i1()], ctx, block)
 
-    {result, env}
+      [result] =
+        build_scf_if(
+          non_negative_i1,
+          ctx,
+          block,
+          [integer_type(ctx)],
+          fn then_block -> [unbox(value, ctx, then_block)] end,
+          fn b ->
+            negative = create_op("ex.integer_sub", [zero, value], [ex_type("term", ctx)], ctx, b)
+            [unbox(negative, ctx, b)]
+          end
+        )
+
+      {create_op("ex.to_word", [result], [ex_type("term", ctx)], ctx, block), env}
+    else
+      [value] = refine_integer_operands!([value_ast], [value], env, ctx, block)
+      ensure_refined_integer_operands!([value])
+      non_negative? = cmp(value, lit(0, ctx, block), "sge", ctx, block)
+      non_negative_i1 = create_op("arith.trunci", [non_negative?], [MLIR.Type.i1()], ctx, block)
+
+      [result] =
+        build_scf_if(
+          non_negative_i1,
+          ctx,
+          block,
+          [integer_type(ctx)],
+          fn _then_block -> [value] end,
+          fn b ->
+            [create_op("ex.sub", [lit(0, ctx, b), value], [integer_type(ctx)], ctx, b)]
+          end
+        )
+
+      {result, env}
+    end
   end
 
   defp lift_stdlib_call(Kernel, function, [left_ast, right_ast], ctx, block, env)
@@ -13254,6 +13307,10 @@ defmodule Batata.Lift do
     )
   end
 
+  defp integer_expression?({{:., _, [module_ast, function]}, _, arguments}, _env)
+       when function in [:abs, :max, :min, :div, :rem] and is_list(arguments),
+       do: module_ref(module_ast) == {:ok, Kernel}
+
   defp integer_expression?({name, _, context}, env) when is_variable_ast(name, context) do
     env
     |> Map.get(@integer_value_names_key, MapSet.new())
@@ -13776,6 +13833,23 @@ defmodule Batata.Lift do
     end)
   end
 
+  defp integer_argument_names(patterns, name, arity, module_env) do
+    modes =
+      module_env
+      |> Map.fetch!(@integer_argument_modes_key)
+      |> Map.get({name, arity}, List.duplicate(false, arity))
+
+    patterns
+    |> Enum.zip(modes)
+    |> Enum.reduce(MapSet.new(), fn
+      {{parameter, _, context}, true}, names when is_variable_ast(parameter, context) ->
+        MapSet.put(names, parameter)
+
+      _pattern_and_mode, names ->
+        names
+    end)
+  end
+
   defp boolean_parameter_names(patterns, name, arity, module_env) do
     modes =
       module_env
@@ -13916,6 +13990,19 @@ defmodule Batata.Lift do
       Macro.prewalk(clause.body_ast, false, fn
         {operator, _, arguments} = node, found?
         when operator in [:+, :-, :*, :div, :rem] and is_list(arguments) ->
+          {node, found? or Enum.any?(arguments, &ast_uses_variable?(&1, term_names))}
+
+        {{:., _, [module_ast, function]}, _, arguments} = node, found?
+        when function in [:max, :min, :div, :rem] and is_list(arguments) ->
+          found? =
+            found? or
+              (module_ref(module_ast) == {:ok, Kernel} and
+                 Enum.any?(arguments, &ast_uses_variable?(&1, term_names)))
+
+          {node, found?}
+
+        {{:., _, [Bitwise, _operator]}, _, arguments} = node, found?
+        when is_list(arguments) ->
           {node, found? or Enum.any?(arguments, &ast_uses_variable?(&1, term_names))}
 
         node, found? ->

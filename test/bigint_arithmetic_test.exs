@@ -12,13 +12,20 @@ defmodule Batata.BigintArithmeticTest do
       def main() do
         value = #{@huge}
         negative = 0 - value
-        {value + 1, value - 1, value * 10, div(negative, 10), rem(negative, 10)}
+        {
+          value + 1,
+          value - 1,
+          value * 10,
+          div(negative, 10),
+          rem(negative, 10),
+          Kernel.abs(negative)
+        }
       end
     end
     """
 
     assert Batata.execute(source, ctx) ==
-             {@huge + 1, @huge - 1, @huge * 10, div(-@huge, 10), rem(-@huge, 10)}
+             {@huge + 1, @huge - 1, @huge * 10, div(-@huge, 10), rem(-@huge, 10), @huge}
 
     rendered = source |> Batata.compile(ctx) |> MLIR.to_string(generic: true)
     assert rendered =~ "ex.integer_add"
@@ -68,6 +75,45 @@ defmodule Batata.BigintArithmeticTest do
     """
 
     assert Batata.execute(source, ctx) == {325, {@huge * 10, 1}, 100}
+  end
+
+  test "preserves boxed coefficients destructured from structs", %{ctx: ctx} do
+    source = """
+    defmodule BigintStructArithmeticFixture do
+      defstruct sign: 1, coef: 0, exp: 0
+
+      defp add(%__MODULE__{coef: :nan} = left, %__MODULE__{}), do: left
+      defp add(%__MODULE__{}, %__MODULE__{coef: :nan} = right), do: right
+
+      defp add(
+             %__MODULE__{coef: :infinity, sign: sign} = left,
+             %__MODULE__{coef: :infinity, sign: sign} = right
+           ) do
+        if left.exp > right.exp, do: left, else: right
+      end
+
+      defp add(%__MODULE__{coef: :infinity}, %__MODULE__{coef: :infinity}),
+        do: %__MODULE__{coef: :nan}
+
+      defp add(%__MODULE__{coef: :infinity} = left, %__MODULE__{}), do: left
+      defp add(%__MODULE__{}, %__MODULE__{coef: :infinity} = right), do: right
+
+      defp add(%__MODULE__{} = left, %__MODULE__{} = right) do
+        %__MODULE__{sign: sign1, coef: coef1} = left
+        %__MODULE__{sign: sign2, coef: coef2} = right
+        %__MODULE__{coef: Kernel.abs(sign1 * coef1 + sign2 * coef2)}
+      end
+
+      def main(), do: add(%__MODULE__{coef: #{@huge}}, %__MODULE__{coef: 10})
+    end
+    """
+
+    assert Batata.execute(source, ctx) == %{
+             __struct__: BigintStructArithmeticFixture,
+             sign: 1,
+             coef: @huge + 10,
+             exp: 0
+           }
   end
 
   test "preserves immediate integer roots returned by mixed term dispatch", %{ctx: ctx} do

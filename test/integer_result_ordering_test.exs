@@ -48,6 +48,24 @@ defmodule Batata.IntegerResultOrderingTest do
     assert module |> MLIR.to_string(generic: true) |> count_op("ex.integer_compare") == 4
   end
 
+  test "orders a term-ABI parameter before its later arithmetic use", %{ctx: ctx} do
+    source = """
+    defmodule ForwardedIntegerOrderingFixture do
+      defp increment(value) do
+        if value >= 0, do: Kernel.div(value, 1) + 1, else: value - 1
+      end
+
+      def main(), do: increment(#{@huge})
+    end
+    """
+
+    assert Batata.execute(source, ctx) == @huge + 1
+
+    module = Batata.compile(source, ctx)
+    assert MLIR.verify?(module)
+    assert module |> MLIR.to_string(generic: true) |> count_op("ex.integer_compare") == 1
+  end
+
   test "validates dynamic arguments before integer-result ordering", %{ctx: ctx} do
     source = """
     defmodule DynamicIntegerResultOrderingFixture do
