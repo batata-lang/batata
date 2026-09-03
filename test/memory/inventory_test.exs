@@ -8,6 +8,7 @@ defmodule Batata.Memory.InventoryTest do
   test "intrinsic inventory is explicit and future operations fail closed" do
     assert Inventory.intrinsic("ex.add").classification == :none
     assert Inventory.intrinsic("ex.tuple").classification == :may_allocate
+    assert Inventory.intrinsic("ex.integer_mul").classification == :may_allocate
     assert Inventory.intrinsic("ex.apply").classification == :unknown
     assert Inventory.intrinsic("ex.enumerable_map_fun").classification == :unknown
     assert Inventory.intrinsic("ex.apply").provenance == "batata.memory.intrinsic.unknown"
